@@ -1,0 +1,5 @@
+/codex-api-gateway
+/dist/
+*.exe
+/server
+config.yaml

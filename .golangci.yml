@@ -1,0 +1,28 @@
+version: "2"
+
+run:
+  go: "1.26"
+  timeout: "5m"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - misspell
+
+  exclusions:
+    paths:
+      - "_test\\.go"
+    rules:
+      # defer 的返回值错误无法有意义地处理(如 defer l.Close()),忽略其 errcheck
+      - linters: [errcheck]
+        source: "defer "
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,61 @@
+# =============================================================================
+# CodexApiGateway 配置示例
+# -----------------------------------------------------------------------------
+# 作用：把 Codex CLI 发来的 OpenAI Responses API 请求，转换为 Anthropic
+#       Messages API 请求，转发给任一 Anthropic 兼容后端（官方 Claude /
+#       智谱 / Kimi / 方舟等），并做主备故障转移 + 断路器保护。
+# 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
+# =============================================================================
+
+# HTTP 服务
+server:
+  listen: ":8080"        # 监听地址；Codex 的 base_url 指向 http://<host>:8080/v1/responses
+
+# 会话状态存储
+# enrich 机制：按 previous_response_id 缓存上一轮输出，回填进下一轮 input，
+# 使无状态后端也能正确完成多轮工具调用。
+session:
+  ttl: 1h                # 单条会话记录的存活时间，过期后从存储淘汰
+  max_entries: 10000     # 存储条目上限；-1 = 无限，0/留空 = 默认 10000
+
+# 全局断路器（所有后端源共享，可被单源 breaker 覆盖）
+# 状态机：
+#   normal ──(连续 N 次失败)──> degraded(该源序列后移) ──(再连续 N 次失败)──> circuitOpen(熔断)
+#   circuitOpen ──(冷却结束)──> halfOpen(放行探测) ──(探测成功)──> 由 recovery 决定回到 normal/degraded
+breaker:
+  first_byte_timeout: 12s   # 流式请求等待首个字节的最长时间，超时计为失败
+  degrade_threshold: 3      # normal→degraded 与 degraded→circuitOpen 各需的连续失败次数
+  recover_threshold: 1      # degraded→normal 所需的连续成功次数
+  cooldown: 30s             # 熔断(circuitOpen)后多久转为半开(halfOpen)探测
+  half_open_probes: 1       # halfOpen 状态允许放行的探测请求数
+  recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
+  max_retries: 0            # 失败重试次数；仅全局生效，不被单源 breaker 覆盖
+
+# thinking 预算映射：reasoning.effort → Anthropic thinking.budget_tokens
+# - effort 为空：不开启 thinking
+# - effort=none：显式禁用 thinking（不查此表）
+# - 其他 effort：查此表取 budget，未命中则取默认值 8000
+thinking:
+  effort_budget: {minimal: 1024, low: 8000, medium: 16000, high: 32000, xhigh: 48000}
+
+# 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
+# base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
+# 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，
+# 智谱 https://open.bigmodel.cn/api/anthropic，Messages 路径同为 /v1/messages。
+sources:
+  - name: anthropic-official                # 源标识，用于日志与故障转移定位
+    base_url: https://api.anthropic.com     # 网关根地址，代码自动补 /v1/messages
+    api_key: ${ANTHROPIC_KEY}               # 密钥，支持 ${ENV_VAR} 展开
+    model_map: { gpt-5: claude-sonnet-4-20250514 }  # 请求 model → 后端 model 映射
+    default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
+
+  # 备用源：演示 per-source 断路器覆盖（整个 breaker 块可选，省略即用全局）
+  # 单源 breaker 中为零值的字段会继承全局；max_retries 始终取全局、不被覆盖。
+  - name: zhipu
+    base_url: https://open.bigmodel.cn/api/anthropic
+    api_key: ${ZHIPU_KEY}
+    model_map: { gpt-5: glm-5.2 }
+    default_model: glm-5.2
+    breaker:
+      first_byte_timeout: 8s    # 该源更快判定首字节超时，其余字段继承全局
+      cooldown: 10s

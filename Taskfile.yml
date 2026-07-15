@@ -1,0 +1,82 @@
+version: '3'
+
+vars:
+  BINARY: codex-api-gateway
+  CONFIG: config.yaml
+  PACKAGES: ./...
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the server binary
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.BINARY}}'
+    cmds:
+      - go build -o {{.BINARY}} ./cmd/server
+
+  run:
+    desc: Run the server (requires {{.CONFIG}})
+    cmds:
+      - go run ./cmd/server -config {{.CONFIG}}
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test {{.PACKAGES}}
+
+  test-race:
+    desc: Run tests with the race detector
+    cmds:
+      - go test -race {{.PACKAGES}}
+
+  test-verbose:
+    desc: Run tests verbosely
+    cmds:
+      - go test -v {{.PACKAGES}}
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet {{.PACKAGES}}
+
+  fmt:
+    desc: Format Go code with gofmt
+    cmds:
+      - gofmt -w internal/ cmd/
+
+  fmt-check:
+    desc: Check formatting without writing (exits non-zero if unformatted)
+    cmds:
+      - gofmt -l internal/ cmd/
+
+  tidy:
+    desc: Run go mod tidy
+    cmds:
+      - go mod tidy
+
+  cover:
+    desc: Run tests with coverage and print the total
+    cmds:
+      - go test -coverprofile=coverage.out {{.PACKAGES}}
+      - 'go tool cover -func=coverage.out | tail -1'
+
+  check:
+    desc: Run fmt-check + vet + test (pre-commit gate)
+    cmds:
+      - task: fmt-check
+      - task: vet
+      - task: test
+
+  smoke:
+    desc: Build then run the server for a manual smoke test
+    cmds:
+      - task: build
+      - ./{{.BINARY}} -config {{.CONFIG}}
