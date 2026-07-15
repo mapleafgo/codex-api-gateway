@@ -91,6 +91,23 @@ func TestConverterTextDelta(t *testing.T) {
 	}
 }
 
+func TestConverterUsesClientModelWhenSet(t *testing.T) {
+	c := New()
+	c.SetClientModel("gpt-5.5")
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_1", Model: "glm-5.2"},
+	})
+	if len(evs) == 0 {
+		t.Fatalf("expected response.created event")
+	}
+	payload := decodePayload(t, evs[0].Data)
+	resp := payload["response"].(map[string]any)
+	if resp["model"] != "gpt-5.5" {
+		t.Fatalf("response model = %v, want client-facing alias gpt-5.5", resp["model"])
+	}
+}
+
 func TestConverterThinkingAndToolUse(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{

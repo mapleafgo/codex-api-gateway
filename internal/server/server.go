@@ -169,6 +169,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	conv := streamconv.New()
 	conv.SetEcho(echoFromRequest(req))
+	conv.SetClientModel(string(req.Model))
 	// Codex TUI 只渲染 reasoning_summary_* 事件，reasoning_text.* 事件不会被显示。
 	// 模型 catalog 的 default_reasoning_summary 常为 "none"，导致 effort 已开启时
 	// 用户仍看不到思考。只要 effort 已开启（非 none），就强制使用 summary 事件格式。

@@ -11,6 +11,17 @@ go run ./cmd/server -config config.yaml
 
 Point Codex at `http://127.0.0.1:8080/v1/responses`.
 
+Use a Codex/OpenAI-side model alias such as `gpt-5` or `gpt-5.5`, then map it
+to the provider model in `config.yaml`:
+
+```yaml
+model_map: { gpt-5: glm-5.2 }
+default_model: glm-5.2
+```
+
+Avoid setting Codex's model directly to provider-only names like `glm-5.2`;
+Codex may not have metadata for those names.
+
 ## Endpoints
 
 - `POST /v1/responses` — OpenAI Responses API（核心转发入口）

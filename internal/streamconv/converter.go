@@ -58,10 +58,11 @@ var (
 
 // Converter turns a stream of Anthropic SSE events into Response SSE events.
 type Converter struct {
-	respID    string
-	model     string
-	seq       int64
-	createdAt int64
+	respID      string
+	model       string
+	clientModel string
+	seq         int64
+	createdAt   int64
 
 	itemOrder int // next output item index
 
@@ -125,6 +126,10 @@ func (c *Converter) OutputItems() []model.OutputItem { return c.outputItems }
 // SetEcho injects request echo parameters for response object P2 fields.
 func (c *Converter) SetEcho(p model.ResponseObjectParams) { c.echo = p }
 
+// SetClientModel keeps Response events on the Codex-facing model alias even
+// when the upstream reports its provider-specific model id.
+func (c *Converter) SetClientModel(model string) { c.clientModel = model }
+
 // SetSummarized tells the converter to emit reasoning_summary_* events
 // instead of reasoning_text.* events for thinking blocks.
 func (c *Converter) SetSummarized(v bool) { c.summarized = v }
@@ -157,6 +162,9 @@ func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEven
 func (c *Converter) handleMessageStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	c.respID = ev.Message.ID
 	c.model = ev.Message.Model
+	if c.clientModel != "" {
+		c.model = c.clientModel
+	}
 	c.createdAt = time.Now().Unix()
 
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusInProgress, c.model, c.createdAt, c.echo)
