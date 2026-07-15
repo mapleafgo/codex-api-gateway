@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -38,12 +38,25 @@ type Server struct {
 
 // New builds a Server.
 func New(cfg *config.Config) *Server {
+	sess := store.New(cfg.Session.MaxBytes, cfg.Session.MaxEntryBytes, time.Duration(cfg.Session.TTL))
+	if cfg.Session.Path != "" {
+		var err error
+		sess, err = store.Open(cfg.Session.Path, cfg.Session.MaxBytes, cfg.Session.MaxEntryBytes, time.Duration(cfg.Session.TTL))
+		if err != nil {
+			panic(fmt.Sprintf("open session store: %v", err))
+		}
+	}
 	return &Server{
 		cfg:       cfg,
-		sess:      store.New(cfg.Session.MaxEntries, time.Duration(cfg.Session.TTL)),
+		sess:      sess,
 		sch:       scheduler.New(cfg),
 		startedAt: time.Now().Unix(),
 	}
+}
+
+// Close releases server resources.
+func (s *Server) Close() error {
+	return s.sess.Close()
 }
 
 // Handler returns the HTTP handler.
@@ -56,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		slog.Warn("拒绝模型列表请求", "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -66,12 +80,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	// 1) 上游模型列表
 	if body, err := s.sch.ListModels(r.Context()); err != nil {
-		log.Printf("[server] /v1/models upstream failed: %v", err)
+		slog.Warn("获取上游模型列表失败", "error", err)
 	} else {
 		defer body.Close()
 		var am model.AnthropicModelsResponse
 		if err := json.NewDecoder(body).Decode(&am); err != nil {
-			log.Printf("[server] /v1/models parse upstream: %v", err)
+			slog.Warn("解析上游模型列表失败", "error", err)
 		} else {
 			for _, m := range am.Data {
 				if seen[m.ID] {
@@ -101,7 +115,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	resp := model.ListResponse{Object: model.ObjectList, Data: entries}
 	w.Header().Set("content-type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[server] /v1/models encode response: %v", err)
+		slog.Error("写出模型列表响应失败", "error", err)
 	}
 }
 
@@ -119,26 +133,48 @@ func parseCreated(rfc3339 string, fallback int64) int64 {
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		slog.Warn("拒绝响应请求", "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		slog.Warn("读取响应请求体失败", "error", err)
 		http.Error(w, "read request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	req, err := convert.DecodeResponseNewParams(body)
 	if err != nil {
+		slog.Warn("解析响应请求体失败", "error", err)
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	prevID := ""
+	prevIDPresent := req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != ""
 	if req.PreviousResponseID.Valid() {
 		prevID = req.PreviousResponseID.Value
 	}
-	log.Printf("[server] POST /v1/responses model=%s inputItems=%d inputStrLen=%d instructionsLen=%d reasoning.effort=%s reasoning.summary=%s prev=%q",
-		req.Model, len(req.Input.OfInputItemList), len(req.Input.OfString.Value), len(req.Instructions.Value),
-		req.Reasoning.Effort, req.Reasoning.Summary, prevID)
+	storeExplicit := req.Store.Valid()
+	storeValue := false
+	if storeExplicit {
+		storeValue = req.Store.Value
+	}
+	storeEffective := shouldStoreResponse(req)
+	slog.Info("收到响应请求",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"model", string(req.Model),
+		"input_items", len(req.Input.OfInputItemList),
+		"input_string_len", len(req.Input.OfString.Value),
+		"instructions_len", len(req.Instructions.Value),
+		"reasoning_effort", string(req.Reasoning.Effort),
+		"reasoning_summary", string(req.Reasoning.Summary),
+		"previous_response_id", prevID,
+		"previous_response_id_present", prevIDPresent,
+		"store_explicit", storeExplicit,
+		"store_value", storeValue,
+		"store_effective", storeEffective,
+		slog.Group("input_item_type_counts", inputItemTypeCountAttrs(req.Input.OfInputItemList)...))
 	// 逐条打印 input item 类型，用于诊断 Codex 发来的对话历史结构
 	for i := range req.Input.OfInputItemList {
 		it := &req.Input.OfInputItemList[i]
@@ -146,12 +182,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if it.OfMessage != nil {
 			role = string(it.OfMessage.Role)
 		}
-		log.Printf("[server]   input[%d] type=%s role=%s", i, itemType(it), role)
+		slog.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
 	}
 
 	ordered := s.cfg.OrderedSources()
 	if len(ordered) > 0 {
 		if _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
+			slog.Warn("预转换响应请求失败", "source", ordered[0].Name, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -190,8 +227,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			sysLen += len(b.Text)
 		}
 		thinkingOn := anthReq.Thinking.OfEnabled != nil || anthReq.Thinking.OfAdaptive != nil
-		log.Printf("[server] converted source=%s model=%s max_tokens=%d messages=%d systemLen=%dB thinking=%v tools=%d",
-			src.Name, anthReq.Model, anthReq.MaxTokens, len(anthReq.Messages), sysLen, thinkingOn, len(anthReq.Tools))
+		slog.Info("请求转换完成",
+			"source", src.Name,
+			"model", string(anthReq.Model),
+			"max_tokens", anthReq.MaxTokens,
+			"messages", len(anthReq.Messages),
+			"system_bytes", sysLen,
+			"thinking", thinkingOn,
+			"tools", len(anthReq.Tools))
 		return anthReq, nil
 	}, func(ev *anthropic.MessageStreamEventUnion) error {
 		evCount++
@@ -199,10 +242,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if ev.Type == anContentBlockStart {
 			blkType = ev.ContentBlock.Type
 		}
-		log.Printf("[server] upstream event #%d type=%s blk=%s", evCount, ev.Type, blkType)
+		slog.Debug("收到上游流事件", "event_index", evCount, "event_type", ev.Type, "block_type", blkType)
 		out, _ := conv.Feed(ev)
 		for _, e := range out {
-			log.Printf("[server]   -> sse %s", e.Type)
+			slog.Debug("写出响应 SSE 事件", "event_type", e.Type)
 			writeSSE(w, e)
 		}
 		flusher.Flush()
@@ -223,14 +266,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		for _, it := range items {
 			types = append(types, it.Type)
 		}
-		log.Printf("[server] done resp_id=%s status=completed upstreamEvents=%d outputTypes=%v", id, evCount, types)
+		slog.Info("响应请求完成", "response_id", id, "status", "completed", "source", sourceName, "upstream_events", evCount, "output_types", types)
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)
 		}
 		flusher.Flush()
 	} else {
-		log.Printf("[server] done resp_id=%s status=failed err=%v", id, execErr)
+		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "error", execErr)
 		if !conv.Done() {
 			// I1: only emit a server-side response.failed if the converter hasn't
 			// already emitted one (e.g. via a mid-stream error event). Without this
@@ -247,15 +290,35 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	items := conv.OutputItems()
-	if len(items) == 0 {
-		if executedReq != nil {
-			items = collectOutput(executedReq)
-		} else {
-			items = collectOutput(req)
+	if shouldStoreResponse(req) {
+		items := conv.OutputItems()
+		if len(items) == 0 {
+			if executedReq != nil {
+				items = collectOutput(executedReq)
+			} else {
+				items = collectOutput(req)
+			}
 		}
+		if executedReq != nil {
+			s.sess.SaveResponse(id, sourceName, executedReq, items)
+		} else {
+			s.sess.SaveResponse(id, sourceName, req, items)
+		}
+		slog.Debug("保存会话上下文",
+			"response_id", id,
+			"source", sourceName,
+			"items", len(items),
+			"previous_response_id", req.PreviousResponseID.Value,
+			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
+			"store_effective", true)
+	} else {
+		slog.Debug("跳过会话上下文保存",
+			"response_id", id,
+			"source", sourceName,
+			"previous_response_id", req.PreviousResponseID.Value,
+			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
+			"store", false)
 	}
-	s.sess.Save(id, sourceName, items)
 }
 
 func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, error) {
@@ -263,8 +326,24 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, err
 	}
-	prevItems := s.sess.Enrich(req, src.Name)
-	log.Printf("[server] enrich source=%s prevItems=%d", src.Name, len(prevItems))
+	var prevItems []model.OutputItem
+	if shouldStoreResponse(req) {
+		prevItems = s.sess.Enrich(req, src.Name)
+		slog.Debug("会话历史回填完成",
+			"source", src.Name,
+			"previous_response_id", req.PreviousResponseID.Value,
+			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
+			"previous_items", len(prevItems),
+			"input_items_after_enrich", len(req.Input.OfInputItemList),
+			"input_string_len_after_enrich", len(req.Input.OfString.Value),
+			"store_effective", true,
+			slog.Group("input_item_type_counts_after_enrich", inputItemTypeCountAttrs(req.Input.OfInputItemList)...))
+	} else if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
+		slog.Warn("跳过 previous_response_id 会话回填",
+			"source", src.Name,
+			"previous_response_id", req.PreviousResponseID.Value,
+			"store", false)
+	}
 	anthReq, err := convert.ToAnthropic(req, s.cfg, prevItems...)
 	if err != nil {
 		return nil, nil, err
@@ -281,6 +360,10 @@ func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
 		return true
 	}
 	return req.Reasoning.Effort != "" && string(req.Reasoning.Effort) != model.ReasoningEffortNone
+}
+
+func shouldStoreResponse(req *oairesponses.ResponseNewParams) bool {
+	return !req.Store.Valid() || req.Store.Value
 }
 
 // echoFromRequest extracts P2 echo fields from the request for response object.
@@ -307,6 +390,10 @@ func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectPa
 	if req.ParallelToolCalls.Valid() {
 		v := req.ParallelToolCalls.Value
 		p.ParallelToolCalls = &v
+	}
+	if req.Store.Valid() {
+		v := req.Store.Value
+		p.Store = &v
 	}
 	// Echo tool_choice if any variant is set.
 	if req.ToolChoice.OfToolChoiceMode.Valid() ||
@@ -343,6 +430,27 @@ func itemType(it *oairesponses.ResponseInputItemUnionParam) string {
 		return model.ItemTypeFunctionCallOutput
 	}
 	return "unknown"
+}
+
+func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) []any {
+	counts := map[string]int{}
+	for i := range items {
+		counts[itemType(&items[i])]++
+	}
+	keys := []string{
+		model.ItemTypeMessage,
+		model.ItemTypeReasoning,
+		model.ItemTypeFunctionCall,
+		model.ItemTypeFunctionCallOutput,
+		"unknown",
+	}
+	attrs := make([]any, 0, len(keys))
+	for _, key := range keys {
+		if counts[key] > 0 {
+			attrs = append(attrs, slog.Int(key, counts[key]))
+		}
+	}
+	return attrs
 }
 
 func collectOutput(req *oairesponses.ResponseNewParams) []model.OutputItem {

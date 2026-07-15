@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -174,6 +174,7 @@ func (s *Scheduler) ExecutePrepared(ctx context.Context, build RequestBuilder, o
 		if mr != -1 && attempt == mr {
 			break
 		}
+		slog.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
 		if werr := s.waitBackoff(ctx, attempt); werr != nil {
 			return "", werr
 		}
@@ -189,11 +190,12 @@ func (s *Scheduler) tryRoundPrepared(ctx context.Context, build RequestBuilder, 
 	for _, src := range s.runtimeSeq() {
 		bk := s.breakerFor(&src)
 		if !bk.Allow() {
-			log.Printf("[scheduler] source %q skipped (breaker open)", src.Name)
+			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
 			continue
 		}
 		req, err := build(src)
 		if err != nil {
+			slog.Warn("构建上游请求失败", "source", src.Name, "error", err)
 			return "", false, err
 		}
 		locked, err := s.trySource(ctx, &src, bk, req, onEvent)
@@ -202,7 +204,7 @@ func (s *Scheduler) tryRoundPrepared(ctx context.Context, build RequestBuilder, 
 		}
 		if err != nil {
 			lastErr = err
-			log.Printf("[scheduler] source %q failed (model=%s): %v", src.Name, string(req.Model), err)
+			slog.Warn("上游源请求失败", "source", src.Name, "model", string(req.Model), "error", err)
 		}
 	}
 	return "", false, lastErr
@@ -221,13 +223,18 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	// Resolve the model per the selected source's ModelMap before sending upstream.
 	resolvedReq := *req
 	resolvedReq.Model = anthropic.Model(ResolveModel(src, string(req.Model)))
-	log.Printf("[scheduler] try source=%q endpoint=%s model=%s->%s", src.Name, src.BaseURL, string(req.Model), string(resolvedReq.Model))
+	slog.Info("尝试上游源",
+		"source", src.Name,
+		"endpoint", src.BaseURL,
+		"model", string(req.Model),
+		"resolved_model", string(resolvedReq.Model))
 	body, err := s.client.Stream(fbCtx, src.BaseURL, src.APIKey, &resolvedReq)
 	if err != nil {
 		if ctx.Err() == nil {
 			oldState := bk.State()
 			newState := bk.RecordFailure()
 			s.adjustOrder(src.Name, oldState, newState)
+			slog.Warn("记录上游源失败", "source", src.Name, "old_state", oldState, "new_state", newState, "error", err)
 		}
 		return false, err
 	}
@@ -241,6 +248,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			oldState := bk.State()
 			newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
+			slog.Info("上游源流已锁定", "source", src.Name, "old_state", oldState, "new_state", newState)
 		}
 		if err := onEvent(ev); err != nil {
 			return err
@@ -252,6 +260,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			oldState := bk.State()
 			newState := bk.RecordFailure()
 			s.adjustOrder(src.Name, oldState, newState)
+			slog.Warn("上游源未返回事件", "source", src.Name, "old_state", oldState, "new_state", newState, "error", scanErr)
 		}
 		if scanErr != nil {
 			return false, scanErr
@@ -272,8 +281,10 @@ func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
 	switch newState {
 	case breaker.Degraded, breaker.CircuitOpen:
 		s.moveToEnd(name)
+		slog.Warn("上游源运行优先级后移", "source", name, "old_state", oldState, "new_state", newState)
 	case breaker.Normal:
 		s.restoreOriginal(name)
+		slog.Info("上游源运行优先级恢复", "source", name, "old_state", oldState, "new_state", newState)
 	}
 }
 
@@ -284,15 +295,16 @@ func (s *Scheduler) ListModels(ctx context.Context) (io.ReadCloser, error) {
 	for _, src := range s.runtimeSeq() {
 		bk := s.breakerFor(&src)
 		if !bk.Allow() {
-			log.Printf("[scheduler] list models: source %q skipped (breaker open)", src.Name)
+			slog.Warn("模型列表跳过上游源", "source", src.Name, "reason", "breaker_open")
 			continue
 		}
 		body, err := s.client.ListModels(ctx, src.BaseURL, src.APIKey)
 		if err != nil {
 			lastErr = err
-			log.Printf("[scheduler] list models: source %q failed: %v", src.Name, err)
+			slog.Warn("模型列表上游源失败", "source", src.Name, "error", err)
 			continue
 		}
+		slog.Info("模型列表上游源成功", "source", src.Name)
 		return body, nil
 	}
 	if lastErr != nil {

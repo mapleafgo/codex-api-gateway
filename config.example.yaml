@@ -5,18 +5,30 @@
 #       Messages API 请求，转发给任一 Anthropic 兼容后端（官方 Claude /
 #       智谱 / Kimi / 方舟等），并做主备故障转移 + 断路器保护。
 # 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
+# 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖配置，层级分隔符用双下划线。
+# 例如：CODEX_API_GATEWAY_SOURCES__0__API_KEY=sk-ant-...
 # =============================================================================
 
 # HTTP 服务
 server:
   listen: ":8080"        # 监听地址；Codex 的 base_url 指向 http://<host>:8080/v1/responses
 
+# 日志配置
+# level: debug | info | warn | error
+# format: text | json
+# debug 会输出输入项、流式事件、SSE 转换、会话保存等细粒度诊断日志。
+logging:
+  level: info
+  format: text
+
 # 会话状态存储
-# enrich 机制：按 previous_response_id 缓存上一轮输出，回填进下一轮 input，
-# 使无状态后端也能正确完成多轮工具调用。
+# enrich 机制：按 previous_response_id 缓存本轮有效 input + output，
+# 下一轮回填完整上下文，使无状态后端也能正确完成多轮对话和工具调用。
 session:
-  ttl: 1h                # 单条会话记录的存活时间，过期后从存储淘汰
-  max_entries: 10000     # 存储条目上限；-1 = 无限，0/留空 = 默认 10000
+  path: data/session             # Badger 存储目录；留空 = 默认 data/session
+  ttl: 1h                        # Badger entry TTL，过期后不可读取并等待 GC
+  max_bytes: 67108864            # 会话缓存总字节预算；0/留空 = 默认 64 MiB
+  max_entry_bytes: 2097152       # 单条响应可缓存的最大字节数；0/留空 = 默认 2 MiB
 
 # 全局断路器（所有后端源共享，可被单源 breaker 覆盖）
 # 状态机：

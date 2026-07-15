@@ -294,7 +294,6 @@ func TestIntegrationToolMultiRound(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Session: config.SessionCfg{MaxEntries: 100},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
 	srv := New(cfg)
@@ -373,7 +372,6 @@ func TestIntegrationReasoningPlaintext(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Session: config.SessionCfg{MaxEntries: 100},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
 	srv := New(cfg)
@@ -491,7 +489,6 @@ func TestIntegrationRedactedThinking(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Session: config.SessionCfg{MaxEntries: 100},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
 	srv := New(cfg)
@@ -663,7 +660,6 @@ func TestIntegrationFailoverSavesActualSourceName(t *testing.T) {
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
-		Session: config.SessionCfg{MaxEntries: 100},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: badA.URL},
 			{Name: "B", BaseURL: goodB.URL},

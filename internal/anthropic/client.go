@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -83,11 +83,13 @@ func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) (io.Re
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		log.Printf("[anthropic] upstream %d GET %s response: %s",
-			resp.StatusCode, url, truncForLog(b, 1000))
+		slog.Warn("上游模型列表请求失败",
+			"status", resp.StatusCode,
+			"url", url,
+			"response", truncForLog(b, 1000))
 		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, string(b))
 	}
-	log.Printf("[anthropic] %d GET %s", resp.StatusCode, url)
+	slog.Info("上游模型列表请求成功", "status", resp.StatusCode, "url", url)
 	return resp.Body, nil
 }
 
@@ -140,8 +142,14 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		log.Printf("[anthropic] upstream %d POST %s\n  request: %s\n  response: %s",
-			resp.StatusCode, url, truncForLog(body, 2000), truncForLog(b, 1000))
+		slog.Warn("上游流式请求失败",
+			"status", resp.StatusCode,
+			"url", url)
+		slog.Debug("上游流式请求失败详情",
+			"status", resp.StatusCode,
+			"url", url,
+			"request", truncForLog(body, 2000),
+			"response", truncForLog(b, 1000))
 		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, string(b))
 	}
 	// 部分网关（如智谱）对错误路径或非法请求返回 HTTP 200 + JSON 错误体（非 4xx），
@@ -149,14 +157,22 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if ct := resp.Header.Get("content-type"); !strings.Contains(ct, "text/event-stream") {
 		b, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		log.Printf("[anthropic] unexpected content-type %q (%d) POST %s\n  request: %s\n  response: %s",
-			ct, resp.StatusCode, url, truncForLog(body, 2000), truncForLog(b, 1000))
+		slog.Warn("上游流式请求返回非 SSE 响应",
+			"status", resp.StatusCode,
+			"url", url,
+			"content_type", ct)
+		slog.Debug("上游非 SSE 响应详情",
+			"status", resp.StatusCode,
+			"url", url,
+			"content_type", ct,
+			"request", truncForLog(body, 2000),
+			"response", truncForLog(b, 1000))
 		if len(b) > 500 {
 			b = append(b[:500:500], []byte("...(truncated)")...)
 		}
 		return nil, fmt.Errorf("anthropic upstream %d: unexpected content-type %q: %s", resp.StatusCode, ct, string(b))
 	}
-	log.Printf("[anthropic] %d POST %s (streaming)", resp.StatusCode, url)
+	slog.Info("上游流式请求已建立", "status", resp.StatusCode, "url", url)
 	return resp.Body, nil
 }
 

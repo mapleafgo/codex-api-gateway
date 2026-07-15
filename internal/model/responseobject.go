@@ -23,6 +23,7 @@ type ResponseObject struct {
 	Reasoning          *ReasoningEcho     `json:"reasoning,omitempty"`
 	PreviousResponseID string             `json:"previous_response_id,omitempty"`
 	Truncation         string             `json:"truncation,omitempty"`
+	Store              *bool              `json:"store,omitempty"`
 }
 
 // ResponseError is the error detail embedded in a failed ResponseObject.
@@ -54,6 +55,7 @@ type ResponseObjectParams struct {
 	Reasoning          *ReasoningEcho
 	PreviousResponseID string
 	Truncation         string
+	Store              *bool
 }
 
 // ReasoningEcho echoes the request's reasoning configuration back in the
@@ -77,5 +79,6 @@ func NewResponseObject(id, status, modelName string, createdAt int64, p Response
 		Reasoning:          p.Reasoning,
 		PreviousResponseID: p.PreviousResponseID,
 		Truncation:         p.Truncation,
+		Store:              p.Store,
 	}
 }

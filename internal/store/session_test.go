@@ -1,8 +1,9 @@
 package store
 
 import (
-	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	oparam "github.com/openai/openai-go/v3/packages/param"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestEnrichFillsToolCallAndThinking(t *testing.T) {
-	s := New(1000, 0)
+	s := New(0, 0, 0)
 	s.Save("resp_1", "official", []model.OutputItem{
 		{Type: "reasoning", ID: "rs_0", Summary: []model.OutputText{{Type: "summary_text", Text: "think"}}},
 		{Type: "function_call", ID: "fc_0", CallID: "c1", Name: "run", Arguments: "{}"},
@@ -45,40 +46,99 @@ func TestEnrichFillsToolCallAndThinking(t *testing.T) {
 	}
 }
 
-func TestSaveWithMaxEntriesNegativeKeepsEntry(t *testing.T) {
-	s := New(-1, 0) // max<0 means unlimited
-	s.Save("resp_1", "official", []model.OutputItem{
-		{Type: "message", Role: "assistant", Content: []model.OutputText{{Type: "output_text", Text: "hello"}}},
+func TestEnrichPrependsStoredInputAndOutputContext(t *testing.T) {
+	s := New(0, 0, 0)
+	s.SaveContext("resp_1", "official", []oairesponses.ResponseInputItemUnionParam{
+		messageInput("user", "first question"),
+	}, []model.OutputItem{
+		{Type: "message", Role: "assistant", Content: []model.OutputText{{Type: "output_text", Text: "first answer"}}},
 	})
-	entry, ok := s.Get("resp_1")
-	if !ok {
-		t.Fatal("entry should be retained when MaxEntries<0 (unlimited)")
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: oairesponses.ResponseInputParam{
+				messageInput("user", "second question"),
+			},
+		},
 	}
-	if len(entry.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(entry.Items))
+
+	_ = s.Enrich(req, "official")
+
+	if got := len(req.Input.OfInputItemList); got != 3 {
+		t.Fatalf("want previous input + output + new input, got %d items: %+v", got, req.Input.OfInputItemList)
+	}
+	if got := messageText(req.Input.OfInputItemList[0]); got != "first question" {
+		t.Fatalf("first item text = %q, want first question", got)
+	}
+	if got := messageText(req.Input.OfInputItemList[1]); got != "first answer" {
+		t.Fatalf("second item text = %q, want first answer", got)
+	}
+	if got := messageText(req.Input.OfInputItemList[2]); got != "second question" {
+		t.Fatalf("third item text = %q, want second question", got)
 	}
 }
 
-func TestSaveWithMaxEntriesZeroUsesDefaultLimit(t *testing.T) {
-	s := New(0, 0)
-	for i := 0; i <= DefaultMaxEntries; i++ {
-		s.Save("resp_"+strconv.Itoa(i), "official", []model.OutputItem{
-			{Type: "message", Role: "assistant"},
-		})
+func TestOpenPersistsContextAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, 0, 0, time.Hour)
+	if err != nil {
+		t.Fatalf("open: %v", err)
 	}
-	var missing int
-	for i := 0; i <= DefaultMaxEntries; i++ {
-		if _, ok := s.Get("resp_" + strconv.Itoa(i)); !ok {
-			missing++
-		}
+	s.SaveContext("resp_1", "official", []oairesponses.ResponseInputItemUnionParam{
+		messageInput("user", "first question"),
+	}, []model.OutputItem{
+		{Type: "message", Role: "assistant", Content: []model.OutputText{{Type: "output_text", Text: "first answer"}}},
+	})
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
-	if missing == 0 {
-		t.Fatalf("at least one entry should be evicted when MaxEntries=0 uses default limit")
+
+	reopened, err := Open(dir, 0, 0, time.Hour)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: oairesponses.ResponseInputParam{
+				messageInput("user", "second question"),
+			},
+		},
+	}
+	_ = reopened.Enrich(req, "official")
+
+	if got := len(req.Input.OfInputItemList); got != 3 {
+		t.Fatalf("want persisted previous input + output + new input, got %d items", got)
+	}
+	if got := messageText(req.Input.OfInputItemList[0]); got != "first question" {
+		t.Fatalf("first item text = %q, want first question", got)
+	}
+	if got := messageText(req.Input.OfInputItemList[1]); got != "first answer" {
+		t.Fatalf("second item text = %q, want first answer", got)
+	}
+}
+
+func TestOpenUsesBadgerTTL(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, 0, 0, 2*time.Second)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	s.Save("resp_1", "official", textItems("old", 10))
+	time.Sleep(3 * time.Second)
+	if _, ok := s.Get("resp_1"); ok {
+		t.Fatalf("badger TTL should make expired entry unretrievable")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 }
 
 func TestEnrichDropsThinkingCrossSource(t *testing.T) {
-	s := New(1000, 0)
+	s := New(0, 0, 0)
 	s.Save("resp_1", "official", []model.OutputItem{
 		{Type: "reasoning", ID: "rs_0", Summary: []model.OutputText{{Type: "summary_text", Text: "think"}}},
 		{Type: "function_call", ID: "fc_0", CallID: "c1", Name: "run"},
@@ -112,5 +172,112 @@ func TestEnrichDropsThinkingCrossSource(t *testing.T) {
 	}
 	if !hasCall {
 		t.Fatalf("tool_call must be kept across sources")
+	}
+}
+
+func TestSaveEvictsLeastRecentlyUsedWhenMaxBytesExceeded(t *testing.T) {
+	s := New(850, 0, 0)
+	s.Save("resp_a", "official", textItems("a", 100))
+	s.Save("resp_b", "official", textItems("b", 100))
+
+	if _, ok := s.Get("resp_a"); !ok {
+		t.Fatalf("expected resp_a before eviction")
+	}
+
+	s.Save("resp_c", "official", textItems("c", 100))
+
+	if _, ok := s.Get("resp_a"); !ok {
+		t.Fatalf("recently used resp_a should be retained")
+	}
+	if _, ok := s.Get("resp_b"); ok {
+		t.Fatalf("least recently used resp_b should be evicted")
+	}
+	if _, ok := s.Get("resp_c"); !ok {
+		t.Fatalf("new resp_c should be retained")
+	}
+}
+
+func TestSaveSkipsEntryLargerThanMaxEntryBytes(t *testing.T) {
+	s := New(0, 120, 0)
+
+	s.Save("resp_big", "official", textItems("big", 200))
+
+	if _, ok := s.Get("resp_big"); ok {
+		t.Fatalf("entry larger than max_entry_bytes should not be stored")
+	}
+}
+
+func TestGetReturnsIndependentEntryCopy(t *testing.T) {
+	s := New(0, 0, 0)
+	s.Save("resp_1", "official", textItems("hello", 5))
+
+	entry, ok := s.Get("resp_1")
+	if !ok {
+		t.Fatalf("expected stored entry")
+	}
+	entry.Items[0].Content[0].Text = "mutated"
+
+	got, ok := s.Get("resp_1")
+	if !ok {
+		t.Fatalf("expected stored entry after mutation")
+	}
+	if got.Items[0].Content[0].Text == "mutated" {
+		t.Fatalf("Get must return a copy, not the stored slice")
+	}
+}
+
+func textItems(id string, n int) []model.OutputItem {
+	return []model.OutputItem{{
+		Type:    "message",
+		ID:      id,
+		Role:    "assistant",
+		Content: []model.OutputText{{Type: "output_text", Text: strings.Repeat("x", n)}},
+	}}
+}
+
+func messageInput(role, text string) oairesponses.ResponseInputItemUnionParam {
+	return oairesponses.ResponseInputItemUnionParam{
+		OfMessage: &oairesponses.EasyInputMessageParam{
+			Role: oairesponses.EasyInputMessageRole(role),
+			Content: oairesponses.EasyInputMessageContentUnionParam{
+				OfString: oparam.NewOpt(text),
+			},
+		},
+	}
+}
+
+func messageText(item oairesponses.ResponseInputItemUnionParam) string {
+	if item.OfMessage == nil {
+		return ""
+	}
+	return item.OfMessage.Content.OfString.Value
+}
+
+func TestDeleteRemovesEntry(t *testing.T) {
+	s := New(0, 0, 0)
+	s.Save("resp_1", "official", textItems("hello", 5))
+
+	if _, ok := s.Get("resp_1"); !ok {
+		t.Fatalf("expected entry before delete")
+	}
+	s.Delete("resp_1")
+	if _, ok := s.Get("resp_1"); ok {
+		t.Fatalf("entry should be gone after delete")
+	}
+}
+
+func TestDeleteFreesBytesForEviction(t *testing.T) {
+	s := New(850, 0, 0)
+	s.Save("resp_a", "official", textItems("a", 100))
+	s.Save("resp_b", "official", textItems("b", 100))
+	s.Delete("resp_a")
+
+	s.Save("resp_c", "official", textItems("c", 100))
+
+	if _, ok := s.Get("resp_b"); !ok {
+		t.Fatalf("resp_b should survive when resp_a was deleted")
+	}
+	if _, ok := s.Get("resp_c"); !ok {
+		t.Fatalf("resp_c should be stored")
 	}
 }

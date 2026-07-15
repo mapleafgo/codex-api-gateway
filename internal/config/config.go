@@ -3,83 +3,110 @@ package config
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/providers/rawbytes"
+	"github.com/knadh/koanf/v2"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// DefaultSessionMaxEntries is used when session.max_entries is omitted or 0.
-const DefaultSessionMaxEntries = 10000
+// DefaultSessionMaxBytes is used when session.max_bytes is omitted or 0.
+const DefaultSessionMaxBytes int64 = 64 * 1024 * 1024
+
+// DefaultSessionMaxEntryBytes is used when session.max_entry_bytes is omitted or 0.
+const DefaultSessionMaxEntryBytes int64 = 2 * 1024 * 1024
+
+// DefaultSessionPath is the on-disk Badger path for session state.
+const DefaultSessionPath = "data/session"
+
+const envPrefix = "CODEX_API_GATEWAY_"
+
+var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Config is the top-level YAML configuration.
 type Config struct {
-	Server   ServerCfg   `yaml:"server"`
-	Session  SessionCfg  `yaml:"session"`
-	Breaker  BreakerCfg  `yaml:"breaker"`
-	Thinking ThinkingCfg `yaml:"thinking"`
-	Sources  []Source    `yaml:"sources"`
+	Server   ServerCfg   `koanf:"server" yaml:"server"`
+	Logging  LoggingCfg  `koanf:"logging" yaml:"logging"`
+	Session  SessionCfg  `koanf:"session" yaml:"session"`
+	Breaker  BreakerCfg  `koanf:"breaker" yaml:"breaker"`
+	Thinking ThinkingCfg `koanf:"thinking" yaml:"thinking"`
+	Sources  []Source    `koanf:"sources" yaml:"sources"`
 }
 
 // ServerCfg configures the HTTP listener.
 type ServerCfg struct {
-	Listen string `yaml:"listen"`
+	Listen string `koanf:"listen" yaml:"listen"`
+}
+
+// LoggingCfg 配置进程级结构化日志。
+type LoggingCfg struct {
+	Level  string `koanf:"level" yaml:"level"`
+	Format string `koanf:"format" yaml:"format"`
 }
 
 // SessionCfg configures previous_response_id session storage.
 type SessionCfg struct {
-	TTL        Duration `yaml:"ttl"`
-	MaxEntries int      `yaml:"max_entries"`
+	Path          string   `koanf:"path" yaml:"path"`
+	TTL           Duration `koanf:"ttl" yaml:"ttl"`
+	MaxBytes      int64    `koanf:"max_bytes" yaml:"max_bytes"`
+	MaxEntryBytes int64    `koanf:"max_entry_bytes" yaml:"max_entry_bytes"`
 }
 
 // BreakerCfg configures upstream failover and circuit breaking.
 type BreakerCfg struct {
-	FirstByteTimeout Duration `yaml:"first_byte_timeout"`
-	Cooldown         Duration `yaml:"cooldown"`
-	DegradeThreshold int      `yaml:"degrade_threshold"`
-	RecoverThreshold int      `yaml:"recover_threshold"`
-	HalfOpenProbes   int      `yaml:"half_open_probes"`
-	MaxRetries       int      `yaml:"max_retries"`
-	Recovery         string   `yaml:"recovery"`
+	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout"`
+	Cooldown         Duration `koanf:"cooldown" yaml:"cooldown"`
+	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold"`
+	RecoverThreshold int      `koanf:"recover_threshold" yaml:"recover_threshold"`
+	HalfOpenProbes   int      `koanf:"half_open_probes" yaml:"half_open_probes"`
+	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries"`
+	Recovery         string   `koanf:"recovery" yaml:"recovery"`
 }
 
 // ThinkingCfg maps Responses reasoning effort values to Anthropic thinking budgets.
 type ThinkingCfg struct {
-	EffortBudget map[string]int `yaml:"effort_budget"`
+	EffortBudget map[string]int `koanf:"effort_budget" yaml:"effort_budget"`
 }
 
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
-	Name          string            `yaml:"name"`
-	BaseURL       string            `yaml:"base_url"`
-	APIKey        string            `yaml:"api_key"`
-	ModelMap      map[string]string `yaml:"model_map"`
-	DefaultModel  string            `yaml:"default_model"`
-	Breaker       *BreakerCfg       `yaml:"breaker"`
-	OriginalIndex int               `yaml:"-"`
+	Name          string            `koanf:"name" yaml:"name"`
+	BaseURL       string            `koanf:"base_url" yaml:"base_url"`
+	APIKey        string            `koanf:"api_key" yaml:"api_key"`
+	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map"`
+	DefaultModel  string            `koanf:"default_model" yaml:"default_model"`
+	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker"`
+	OriginalIndex int               `koanf:"-" yaml:"-"`
 }
 
 // Duration wraps time.Duration for YAML parsing.
 type Duration time.Duration
 
 // UnmarshalYAML parses a Go duration string from YAML.
-func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+func (d *Duration) UnmarshalYAML(value *yamlv3.Node) error {
 	var s string
 	if err := value.Decode(&s); err != nil {
 		return err
 	}
-	parsed, err := time.ParseDuration(s)
+	return d.UnmarshalText([]byte(s))
+}
+
+// UnmarshalText 从 koanf/mapstructure 提供的字符串解析 Go duration。
+func (d *Duration) UnmarshalText(text []byte) error {
+	parsed, err := time.ParseDuration(string(text))
 	if err != nil {
 		return err
 	}
 	*d = Duration(parsed)
 	return nil
 }
-
-var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 func expandEnv(s string) string {
 	return envRe.ReplaceAllStringFunc(s, func(m string) string {
@@ -96,9 +123,20 @@ func Load(path string) (*Config, error) {
 	}
 	data = []byte(expandEnv(string(data)))
 	warnDeprecatedFields(data)
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	k := koanf.New(".")
+	if err := k.Load(rawbytes.Provider(data), yaml.Parser()); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	var cfg Config
+	if err := k.Unmarshal("", &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	envCfg := koanf.New(".")
+	if err := envCfg.Load(env.ProviderWithValue(envPrefix, ".", transformEnv), nil); err != nil {
+		return nil, fmt.Errorf("load env config: %w", err)
+	}
+	if err := applyEnvOverrides(&cfg, envCfg); err != nil {
+		return nil, err
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -106,15 +144,142 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func transformEnv(key, value string) (string, interface{}) {
+	key = strings.TrimPrefix(key, envPrefix)
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "__", ".")
+	return key, value
+}
+
+func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
+	overrides := []struct {
+		path   string
+		target any
+	}{
+		{"server.listen", &cfg.Server.Listen},
+		{"logging.level", &cfg.Logging.Level},
+		{"logging.format", &cfg.Logging.Format},
+		{"session.path", &cfg.Session.Path},
+		{"session.ttl", &cfg.Session.TTL},
+		{"session.max_bytes", &cfg.Session.MaxBytes},
+		{"session.max_entry_bytes", &cfg.Session.MaxEntryBytes},
+		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
+		{"breaker.cooldown", &cfg.Breaker.Cooldown},
+		{"breaker.degrade_threshold", &cfg.Breaker.DegradeThreshold},
+		{"breaker.recover_threshold", &cfg.Breaker.RecoverThreshold},
+		{"breaker.half_open_probes", &cfg.Breaker.HalfOpenProbes},
+		{"breaker.max_retries", &cfg.Breaker.MaxRetries},
+		{"breaker.recovery", &cfg.Breaker.Recovery},
+	}
+	for _, override := range overrides {
+		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
+			return err
+		}
+	}
+	for i := range cfg.Sources {
+		if err := applySourceEnvOverrides(&cfg.Sources[i], k, fmt.Sprintf("sources.%d", i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
+	overrides := []struct {
+		path   string
+		target any
+	}{
+		{prefix + ".name", &src.Name},
+		{prefix + ".base_url", &src.BaseURL},
+		{prefix + ".api_key", &src.APIKey},
+		{prefix + ".default_model", &src.DefaultModel},
+	}
+	for _, override := range overrides {
+		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
+			return err
+		}
+	}
+	breakerPrefix := prefix + ".breaker"
+	if !hasAnyEnv(k, breakerPrefix,
+		"first_byte_timeout", "cooldown", "degrade_threshold", "recover_threshold",
+		"half_open_probes", "recovery") {
+		return nil
+	}
+	if src.Breaker == nil {
+		src.Breaker = &BreakerCfg{}
+	}
+	overrides = []struct {
+		path   string
+		target any
+	}{
+		{breakerPrefix + ".first_byte_timeout", &src.Breaker.FirstByteTimeout},
+		{breakerPrefix + ".cooldown", &src.Breaker.Cooldown},
+		{breakerPrefix + ".degrade_threshold", &src.Breaker.DegradeThreshold},
+		{breakerPrefix + ".recover_threshold", &src.Breaker.RecoverThreshold},
+		{breakerPrefix + ".half_open_probes", &src.Breaker.HalfOpenProbes},
+		{breakerPrefix + ".recovery", &src.Breaker.Recovery},
+	}
+	for _, override := range overrides {
+		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasAnyEnv(k *koanf.Koanf, prefix string, names ...string) bool {
+	for _, name := range names {
+		if k.Exists(prefix + "." + name) {
+			return true
+		}
+	}
+	return false
+}
+
+func unmarshalEnvPath(k *koanf.Koanf, path string, target any) error {
+	if !k.Exists(path) {
+		return nil
+	}
+	if err := k.Unmarshal(path, target); err != nil {
+		return fmt.Errorf("parse env config %s: %w", path, err)
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	if len(c.Sources) == 0 {
 		return fmt.Errorf("config: at least one source required")
 	}
-	if c.Session.MaxEntries < -1 {
-		return fmt.Errorf("config: session.max_entries must be -1 (unlimited), 0 (default), or positive, got %d", c.Session.MaxEntries)
+	if c.Logging.Level == "" {
+		c.Logging.Level = "info"
 	}
-	if c.Session.MaxEntries == 0 {
-		c.Session.MaxEntries = DefaultSessionMaxEntries
+	if c.Logging.Format == "" {
+		c.Logging.Format = "text"
+	}
+	switch c.Logging.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("config: logging.level must be debug, info, warn, or error, got %q", c.Logging.Level)
+	}
+	switch c.Logging.Format {
+	case "text", "json":
+	default:
+		return fmt.Errorf("config: logging.format must be text or json, got %q", c.Logging.Format)
+	}
+	if c.Session.MaxBytes < 0 {
+		return fmt.Errorf("config: session.max_bytes must be 0 (default) or positive, got %d", c.Session.MaxBytes)
+	}
+	if c.Session.MaxEntryBytes < 0 {
+		return fmt.Errorf("config: session.max_entry_bytes must be 0 (default) or positive, got %d", c.Session.MaxEntryBytes)
+	}
+	if c.Session.MaxBytes == 0 {
+		c.Session.MaxBytes = DefaultSessionMaxBytes
+	}
+	if c.Session.MaxEntryBytes == 0 {
+		c.Session.MaxEntryBytes = DefaultSessionMaxEntryBytes
+	}
+	if c.Session.Path == "" {
+		c.Session.Path = DefaultSessionPath
 	}
 	if c.Session.TTL == 0 {
 		c.Session.TTL = Duration(time.Hour)
@@ -225,7 +390,7 @@ func (c *Config) BreakerFor(s *Source) BreakerCfg {
 // warnDeprecatedFields scans raw YAML for deprecated keys and logs warnings.
 func warnDeprecatedFields(data []byte) {
 	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	if err := yamlv3.Unmarshal(data, &raw); err != nil {
 		return // real parse will report the error
 	}
 	scanDeprecated(raw)
@@ -236,9 +401,11 @@ func scanDeprecated(m map[string]any) {
 	for k, v := range m {
 		switch k {
 		case "priority":
-			log.Printf("[config] ignored deprecated field 'priority' (sources now use list order)")
+			slog.Warn("忽略已废弃配置字段", "field", "priority", "replacement", "sources list order")
 		case "failure_threshold":
-			log.Printf("[config] ignored deprecated field 'failure_threshold' (use degrade_threshold)")
+			slog.Warn("忽略已废弃配置字段", "field", "failure_threshold", "replacement", "degrade_threshold")
+		case "max_entries":
+			slog.Warn("忽略已废弃配置字段", "field", "max_entries", "replacement", "session.max_bytes")
 		}
 		switch sub := v.(type) {
 		case map[string]any:

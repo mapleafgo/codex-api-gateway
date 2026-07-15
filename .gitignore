@@ -3,3 +3,5 @@
 *.exe
 /server
 config.yaml
+data/
+.mimocode/
