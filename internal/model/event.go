@@ -127,6 +127,24 @@ type FunctionCallArgumentsDoneEvent struct {
 	Arguments      string `json:"arguments"`
 }
 
+// CustomToolCallInputDeltaEvent carries custom tool input.
+type CustomToolCallInputDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Delta          string `json:"delta"`
+}
+
+// CustomToolCallInputDoneEvent closes custom tool input.
+type CustomToolCallInputDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Input          string `json:"input"`
+}
+
 // OutputItemAddedEvent opens an output item.
 type OutputItemAddedEvent struct {
 	Type           string     `json:"type"`

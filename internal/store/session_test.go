@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,99 @@ func TestEnrichFillsToolCallAndThinking(t *testing.T) {
 	}
 	if req.Input.OfInputItemList[2].OfFunctionCallOutput == nil {
 		t.Fatalf("expected function_call_output third")
+	}
+}
+
+func TestEnrichFillsCustomToolCall(t *testing.T) {
+	s := New(0, 0, 0)
+	s.Save("resp_1", "official", []model.OutputItem{
+		{Type: "custom_tool_call", ID: "ctc_0", CallID: "c1", Name: "apply_patch", Input: "*** Begin Patch"},
+	})
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: oairesponses.ResponseInputParam{
+				{OfCustomToolCallOutput: &oairesponses.ResponseCustomToolCallOutputParam{
+					CallID: "c1",
+					Output: oairesponses.ResponseCustomToolCallOutputOutputUnionParam{
+						OfString: oparam.NewOpt("ok"),
+					},
+				}},
+			},
+		},
+	}
+	_ = s.Enrich(req, "official")
+	if len(req.Input.OfInputItemList) != 2 {
+		t.Fatalf("want 2 items after enrich, got %d: %+v", len(req.Input.OfInputItemList), req.Input.OfInputItemList)
+	}
+	call := req.Input.OfInputItemList[0].OfCustomToolCall
+	if call == nil {
+		t.Fatalf("expected custom_tool_call first: %+v", req.Input.OfInputItemList[0])
+	}
+	if call.CallID != "c1" || call.Name != "apply_patch" || call.Input != "*** Begin Patch" {
+		t.Fatalf("bad custom_tool_call: %+v", call)
+	}
+	if req.Input.OfInputItemList[1].OfCustomToolCallOutput == nil {
+		t.Fatalf("expected custom_tool_call_output second")
+	}
+}
+
+func TestEnrichPreservesAssistantPhase(t *testing.T) {
+	s := New(0, 0, 0)
+	s.Save("resp_1", "official", []model.OutputItem{
+		{
+			Type:  "message",
+			ID:    "msg_0",
+			Role:  "assistant",
+			Phase: "final_answer",
+			Content: []model.OutputText{{
+				Type: "output_text",
+				Text: "done",
+			}},
+		},
+	})
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfString: oparam.NewOpt("next"),
+		},
+	}
+	_ = s.Enrich(req, "official")
+	if len(req.Input.OfInputItemList) < 1 {
+		t.Fatalf("expected enriched assistant message")
+	}
+	msg := req.Input.OfInputItemList[0].OfMessage
+	if msg == nil {
+		t.Fatalf("expected message input item: %+v", req.Input.OfInputItemList[0])
+	}
+	if string(msg.Phase) != "final_answer" {
+		t.Fatalf("assistant phase not preserved: %+v", msg)
+	}
+}
+
+func TestEnrichRoundTripsUnhandledInputItemRaw(t *testing.T) {
+	s := New(0, 0, 0)
+	compaction := oairesponses.ResponseInputItemParamOfCompaction("sealed-context")
+	s.SaveContext("resp_1", "official", []oairesponses.ResponseInputItemUnionParam{compaction}, nil)
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfString: oparam.NewOpt("next"),
+		},
+	}
+	_ = s.Enrich(req, "official")
+	if len(req.Input.OfInputItemList) < 1 {
+		t.Fatalf("expected enriched raw item")
+	}
+	b, err := json.Marshal(req.Input.OfInputItemList[0])
+	if err != nil {
+		t.Fatalf("marshal enriched item: %v", err)
+	}
+	if !strings.Contains(string(b), `"type":"compaction"`) || !strings.Contains(string(b), `"encrypted_content":"sealed-context"`) {
+		t.Fatalf("raw compaction item not round-tripped: %s", b)
 	}
 }
 

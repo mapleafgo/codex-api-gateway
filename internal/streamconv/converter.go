@@ -2,6 +2,7 @@
 package streamconv
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -34,6 +35,8 @@ var (
 	evReasoningSummaryTextDone   = string(oaconstant.ValueOf[oaconstant.ResponseReasoningSummaryTextDone]())
 	evFunctionCallArgumentsDelta = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
 	evFunctionCallArgumentsDone  = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
+	evCustomToolCallInputDelta   = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
+	evCustomToolCallInputDone    = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
 )
 
 var (
@@ -79,8 +82,9 @@ type Converter struct {
 	thinkRedacted   bool // current thinking block is redacted
 
 	// Tool call state
-	toolCalls       map[int]int // block index -> output item index
+	toolCalls       map[int]toolCallState // block index -> output item state
 	toolArgBuilders map[int]*strings.Builder
+	customToolNames map[string]bool
 
 	// Accumulators
 	textBuilder  strings.Builder
@@ -98,9 +102,18 @@ type Converter struct {
 // New returns a fresh converter.
 func New() *Converter {
 	return &Converter{
-		toolCalls:       map[int]int{},
+		toolCalls:       map[int]toolCallState{},
 		toolArgBuilders: map[int]*strings.Builder{},
+		customToolNames: map[string]bool{
+			"apply_patch": true,
+			"shell":       true,
+		},
 	}
+}
+
+type toolCallState struct {
+	itemIdx int
+	custom  bool
 }
 
 func (c *Converter) nextSeq() int64 { c.seq++; return c.seq }
@@ -133,6 +146,19 @@ func (c *Converter) SetClientModel(model string) { c.clientModel = model }
 // SetSummarized tells the converter to emit reasoning_summary_* events
 // instead of reasoning_text.* events for thinking blocks.
 func (c *Converter) SetSummarized(v bool) { c.summarized = v }
+
+// SetCustomToolNames marks tool_use names that should be emitted as Responses
+// custom_tool_call items instead of function_call items.
+func (c *Converter) SetCustomToolNames(names []string) {
+	if c.customToolNames == nil {
+		c.customToolNames = map[string]bool{}
+	}
+	for _, name := range names {
+		if name != "" {
+			c.customToolNames[name] = true
+		}
+	}
+}
 
 // Feed processes one Anthropic event; returns Response SSE events to emit.
 func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEvent, error) {
@@ -201,7 +227,7 @@ func (c *Converter) handleTextStart() []model.SSEEvent {
 
 	itemID := fmt.Sprintf("msg_%d", idx)
 	item := model.OutputItem{
-		Type: model.ItemTypeMessage, ID: itemID, Role: model.RoleAssistant, Status: model.ResponseStatusInProgress,
+		Type: model.ItemTypeMessage, ID: itemID, Role: model.RoleAssistant, Phase: model.AssistantPhaseFinalAnswer, Status: model.ResponseStatusInProgress,
 		Content: []model.OutputText{},
 	}
 	c.outputItems = append(c.outputItems, item)
@@ -259,12 +285,20 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 	idx := c.itemOrder
 	c.itemOrder++
 	blkIdx := int(ev.Index)
-	c.toolCalls[blkIdx] = idx
+	custom := c.customToolNames[ev.ContentBlock.Name]
+	c.toolCalls[blkIdx] = toolCallState{itemIdx: idx, custom: custom}
 	c.toolArgBuilders[blkIdx] = &strings.Builder{}
 
 	itemID := fmt.Sprintf("fc_%d", idx)
+	itemType := model.ItemTypeFunctionCall
+	status := model.ResponseStatusInProgress
+	if custom {
+		itemID = fmt.Sprintf("ctc_%d", idx)
+		itemType = model.ItemTypeCustomToolCall
+		status = ""
+	}
 	item := model.OutputItem{
-		Type: model.ItemTypeFunctionCall, ID: itemID, Status: model.ResponseStatusInProgress,
+		Type: itemType, ID: itemID, Status: status,
 		CallID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name,
 	}
 	c.outputItems = append(c.outputItems, item)
@@ -307,16 +341,19 @@ func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []mo
 		return nil
 	case anDeltaInputJSON:
 		blkIdx := int(ev.Index)
-		itemIdx, ok := c.toolCalls[blkIdx]
+		state, ok := c.toolCalls[blkIdx]
 		if !ok {
 			return nil
 		}
 		if b, ok := c.toolArgBuilders[blkIdx]; ok {
 			b.WriteString(ev.Delta.PartialJSON)
 		}
+		if state.custom {
+			return nil
+		}
 		return []model.SSEEvent{model.MarshalEvent(evFunctionCallArgumentsDelta, model.FunctionCallArgumentsDeltaEvent{
 			Type: evFunctionCallArgumentsDelta, SequenceNumber: c.nextSeq(),
-			OutputIndex: itemIdx, ItemID: fmt.Sprintf("fc_%d", itemIdx),
+			OutputIndex: state.itemIdx, ItemID: fmt.Sprintf("fc_%d", state.itemIdx),
 			Delta: ev.Delta.PartialJSON,
 		})}
 	}
@@ -384,11 +421,36 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 	}
 
 	blkIdx := int(ev.Index)
-	if itemIdx, ok := c.toolCalls[blkIdx]; ok {
+	if state, ok := c.toolCalls[blkIdx]; ok {
+		itemIdx := state.itemIdx
 		itemID := fmt.Sprintf("fc_%d", itemIdx)
 		args := ""
 		if b, ok := c.toolArgBuilders[blkIdx]; ok {
 			args = b.String()
+		}
+		if state.custom {
+			itemID = fmt.Sprintf("ctc_%d", itemIdx)
+			input := customToolInput(args)
+			if itemIdx < len(c.outputItems) {
+				c.outputItems[itemIdx].Input = input
+			}
+			if input != "" {
+				out = append(out, model.MarshalEvent(evCustomToolCallInputDelta, model.CustomToolCallInputDeltaEvent{
+					Type: evCustomToolCallInputDelta, SequenceNumber: c.nextSeq(),
+					OutputIndex: itemIdx, ItemID: itemID, Delta: input,
+				}))
+			}
+			out = append(out, model.MarshalEvent(evCustomToolCallInputDone, model.CustomToolCallInputDoneEvent{
+				Type: evCustomToolCallInputDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: itemIdx, ItemID: itemID, Input: input,
+			}))
+			out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
+			}))
+			delete(c.toolCalls, blkIdx)
+			delete(c.toolArgBuilders, blkIdx)
+			return out
 		}
 		if itemIdx < len(c.outputItems) {
 			c.outputItems[itemIdx].Arguments = args
@@ -407,6 +469,17 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 	}
 
 	return out
+}
+
+func customToolInput(raw string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return raw
+	}
+	if input, ok := obj["input"].(string); ok {
+		return input
+	}
+	return raw
 }
 
 func (c *Converter) emitSummaryEvents(itemID, text string) []model.SSEEvent {

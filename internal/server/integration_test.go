@@ -351,6 +351,45 @@ func TestIntegrationToolMultiRound(t *testing.T) {
 	}
 }
 
+func TestIntegrationCustomToolStream(t *testing.T) {
+	customToolLines := []string{
+		`{"type":"message_start","message":{"id":"m_custom1","model":"claude"}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_raw","name":"raw_edit"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"patch text\"}"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"type":"message_delta","stop_reason":"tool_use"},"usage":{"input_tokens":5,"output_tokens":3}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	upstream, _ := mockBackend([]mockResp{{lines: customToolLines}})
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","input":"hi","tools":[{"type":"custom","name":"raw_edit"}],"stream":true}`
+	events := postResponses(t, ts, body)
+
+	requireEvent(t, events, "response.custom_tool_call_input.delta")
+	doneEv := findEvent(t, events, "response.custom_tool_call_input.done")
+	if doneEv.data["input"] != "patch text" {
+		t.Fatalf("expected custom input 'patch text', got %v", doneEv.data["input"])
+	}
+	requireNotEvent(t, events, "response.function_call_arguments.done")
+
+	added := findEvent(t, events, "response.output_item.added")
+	item := added.data["item"].(map[string]any)
+	if item["type"] != "custom_tool_call" || item["name"] != "raw_edit" {
+		t.Fatalf("expected custom_tool_call raw_edit item, got %+v", item)
+	}
+}
+
 // TestIntegrationReasoningPlaintext verifies plaintext thinking with
 // thinking_delta + signature_delta produces reasoning_summary_* events and
 // stores the signature for round-trip.

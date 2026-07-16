@@ -77,6 +77,131 @@ func TestDeveloperRoleFoldsToSystem(t *testing.T) {
 	}
 }
 
+func TestSystemConversionPreservesInstructionRoles(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"top rules"}]},{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer rules"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.System) != 1 {
+		t.Fatalf("expected one system block: %+v", out.System)
+	}
+	got := out.System[0].Text
+	wantParts := []string{
+		"<developer>\nbe brief\n</developer>",
+		"<system>\ntop rules\n</system>",
+		"<developer>\ndeveloper rules\n</developer>",
+	}
+	last := -1
+	for _, part := range wantParts {
+		idx := strings.Index(got, part)
+		if idx < 0 {
+			t.Fatalf("system block missing role-preserved part %q: %q", part, got)
+		}
+		if idx <= last {
+			t.Fatalf("system block parts out of order: %q", got)
+		}
+		last = idx
+	}
+}
+
+func TestAssistantPhasePreservedInAnthropicText(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"input_text","text":"I am checking files."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) < 1 || out.Messages[0].Role != anthropic.MessageParamRoleAssistant {
+		t.Fatalf("assistant message not converted: %+v", out.Messages)
+	}
+	text := out.Messages[0].Content[0].OfText
+	if text == nil {
+		t.Fatalf("assistant phase text marker missing: %+v", out.Messages[0].Content[0])
+	}
+	if !strings.Contains(text.Text, "<assistant_phase>commentary</assistant_phase>") {
+		t.Fatalf("assistant phase not preserved in text: %q", text.Text)
+	}
+	if !strings.Contains(text.Text, "I am checking files.") {
+		t.Fatalf("assistant message text lost: %q", text.Text)
+	}
+}
+
+func TestAdditionalToolsAndToolSearchItemsConvert(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"tool_search_call","call_id":"ts1","arguments":{"q":"crm"}},
+		{"type":"tool_search_output","call_id":"ts1","tools":[{"type":"function","name":"lookup","description":"lookup contact","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}]},
+		{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"raw_edit","description":"raw edit"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"use the loaded tools"}]}
+	],"tools":[{"type":"tool_search","execution":"client","description":"search deferred tools","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findTool(out.Tools, "tool_search") == nil {
+		t.Fatalf("top-level tool_search not exposed: %+v", out.Tools)
+	}
+	if findTool(out.Tools, "lookup") == nil {
+		t.Fatalf("tool_search_output tools not exposed: %+v", out.Tools)
+	}
+	raw := findTool(out.Tools, "raw_edit")
+	if raw == nil || raw.Type != anthropic.ToolTypeCustom {
+		t.Fatalf("additional custom tool not exposed as custom: %+v", out.Tools)
+	}
+	if len(out.Messages) < 2 || out.Messages[0].Content[0].OfToolUse == nil {
+		t.Fatalf("tool_search_call not converted to tool_use: %+v", out.Messages)
+	}
+	if out.Messages[0].Content[0].OfToolUse.Name != "tool_search" {
+		t.Fatalf("tool_search_call uses wrong tool name: %+v", out.Messages[0].Content[0].OfToolUse)
+	}
+	if out.Messages[1].Content[0].OfToolResult == nil {
+		t.Fatalf("tool_search_output not converted to tool_result: %+v", out.Messages)
+	}
+	if len(out.System) == 0 || !strings.Contains(out.System[0].Text, "<developer_tools>") {
+		t.Fatalf("additional_tools context marker missing: %+v", out.System)
+	}
+}
+
+func TestCompactionItemsPreservedAsSystemContext(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"compaction","encrypted_content":"sealed-context"},
+		{"type":"compaction_trigger"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.System) != 1 {
+		t.Fatalf("expected compaction system context: %+v", out.System)
+	}
+	got := out.System[0].Text
+	if !strings.Contains(got, "<compaction>") || !strings.Contains(got, "sealed-context") {
+		t.Fatalf("compaction item not preserved: %q", got)
+	}
+	if !strings.Contains(got, "<compaction_trigger />") {
+		t.Fatalf("compaction trigger not preserved: %q", got)
+	}
+}
+
+func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"mcp_approval_response","approval_request_id":"apr_1","approve":true,"reason":"user approved"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.System) != 1 {
+		t.Fatalf("expected unsupported item system context: %+v", out.System)
+	}
+	got := out.System[0].Text
+	if !strings.Contains(got, "<openai_input_item type=\"mcp_approval_response\">") ||
+		!strings.Contains(got, `"approval_request_id":"apr_1"`) {
+		t.Fatalf("unsupported item not preserved: %q", got)
+	}
+}
+
 func TestToolCallsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search x"}]},{"type":"function_call","call_id":"c1","name":"search","arguments":"{\"q\":\"x\"}"},{"type":"function_call_output","call_id":"c1","output":"result-x"}],"tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
@@ -102,6 +227,43 @@ func TestToolCallsConvert(t *testing.T) {
 	}
 	if len(out.Tools) != 1 || out.Tools[0].OfTool.Name != "search" {
 		t.Fatalf("bad tools: %+v", out.Tools)
+	}
+}
+
+func TestCustomToolCallInputAndOutputConvert(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"edit"}]},
+		{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
+		{"type":"custom_tool_call_output","call_id":"c1","output":"ok"}
+	],"tools":[{"type":"custom","name":"apply_patch"}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 3 {
+		t.Fatalf("want 3 messages, got %d: %+v", len(out.Messages), out.Messages)
+	}
+	toolUse := out.Messages[1].Content[0].OfToolUse
+	if toolUse == nil {
+		t.Fatalf("custom_tool_call not converted to tool_use: %+v", out.Messages[1])
+	}
+	if toolUse.ID != "c1" || toolUse.Name != "apply_patch" {
+		t.Fatalf("bad custom tool_use ids: %+v", toolUse)
+	}
+	inputData, err := json.Marshal(toolUse.Input)
+	if err != nil {
+		t.Fatalf("custom tool input cannot marshal: %v", err)
+	}
+	var input map[string]string
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		t.Fatalf("custom tool input is not JSON object: %v", err)
+	}
+	if input["input"] != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("custom input not wrapped: %+v", input)
+	}
+	toolResult := out.Messages[2].Content[0].OfToolResult
+	if toolResult == nil || toolResult.ToolUseID != "c1" {
+		t.Fatalf("custom_tool_call_output not converted: %+v", out.Messages[2])
 	}
 }
 

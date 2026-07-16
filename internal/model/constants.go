@@ -22,6 +22,13 @@ var (
 	ItemTypeMessage            = string(oaconstant.ValueOf[oaconstant.Message]())
 	ItemTypeFunctionCall       = string(oaconstant.ValueOf[oaconstant.FunctionCall]())
 	ItemTypeFunctionCallOutput = string(oaconstant.ValueOf[oaconstant.FunctionCallOutput]())
+	ItemTypeCustomToolCall     = string(oaconstant.ValueOf[oaconstant.CustomToolCall]())
+	ItemTypeCustomToolCallOut  = string(oaconstant.ValueOf[oaconstant.CustomToolCallOutput]())
+	ItemTypeToolSearchCall     = string(oaconstant.ValueOf[oaconstant.ToolSearchCall]())
+	ItemTypeToolSearchOutput   = string(oaconstant.ValueOf[oaconstant.ToolSearchOutput]())
+	ItemTypeAdditionalTools    = string(oaconstant.ValueOf[oaconstant.AdditionalTools]())
+	ItemTypeCompaction         = string(oaconstant.ValueOf[oaconstant.Compaction]())
+	ItemTypeCompactionTrigger  = string(oaconstant.ValueOf[oaconstant.CompactionTrigger]())
 	ItemTypeReasoning          = string(oaconstant.ValueOf[oaconstant.Reasoning]())
 
 	ContentTypeOutputText  = string(oaconstant.ValueOf[oaconstant.OutputText]())
@@ -45,6 +52,9 @@ const (
 
 	ReasoningSummaryConcise = string(oairesponses.ReasoningSummaryConcise)
 	ReasoningEffortNone     = string(oairesponses.ReasoningEffortNone)
+
+	AssistantPhaseCommentary  = string(oairesponses.EasyInputMessagePhaseCommentary)
+	AssistantPhaseFinalAnswer = string(oairesponses.EasyInputMessagePhaseFinalAnswer)
 
 	ToolChoiceAuto     = string(oairesponses.ToolChoiceOptionsAuto)
 	ToolChoiceRequired = string(oairesponses.ToolChoiceOptionsRequired)

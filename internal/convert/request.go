@@ -9,6 +9,7 @@ import (
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
@@ -53,6 +54,14 @@ func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) 
 				OfCustomTool: &oairesponses.ToolChoiceCustomParam{Name: name},
 			}
 		}
+	case "apply_patch":
+		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfSpecificApplyPatchToolChoice: &oairesponses.ToolChoiceApplyPatchParam{},
+		}
+	case "shell":
+		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfSpecificShellToolChoice: &oairesponses.ToolChoiceShellParam{},
+		}
 	}
 }
 
@@ -82,7 +91,7 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 		out.TopP = aparam.NewOpt(req.TopP.Value)
 	}
 
-	var sysParts []string
+	var sysParts []instructionPart
 
 	// Input can be a plain string or a list of items.
 	if req.Input.OfString.Valid() && req.Input.OfString.Value != "" {
@@ -99,10 +108,10 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 
 	// Instructions fold into System as a separate text block.
 	if req.Instructions.Valid() && req.Instructions.Value != "" {
-		sysParts = append([]string{req.Instructions.Value}, sysParts...)
+		sysParts = append([]instructionPart{{role: model.RoleDeveloper, text: req.Instructions.Value}}, sysParts...)
 	}
-	if len(sysParts) > 0 {
-		out.System = []anthropic.TextBlockParam{{Text: joinNonEmpty("\n", sysParts)}}
+	if systemText := formatInstructionParts(sysParts); systemText != "" {
+		out.System = []anthropic.TextBlockParam{{Text: systemText}}
 	}
 
 	applyReasoning(out, req, cfg)
@@ -116,7 +125,12 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	return out, nil
 }
 
-func appendItem(out *anthropic.MessageNewParams, sysParts *[]string, item *oairesponses.ResponseInputItemUnionParam, sigByID map[string]string) error {
+type instructionPart struct {
+	role string
+	text string
+}
+
+func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam, sigByID map[string]string) error {
 	if item.OfMessage != nil {
 		return appendMessage(out, sysParts, item.OfMessage)
 	}
@@ -129,10 +143,72 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]string, item *oaire
 	if item.OfFunctionCallOutput != nil {
 		return appendFunctionCallOutput(out, item.OfFunctionCallOutput)
 	}
+	if item.OfCustomToolCall != nil {
+		return appendCustomToolCall(out, item.OfCustomToolCall)
+	}
+	if item.OfCustomToolCallOutput != nil {
+		return appendCustomToolCallOutput(out, item.OfCustomToolCallOutput)
+	}
+	if item.OfToolSearchCall != nil {
+		return appendToolSearchCall(out, item.OfToolSearchCall)
+	}
+	if item.OfToolSearchOutput != nil {
+		return appendToolSearchOutput(out, sysParts, item.OfToolSearchOutput)
+	}
+	if item.OfAdditionalTools != nil {
+		appendToolList(out, item.OfAdditionalTools.Tools)
+		*sysParts = append(*sysParts, instructionPart{
+			role: model.RoleDeveloper,
+			text: formatToolNames("developer_tools", item.OfAdditionalTools.Tools),
+		})
+		return nil
+	}
+	if item.OfCompaction != nil {
+		*sysParts = append(*sysParts, instructionPart{
+			role: model.RoleSystem,
+			text: "<compaction>\n" + item.OfCompaction.EncryptedContent + "\n</compaction>",
+		})
+		return nil
+	}
+	if item.OfCompactionTrigger != nil {
+		*sysParts = append(*sysParts, instructionPart{
+			role: model.RoleSystem,
+			text: "<compaction_trigger />",
+		})
+		return nil
+	}
+	if part, ok := unknownInputItemPart(item); ok {
+		*sysParts = append(*sysParts, part)
+	}
 	return nil
 }
 
-func appendMessage(out *anthropic.MessageNewParams, sysParts *[]string, m *oairesponses.EasyInputMessageParam) error {
+func unknownInputItemPart(item *oairesponses.ResponseInputItemUnionParam) (instructionPart, bool) {
+	raw, err := json.Marshal(item)
+	if err != nil || string(raw) == "{}" || string(raw) == "null" {
+		return instructionPart{}, false
+	}
+	typ := ""
+	if ptr := item.GetType(); ptr != nil {
+		typ = *ptr
+	}
+	if typ == "" {
+		var obj struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(raw, &obj)
+		typ = obj.Type
+	}
+	if typ == "" {
+		typ = "unknown"
+	}
+	return instructionPart{
+		role: model.RoleSystem,
+		text: fmt.Sprintf("<openai_input_item type=\"%s\">\n%s\n</openai_input_item>", typ, raw),
+	}, true
+}
+
+func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart, m *oairesponses.EasyInputMessageParam) error {
 	// Extract text/image blocks from content.
 	var blocks []anthropic.ContentBlockParamUnion
 	var textParts []string
@@ -168,7 +244,10 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]string, m *oaire
 	// Anthropic's system parameter is []TextBlockParam (text-only), so images
 	// cannot be represented in the system role. This is a protocol limitation.
 	if role == model.RoleSystem || role == model.RoleDeveloper {
-		*sysParts = append(*sysParts, joinNonEmpty("\n", textParts))
+		*sysParts = append(*sysParts, instructionPart{
+			role: role,
+			text: joinNonEmpty("\n", textParts),
+		})
 		return nil
 	}
 
@@ -185,11 +264,28 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]string, m *oaire
 		blocks = []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{}}}
 	}
 
+	if role == model.RoleAssistant && m.Phase != "" {
+		applyAssistantPhase(blocks, string(m.Phase))
+	}
+
 	out.Messages = append(out.Messages, anthropic.MessageParam{
 		Role:    anthropic.MessageParamRole(role),
 		Content: blocks,
 	})
 	return nil
+}
+
+func applyAssistantPhase(blocks []anthropic.ContentBlockParamUnion, phase string) {
+	if len(blocks) == 0 || phase == "" {
+		return
+	}
+	marker := "<assistant_phase>" + phase + "</assistant_phase>\n"
+	for i := range blocks {
+		if blocks[i].OfText != nil {
+			blocks[i].OfText.Text = marker + blocks[i].OfText.Text
+			return
+		}
+	}
 }
 
 func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseReasoningItemParam, sigByID map[string]string) error {
@@ -242,38 +338,85 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
+	return appendToolUse(out, fc.CallID, toolName(fc.Namespace.Value, fc.Name), json.RawMessage(orDefault(fc.Arguments, `{}`)))
+}
+
+func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
+	return appendToolUse(out, call.CallID, toolName(call.Namespace.Value, call.Name), map[string]any{"input": call.Input})
+}
+
+func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) error {
 	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
 		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
 	}
 	last := &out.Messages[len(out.Messages)-1]
 	last.Content = append(last.Content, anthropic.ContentBlockParamUnion{
 		OfToolUse: &anthropic.ToolUseBlockParam{
-			ID:    fc.CallID,
-			Name:  fc.Name,
-			Input: json.RawMessage(orDefault(fc.Arguments, `{}`)),
+			ID:    id,
+			Name:  name,
+			Input: input,
 		},
 	})
 	return nil
 }
 
 func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses.ResponseInputItemFunctionCallOutputParam) error {
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
-		out.Messages = append(out.Messages, anthropic.NewUserMessage())
-	}
-	last := &out.Messages[len(out.Messages)-1]
 	outputText := ""
 	if fco.Output.OfString.Valid() {
 		outputText = fco.Output.OfString.Value
 	}
+	return appendToolResult(out, fco.CallID, outputText)
+}
+
+func appendCustomToolCallOutput(out *anthropic.MessageNewParams, output *oairesponses.ResponseCustomToolCallOutputParam) error {
+	outputText := ""
+	if output.Output.OfString.Valid() {
+		outputText = output.Output.OfString.Value
+	}
+	return appendToolResult(out, output.CallID, outputText)
+}
+
+func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemToolSearchCallParam) error {
+	callID := call.CallID.Value
+	if callID == "" {
+		callID = call.ID.Value
+	}
+	return appendToolUse(out, callID, "tool_search", call.Arguments)
+}
+
+func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instructionPart, output *oairesponses.ResponseToolSearchOutputItemParam) error {
+	appendToolList(out, output.Tools)
+	*sysParts = append(*sysParts, instructionPart{
+		role: model.RoleDeveloper,
+		text: formatToolNames("tool_search_output", output.Tools),
+	})
+	if !output.CallID.Valid() || output.CallID.Value == "" {
+		return nil
+	}
+	return appendToolResult(out, output.CallID.Value, formatToolNames("tool_search_output", output.Tools))
+}
+
+func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string) error {
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
+		out.Messages = append(out.Messages, anthropic.NewUserMessage())
+	}
+	last := &out.Messages[len(out.Messages)-1]
 	last.Content = append(last.Content, anthropic.ContentBlockParamUnion{
 		OfToolResult: &anthropic.ToolResultBlockParam{
-			ToolUseID: fco.CallID,
+			ToolUseID: callID,
 			Content: []anthropic.ToolResultBlockParamContentUnion{{
 				OfText: &anthropic.TextBlockParam{Text: outputText},
 			}},
 		},
 	})
 	return nil
+}
+
+func toolName(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "__" + name
 }
 
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {
@@ -326,25 +469,99 @@ func toInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
 }
 
 func convertTools(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
-	for _, t := range req.Tools {
-		if t.OfFunction == nil {
-			continue
-		}
-		fn := t.OfFunction
-		schema := fn.Parameters
-		if schema == nil {
-			schema = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
-		tool := &anthropic.ToolParam{
-			Name:        fn.Name,
-			InputSchema: toInputSchema(schema),
-		}
-		if fn.Description.Valid() {
-			tool.Description = aparam.NewOpt(fn.Description.Value)
-		}
-		out.Tools = append(out.Tools, anthropic.ToolUnionParam{OfTool: tool})
-	}
+	appendToolList(out, req.Tools)
 	return nil
+}
+
+func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUnionParam) {
+	for _, t := range tools {
+		appendToolUnion(out, t)
+	}
+}
+
+func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionParam) {
+	switch {
+	case t.OfFunction != nil:
+		fn := t.OfFunction
+		appendConvertedTool(out, fn.Name, fn.Parameters, optionalString(fn.Description), false)
+	case t.OfCustom != nil:
+		custom := t.OfCustom
+		appendConvertedTool(out, custom.Name, freeformInputSchema(), optionalString(custom.Description), true)
+	case t.OfApplyPatch != nil:
+		appendConvertedTool(out, "apply_patch", freeformInputSchema(), nil, true)
+	case t.OfShell != nil:
+		appendConvertedTool(out, "shell", freeformInputSchema(), nil, true)
+	case t.OfLocalShell != nil:
+		appendConvertedTool(out, "shell", freeformInputSchema(), nil, true)
+	case t.OfToolSearch != nil:
+		search := t.OfToolSearch
+		appendConvertedTool(out, "tool_search", schemaFromAny(search.Parameters), optionalString(search.Description), false)
+	case t.OfNamespace != nil:
+		namespace := t.OfNamespace
+		for _, nested := range namespace.Tools {
+			if nested.OfFunction != nil {
+				fn := nested.OfFunction
+				appendConvertedTool(out, toolName(namespace.Name, fn.Name), schemaFromAny(fn.Parameters), optionalString(fn.Description), false)
+			} else if nested.OfCustom != nil {
+				custom := nested.OfCustom
+				appendConvertedTool(out, toolName(namespace.Name, custom.Name), freeformInputSchema(), optionalString(custom.Description), true)
+			}
+		}
+	}
+}
+
+func appendConvertedTool(out *anthropic.MessageNewParams, name string, schema map[string]any, description *string, custom bool) {
+	if name == "" {
+		return
+	}
+	if hasTool(out, name) {
+		return
+	}
+	if schema == nil {
+		schema = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	tool := &anthropic.ToolParam{
+		Name:        name,
+		InputSchema: toInputSchema(schema),
+	}
+	if description != nil {
+		tool.Description = aparam.NewOpt(*description)
+	}
+	if custom {
+		tool.Type = anthropic.ToolTypeCustom
+	}
+	out.Tools = append(out.Tools, anthropic.ToolUnionParam{OfTool: tool})
+}
+
+func hasTool(out *anthropic.MessageNewParams, name string) bool {
+	for _, tool := range out.Tools {
+		if tool.OfTool != nil && tool.OfTool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func optionalString(v oparam.Opt[string]) *string {
+	if !v.Valid() {
+		return nil
+	}
+	return &v.Value
+}
+
+func schemaFromAny(v any) map[string]any {
+	schema, _ := v.(map[string]any)
+	return schema
+}
+
+func freeformInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input": map[string]any{"type": "string"},
+		},
+		"required": []string{"input"},
+	}
 }
 
 func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
@@ -401,6 +618,14 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	} else if tc.OfCustomTool != nil {
 		out.ToolChoice = anthropic.ToolChoiceUnionParam{
 			OfTool: &anthropic.ToolChoiceToolParam{Name: tc.OfCustomTool.Name},
+		}
+	} else if tc.OfSpecificApplyPatchToolChoice != nil {
+		out.ToolChoice = anthropic.ToolChoiceUnionParam{
+			OfTool: &anthropic.ToolChoiceToolParam{Name: "apply_patch"},
+		}
+	} else if tc.OfSpecificShellToolChoice != nil {
+		out.ToolChoice = anthropic.ToolChoiceUnionParam{
+			OfTool: &anthropic.ToolChoiceToolParam{Name: "shell"},
 		}
 	}
 }
@@ -479,6 +704,59 @@ func orDefault(s string, def string) string {
 		return def
 	}
 	return s
+}
+
+func formatInstructionParts(parts []instructionPart) string {
+	var formatted []string
+	for _, part := range parts {
+		if part.text == "" {
+			continue
+		}
+		role := part.role
+		if role == "" {
+			role = model.RoleDeveloper
+		}
+		formatted = append(formatted, fmt.Sprintf("<%s>\n%s\n</%s>", role, part.text, role))
+	}
+	if len(formatted) == 0 {
+		return ""
+	}
+	formatted = append([]string{
+		"OpenAI instruction hierarchy is preserved below. Apply <system> before <developer>; both override user messages.",
+	}, formatted...)
+	return joinNonEmpty("\n\n", formatted)
+}
+
+func formatToolNames(tag string, tools []oairesponses.ToolUnionParam) string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		switch {
+		case tool.OfFunction != nil:
+			names = append(names, tool.OfFunction.Name)
+		case tool.OfCustom != nil:
+			names = append(names, tool.OfCustom.Name)
+		case tool.OfApplyPatch != nil:
+			names = append(names, "apply_patch")
+		case tool.OfShell != nil || tool.OfLocalShell != nil:
+			names = append(names, "shell")
+		case tool.OfToolSearch != nil:
+			names = append(names, "tool_search")
+		case tool.OfNamespace != nil:
+			namespace := tool.OfNamespace
+			for _, nested := range namespace.Tools {
+				if nested.OfFunction != nil {
+					names = append(names, toolName(namespace.Name, nested.OfFunction.Name))
+				} else if nested.OfCustom != nil {
+					names = append(names, toolName(namespace.Name, nested.OfCustom.Name))
+				}
+			}
+		}
+	}
+	body, err := json.Marshal(names)
+	if err != nil {
+		body = []byte("[]")
+	}
+	return fmt.Sprintf("<%s>\n%s\n</%s>", tag, string(body), tag)
 }
 
 func joinNonEmpty(sep string, parts []string) string {

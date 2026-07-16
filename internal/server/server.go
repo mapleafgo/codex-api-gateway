@@ -207,6 +207,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	conv := streamconv.New()
 	conv.SetEcho(echoFromRequest(req))
 	conv.SetClientModel(string(req.Model))
+	conv.SetCustomToolNames(convert.FreeformToolNames(req))
 	// Codex TUI 只渲染 reasoning_summary_* 事件，reasoning_text.* 事件不会被显示。
 	// 模型 catalog 的 default_reasoning_summary 常为 "none"，导致 effort 已开启时
 	// 用户仍看不到思考。只要 effort 已开启（非 none），就强制使用 summary 事件格式。
@@ -222,6 +223,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		executedReq = reqForSource
+		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
 		sysLen := 0
 		for _, b := range anthReq.System {
 			sysLen += len(b.Text)
@@ -401,7 +403,9 @@ func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectPa
 		req.ToolChoice.OfFunctionTool != nil ||
 		req.ToolChoice.OfHostedTool != nil ||
 		req.ToolChoice.OfMcpTool != nil ||
-		req.ToolChoice.OfCustomTool != nil {
+		req.ToolChoice.OfCustomTool != nil ||
+		req.ToolChoice.OfSpecificApplyPatchToolChoice != nil ||
+		req.ToolChoice.OfSpecificShellToolChoice != nil {
 		p.ToolChoice = req.ToolChoice
 	}
 	if req.Reasoning.Effort != "" || req.Reasoning.Summary != "" {
@@ -429,6 +433,30 @@ func itemType(it *oairesponses.ResponseInputItemUnionParam) string {
 	if it.OfFunctionCallOutput != nil {
 		return model.ItemTypeFunctionCallOutput
 	}
+	if it.OfCustomToolCall != nil {
+		return model.ItemTypeCustomToolCall
+	}
+	if it.OfCustomToolCallOutput != nil {
+		return model.ItemTypeCustomToolCallOut
+	}
+	if it.OfToolSearchCall != nil {
+		return model.ItemTypeToolSearchCall
+	}
+	if it.OfToolSearchOutput != nil {
+		return model.ItemTypeToolSearchOutput
+	}
+	if it.OfAdditionalTools != nil {
+		return model.ItemTypeAdditionalTools
+	}
+	if it.OfCompaction != nil {
+		return model.ItemTypeCompaction
+	}
+	if it.OfCompactionTrigger != nil {
+		return model.ItemTypeCompactionTrigger
+	}
+	if typ := it.GetType(); typ != nil && *typ != "" {
+		return *typ
+	}
 	return "unknown"
 }
 
@@ -442,6 +470,13 @@ func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) [
 		model.ItemTypeReasoning,
 		model.ItemTypeFunctionCall,
 		model.ItemTypeFunctionCallOutput,
+		model.ItemTypeCustomToolCall,
+		model.ItemTypeCustomToolCallOut,
+		model.ItemTypeToolSearchCall,
+		model.ItemTypeToolSearchOutput,
+		model.ItemTypeAdditionalTools,
+		model.ItemTypeCompaction,
+		model.ItemTypeCompactionTrigger,
 		"unknown",
 	}
 	attrs := make([]any, 0, len(keys))
@@ -461,6 +496,24 @@ func collectOutput(req *oairesponses.ResponseNewParams) []model.OutputItem {
 			out = append(out, model.OutputItem{
 				Type: model.ItemTypeFunctionCall, CallID: fc.CallID, Name: fc.Name,
 				Arguments: fc.Arguments,
+			})
+		} else if it.OfCustomToolCall != nil {
+			call := it.OfCustomToolCall
+			out = append(out, model.OutputItem{
+				Type:      model.ItemTypeCustomToolCall,
+				ID:        call.ID.Value,
+				CallID:    call.CallID,
+				Name:      call.Name,
+				Input:     call.Input,
+				Namespace: call.Namespace.Value,
+			})
+		} else if it.OfCustomToolCallOutput != nil {
+			output := it.OfCustomToolCallOutput
+			out = append(out, model.OutputItem{
+				Type:   model.ItemTypeCustomToolCallOut,
+				ID:     output.ID.Value,
+				CallID: output.CallID,
+				Output: output.Output.OfString.Value,
 			})
 		} else if it.OfReasoning != nil {
 			r := it.OfReasoning

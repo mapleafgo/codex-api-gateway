@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,14 +30,18 @@ type Entry struct {
 type contextItem struct {
 	Type             string             `json:"type"`
 	Role             string             `json:"role,omitempty"`
+	Phase            string             `json:"phase,omitempty"`
 	Text             string             `json:"text,omitempty"`
 	ID               string             `json:"id,omitempty"`
 	CallID           string             `json:"call_id,omitempty"`
 	Name             string             `json:"name,omitempty"`
 	Arguments        string             `json:"arguments,omitempty"`
+	Input            string             `json:"input,omitempty"`
 	Output           string             `json:"output,omitempty"`
+	Namespace        string             `json:"namespace,omitempty"`
 	Summary          []model.OutputText `json:"summary,omitempty"`
 	EncryptedContent string             `json:"encrypted_content,omitempty"`
+	Raw              json.RawMessage    `json:"raw,omitempty"`
 }
 
 type storedEntry struct {
@@ -232,7 +237,8 @@ func toInputItemParam(it model.OutputItem) oairesponses.ResponseInputItemUnionPa
 		}
 		return oairesponses.ResponseInputItemUnionParam{
 			OfMessage: &oairesponses.EasyInputMessageParam{
-				Role: role,
+				Role:  role,
+				Phase: oairesponses.EasyInputMessagePhase(it.Phase),
 				Content: oairesponses.EasyInputMessageContentUnionParam{
 					OfString: oparam.NewOpt(text),
 				},
@@ -246,6 +252,17 @@ func toInputItemParam(it model.OutputItem) oairesponses.ResponseInputItemUnionPa
 				Arguments: it.Arguments,
 			},
 		}
+	case model.ItemTypeCustomToolCall:
+		namespace, name := splitToolName(it.Namespace, it.Name)
+		call := &oairesponses.ResponseCustomToolCallParam{
+			CallID: it.CallID,
+			Name:   name,
+			Input:  it.Input,
+		}
+		if namespace != "" {
+			call.Namespace = oparam.NewOpt(namespace)
+		}
+		return oairesponses.ResponseInputItemUnionParam{OfCustomToolCall: call}
 	case model.ItemTypeReasoning:
 		r := &oairesponses.ResponseReasoningItemParam{
 			ID: it.ID,
@@ -481,9 +498,10 @@ func cloneInputItems(items []oairesponses.ResponseInputItemUnionParam) []oairesp
 func inputItemToContext(item oairesponses.ResponseInputItemUnionParam) (contextItem, bool) {
 	if item.OfMessage != nil {
 		return contextItem{
-			Type: model.ItemTypeMessage,
-			Role: string(item.OfMessage.Role),
-			Text: messageParamText(item.OfMessage),
+			Type:  model.ItemTypeMessage,
+			Role:  string(item.OfMessage.Role),
+			Phase: string(item.OfMessage.Phase),
+			Text:  messageParamText(item.OfMessage),
 		}, true
 	}
 	if item.OfReasoning != nil {
@@ -517,6 +535,39 @@ func inputItemToContext(item oairesponses.ResponseInputItemUnionParam) (contextI
 			Output: item.OfFunctionCallOutput.Output.OfString.Value,
 		}, true
 	}
+	if item.OfCustomToolCall != nil {
+		return contextItem{
+			Type:      model.ItemTypeCustomToolCall,
+			ID:        item.OfCustomToolCall.ID.Value,
+			CallID:    item.OfCustomToolCall.CallID,
+			Name:      item.OfCustomToolCall.Name,
+			Input:     item.OfCustomToolCall.Input,
+			Namespace: item.OfCustomToolCall.Namespace.Value,
+		}, true
+	}
+	if item.OfCustomToolCallOutput != nil {
+		return contextItem{
+			Type:   model.ItemTypeCustomToolCallOut,
+			ID:     item.OfCustomToolCallOutput.ID.Value,
+			CallID: item.OfCustomToolCallOutput.CallID,
+			Output: item.OfCustomToolCallOutput.Output.OfString.Value,
+		}, true
+	}
+	if item.OfCompaction != nil {
+		return contextItem{
+			Type:             model.ItemTypeCompaction,
+			ID:               item.OfCompaction.ID.Value,
+			EncryptedContent: item.OfCompaction.EncryptedContent,
+		}, true
+	}
+	if item.OfCompactionTrigger != nil {
+		return contextItem{Type: model.ItemTypeCompactionTrigger}, true
+	}
+	if raw, err := json.Marshal(item); err == nil {
+		if typ := inputItemType(item, raw); typ != "" {
+			return contextItem{Type: typ, Raw: raw}, true
+		}
+	}
 	return contextItem{}, false
 }
 
@@ -524,9 +575,10 @@ func outputItemToContext(item model.OutputItem) contextItem {
 	switch item.Type {
 	case model.ItemTypeMessage:
 		return contextItem{
-			Type: model.ItemTypeMessage,
-			Role: item.Role,
-			Text: outputText(item.Content),
+			Type:  model.ItemTypeMessage,
+			Role:  item.Role,
+			Phase: item.Phase,
+			Text:  outputText(item.Content),
 		}
 	case model.ItemTypeFunctionCall:
 		return contextItem{
@@ -535,6 +587,23 @@ func outputItemToContext(item model.OutputItem) contextItem {
 			CallID:    item.CallID,
 			Name:      item.Name,
 			Arguments: item.Arguments,
+		}
+	case model.ItemTypeCustomToolCall:
+		namespace, name := splitToolName(item.Namespace, item.Name)
+		return contextItem{
+			Type:      model.ItemTypeCustomToolCall,
+			ID:        item.ID,
+			CallID:    item.CallID,
+			Name:      name,
+			Input:     item.Input,
+			Namespace: namespace,
+		}
+	case model.ItemTypeCustomToolCallOut:
+		return contextItem{
+			Type:   model.ItemTypeCustomToolCallOut,
+			ID:     item.ID,
+			CallID: item.CallID,
+			Output: item.Output,
 		}
 	case model.ItemTypeReasoning:
 		return contextItem{
@@ -557,7 +626,8 @@ func contextToInputItem(item contextItem) oairesponses.ResponseInputItemUnionPar
 		}
 		return oairesponses.ResponseInputItemUnionParam{
 			OfMessage: &oairesponses.EasyInputMessageParam{
-				Role: role,
+				Role:  role,
+				Phase: oairesponses.EasyInputMessagePhase(item.Phase),
 				Content: oairesponses.EasyInputMessageContentUnionParam{
 					OfString: oparam.NewOpt(item.Text),
 				},
@@ -580,6 +650,30 @@ func contextToInputItem(item contextItem) oairesponses.ResponseInputItemUnionPar
 				},
 			},
 		}
+	case model.ItemTypeCustomToolCall:
+		call := &oairesponses.ResponseCustomToolCallParam{
+			CallID: item.CallID,
+			Name:   item.Name,
+			Input:  item.Input,
+		}
+		if item.ID != "" {
+			call.ID = oparam.NewOpt(item.ID)
+		}
+		if item.Namespace != "" {
+			call.Namespace = oparam.NewOpt(item.Namespace)
+		}
+		return oairesponses.ResponseInputItemUnionParam{OfCustomToolCall: call}
+	case model.ItemTypeCustomToolCallOut:
+		output := &oairesponses.ResponseCustomToolCallOutputParam{
+			CallID: item.CallID,
+			Output: oairesponses.ResponseCustomToolCallOutputOutputUnionParam{
+				OfString: oparam.NewOpt(item.Output),
+			},
+		}
+		if item.ID != "" {
+			output.ID = oparam.NewOpt(item.ID)
+		}
+		return oairesponses.ResponseInputItemUnionParam{OfCustomToolCallOutput: output}
 	case model.ItemTypeReasoning:
 		r := &oairesponses.ResponseReasoningItemParam{ID: item.ID}
 		for _, summary := range item.Summary {
@@ -591,9 +685,36 @@ func contextToInputItem(item contextItem) oairesponses.ResponseInputItemUnionPar
 			r.EncryptedContent = oparam.NewOpt(item.EncryptedContent)
 		}
 		return oairesponses.ResponseInputItemUnionParam{OfReasoning: r}
+	case model.ItemTypeCompaction:
+		compaction := &oairesponses.ResponseCompactionItemParam{
+			EncryptedContent: item.EncryptedContent,
+		}
+		if item.ID != "" {
+			compaction.ID = oparam.NewOpt(item.ID)
+		}
+		return oairesponses.ResponseInputItemUnionParam{OfCompaction: compaction}
+	case model.ItemTypeCompactionTrigger:
+		trigger := oairesponses.NewResponseInputItemCompactionTriggerParam()
+		return oairesponses.ResponseInputItemUnionParam{OfCompactionTrigger: &trigger}
 	default:
+		if len(item.Raw) > 0 {
+			return oparam.Override[oairesponses.ResponseInputItemUnionParam](json.RawMessage(item.Raw))
+		}
 		return oairesponses.ResponseInputItemUnionParam{}
 	}
+}
+
+func inputItemType(item oairesponses.ResponseInputItemUnionParam, raw json.RawMessage) string {
+	if typ := item.GetType(); typ != nil && *typ != "" {
+		return *typ
+	}
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return obj.Type
+	}
+	return ""
 }
 
 func messageParamText(message *oairesponses.EasyInputMessageParam) string {
@@ -619,6 +740,17 @@ func outputText(items []model.OutputText) string {
 	return joinText(parts)
 }
 
+func splitToolName(namespace, name string) (string, string) {
+	if namespace != "" || name == "" {
+		return namespace, name
+	}
+	before, after, ok := strings.Cut(name, "__")
+	if !ok || before == "" || after == "" {
+		return "", name
+	}
+	return before, after
+}
+
 func joinText(parts []string) string {
 	if len(parts) == 0 {
 		return ""
@@ -638,6 +770,9 @@ func cloneContextItems(items []contextItem) []contextItem {
 	copy(out, items)
 	for i := range out {
 		out[i].Summary = cloneOutputText(out[i].Summary)
+		if len(out[i].Raw) > 0 {
+			out[i].Raw = append(json.RawMessage(nil), out[i].Raw...)
+		}
 	}
 	return out
 }

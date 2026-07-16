@@ -91,6 +91,42 @@ func TestConverterTextDelta(t *testing.T) {
 	}
 }
 
+func TestConverterOutputMessageHasFinalAnswerPhase(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_1", Model: "claude"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	if len(evs) == 0 {
+		t.Fatalf("expected output_item.added event")
+	}
+	var added struct {
+		Item struct {
+			Type  string `json:"type"`
+			Role  string `json:"role"`
+			Phase string `json:"phase"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(evs[0].Data, &added); err != nil {
+		t.Fatalf("unmarshal output item: %v", err)
+	}
+	if added.Item.Type != "message" || added.Item.Role != "assistant" {
+		t.Fatalf("expected assistant message item, got %+v", added.Item)
+	}
+	if added.Item.Phase != "final_answer" {
+		t.Fatalf("assistant output phase not set: %+v", added.Item)
+	}
+	items := c.OutputItems()
+	if len(items) != 1 || items[0].Phase != "final_answer" {
+		t.Fatalf("stored output item phase not set: %+v", items)
+	}
+}
+
 func TestConverterUsesClientModelWhenSet(t *testing.T) {
 	c := New()
 	c.SetClientModel("gpt-5.5")
@@ -288,6 +324,60 @@ func TestConverterOutputItemsFunctionCall(t *testing.T) {
 	}
 	if items[0].Arguments != `{"q":"hello"}` {
 		t.Fatalf("expected Arguments %q, got %q", `{"q":"hello"}`, items[0].Arguments)
+	}
+}
+
+func TestConverterOutputItemsCustomToolCall(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_patch", Name: "apply_patch"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"input":"*** Begin`},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: ` Patch"}`},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_stop",
+		Index: 0,
+	})
+
+	var types []string
+	for _, e := range evs {
+		types = append(types, evType(t, e.Data))
+	}
+	if !contains(types, "response.custom_tool_call_input.delta") {
+		t.Fatalf("expected custom_tool_call_input.delta, got %+v", types)
+	}
+	if !contains(types, "response.custom_tool_call_input.done") {
+		t.Fatalf("expected custom_tool_call_input.done, got %+v", types)
+	}
+	for _, typ := range types {
+		if typ == "response.function_call_arguments.done" {
+			t.Fatalf("custom tool must not emit function_call_arguments.done: %+v", types)
+		}
+	}
+	items := c.OutputItems()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 output item, got %d: %+v", len(items), items)
+	}
+	if items[0].Type != "custom_tool_call" {
+		t.Fatalf("expected custom_tool_call, got %+v", items[0])
+	}
+	if items[0].Input != "*** Begin Patch" {
+		t.Fatalf("expected unwrapped input, got %q", items[0].Input)
 	}
 }
 
