@@ -139,7 +139,7 @@
 | `custom` | `tool_choice.tool(name)` | `supported` | 直接映射 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | function/custom 按 name 过滤；shell/local_shell、apply_patch、tool_search 按 canonical 名称过滤；hosted/MCP allowed 条目仍不支持 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | function/custom 按 name 过滤；namespace 内 function/custom 展开为 `namespace__child` 后过滤；shell/local_shell、apply_patch、tool_search 按 canonical 名称过滤；hosted/MCP allowed 条目仍不支持 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |

@@ -699,6 +699,51 @@ func TestAllowedToolsJSONSupportsNamelessTools(t *testing.T) {
 	}
 }
 
+func TestAllowedToolsJSONSupportsNamespaceChildren(t *testing.T) {
+	for _, mode := range []string{"auto", "required"} {
+		t.Run(mode, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":[{"type":"namespace","name":"crm","tools":[
+					{"type":"function","name":"lookup","parameters":{"type":"object"}},
+					{"type":"custom","name":"raw"}
+				]}],
+				"tool_choice":{"type":"allowed_tools","mode":"`+mode+`","tools":[{"type":"namespace","name":"crm","tools":[
+					{"type":"function","name":"lookup"},
+					{"type":"custom","name":"raw"}
+				]}]}
+			}`)
+			out, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Tools) != 2 || out.Tools[0].OfTool.Name != "crm__lookup" || out.Tools[1].OfTool.Name != "crm__raw" {
+				t.Fatalf("namespace allowed_tools did not retain flattened children: %+v", out.Tools)
+			}
+			if mode == "required" && out.ToolChoice.OfAny == nil {
+				t.Fatalf("required namespace allowed_tools should map to any: %+v", out.ToolChoice)
+			}
+			if mode == "auto" && out.ToolChoice.OfAuto == nil {
+				t.Fatalf("auto namespace allowed_tools should map to auto: %+v", out.ToolChoice)
+			}
+		})
+	}
+}
+
+func TestAllowedToolsJSONRejectsUnknownNamespaceChild(t *testing.T) {
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":"hi",
+		"tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}],
+		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"missing"}]}]}
+	}`)
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), `namespace "crm" child "missing"`) {
+		t.Fatalf("expected explicit unknown namespace child error, got %v", err)
+	}
+}
+
 func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"parallel_tool_calls":false,"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})

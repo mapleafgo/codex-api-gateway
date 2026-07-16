@@ -727,17 +727,28 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 
 func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.ToolChoiceAllowedParam) error {
 	allowedNames := map[string]bool{}
+	namespaceChildren := map[string]string{}
 	for _, tool := range allowed.Tools {
-		name, err := allowedToolName(tool)
+		names, children, err := allowedToolNames(tool)
 		if err != nil {
 			return err
 		}
-		allowedNames[name] = true
+		for _, name := range names {
+			allowedNames[name] = true
+		}
+		for name, child := range children {
+			namespaceChildren[name] = child
+		}
 	}
 	var filtered []anthropic.ToolUnionParam
 	for _, tool := range out.Tools {
 		if tool.OfTool != nil && allowedNames[tool.OfTool.Name] {
 			filtered = append(filtered, tool)
+		}
+	}
+	for name, child := range namespaceChildren {
+		if !hasToolInList(filtered, name) {
+			return fmt.Errorf("tool_choice allowed_tools namespace %q child %q is not declared", strings.TrimSuffix(name, "__"+child), child)
 		}
 	}
 	if len(filtered) == 0 {
@@ -753,24 +764,66 @@ func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.To
 	return nil
 }
 
-func allowedToolName(tool map[string]any) (string, error) {
+func hasToolInList(tools []anthropic.ToolUnionParam, name string) bool {
+	for _, tool := range tools {
+		if tool.OfTool != nil && tool.OfTool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func allowedToolNames(tool map[string]any) ([]string, map[string]string, error) {
 	typ, _ := tool["type"].(string)
 	switch typ {
 	case "shell", "local_shell":
-		return "shell", nil
+		return []string{"shell"}, nil, nil
 	case "apply_patch":
-		return "apply_patch", nil
+		return []string{"apply_patch"}, nil, nil
 	case "tool_search":
-		return "tool_search", nil
+		return []string{"tool_search"}, nil, nil
 	case "function", "custom":
 		name, _ := tool["name"].(string)
 		if name != "" {
-			return name, nil
+			return []string{name}, nil, nil
 		}
-		return "", fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
+		return nil, nil, fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
+	case "namespace":
+		return allowedNamespaceToolNames(tool)
 	default:
-		return "", fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
+		return nil, nil, fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
 	}
+}
+
+func allowedNamespaceToolNames(tool map[string]any) ([]string, map[string]string, error) {
+	namespace, _ := tool["name"].(string)
+	if namespace == "" {
+		return nil, nil, fmt.Errorf("tool_choice allowed_tools namespace requires a name")
+	}
+	rawTools, _ := tool["tools"].([]any)
+	if len(rawTools) == 0 {
+		return nil, nil, fmt.Errorf("tool_choice allowed_tools namespace %q requires tools", namespace)
+	}
+	names := make([]string, 0, len(rawTools))
+	children := make(map[string]string, len(rawTools))
+	for _, rawTool := range rawTools {
+		nested, ok := rawTool.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("tool_choice allowed_tools namespace %q has invalid child", namespace)
+		}
+		typ, _ := nested["type"].(string)
+		if typ != "function" && typ != "custom" {
+			return nil, nil, fmt.Errorf("unsupported tool_choice allowed_tools namespace %q child type %q", namespace, typ)
+		}
+		child, _ := nested["name"].(string)
+		if child == "" {
+			return nil, nil, fmt.Errorf("tool_choice allowed_tools namespace %q child %q requires a name", namespace, typ)
+		}
+		name := toolName(namespace, child)
+		names = append(names, name)
+		children[name] = child
+	}
+	return names, children, nil
 }
 
 func applyParallelToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {

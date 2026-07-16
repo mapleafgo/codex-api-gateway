@@ -4,7 +4,6 @@ import "encoding/json"
 
 // OutputItem is a self-contained output item (message/tool call/reasoning)
 // used both for emitted output_item.added/done events and for session storage.
-// It uses omitempty so Marshal stays clean (unlike SDK ResponseOutputItemUnion).
 type OutputItem struct {
 	Type             string       `json:"type"` // message | function_call | custom_tool_call | reasoning
 	ID               string       `json:"id"`
@@ -28,6 +27,25 @@ type OutputText struct {
 	Type    string  `json:"type"` // output_text | refusal | summary_text
 	Text    string  `json:"text"`
 	Refusal *string `json:"refusal,omitempty"`
+}
+
+// MarshalJSON 保证 message item 的必填 content 字段即使为空也会写入 wire payload。
+func (i OutputItem) MarshalJSON() ([]byte, error) {
+	if i.Type != ItemTypeMessage {
+		type outputItem OutputItem
+		return json.Marshal(outputItem(i))
+	}
+	return json.Marshal(struct {
+		Type    string       `json:"type"`
+		ID      string       `json:"id"`
+		Status  string       `json:"status,omitempty"`
+		Role    string       `json:"role,omitempty"`
+		Phase   string       `json:"phase,omitempty"`
+		Content []OutputText `json:"content"`
+	}{
+		Type: i.Type, ID: i.ID, Status: i.Status, Role: i.Role, Phase: i.Phase,
+		Content: i.Content,
+	})
 }
 
 // MarshalJSON 按 content 类型输出互斥的 Responses wire 字段。

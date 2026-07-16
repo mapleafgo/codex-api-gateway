@@ -841,8 +841,9 @@ func TestRefusalStopReasonEmitsRefusalPartAndContentFilter(t *testing.T) {
 	if got := addedItem["status"]; got != "in_progress" {
 		t.Fatalf("added refusal item status = %#v, want in_progress", got)
 	}
-	if _, ok := addedItem["content"]; ok {
-		t.Fatalf("added refusal item should have empty content, got %#v", addedItem)
+	addedContent, ok := addedItem["content"].([]any)
+	if !ok || len(addedContent) != 0 {
+		t.Fatalf("added refusal item content = %#v, want explicit empty array", addedItem["content"])
 	}
 
 	addedPart := eventData(t, eventByType(t, evs, "response.content_part.added"))["part"].(map[string]any)
@@ -857,12 +858,18 @@ func TestRefusalStopReasonEmitsRefusalPartAndContentFilter(t *testing.T) {
 	if got := delta["delta"]; got != "I can't help with that." {
 		t.Fatalf("refusal delta = %#v, want final refusal", got)
 	}
+	if got := delta["content_index"]; got != float64(0) {
+		t.Fatalf("refusal delta content_index = %#v, want 0", got)
+	}
 
 	for _, typ := range []string{"response.refusal.done", "response.content_part.done"} {
 		data := eventData(t, eventByType(t, evs, typ))
 		if typ == "response.refusal.done" {
 			if got := data["refusal"]; got != "I can't help with that." {
 				t.Fatalf("%s refusal = %#v, want final refusal", typ, got)
+			}
+			if got := data["content_index"]; got != float64(0) {
+				t.Fatalf("%s content_index = %#v, want 0", typ, got)
 			}
 			continue
 		}

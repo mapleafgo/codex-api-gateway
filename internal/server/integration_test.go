@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -348,6 +349,66 @@ func TestIntegrationToolMultiRound(t *testing.T) {
 	resp2 := completed2.data["response"].(map[string]any)
 	if resp2["previous_response_id"] != respID {
 		t.Fatalf("expected previous_response_id=%s echoed, got %v", respID, resp2["previous_response_id"])
+	}
+}
+
+func TestIntegrationUnsupportedBlockDoesNotPersistHiddenOutput(t *testing.T) {
+	var calls atomic.Int64
+	var requestBodies []string
+	var requestMu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		requestMu.Lock()
+		requestBodies = append(requestBodies, string(body))
+		requestMu.Unlock()
+
+		w.Header().Set("content-type", "text/event-stream")
+		lines := []string{
+			`{"type":"message_start","message":{"id":"m_hidden_failure","model":"claude"}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hidden output"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search"}}`,
+		}
+		if calls.Add(1) == 2 {
+			lines = textStreamLines()
+		}
+		for _, line := range lines {
+			if _, err := io.WriteString(w, "data: "+line+"\n\n"); err != nil {
+				t.Fatalf("write upstream response: %v", err)
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	first := postResponses(t, ts, textStreamBody)
+	failed := findEvent(t, first, "response.failed")
+	output := failed.data["response"].(map[string]any)["output"].([]any)
+	if len(output) != 0 {
+		t.Fatalf("failed terminal output = %#v, want empty", output)
+	}
+	if _, ok := srv.sess.Get("m_hidden_failure"); ok {
+		t.Fatal("failed response must not be persisted for replay")
+	}
+
+	postResponses(t, ts, `{"model":"gpt-5","previous_response_id":"m_hidden_failure","input":"follow-up","stream":true}`)
+	requestMu.Lock()
+	secondRequest := requestBodies[1]
+	requestMu.Unlock()
+	if strings.Contains(secondRequest, "hidden output") {
+		t.Fatalf("previous_response_id replay leaked hidden failed output: %s", secondRequest)
 	}
 }
 

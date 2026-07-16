@@ -34,7 +34,7 @@ type RefusalDeltaEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number,omitempty"`
 	OutputIndex    int    `json:"output_index"`
-	ContentIndex   int    `json:"content_index,omitempty"`
+	ContentIndex   int    `json:"content_index"`
 	ItemID         string `json:"item_id"`
 	Delta          string `json:"delta"`
 }
@@ -44,7 +44,7 @@ type RefusalDoneEvent struct {
 	Type           string `json:"type"`
 	SequenceNumber int64  `json:"sequence_number,omitempty"`
 	OutputIndex    int    `json:"output_index"`
-	ContentIndex   int    `json:"content_index,omitempty"`
+	ContentIndex   int    `json:"content_index"`
 	ItemID         string `json:"item_id"`
 	Refusal        string `json:"refusal"`
 }

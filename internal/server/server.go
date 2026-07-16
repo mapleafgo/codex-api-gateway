@@ -268,7 +268,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		for _, it := range items {
 			types = append(types, it.Type)
 		}
-		slog.Info("响应请求完成", "response_id", id, "status", "completed", "source", sourceName, "upstream_events", evCount, "output_types", types)
+		status := model.ResponseStatusCompleted
+		if conv.Failed() {
+			status = model.ResponseStatusFailed
+		}
+		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "output_types", types)
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)
@@ -292,7 +296,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if shouldStoreResponse(req) {
+	if shouldStoreResponse(req) && !conv.Failed() {
 		items := conv.OutputItems()
 		if len(items) == 0 {
 			if executedReq != nil {
@@ -319,7 +323,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"source", sourceName,
 			"previous_response_id", req.PreviousResponseID.Value,
 			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
-			"store", false)
+			"store", shouldStoreResponse(req))
 	}
 }
 

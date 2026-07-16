@@ -97,6 +97,7 @@ type Converter struct {
 	refusalText string
 	usage       *model.ResponseUsage
 	completed   bool
+	failed      bool
 
 	outputItems []model.OutputItem
 	echo        model.ResponseObjectParams
@@ -128,6 +129,9 @@ func (c *Converter) RespID() string { return c.respID }
 // (response.completed / response.failed). Callers use this to avoid emitting
 // a duplicate terminal event after a mid-stream error followed by a read error.
 func (c *Converter) Done() bool { return c.completed }
+
+// Failed reports whether the converter emitted a failed terminal response.
+func (c *Converter) Failed() bool { return c.failed }
 
 // Seq returns the current sequence number for use by callers that need to
 // emit terminal events outside the converter (e.g. server-side response.failed).
@@ -226,6 +230,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 
 func (c *Converter) handleUnsupportedBlock(ev *anthropic.MessageStreamEventUnion) model.SSEEvent {
 	c.completed = true
+	c.failed = true
 	blockType := ev.ContentBlock.Type
 	if blockType == "" {
 		blockType = "unknown"
@@ -658,6 +663,7 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 
 func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) model.SSEEvent {
 	c.completed = true
+	c.failed = true
 	msg := "upstream stream error"
 	if ev.Delta.Text != "" {
 		msg = ev.Delta.Text
