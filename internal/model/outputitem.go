@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 // OutputItem is a self-contained output item (message/tool call/reasoning)
 // used both for emitted output_item.added/done events and for session storage.
 // It uses omitempty so Marshal stays clean (unlike SDK ResponseOutputItemUnion).
@@ -24,6 +26,29 @@ type OutputItem struct {
 // OutputText is one message content or reasoning summary part.
 type OutputText struct {
 	Type    string  `json:"type"` // output_text | refusal | summary_text
-	Text    string  `json:"text,omitempty"`
+	Text    string  `json:"text"`
 	Refusal *string `json:"refusal,omitempty"`
+}
+
+func (p OutputText) MarshalJSON() ([]byte, error) {
+	if p.Type == ContentTypeRefusal {
+		refusal := ""
+		if p.Refusal != nil {
+			refusal = *p.Refusal
+		}
+		return json.Marshal(struct {
+			Type    string `json:"type"`
+			Refusal string `json:"refusal"`
+		}{
+			Type:    p.Type,
+			Refusal: refusal,
+		})
+	}
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{
+		Type: p.Type,
+		Text: p.Text,
+	})
 }

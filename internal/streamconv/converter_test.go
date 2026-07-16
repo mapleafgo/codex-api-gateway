@@ -830,6 +830,43 @@ func TestRefusalWithoutDetailsStillEmitsRefusalEvents(t *testing.T) {
 	}
 }
 
+func TestEmptyOutputTextKeepsRequiredTextFields(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_empty_text", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	blockStopEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: anthropic.StopReasonEndTurn},
+	})
+	terminalEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	done := eventData(t, eventByType(t, blockStopEvents, "response.output_item.done"))
+	doneItem := done["item"].(map[string]any)
+	doneContent := doneItem["content"].([]any)
+	donePart := doneContent[0].(map[string]any)
+	if got, ok := donePart["text"]; !ok || got != "" {
+		t.Fatalf("output_item.done output_text should include empty text, got %#v", donePart)
+	}
+
+	terminal := eventData(t, terminalEvents[len(terminalEvents)-1])
+	response := terminal["response"].(map[string]any)
+	output := response["output"].([]any)
+	item := output[0].(map[string]any)
+	content := item["content"].([]any)
+	part := content[0].(map[string]any)
+	if got, ok := part["text"]; !ok || got != "" {
+		t.Fatalf("terminal output_text should include empty text, got %#v", part)
+	}
+}
+
 func decodePayload(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var m map[string]any
