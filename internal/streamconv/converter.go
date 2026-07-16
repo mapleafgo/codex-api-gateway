@@ -165,7 +165,7 @@ func (c *Converter) SetCustomToolNames(names []string) {
 
 // Feed processes one Anthropic event; returns Response SSE events to emit.
 func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEvent, error) {
-	if c.completed && ev.Type != anError {
+	if c.completed {
 		return nil, nil
 	}
 

@@ -546,12 +546,61 @@ func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 	if len(evs) != 1 || evs[0].Type != "response.failed" {
 		t.Fatalf("expected response.failed for unsupported block, got %+v", evs)
 	}
-	if !strings.Contains(string(evs[0].Data), "server_tool_use") {
-		t.Fatalf("failed event should name unsupported block: %s", evs[0].Data)
+	data := eventData(t, evs[0])
+	if data["type"] != "response.failed" {
+		t.Fatalf("failed payload type mismatch: %v", data)
+	}
+	if _, ok := data["sequence_number"].(float64); !ok {
+		t.Fatalf("failed payload should include sequence_number: %v", data)
+	}
+	response := data["response"].(map[string]any)
+	if response["status"] != "failed" {
+		t.Fatalf("response status should be failed: %v", response)
+	}
+	output := response["output"].([]any)
+	if len(output) != 0 {
+		t.Fatalf("failed response should have empty output: %v", output)
+	}
+	errObj := response["error"].(map[string]any)
+	if !strings.Contains(errObj["message"].(string), "server_tool_use") {
+		t.Fatalf("failed event should name unsupported block: %v", errObj)
 	}
 	trailing, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
 	if len(trailing) != 0 {
 		t.Fatalf("unsupported block should mark converter complete, got trailing events %+v", trailing)
+	}
+}
+
+func TestUnsupportedAnthropicBlockSuppressesLaterErrorTerminal(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_unsupported_error", Model: "claude-test"},
+	})
+	first, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start",
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "server_tool_use",
+		},
+	})
+	errEv := &anthropic.MessageStreamEventUnion{Type: "error"}
+	errEv.Delta.Text = "upstream failed after unsupported block"
+	second, _ := c.Feed(errEv)
+	third, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	all := append(append(first, second...), third...)
+	terminalCount := 0
+	for _, ev := range all {
+		switch ev.Type {
+		case "response.failed", "response.completed", "response.incomplete":
+			terminalCount++
+		}
+	}
+	if terminalCount != 1 {
+		t.Fatalf("expected exactly one terminal event, got %d in %v", terminalCount, eventTypes(all))
+	}
+	if len(second) != 0 || len(third) != 0 {
+		t.Fatalf("completed converter should suppress later error/message_stop, got error=%+v stop=%+v", second, third)
 	}
 }
 
