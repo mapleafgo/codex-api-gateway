@@ -811,6 +811,44 @@ func TestToolResultBlockSkippedNotFailed(t *testing.T) {
 	}
 }
 
+// TestToolResultWithWebSearchToolUseIDCompletesWebSearchCall verifies that
+// when a backend misnames web_search_tool_result as tool_result but carries
+// the web_search server_tool_use id, the gateway treats it as the web search
+// result and completes the web_search_call item.
+func TestToolResultWithWebSearchToolUseIDCompletesWebSearchCall(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m_compat", Model: "claude-test"},
+	})
+	// 先发出 web_search server_tool_use
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:  "server_tool_use",
+			ID:    "toolu_ws_compat",
+			Name:  "web_search",
+			Input: map[string]any{"query": "compat test"},
+		},
+	})
+	// 后端把 web_search_tool_result 传成了 tool_result，但 tool_use_id 指向 web_search
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:      "tool_result",
+			ToolUseID: "toolu_ws_compat",
+		},
+	})
+	eventByType(t, evs, "response.web_search_call.completed")
+	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
+	item := done["item"].(map[string]any)
+	if item["status"] != "completed" {
+		t.Fatalf("web_search_call should be completed via compatible tool_result, got %v", item["status"])
+	}
+}
+
 func TestSummarizedEmitsSummaryEvents(t *testing.T) {
 	c := New()
 	c.SetSummarized(true)

@@ -267,6 +267,14 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockWebSearchToolResult:
 		return c.handleWebSearchResultStart(ev)
 	case anBlockToolResult:
+		// 兼容后端把 web_search_tool_result 误传为 tool_result 的情况：
+		// 若该块的 tool_use_id 对应一个已知的 web_search server_tool_use，
+		// 则按 web search 结果处理，否则静默跳过。
+		if _, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]; ok {
+			slog.Warn("后端将 web_search_tool_result 传为 tool_result，按 web search 结果兼容处理",
+				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID)
+			return c.handleWebSearchResultStart(ev)
+		}
 		return c.handleSkippedBlockStart(ev)
 	case anBlockWebFetchToolResult,
 		anBlockWebFetchToolResultError,
