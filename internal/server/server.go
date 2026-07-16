@@ -278,6 +278,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeSSE(w, e)
 		}
 		flusher.Flush()
+	} else if conv.Done() && !conv.Failed() {
+		slog.Warn("上游流终态后读取失败",
+			"response_id", id,
+			"source", sourceName,
+			"error", execErr)
 	} else {
 		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "error", execErr)
 		if !conv.Done() {
@@ -296,7 +301,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if shouldStoreResponse(req) && execErr == nil && !conv.Failed() {
+	if shouldStoreResponse(req) && !conv.Failed() && (execErr == nil || conv.Done()) {
 		items := conv.OutputItems()
 		if len(items) == 0 {
 			if executedReq != nil {

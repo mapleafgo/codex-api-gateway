@@ -497,6 +497,89 @@ func TestIntegrationTransportFailureDoesNotPersistHiddenOutput(t *testing.T) {
 	}
 }
 
+func TestIntegrationPostTerminalTransportFailurePersistsVisibleOutput(t *testing.T) {
+	var calls atomic.Int64
+	var requestBodies []string
+	var requestMu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		requestMu.Lock()
+		requestBodies = append(requestBodies, string(body))
+		requestMu.Unlock()
+
+		if calls.Add(1) == 2 {
+			writeGoodSSE(w)
+			return
+		}
+
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		f := w.(http.Flusher)
+		f.Flush()
+		for _, line := range []string{
+			`{"type":"message_start","message":{"id":"m_post_terminal_reset","model":"claude"}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"visible output"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"type":"message_delta","stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":2}}`,
+			`{"type":"message_stop"}`,
+		} {
+			if _, err := io.WriteString(w, "data: "+line+"\n\n"); err != nil {
+				t.Fatalf("write upstream response: %v", err)
+			}
+			f.Flush()
+		}
+		hj := w.(http.Hijacker)
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack upstream response: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(5 * time.Second),
+			DegradeThreshold: 100,
+			Cooldown:         config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+		},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	first := postResponses(t, ts, textStreamBody)
+	completedCount := 0
+	for _, event := range first {
+		if event.eventType == "response.completed" {
+			completedCount++
+		}
+	}
+	if completedCount != 1 {
+		t.Fatalf("expected exactly one response.completed, got %d: %v", completedCount, eventTypes(first))
+	}
+	requireNotEvent(t, first, "response.failed")
+	if _, ok := srv.sess.Get("m_post_terminal_reset"); !ok {
+		t.Fatal("completed response must be persisted for replay after post-terminal transport failure")
+	}
+
+	postResponses(t, ts, `{"model":"gpt-5","previous_response_id":"m_post_terminal_reset","input":"follow-up","stream":true}`)
+	requestMu.Lock()
+	secondRequest := requestBodies[1]
+	requestMu.Unlock()
+	if !strings.Contains(secondRequest, "visible output") {
+		t.Fatalf("previous_response_id replay omitted visible output: %s", secondRequest)
+	}
+}
+
 func TestIntegrationCustomToolStream(t *testing.T) {
 	customToolLines := []string{
 		`{"type":"message_start","message":{"id":"m_custom1","model":"claude"}}`,
