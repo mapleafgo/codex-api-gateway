@@ -1384,3 +1384,17 @@ func TestRedactedThinkingFromEncryptedContent(t *testing.T) {
 		t.Fatalf("redacted_thinking block not found: %s", b)
 	}
 }
+
+// TestTopLevelCacheControlForMessageHistory 复现 gap①:顶层 cache_control
+// 必须设置,Anthropic 才会自动缓存 messages 历史(system/tools 已有显式
+// breakpoint,顶层 marker 覆盖到 messages 末尾)。
+func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.CacheControl.TTL == "" {
+		t.Fatalf("top-level cache_control not set; message history won't be cached")
+	}
+}

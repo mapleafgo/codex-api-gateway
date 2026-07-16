@@ -1084,6 +1084,7 @@ func setDocumentTitle(block *anthropic.DocumentBlockParam, file *oairesponses.Re
 func applyAnthropicCacheControl(out *anthropic.MessageNewParams) {
 	cacheControl := anthropic.NewCacheControlEphemeralParam()
 	cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+	out.CacheControl = cacheControl
 	if len(out.System) > 0 {
 		out.System[len(out.System)-1].CacheControl = cacheControl
 	}
