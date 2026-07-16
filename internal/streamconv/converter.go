@@ -165,6 +165,10 @@ func (c *Converter) SetCustomToolNames(names []string) {
 
 // Feed processes one Anthropic event; returns Response SSE events to emit.
 func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEvent, error) {
+	if c.completed && ev.Type != anError {
+		return nil, nil
+	}
+
 	var out []model.SSEEvent
 	switch ev.Type {
 	case anMessageStart:
@@ -217,7 +221,23 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockToolUse:
 		return c.handleToolUseStart(ev)
 	}
-	return nil
+	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
+}
+
+func (c *Converter) handleUnsupportedBlock(ev *anthropic.MessageStreamEventUnion) model.SSEEvent {
+	c.completed = true
+	blockType := ev.ContentBlock.Type
+	if blockType == "" {
+		blockType = "unknown"
+	}
+	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
+	resp.Output = []model.OutputItem{}
+	resp.Error = &model.ResponseError{
+		Message: fmt.Sprintf("unsupported Anthropic content block %q", blockType),
+	}
+	return model.MarshalEvent(evResponseFailed, model.TerminalResponseEvent{
+		Type: evResponseFailed, SequenceNumber: c.nextSeq(), Response: resp,
+	})
 }
 
 func (c *Converter) handleTextStart() []model.SSEEvent {

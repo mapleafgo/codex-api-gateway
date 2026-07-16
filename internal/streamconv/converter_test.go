@@ -528,6 +528,33 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	}
 }
 
+func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_unsupported", Model: "claude-test"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "server_tool_use",
+			ID:   "srv_1",
+			Name: "web_search",
+		},
+	})
+	if len(evs) != 1 || evs[0].Type != "response.failed" {
+		t.Fatalf("expected response.failed for unsupported block, got %+v", evs)
+	}
+	if !strings.Contains(string(evs[0].Data), "server_tool_use") {
+		t.Fatalf("failed event should name unsupported block: %s", evs[0].Data)
+	}
+	trailing, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	if len(trailing) != 0 {
+		t.Fatalf("unsupported block should mark converter complete, got trailing events %+v", trailing)
+	}
+}
+
 func TestSummarizedEmitsSummaryEvents(t *testing.T) {
 	c := New()
 	c.SetSummarized(true)

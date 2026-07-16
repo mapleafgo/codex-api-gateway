@@ -248,18 +248,18 @@
 | stream `thinking` | reasoning | `supported` | 已输出 reasoning events |
 | stream `redacted_thinking` | reasoning encrypted | `supported` | 已存 encrypted_content |
 | stream `tool_use` | function/custom tool call | `supported` | 已输出 tool call events |
-| stream `server_tool_use` | built-in tool call | `deferred` | 当前静默忽略风险，需补诊断策略 |
-| stream `web_search_tool_result` | web search call result | `deferred` | 需专项映射 |
+| stream `server_tool_use` | built-in tool call | `unsupported_by_backend` | 未映射时显式失败，不再静默丢弃 |
+| stream `web_search_tool_result` | web search call result | `deferred` | 未映射时当前会显式失败，需专项映射 |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
-| stream `code_execution_tool_result` | code interpreter output | `deferred` | 需专项映射 |
-| stream `bash_code_execution_tool_result` | shell/code output | `deferred` | 需专项映射 |
-| stream `text_editor_code_execution_tool_result` | apply_patch/text editor output | `deferred` | 需专项映射 |
-| stream `tool_search_tool_result` | tool_search_output | `deferred` | 需专项映射 |
+| stream `code_execution_tool_result` | code interpreter output | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `bash_code_execution_tool_result` | shell/code output | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `text_editor_code_execution_tool_result` | apply_patch/text editor output | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `tool_search_tool_result` | tool_search_output | `deferred` | 未映射时当前会显式失败，需专项映射 |
 | stream `container_upload` | none | `unsupported_by_backend` | 无 OpenAI Responses 等价输出 |
 | stream `mid_conversation_system` | none | `deferred` | 需决定是否转 developer/system marker |
 | event `ping` | no-op | `supported` | 忽略是正确行为 |
 | event `message_start` | `response.created/in_progress` | `supported` | 已处理 |
-| event `content_block_start` | item/content start | `lossy_supported` | 部分 block 类型未处理 |
+| event `content_block_start` | item/content start | `lossy_supported` | 已支持类型映射；未知类型会输出诊断性 failed |
 | event `content_block_delta` | delta events | `lossy_supported` | citation/server tool delta 未处理 |
 | event `content_block_stop` | done events | `lossy_supported` | 未知 block stop 未诊断 |
 | event `message_delta` | stop reason / usage | `lossy_supported` | stop reason 枚举需修正 |
