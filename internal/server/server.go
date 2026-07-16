@@ -296,7 +296,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if shouldStoreResponse(req) && !conv.Failed() {
+	if shouldStoreResponse(req) && execErr == nil && !conv.Failed() {
 		items := conv.OutputItems()
 		if len(items) == 0 {
 			if executedReq != nil {

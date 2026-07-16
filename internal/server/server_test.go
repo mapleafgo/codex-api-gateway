@@ -416,11 +416,8 @@ func TestResponsesMidStreamErrorNoDoubleFailed(t *testing.T) {
 	}
 }
 
-// TestResponsesErrorPathIDConsistency (I2): when all sources fail before any
-// message_start (conv.RespID()==""), the response.id in the response.failed
-// event must match the key used for session.Save — otherwise
-// previous_response_id can never resolve in a subsequent request.
-func TestResponsesErrorPathIDConsistency(t *testing.T) {
+// TestResponsesServerFailureIsNotPersisted 验证服务端失败响应不能通过 previous_response_id 回放。
+func TestResponsesServerFailureIsNotPersisted(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -466,9 +463,8 @@ func TestResponsesErrorPathIDConsistency(t *testing.T) {
 		t.Fatalf("could not extract response.id from response.failed event. body:\n%s", body)
 	}
 
-	// The session store must have an entry under the same ID.
-	if _, ok := srv.sess.Get(failedID); !ok {
-		t.Fatalf("I2: session store missing entry for response.id %q — ID mismatch between error event and session save. body:\n%s", failedID, body)
+	if _, ok := srv.sess.Get(failedID); ok {
+		t.Fatalf("server-side failed response %q must not be persisted. body:\n%s", failedID, body)
 	}
 }
 
