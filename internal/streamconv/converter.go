@@ -461,7 +461,7 @@ func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBloc
 func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	blkIdx := int(ev.Index)
 	c.skippedBlocks[blkIdx] = true
-	slog.Debug("跳过无 Responses 等价物的 server_tool_use block",
+	slog.Warn("跳过无 Responses 等价物的 server_tool_use block，对应数据被丢弃",
 		"response_id", c.respID, "block_index", blkIdx, "name", ev.ContentBlock.Name)
 	return nil
 }
@@ -473,7 +473,7 @@ func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamE
 func (c *Converter) handleSkippedBlockStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	blkIdx := int(ev.Index)
 	c.skippedBlocks[blkIdx] = true
-	slog.Debug("跳过无 Responses 等价物的 content block",
+	slog.Warn("跳过无 Responses 等价物的 content block，对应数据被丢弃",
 		"response_id", c.respID, "block_index", blkIdx, "block_type", ev.ContentBlock.Type)
 	return nil
 }

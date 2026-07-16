@@ -47,3 +47,11 @@ PR 应包含：变更摘要、测试结果（至少 `task check`）、相关 iss
 ## Security & Configuration Tips
 
 不要提交真实 API key、上游地址凭据或本地专用配置。新增配置项时同时更新 `config.example.yaml`，并在 `internal/config` 中添加校验和测试。
+
+## 静默跳过与降级处理约定
+
+当代码需要静默跳过或忽略上游数据（例如流式转换中遇到无 Responses 等价物的 Anthropic content block、忽略无法映射的字段或事件）时，必须同时输出 **WARN 级别**的结构化日志，至少包含以下字段：被丢弃内容的类型/标识、关联的 response_id 或上下文 id、影响说明（如"对应数据被丢弃"）。
+
+禁止使用 `slog.Debug` 或 `fmt.Println` 处理此类静默跳过。跳过的目的是让流继续，而不是把信息丢失变成完全不可观测。
+
+新增静默跳过分支时，同步补充或更新对应的测试，验证跳过路径触发且不产生异常事件。
