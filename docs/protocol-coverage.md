@@ -14,6 +14,8 @@
 | `unsupported_by_backend` | Anthropic Messages 无等价能力，不能安全模拟 | 应返回明确错误或在文档中登记不支持 |
 | `deferred` | 需要专项设计才能决定语义 | 必须说明后续分析点 |
 
+第一批只覆盖枚举/refusal、shell/apply_patch 输入项、`allowed_tools`、不支持工具的显式错误和未处理 Anthropic block 的显式失败；本文其余 `deferred` 项均不属于第一批，具体后续专项原因见各行说明。
+
 ## 资料来源
 
 - OpenAI API Reference: `https://developers.openai.com/api/reference/resources/responses/methods/create`
@@ -182,7 +184,7 @@
 | `response.created` | `message_start` | `supported` | 已输出 |
 | `response.in_progress` | `message_start` | `supported` | 已输出 |
 | `response.completed` | `message_stop` | `supported` | 已输出 |
-| `response.incomplete` | `message_stop` + stop reason | `lossy_supported` | 枚举需修正 |
+| `response.incomplete` | `message_stop` + stop reason | `lossy_supported` | `max_tokens` 与 refusal 使用合法 incomplete reason；`pause_turn` 不写非法 reason |
 | `response.failed` | upstream error | `supported` | 已输出 |
 | `error` | Anthropic error event | `deferred` | 当前多映射为 failed，需决定是否同时发 error |
 | `response.queued` | none | `unsupported_by_backend` | 后端无队列状态 |
@@ -262,7 +264,7 @@
 | event `content_block_start` | item/content start | `lossy_supported` | 已支持类型映射；未知类型会输出诊断性 failed |
 | event `content_block_delta` | delta events | `lossy_supported` | citation/server tool delta 未处理 |
 | event `content_block_stop` | done events | `lossy_supported` | 未知 block stop 未诊断 |
-| event `message_delta` | stop reason / usage | `lossy_supported` | stop reason 枚举需修正 |
+| event `message_delta` | stop reason / usage | `lossy_supported` | `max_tokens` 与 refusal 已映射；`pause_turn` 结束为 incomplete 但不写非法 reason |
 | event `message_stop` | terminal response | `supported` | 已处理 |
 | event `error` | response.failed/error | `supported` | raw SSE client 转 synthetic error |
 
