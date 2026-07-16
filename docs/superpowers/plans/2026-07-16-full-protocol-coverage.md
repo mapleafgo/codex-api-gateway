@@ -347,8 +347,7 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 				{OfShellCallOutput: &oairesponses.ResponseInputItemShellCallOutputParam{
 					CallID: "call_shell",
 					Output: []oairesponses.ResponseFunctionShellCallOutputContentParam{{
-						Type: "text",
-						Text: "ok",
+						Stdout: "ok",
 					}},
 				}},
 				{OfApplyPatchCallOutput: &oairesponses.ResponseInputItemApplyPatchCallOutputParam{
@@ -435,8 +434,11 @@ func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 func shellOutputText(parts []oairesponses.ResponseFunctionShellCallOutputContentParam) string {
 	var out []string
 	for _, part := range parts {
-		if part.Text != "" {
-			out = append(out, part.Text)
+		if part.Stdout != "" {
+			out = append(out, part.Stdout)
+		}
+		if part.Stderr != "" {
+			out = append(out, part.Stderr)
 		}
 	}
 	return strings.Join(out, "\n")
