@@ -551,7 +551,7 @@ func statusFor(reason string) (status, incompleteReason string) {
 
 func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
-	if c.stopReason == string(anthropic.StopReasonRefusal) && c.refusalText != "" {
+	if c.stopReason == string(anthropic.StopReasonRefusal) {
 		out = append(out, c.emitRefusalEvents()...)
 	}
 
@@ -587,13 +587,16 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 	idx := c.itemOrder
 	c.itemOrder++
 	itemID := fmt.Sprintf("msg_%d", idx)
+	refusal := c.refusalText
+	refusalPart := model.OutputText{Type: model.ContentTypeRefusal, Refusal: &refusal}
+	refusalEventPart := model.ContentPartOut{Type: model.ContentTypeRefusal, Refusal: &refusal}
 	item := model.OutputItem{
 		Type:    model.ItemTypeMessage,
 		ID:      itemID,
 		Role:    model.RoleAssistant,
 		Phase:   model.AssistantPhaseFinalAnswer,
 		Status:  model.ResponseStatusCompleted,
-		Content: []model.OutputText{{Type: model.ContentTypeRefusal, Text: c.refusalText}},
+		Content: []model.OutputText{refusalPart},
 	}
 	c.outputItems = append(c.outputItems, item)
 
@@ -603,7 +606,7 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 		}),
 		model.MarshalEvent(evContentPartAdded, model.ContentPartAddedEvent{
 			Type: evContentPartAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
-			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeRefusal},
+			ItemID: itemID, Part: refusalEventPart,
 		}),
 		model.MarshalEvent(evRefusalDelta, model.RefusalDeltaEvent{
 			Type: evRefusalDelta, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
@@ -615,7 +618,7 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 		}),
 		model.MarshalEvent(evContentPartDone, model.ContentPartDoneEvent{
 			Type: evContentPartDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
-			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeRefusal, Text: c.refusalText},
+			ItemID: itemID, Part: refusalEventPart,
 		}),
 		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
 			Type: evOutputItemDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: item,

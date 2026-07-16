@@ -206,8 +206,9 @@ type SummaryPart struct {
 
 // ContentPartOut is one content part emitted in content_part.added/done.
 type ContentPartOut struct {
-	Type string `json:"type"` // output_text | refusal
-	Text string `json:"text,omitempty"`
+	Type    string  `json:"type"` // output_text | refusal
+	Text    string  `json:"text,omitempty"`
+	Refusal *string `json:"refusal,omitempty"`
 }
 
 // MarshalEvent marshals any event struct into an SSEEvent.

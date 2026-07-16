@@ -27,6 +27,26 @@ func eventTypes(evs []model.SSEEvent) []string {
 	return out
 }
 
+func eventData(t *testing.T, ev model.SSEEvent) map[string]any {
+	t.Helper()
+	var data map[string]any
+	if err := json.Unmarshal(ev.Data, &data); err != nil {
+		t.Fatalf("decode event data: %v", err)
+	}
+	return data
+}
+
+func eventByType(t *testing.T, evs []model.SSEEvent, typ string) model.SSEEvent {
+	t.Helper()
+	for _, ev := range evs {
+		if ev.Type == typ {
+			return ev
+		}
+	}
+	t.Fatalf("missing event %s in %v", typ, eventTypes(evs))
+	return model.SSEEvent{}
+}
+
 func TestConverterTextDelta(t *testing.T) {
 	c := New()
 	// message_start
@@ -739,6 +759,74 @@ func TestRefusalStopReasonEmitsRefusalPartAndContentFilter(t *testing.T) {
 	last := evs[len(evs)-1]
 	if !strings.Contains(string(last.Data), `"reason":"content_filter"`) {
 		t.Fatalf("refusal should map to OpenAI content_filter: %s", last.Data)
+	}
+
+	for _, typ := range []string{"response.content_part.added", "response.content_part.done"} {
+		data := eventData(t, eventByType(t, evs, typ))
+		part := data["part"].(map[string]any)
+		if got := part["refusal"]; got != "I can't help with that." {
+			t.Fatalf("%s should include refusal field, got %#v", typ, part)
+		}
+		if _, ok := part["text"]; ok {
+			t.Fatalf("%s refusal part should not include text field: %#v", typ, part)
+		}
+	}
+
+	for _, typ := range []string{"response.output_item.added", "response.output_item.done"} {
+		data := eventData(t, eventByType(t, evs, typ))
+		item := data["item"].(map[string]any)
+		content := item["content"].([]any)
+		part := content[0].(map[string]any)
+		if got := part["refusal"]; got != "I can't help with that." {
+			t.Fatalf("%s item content should include refusal field, got %#v", typ, part)
+		}
+		if _, ok := part["text"]; ok {
+			t.Fatalf("%s refusal item content should not include text field: %#v", typ, part)
+		}
+	}
+
+	terminal := eventData(t, last)
+	response := terminal["response"].(map[string]any)
+	output := response["output"].([]any)
+	item := output[0].(map[string]any)
+	content := item["content"].([]any)
+	part := content[0].(map[string]any)
+	if got := part["refusal"]; got != "I can't help with that." {
+		t.Fatalf("terminal response should include refusal field, got %#v", part)
+	}
+	if _, ok := part["text"]; ok {
+		t.Fatalf("terminal refusal content should not include text field: %#v", part)
+	}
+}
+
+func TestRefusalWithoutDetailsStillEmitsRefusalEvents(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_empty_refusal", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: anthropic.StopReasonRefusal},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	wantTypes := []string{
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.refusal.delta",
+		"response.refusal.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.incomplete",
+	}
+	if got := eventTypes(evs); !slices.Equal(got, wantTypes) {
+		t.Fatalf("unexpected event sequence:\nwant %v\n got %v", wantTypes, got)
+	}
+	added := eventData(t, eventByType(t, evs, "response.content_part.added"))
+	part := added["part"].(map[string]any)
+	if got, ok := part["refusal"]; !ok || got != "" {
+		t.Fatalf("empty refusal should still be explicit, got %#v", part)
 	}
 }
 

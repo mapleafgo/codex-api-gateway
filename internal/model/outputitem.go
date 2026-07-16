@@ -21,8 +21,9 @@ type OutputItem struct {
 	Signature        string       `json:"signature,omitempty"`         // reasoning (plaintext thinking)
 }
 
-// OutputText is one text content/summary part.
+// OutputText is one message content or reasoning summary part.
 type OutputText struct {
-	Type string `json:"type"` // output_text | summary_text
-	Text string `json:"text"`
+	Type    string  `json:"type"` // output_text | refusal | summary_text
+	Text    string  `json:"text,omitempty"`
+	Refusal *string `json:"refusal,omitempty"`
 }
