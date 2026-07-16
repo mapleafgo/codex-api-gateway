@@ -4,6 +4,7 @@ package streamconv
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -148,6 +149,10 @@ func (c *Converter) Failed() bool { return c.failed }
 // emit terminal events outside the converter (e.g. server-side response.failed).
 func (c *Converter) Seq() int64 { return c.seq }
 
+// StopReason returns the upstream stop reason for diagnostics (empty before
+// the message_delta carrying it arrives).
+func (c *Converter) StopReason() string { return c.stopReason }
+
 // NextSeq advances and returns the next sequence number for caller-emitted events.
 func (c *Converter) NextSeq() int64 { return c.nextSeq() }
 
@@ -250,6 +255,8 @@ func (c *Converter) handleUnsupportedBlock(ev *anthropic.MessageStreamEventUnion
 	if blockType == "" {
 		blockType = "unknown"
 	}
+	slog.Warn("遇到不支持的 Anthropic content block，转为 response.failed",
+		"response_id", c.respID, "block_type", blockType, "name", ev.ContentBlock.Name)
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Output = []model.OutputItem{}
 	resp.Error = &model.ResponseError{
@@ -767,6 +774,8 @@ func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) model.SSE
 	if ev.Delta.Text != "" {
 		msg = ev.Delta.Text
 	}
+	slog.Warn("收到上游 error 事件，转为 response.failed",
+		"response_id", c.respID, "message", msg)
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Output = []model.OutputItem{}
 	resp.Error = &model.ResponseError{Message: msg}

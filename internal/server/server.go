@@ -229,14 +229,25 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			sysLen += len(b.Text)
 		}
 		thinkingOn := anthReq.Thinking.OfEnabled != nil || anthReq.Thinking.OfAdaptive != nil
+		thinkingBlocks, emptySig, toolUseBlk, toolResultBlk, assistantMsgs, userMsgs := summarizeAnthropicRequest(anthReq)
 		slog.Info("请求转换完成",
 			"source", src.Name,
 			"model", string(anthReq.Model),
 			"max_tokens", anthReq.MaxTokens,
 			"messages", len(anthReq.Messages),
+			"assistant_messages", assistantMsgs,
+			"user_messages", userMsgs,
 			"system_bytes", sysLen,
 			"thinking", thinkingOn,
+			"thinking_blocks", thinkingBlocks,
+			"thinking_empty_signature", emptySig,
+			"tool_use_blocks", toolUseBlk,
+			"tool_result_blocks", toolResultBlk,
 			"tools", len(anthReq.Tools))
+		if emptySig > 0 {
+			slog.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
+				"source", src.Name, "thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
+		}
 		return anthReq, nil
 	}, func(ev *anthropic.MessageStreamEventUnion) error {
 		evCount++
@@ -272,7 +283,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if conv.Failed() {
 			status = model.ResponseStatusFailed
 		}
-		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "output_types", types)
+		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types)
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)
@@ -498,6 +509,37 @@ func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) [
 		}
 	}
 	return attrs
+}
+
+// summarizeAnthropicRequest counts block/role distribution in a converted
+// Anthropic request for diagnostics: reasoning signature health (empty
+// signatures violate Anthropic's thinking round-trip rules and can corrupt
+// multi-turn thinking context), tool-loop balance, and context volume.
+func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks, emptySig, toolUse, toolResult, assistant, user int) {
+	for _, msg := range req.Messages {
+		switch msg.Role {
+		case anthropic.MessageParamRoleAssistant:
+			assistant++
+		case anthropic.MessageParamRoleUser:
+			user++
+		}
+		for _, b := range msg.Content {
+			switch {
+			case b.OfThinking != nil:
+				thinkingBlocks++
+				if b.OfThinking.Signature == "" {
+					emptySig++
+				}
+			case b.OfRedactedThinking != nil:
+				thinkingBlocks++
+			case b.OfToolUse != nil:
+				toolUse++
+			case b.OfToolResult != nil:
+				toolResult++
+			}
+		}
+	}
+	return
 }
 
 func collectOutput(req *oairesponses.ResponseNewParams) []model.OutputItem {
