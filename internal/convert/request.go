@@ -334,28 +334,11 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 		blocks = []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{}}}
 	}
 
-	if role == model.RoleAssistant && m.Phase != "" {
-		applyAssistantPhase(blocks, string(m.Phase))
-	}
-
 	out.Messages = append(out.Messages, anthropic.MessageParam{
 		Role:    anthropic.MessageParamRole(role),
 		Content: blocks,
 	})
 	return nil
-}
-
-func applyAssistantPhase(blocks []anthropic.ContentBlockParamUnion, phase string) {
-	if len(blocks) == 0 || phase == "" {
-		return
-	}
-	marker := "<assistant_phase>" + phase + "</assistant_phase>\n"
-	for i := range blocks {
-		if blocks[i].OfText != nil {
-			blocks[i].OfText.Text = marker + blocks[i].OfText.Text
-			return
-		}
-	}
 }
 
 func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseReasoningItemParam, sigByID map[string]string) error {

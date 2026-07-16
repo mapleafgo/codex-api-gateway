@@ -107,7 +107,7 @@ func TestSystemConversionPreservesInstructionRoles(t *testing.T) {
 	}
 }
 
-func TestAssistantPhasePreservedInAnthropicText(t *testing.T) {
+func TestAssistantPhaseNotInjectedIntoAnthropicText(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"input_text","text":"I am checking files."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
@@ -118,10 +118,12 @@ func TestAssistantPhasePreservedInAnthropicText(t *testing.T) {
 	}
 	text := out.Messages[0].Content[0].OfText
 	if text == nil {
-		t.Fatalf("assistant phase text marker missing: %+v", out.Messages[0].Content[0])
+		t.Fatalf("assistant text block missing: %+v", out.Messages[0].Content[0])
 	}
-	if !strings.Contains(text.Text, "<assistant_phase>commentary</assistant_phase>") {
-		t.Fatalf("assistant phase not preserved in text: %q", text.Text)
+	// 注入 <assistant_phase> 标记会导致上游模型模仿该标记，只输出标记而丢失正文。
+	// 因此 assistant 消息文本必须原样保留，不得注入 phase 标记。
+	if strings.Contains(text.Text, "<assistant_phase>") {
+		t.Fatalf("assistant phase marker must not be injected: %q", text.Text)
 	}
 	if !strings.Contains(text.Text, "I am checking files.") {
 		t.Fatalf("assistant message text lost: %q", text.Text)

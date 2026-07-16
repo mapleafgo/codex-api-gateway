@@ -277,8 +277,8 @@
 | role | `assistant` | `assistant` | `supported` | 直接映射 |
 | role | `system` | top-level `system` | `lossy_supported` | Anthropic 无 system message role |
 | role | `developer` | top-level `system` with marker | `lossy_supported` | 通过 marker 保留层级 |
-| assistant phase | `commentary` | none | `lossy_supported` | 通过 `<assistant_phase>` marker |
-| assistant phase | `final_answer` | none | `lossy_supported` | 输出 item 保留 phase |
+| assistant phase | `commentary` | none | `raw_preserved` | 仅 Codex 客户端渲染用；不注入请求文本，避免上游模型模仿 |
+| assistant phase | `final_answer` | none | `raw_preserved` | 仅 Codex 客户端渲染用；不注入请求文本，避免上游模型模仿 |
 | response status | `in_progress` | message active | `supported` | created 后输出 |
 | response status | `completed` | `end_turn/tool_use/stop_sequence` | `supported` | 需按 stop reason |
 | response status | `incomplete` | `max_tokens` | `supported` | reason=`max_output_tokens` |
