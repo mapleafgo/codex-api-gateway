@@ -138,9 +138,10 @@ OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
                                 default_config/ configs(allowlist) }
 ```
 
-- 字段映射：`server_label`→`name`，`server_url`→`url`，`authorization`→`authorization_token`，`headers`→（Anthropic MCP connector 不暴露自定义 header，丢失），`allowed_tools`→`mcp_toolset` allowlist 模式（`default_config.enabled=false` + 命中项 `configs[name].enabled=true`）。
-- `require_approval`：Anthropic MCP connector **无审批协议**（Claude 直接执行 MCP 工具，无批准前置门）。`never`/缺省正常映射（两边语义一致：无审批直接执行）；`on_failure`/`if_referenced` → **fail-fast**（返回明确转换错误）——继续映射会让 Anthropic 直接执行工具，**悄悄剥夺客户端对破坏性工具的批准控制**，属安全语义不对齐，不可"丢失"了事。
-- `connector_id` / `tunnel_id`（OpenAI 私有 connector / Secure Tunnel）：Anthropic 无等价 → 不支持，请求时明确转换错误（保留这些来源时 fail-fast）。
+- 字段映射：`server_label`→`name`，`server_url`→`url`，`authorization`→`authorization_token`，`allowed_tools`→`mcp_toolset` allowlist 模式（`default_config.enabled=false` + 命中项 `configs[name].enabled=true`）。
+- `headers`：Anthropic server 定义只有单一 `authorization_token`、无自定义 header 槽。**择优提取** `headers["Authorization"]: Bearer xxx` → `authorization_token`（`authorization` 字段为空时回退）；其余 header 丢弃 + WARN（含 `X-API-Key` 等非标认证时 server 可能连不上，上游自然报错）。
+- `require_approval`：Anthropic MCP connector **无审批协议**（Claude 直接执行 MCP 工具，无批准前置门）。`never`/缺省正常映射；`on_failure`/`if_referenced` → **降级为 never**（`mcp_toolset` 本就无 approval 配置）+ **WARN**（含 `server_label`、原 `require_approval` 值，审计"有无审批的破坏性工具在执行"）。客户端通过"未收到 `mcp_approval_request`、`mcp_call` 直接 completed"感知审批未走（OpenAI Responses 协议无标准"approval 绕过"标注位，不往 output 注入以免破坏协议）。无配置开关。
+- `connector_id` / `tunnel_id`（OpenAI 私有托管 connector / Secure Tunnel）：属 OpenAI 私有基础设施，不在 Anthropic 标准范围 → **fail-fast**（请求含这些来源时返回明确转换错误）。客户端改用 `server_url` 形式。
 - **类型链约束**：标准 `MessageNewParams` 顶层无 `mcp_servers`、`ToolUnionParam` 无 `OfMCPToolset`。实现方案：`ToAnthropic` 额外产出 MCP 定义（server 列表 + toolset），`client.Stream` 在 marshal 后用类似 `injectStream` 的 JSON 注入把 `mcp_servers` 与 `mcp_toolset` 注入请求体（避免把整条类型链切到 beta）。
 
 #### 2.3 回程流式（批次 B：catalog/streamconv 注册 `mcp_tool_use`/`mcp_tool_result` handler + `ScanEvents` probe）
@@ -156,11 +157,11 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 
 #### 2.4 信息损失
 
-- `mcp_list_tools` 工具列表不回传（Anthropic 连接后注入系统提示，不通过 item 暴露）。
-- `require_approval`（`on_failure`/`if_referenced`）：Anthropic 无审批协议，网关 **fail-fast** 拒绝，不静默剥夺客户端批准控制；`never`/缺省正常映射。回程 Anthropic 不发审批 → 不产出 `mcp_approval_request`；历史 `mcp_approval_response` 回灌无 Anthropic 等价，丢弃并 WARN（raw_preserved）。
-- 自定义 `headers`：Anthropic MCP server 定义不暴露，丢失。
-- `connector_id` / `tunnel_id`：不支持，fail-fast。
-- 需 beta API（`mcp-client-2025-11-20`）；后端若不实现 beta endpoint 则上游自然报错（不属网关协议层判定）。
+- `mcp_list_tools` 工具列表不回传（Anthropic 连接后注入系统提示，不通过 item 暴露）；历史回灌丢弃 + WARN。客户端靠 `mcp_call` 照常工作，`mcp_list_tools` 非执行前置。
+- `require_approval`（`on_failure`/`if_referenced`）：Anthropic 无审批协议，**降级为 never + WARN**[server_label, 原值]（多数场景 approval 是防御性默认，透明降级优于 fail-fast 致完全不可用）；`never`/缺省正常映射。回程不产出 `mcp_approval_request`；历史 `mcp_approval_response` 回灌无 Anthropic 等价，丢弃并 WARN（raw_preserved）。
+- 自定义 `headers`：仅 `Authorization: Bearer` 提取到 `authorization_token`（`authorization` 字段空时回退），其余丢弃 + WARN。
+- `connector_id` / `tunnel_id`：OpenAI 私有托管服务，不在 Anthropic 标准范围，fail-fast。
+- 需 beta API（`mcp-client-2025-11-20`，代码做命名常量便于跟进版本演进）；按标准发，后端若不实现 beta endpoint 则上游自然报错、网关透传为 `response.failed`（不预判后端、不加配置开关）。
 
 ## 状态升级清单（实现后更新 `docs/protocol-coverage.md`）
 
@@ -174,7 +175,7 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 | Input/Output `mcp_call` | unsupported_by_backend | `lossy_supported` |
 | Events `mcp_call*` | unsupported_by_backend | `lossy_supported` |
 | `mcp_list_tools` | unsupported_by_backend | 保持（Anthropic 不暴露工具列表 item） |
-| `mcp_approval_request` / `mcp_approval_response` | unsupported_by_backend | 保持（Anthropic 无审批协议；`require_approval≠never` 时请求 fail-fast，历史回灌 raw_preserved） |
+| `mcp_approval_request` / `mcp_approval_response` | unsupported_by_backend | 保持（Anthropic 无审批；`require_approval≠never` 时降级为 never + WARN，不产 approval_request，历史回灌 raw_preserved） |
 | `bash_code_execution_tool_result` / `text_editor_code_execution_tool_result` | deferred | 保持 `deferred` |
 
 ## 分批计划
