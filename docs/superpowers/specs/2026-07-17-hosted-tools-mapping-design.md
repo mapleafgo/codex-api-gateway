@@ -16,7 +16,8 @@
 1. 按 Anthropic 标准，补全 **code interpreter**（→ code execution）、**MCP**（→ managed MCP connector）两类 hosted tool 的请求侧 + 回程流式双向映射。
 2. **复核 web search** 现有映射的边界（已端到端 `supported`，仅查缺）。
 3. 更新 `docs/protocol-coverage.md` 对应行的状态与说明。
-4. 全程 TDD：每个映射先写 RED 测试（基于官方文档 wire 样本），再实现，再验证。
+4. 建立 **tool 处理通用架构**（catalog 驱动），让所有 tool 类型（现有 + code interpreter + MCP + 未来 hosted tool）走统一注册/派发框架，消除散落 switch。
+5. 全程 TDD：每个映射先写 RED 测试（基于官方文档 wire 样本），再实现，再验证。
 
 ## 非目标
 
@@ -45,6 +46,26 @@
 - 本网关 `internal/anthropic/client.go` 是**手工 POST `/v1/messages`**（不走 SDK `Messages.New`），beta header 已有条件注入机制（`thinkingEnabled` → `interleaved-thinking-2025-05-14`，多 beta 逗号分隔）。
 
 ## 设计
+
+### 通用 tool 处理架构（重构基础，批次 0）
+
+**痛点**：同一 tool 类型的行为散落在 6+ 处 switch——请求侧 `appendToolUnion`、`declaredToolIdentities`、`parseAllowedToolIdentities`、`formatToolNames`、`setLastToolCacheControl`、`FreeformToolNames`；回程侧 `handleBlockStart`、`handleServerToolUseStart`、`handleWebSearchResultStart`。新增一个 tool 要同步改 5–6 处，易遗漏（protocol-coverage 反复出现的原因）。
+
+**架构：catalog 驱动**。建立 tool 处理的单一事实来源（新增 `internal/convert/toolcatalog`，或并入 `convert`），每种 tool 在一处定义全部维度：
+
+- **身份**：`openaiType`、固定名（`shell`/`apply_patch`/`tool_search`）或字段名、namespace 归属。
+- **类别 `kind`**：`clientTool`（→ `ToolParam`，客户端执行）/ `serverTool`（→ 标准 server tool union 变体，Anthropic 执行）/ `betaServerTool`（→ beta 注入，如 MCP）/ `unsupported`（fail-fast）。
+- **freeform**：custom freeform（回程把 tool_use input 解包成裸文本）。
+- **请求映射 `mapRequest`**：OpenAI tool → `anthropicDecl`（`ToolParam` / server tool union / beta 注入 / error）。
+- **回程映射**（server/beta tool）：`mapServerCall`（block → call item + events）、`mapResult`（result block → outputs + completed）。
+
+请求侧与回程侧的 dispatch 全部改为遍历 catalog 查询，消除散落 switch。
+
+**收益**：新增 tool（code interpreter / MCP / 未来 hosted tool）= catalog 注册一项 + 提供映射函数，零散落 switch 改动；tool 行为集中、与 `docs/protocol-coverage.md` 矩阵一一对应、可审计。
+
+**特例处理**：namespace tool 是结构性嵌套（catalog 按子 tool 类型递归）；custom/function 名取自字段（catalog 提供 nameResolver）；MCP 的 beta 注入（`kind=betaServerTool`，`mapRequest` 产出 `betaInjection{mcp_servers, mcp_toolset}`，由 `client` 层消费注入）。
+
+**重构约束**：批次 0 是纯重构，不改变任何现有 tool 的协议行为，全部由现有 `request_test.go` / `converter_test.go` / 集成测试保护；迁移完成后 GREEN，再做 A/B。
 
 ### 0. web search（复核，当前 `supported`）
 
@@ -154,8 +175,11 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 
 ## 分批计划
 
-- **批次 A：code interpreter + web search 复核**。纯 `convert` + `streamconv`，不动 `client`。与 web search 同构，低风险。先落地。
-- **批次 B：MCP beta 改造**。涉及 `client`（beta header）+ `convert`（mcp_servers / mcp_toolset JSON 注入）+ `streamconv`（mcp block probe 解析）。工程量与风险明显大于 A，单独成批，A 合并后再做。
+- **批次 0：通用 tool 架构重构**。建 catalog，迁移现有 tool（function/custom/shell/apply_patch/tool_search/namespace/web_search），请求侧 + 回程侧 dispatch 全部走 catalog，**行为不变**（现有测试全 GREEN）。纯重构，为 A/B 铺路。
+- **批次 A：code interpreter 接入**。catalog 注册 `code_interpreter`（`serverTool`），验证架构对标准 server tool 的扩展。纯 `convert` + `streamconv`，不动 `client`，与 web search 同构。含 web search 复核。
+- **批次 B：MCP 接入**。catalog 注册 `mcp`（`betaServerTool`），验证架构对 beta server tool 的扩展。涉及 `client`（beta header）+ `convert`（mcp_servers / mcp_toolset 注入）+ `streamconv`（mcp block probe 解析）。工程量与风险最大，单独成批。
+
+每批独立可合并：批次 0 合并后 main 即获得通用架构收益（即便不做 A/B，新增 tool 也变简单）；A/B 在架构上各自独立。
 
 ## 测试策略
 
