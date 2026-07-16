@@ -51,7 +51,7 @@
 
 **痛点**：同一 tool 类型的行为散落在 6+ 处 switch——请求侧 `appendToolUnion`、`declaredToolIdentities`、`parseAllowedToolIdentities`、`formatToolNames`、`setLastToolCacheControl`、`FreeformToolNames`；回程侧 `handleBlockStart`、`handleServerToolUseStart`、`handleWebSearchResultStart`。新增一个 tool 要同步改 5–6 处，易遗漏（protocol-coverage 反复出现的原因）。
 
-**架构：catalog 驱动**。建立 tool 处理的单一事实来源（新增 `internal/convert/toolcatalog`，或并入 `convert`）。每种 tool 在一处登记其**完整生命周期四维度**，覆盖 SDK 已知的全部变体（OpenAI Tool Union 17 项 / Input Item 31 项 / Tool Choice 9 项 / Anthropic 回程 block 全集）：
+**架构：catalog 驱动**。建立 tool 处理的单一事实来源（新增独立包 `internal/toolcatalog`，被 `convert` / `streamconv` 共同依赖，无循环；与批次 0 plan 一致）。每种 tool 在一处登记其**完整生命周期四维度**，覆盖 SDK 已知的全部变体（OpenAI Tool Union 17 项 / Input Item 31 项 / Tool Choice 9 项 / Anthropic 回程 block 全集）：
 
 - **身份 identity**：`openaiType`、固定名（`shell`/`apply_patch`/`tool_search`）或字段名、namespace 归属、freeform 标记——统一服务于 `tool_choice`、`allowed_tools`、命名与回程 function/custom 判定。
 - **类别 kind**：`clientTool`（→ `ToolParam`，客户端执行）/ `serverTool`（→ 标准 server tool union 变体，Anthropic 执行）/ `betaServerTool`（→ beta 注入，如 MCP）/ `unsupported`（fail-fast 或 raw_preserved，按矩阵）。
@@ -65,7 +65,7 @@
 
 **收益**：新增 tool（code interpreter / MCP / 未来 hosted tool）= catalog 注册一项 + 提供映射函数，零散落 switch 改动；tool 行为集中、与 `docs/protocol-coverage.md` 矩阵一一对应、可审计。
 
-**特例处理**：namespace tool 是结构性嵌套（catalog 按子 tool 类型递归）；custom/function 名取自字段（catalog 提供 nameResolver）；MCP 的 beta 注入（`kind=betaServerTool`，`mapRequest` 产出 `betaInjection{mcp_servers, mcp_toolset}`，由 `client` 层消费注入）。
+**特例处理**：namespace tool 是结构性嵌套（catalog 按子 tool 类型递归）；custom/function 名取自字段（catalog 提供 nameResolver）；MCP 的 beta 注入（`kind=betaServerTool`，`mapDecl` 产出 `betaInjection{mcp_servers, mcp_toolset}`，由 `client` 层消费注入）。
 
 **重构约束**：批次 0 是纯重构，不改变任何现有 tool 的协议行为，全部由现有 `request_test.go` / `converter_test.go` / 集成测试保护；迁移完成后 GREEN，再做 A/B。
 
@@ -76,10 +76,11 @@ web_search 是当前唯一已实现的 server tool（`web_search` / `web_search_
 复核项（迁移同期查缺）：
 
 - `search_context_size`（low/medium/high）：Anthropic 用 `max_uses` 控制搜索量；近似映射属 `lossy_supported` 增强，**本轮不做**，保持现状登记。
+- `user_location`：Anthropic `web_search_20250305` 有该字段；OpenAI `web_search` 是否有对应待批次 0 复核确认（查 `WebSearchToolParam` 字段）——有则映射、无则不处理（Anthropic 侧留空，无损失）。
 - 历史 `web_search_call` input item 回灌：web_search 是 hosted 无状态，确认迁移后 catalog 的 `mapReplay` 不对其产生副作用。
 - 结论：迁移后维持 `supported`，无协议行为变化。
 
-### 1. code interpreter → code execution（`deferred` → `lossy_supported`）
+### 1. code interpreter → code execution（批次 A；`deferred` → `lossy_supported`）
 
 两端都是 hosted Python 沙箱，结构与 web search 同构（`server_tool_use` + 结果块，靠 `tool_use_id` 关联）。
 
@@ -109,6 +110,7 @@ OpenAI OfCodeInterpreter{ Container: {type:auto, memory_limit, file_ids} | "cntr
 - `stderr` / 非零 `return_code`：并入 `logs` 输出（OpenAI `logs` 类型承载 stdout/stderr 文本）。
 - `content[].file_id`（代码生成的文件）：Anthropic 用 `file_id`，OpenAI `image`/`file` 输出需 `url`。网关无 OpenAI files 凭据，无法转换 → **丢弃并 WARN**（遵循 AGENTS.md 静默跳过约定）。
 - outputs 承载：OpenAI code_interpreter 仅有 5 个 streaming event（`in_progress`/`interpreting`/`code.delta`/`code.done`/`completed`），**无独立 output event**；`outputs` 随 `code_interpreter_call` item 在 `output_item.done` 时整体携带（SDK response.go:4659-4808，item `Outputs` 字段 `api:"required"`）。converter 在 `code_execution_tool_result` 到达时把 stdout 填入 item.Outputs，再发 `completed` + `output_item.done`。
+- `input.code` 字段名：Anthropic code_execution `server_tool_use` 的 input 结构 SDK 类型为 `any`，spec 假设 `{code}`；批次 A 实现时以官方文档/RED 测试锁定确切字段名，若不同则据实修正（已知风险点）。
 
 #### 1.3 input 回灌（多轮）
 
@@ -118,7 +120,7 @@ OpenAI OfCodeInterpreter{ Container: {type:auto, memory_limit, file_ids} | "cntr
 
 `bash_code_execution_tool_result` / `text_editor_code_execution_tool_result`：OpenAI 侧无对应 hosted item（shell 走 custom tool 由客户端执行、apply_patch 同理），**本轮不映射**，保持 `deferred`，维持当前显式失败 + WARN。
 
-### 2. MCP → managed MCP connector（`unsupported_by_backend` → `lossy_supported`）
+### 2. MCP → managed MCP connector（批次 B；`unsupported_by_backend` → `lossy_supported`）
 
 **状态重评**：矩阵原判 `unsupported_by_backend`（"lifecycle 不等价"）。调研证实 Anthropic 提供 managed MCP connector（beta），语义等价于 OpenAI hosted MCP（都是服务端代连 remote MCP server、执行 tool）。故重评为 `lossy_supported`，损耗见 2.4。
 
@@ -146,7 +148,7 @@ OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
 
 #### 2.3 回程流式（批次 B：catalog/streamconv 注册 `mcp_tool_use`/`mcp_tool_result` handler + `ScanEvents` probe）
 
-Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `MessageStreamEventUnion` / `ContentBlockStartEventContentBlockUnion` **无 `Of*` 变体承载**。方案：在 `ScanEvents` 增加 probe（参考现有 error 事件 probe 机制），识别 `type=mcp_tool_use` / `type=mcp_tool_result` 的 raw payload，合成 converter 可识别的结构化事件；converter 映射：
+Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `MessageStreamEventUnion` / `ContentBlockStartEventContentBlockUnion` **无 `Of*` 变体承载**。方案：在 `ScanEvents` 增加 probe（参考现有 error 事件 probe 机制），识别 `type=mcp_tool_use` / `type=mcp_tool_result` 的 raw payload，解析成 converter 内部中间信号；converter 新增 `handleMcpToolUseStart` / `handleMcpToolResultStart`（与 `handleServerToolUseStart` / `handleWebSearchResultStart` 平级）消费并映射：
 
 | Anthropic block | Responses 事件 / item |
 |---|---|
@@ -154,6 +156,12 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 | `mcp_tool_result{tool_use_id,is_error,content}` | `mcp_call` output（content text）；`mcp_call.completed`（is_error 时 `failed`）+ `output_item.done` |
 
 `mcp_list_tools`：Anthropic 不暴露工具列表 item → **不发**（OpenAI 客户端缺它仍可工作）。登记为损失。
+
+#### 2.3.1 input 回灌与 tool_choice（批次 B）
+
+- 历史 `mcp_call`（含 output）：catalog `mapReplay` 转成 Anthropic beta 历史 `mcp_tool_use` + `mcp_tool_result` 回放（`mcp_tool_use` 用 `server_name`/`name`/`input`，`mcp_tool_result` 用 `output`/`is_error`），使多轮上下文保留历史 MCP 调用——与 web_search/code_execution 回灌同模式（server tool 历史 block 回放，需 beta 结构）。
+- 历史 `mcp_list_tools`：丢弃 + WARN（见 2.4）。
+- `tool_choice` 的 `OfMcpTool`（指定调某 MCP server 的某工具）/ `OfHostedTool`：批次 B **保持 unsupported**（Anthropic 侧 MCP 工具名由 server 动态提供，`tool_choice` 精确指定不可靠）→ fail-fast，与现有 `convertToolChoice` 行为一致。
 
 #### 2.4 信息损失
 
