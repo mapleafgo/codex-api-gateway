@@ -563,10 +563,16 @@ func inputItemToContext(item oairesponses.ResponseInputItemUnionParam) (contextI
 	if item.OfCompactionTrigger != nil {
 		return contextItem{Type: model.ItemTypeCompactionTrigger}, true
 	}
-	if raw, err := json.Marshal(item); err == nil {
-		if typ := inputItemType(item, raw); typ != "" {
-			return contextItem{Type: typ, Raw: raw}, true
-		}
+	return rawInputItemContext(item)
+}
+
+func rawInputItemContext(item oairesponses.ResponseInputItemUnionParam) (contextItem, bool) {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return contextItem{}, false
+	}
+	if typ := inputItemType(item, raw); typ != "" {
+		return contextItem{Type: typ, Raw: raw}, true
 	}
 	return contextItem{}, false
 }
@@ -696,12 +702,60 @@ func contextToInputItem(item contextItem) oairesponses.ResponseInputItemUnionPar
 	case model.ItemTypeCompactionTrigger:
 		trigger := oairesponses.NewResponseInputItemCompactionTriggerParam()
 		return oairesponses.ResponseInputItemUnionParam{OfCompactionTrigger: &trigger}
-	default:
-		if len(item.Raw) > 0 {
-			return oparam.Override[oairesponses.ResponseInputItemUnionParam](json.RawMessage(item.Raw))
+	case model.ItemTypeLocalShellCall,
+		model.ItemTypeLocalShellCallOutput,
+		model.ItemTypeShellCall,
+		model.ItemTypeShellCallOutput,
+		model.ItemTypeApplyPatchCall,
+		model.ItemTypeApplyPatchCallOutput:
+		if typed, ok := rawContextToTypedInputItem(item); ok {
+			return typed
 		}
-		return oairesponses.ResponseInputItemUnionParam{}
+	default:
 	}
+	if len(item.Raw) > 0 {
+		return oparam.Override[oairesponses.ResponseInputItemUnionParam](json.RawMessage(item.Raw))
+	}
+	return oairesponses.ResponseInputItemUnionParam{}
+}
+
+func rawContextToTypedInputItem(item contextItem) (oairesponses.ResponseInputItemUnionParam, bool) {
+	if len(item.Raw) == 0 {
+		return oairesponses.ResponseInputItemUnionParam{}, false
+	}
+	switch item.Type {
+	case model.ItemTypeLocalShellCall:
+		var value oairesponses.ResponseInputItemLocalShellCallParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfLocalShellCall: &value}, true
+		}
+	case model.ItemTypeLocalShellCallOutput:
+		var value oairesponses.ResponseInputItemLocalShellCallOutputParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfLocalShellCallOutput: &value}, true
+		}
+	case model.ItemTypeShellCall:
+		var value oairesponses.ResponseInputItemShellCallParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfShellCall: &value}, true
+		}
+	case model.ItemTypeShellCallOutput:
+		var value oairesponses.ResponseInputItemShellCallOutputParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfShellCallOutput: &value}, true
+		}
+	case model.ItemTypeApplyPatchCall:
+		var value oairesponses.ResponseInputItemApplyPatchCallParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfApplyPatchCall: &value}, true
+		}
+	case model.ItemTypeApplyPatchCallOutput:
+		var value oairesponses.ResponseInputItemApplyPatchCallOutputParam
+		if json.Unmarshal(item.Raw, &value) == nil {
+			return oairesponses.ResponseInputItemUnionParam{OfApplyPatchCallOutput: &value}, true
+		}
+	}
+	return oairesponses.ResponseInputItemUnionParam{}, false
 }
 
 func inputItemType(item oairesponses.ResponseInputItemUnionParam, raw json.RawMessage) string {

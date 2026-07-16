@@ -88,12 +88,12 @@
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image output item |
 | `code_interpreter_call` | Anthropic code execution tool | `deferred` | 两侧 tool/result/event 结构需专项映射 |
-| `local_shell_call` | assistant `tool_use` name=`shell` | `deferred` | 第一批补齐目标 |
-| `local_shell_call_output` | user `tool_result` | `deferred` | 第一批补齐目标 |
-| `shell_call` | assistant `tool_use` name=`shell` | `deferred` | 第一批补齐目标 |
-| `shell_call_output` | user `tool_result` | `deferred` | 第一批补齐目标 |
-| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `deferred` | 第一批补齐目标 |
-| `apply_patch_call_output` | user `tool_result` | `deferred` | 第一批补齐目标 |
+| `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
+| `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
+| `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
+| `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
+| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update diff 作为文本；delete 操作及调用者元数据未映射 |
+| `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
 | `mcp_list_tools` | none | `unsupported_by_backend` | Anthropic remote MCP/connector 语义不同 |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 无等价审批协议 |
 | `mcp_approval_response` | none | `unsupported_by_backend` | 无等价审批协议 |
@@ -163,12 +163,12 @@
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
 | `code_interpreter_call` | Anthropic code execution | `deferred` | 需专项映射 |
-| `local_shell_call` | `tool_use` name=`shell` | `deferred` | 第一批补齐目标 |
-| `local_shell_call_output` | request replay only | `deferred` | 第一批补齐目标 |
-| `shell_call` | `tool_use` name=`shell` | `deferred` | 第一批补齐目标 |
-| `shell_call_output` | request replay only | `deferred` | 第一批补齐目标 |
-| `apply_patch_call` | `tool_use` name=`apply_patch` | `deferred` | 第一批补齐目标 |
-| `apply_patch_call_output` | request replay only | `deferred` | 第一批补齐目标 |
+| `local_shell_call` | `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
+| `local_shell_call_output` | request replay only | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
+| `shell_call` | `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
+| `shell_call_output` | request replay only | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
+| `apply_patch_call` | `tool_use` name=`apply_patch` | `lossy_supported` | create/update diff 作为文本；delete 操作及调用者元数据未映射 |
+| `apply_patch_call_output` | request replay only | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
 | `mcp_call` | none | `unsupported_by_backend` | 无等价 |
 | `mcp_list_tools` | none | `unsupported_by_backend` | 无等价 |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 无等价 |

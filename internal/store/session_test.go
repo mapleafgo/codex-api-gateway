@@ -140,6 +140,30 @@ func TestEnrichRoundTripsUnhandledInputItemRaw(t *testing.T) {
 	}
 }
 
+func TestEnrichRoundTripsShellCallRaw(t *testing.T) {
+	s := New(0, 0, time.Hour)
+	input := []oairesponses.ResponseInputItemUnionParam{{
+		OfShellCall: &oairesponses.ResponseInputItemShellCallParam{
+			CallID: "call_shell",
+			Action: oairesponses.ResponseInputItemShellCallActionParam{
+				Commands: []string{"echo hi"},
+			},
+		},
+	}}
+	s.SaveContext("resp_1", "src", input, nil)
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_1"),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfString: oparam.NewOpt("next"),
+		},
+	}
+	s.Enrich(req, "src")
+	if req.Input.OfInputItemList[0].OfShellCall == nil {
+		t.Fatalf("shell_call was not replayed: %+v", req.Input.OfInputItemList[0])
+	}
+}
+
 func TestEnrichPrependsStoredInputAndOutputContext(t *testing.T) {
 	s := New(0, 0, 0)
 	s.SaveContext("resp_1", "official", []oairesponses.ResponseInputItemUnionParam{

@@ -155,6 +155,28 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfToolSearchOutput != nil {
 		return appendToolSearchOutput(out, sysParts, item.OfToolSearchOutput)
 	}
+	if item.OfLocalShellCall != nil {
+		return appendLocalShellCall(out, item.OfLocalShellCall)
+	}
+	if item.OfLocalShellCallOutput != nil {
+		return appendToolResult(out, item.OfLocalShellCallOutput.ID, item.OfLocalShellCallOutput.Output)
+	}
+	if item.OfShellCall != nil {
+		return appendShellCall(out, item.OfShellCall)
+	}
+	if item.OfShellCallOutput != nil {
+		return appendToolResult(out, item.OfShellCallOutput.CallID, shellOutputText(item.OfShellCallOutput.Output))
+	}
+	if item.OfApplyPatchCall != nil {
+		return appendApplyPatchCall(out, item.OfApplyPatchCall)
+	}
+	if item.OfApplyPatchCallOutput != nil {
+		output := ""
+		if item.OfApplyPatchCallOutput.Output.Valid() {
+			output = item.OfApplyPatchCallOutput.Output.Value
+		}
+		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, output)
+	}
 	if item.OfAdditionalTools != nil {
 		appendToolList(out, item.OfAdditionalTools.Tools)
 		*sysParts = append(*sysParts, instructionPart{
@@ -343,6 +365,37 @@ func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.Respon
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
 	return appendToolUse(out, call.CallID, toolName(call.Namespace.Value, call.Name), map[string]any{"input": call.Input})
+}
+
+func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemShellCallParam) error {
+	input := strings.Join(call.Action.Commands, "\n")
+	return appendToolUse(out, call.CallID, "shell", map[string]any{"input": input})
+}
+
+func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemLocalShellCallParam) error {
+	input := strings.Join(call.Action.Command, " ")
+	return appendToolUse(out, call.CallID, "shell", map[string]any{"input": input})
+}
+
+func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemApplyPatchCallParam) error {
+	patch := ""
+	if diff := call.Operation.GetDiff(); diff != nil {
+		patch = *diff
+	}
+	return appendToolUse(out, call.CallID, "apply_patch", map[string]any{"input": patch})
+}
+
+func shellOutputText(parts []oairesponses.ResponseFunctionShellCallOutputContentParam) string {
+	output := make([]string, 0, len(parts)*2)
+	for _, part := range parts {
+		if part.Stdout != "" {
+			output = append(output, part.Stdout)
+		}
+		if part.Stderr != "" {
+			output = append(output, part.Stderr)
+		}
+	}
+	return strings.Join(output, "\n")
 }
 
 func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) error {

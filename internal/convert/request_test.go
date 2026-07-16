@@ -2,12 +2,14 @@ package convert
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
@@ -264,6 +266,123 @@ func TestCustomToolCallInputAndOutputConvert(t *testing.T) {
 	toolResult := out.Messages[2].Content[0].OfToolResult
 	if toolResult == nil || toolResult.ToolUseID != "c1" {
 		t.Fatalf("custom_tool_call_output not converted: %+v", out.Messages[2])
+	}
+}
+
+func TestShellCallInputItemConvertsToShellToolUse(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfShellCall: &oairesponses.ResponseInputItemShellCallParam{
+					CallID: "call_shell",
+					Action: oairesponses.ResponseInputItemShellCallActionParam{
+						Commands: []string{"pwd", "go test ./..."},
+					},
+				},
+			}},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolUse := out.Messages[0].Content[0].OfToolUse
+	if toolUse == nil || toolUse.Name != "shell" || toolUse.ID != "call_shell" {
+		t.Fatalf("bad shell tool_use: %+v", out.Messages[0].Content[0])
+	}
+	if got := fmt.Sprint(toolUse.Input); !strings.Contains(got, "go test ./...") {
+		t.Fatalf("shell input lost commands: %#v", toolUse.Input)
+	}
+}
+
+func TestLocalShellCallInputItemConvertsToShellToolUse(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfLocalShellCall: &oairesponses.ResponseInputItemLocalShellCallParam{
+					ID:     "local_shell_1",
+					CallID: "call_local_shell",
+					Action: oairesponses.ResponseInputItemLocalShellCallActionParam{
+						Command: []string{"go", "test", "./..."},
+					},
+				},
+			}},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolUse := out.Messages[0].Content[0].OfToolUse
+	if toolUse == nil || toolUse.Name != "shell" || toolUse.ID != "call_local_shell" {
+		t.Fatalf("bad local shell tool_use: %+v", out.Messages[0].Content[0])
+	}
+	if got := fmt.Sprint(toolUse.Input); !strings.Contains(got, "go test ./...") {
+		t.Fatalf("local shell input lost command: %#v", toolUse.Input)
+	}
+}
+
+func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfApplyPatchCall: &oairesponses.ResponseInputItemApplyPatchCallParam{
+					CallID: "call_patch",
+					Status: "completed",
+					Operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+						OfUpdateFile: &oairesponses.ResponseInputItemApplyPatchCallOperationUpdateFileParam{
+							Path: "README.md",
+							Diff: "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch\n",
+						},
+					},
+				},
+			}},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolUse := out.Messages[0].Content[0].OfToolUse
+	if toolUse == nil || toolUse.Name != "apply_patch" || toolUse.ID != "call_patch" {
+		t.Fatalf("bad apply_patch tool_use: %+v", out.Messages[0].Content[0])
+	}
+	if got := fmt.Sprint(toolUse.Input); !strings.Contains(got, "*** Begin Patch") {
+		t.Fatalf("apply_patch input lost diff: %#v", toolUse.Input)
+	}
+}
+
+func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{
+				{OfShellCallOutput: &oairesponses.ResponseInputItemShellCallOutputParam{
+					CallID: "call_shell",
+					Output: []oairesponses.ResponseFunctionShellCallOutputContentParam{{
+						Stdout: "ok",
+					}},
+				}},
+				{OfApplyPatchCallOutput: &oairesponses.ResponseInputItemApplyPatchCallOutputParam{
+					CallID: "call_patch",
+					Status: "completed",
+					Output: oparam.NewOpt("Done"),
+				}},
+			},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Messages[0].Content[0].OfToolResult.ToolUseID != "call_shell" {
+		t.Fatalf("shell output did not produce tool_result: %+v", out.Messages[0])
+	}
+	if out.Messages[0].Content[1].OfToolResult.ToolUseID != "call_patch" {
+		t.Fatalf("apply_patch output did not produce tool_result: %+v", out.Messages[0])
 	}
 }
 
