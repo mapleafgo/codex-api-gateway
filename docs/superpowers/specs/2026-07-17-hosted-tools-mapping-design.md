@@ -69,15 +69,15 @@
 
 **重构约束**：批次 0 是纯重构，不改变任何现有 tool 的协议行为，全部由现有 `request_test.go` / `converter_test.go` / 集成测试保护；迁移完成后 GREEN，再做 A/B。
 
-### 0. web search（复核，当前 `supported`）
+### web search（批次 0 统一重构 + 复核，当前 `supported`）
 
-现有映射：`web_search` / `web_search_preview` → `web_search_20250305`；回程 `server_tool_use(web_search)` + `web_search_tool_result` → `web_search_call` 事件链 + `action.sources`。已端到端 `supported`。
+web_search 是当前唯一已实现的 server tool（`web_search` / `web_search_preview` → `web_search_20250305`；回程 `server_tool_use(web_search)` + `web_search_tool_result` → `web_search_call` 事件链 + `action.sources`）。**批次 0 将其请求声明（`appendWebSearchTool`）与回程流式（`handleServerToolUseStart` / `handleWebSearchResultStart` / `extractWebSearchSources` / `extractWebSearchQuery`）统一迁移进 catalog**，作为 **`serverTool` kind 的首个范例**——使 catalog 的 server tool 维度有真实迁移验证，直接为批次 A（code interpreter 同为 `serverTool`）铺路。行为不变，由 `TestWebSearch*` / `TestWebSearchServerToolUseEmitsWebSearchCall` / `TestWebSearchResultSurfacesSources` 等测试保护。
 
-复核项（仅查缺，预期不改动主路径）：
+复核项（迁移同期查缺）：
 
-- `search_context_size`（low/medium/high）：矩阵已注明"暂未映射"。Anthropic 用 `max_uses` 控制搜索量。是否做近似映射（如 high→更高 max_uses）属于 `lossy_supported` 增强，**本轮默认不动**，保持现状登记。
-- 历史 `web_search_call` input item 回灌：web_search 是 hosted 无状态，历史 call 无需回灌执行结果；确认现有 `appendItem` 不对其产生副作用。
-- 结论：web search 维持 `supported`，无代码改动（除非复核发现 bug）。
+- `search_context_size`（low/medium/high）：Anthropic 用 `max_uses` 控制搜索量；近似映射属 `lossy_supported` 增强，**本轮不做**，保持现状登记。
+- 历史 `web_search_call` input item 回灌：web_search 是 hosted 无状态，确认迁移后 catalog 的 `mapReplay` 不对其产生副作用。
+- 结论：迁移后维持 `supported`，无协议行为变化。
 
 ### 1. code interpreter → code execution（`deferred` → `lossy_supported`）
 
@@ -178,7 +178,7 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 ## 分批计划
 
 - **批次 0：通用 tool 架构重构**。建 catalog，迁移现有 tool（function/custom/shell/apply_patch/tool_search/namespace/web_search），请求侧 + 回程侧 dispatch 全部走 catalog，**行为不变**（现有测试全 GREEN）。纯重构，为 A/B 铺路。
-- **批次 A：code interpreter 接入**。catalog 注册 `code_interpreter`（`serverTool`），验证架构对标准 server tool 的扩展。纯 `convert` + `streamconv`，不动 `client`，与 web search 同构。含 web search 复核。
+- **批次 A：code interpreter 接入**。catalog 注册 `code_interpreter`（`serverTool`），复用批次 0 为 web_search 建立的 `serverTool` catalog 模式，验证其对标准 server tool 的扩展。纯 `convert` + `streamconv`，不动 `client`。
 - **批次 B：MCP 接入**。catalog 注册 `mcp`（`betaServerTool`），验证架构对 beta server tool 的扩展。涉及 `client`（beta header）+ `convert`（mcp_servers / mcp_toolset 注入）+ `streamconv`（mcp block probe 解析）。工程量与风险最大，单独成批。
 
 每批独立可合并：批次 0 合并后 main 即获得通用架构收益（即便不做 A/B，新增 tool 也变简单）；A/B 在架构上各自独立。
