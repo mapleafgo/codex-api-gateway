@@ -171,6 +171,10 @@ func (c *Converter) Seq() int64 { return c.seq }
 // the message_delta carrying it arrives).
 func (c *Converter) StopReason() string { return c.stopReason }
 
+// Usage returns the upstream token usage (including cache hit/creation) for
+// diagnostics; nil before the message_delta carrying usage arrives.
+func (c *Converter) Usage() *model.ResponseUsage { return c.usage }
+
 // NextSeq advances and returns the next sequence number for caller-emitted events.
 func (c *Converter) NextSeq() int64 { return c.nextSeq() }
 
@@ -709,10 +713,13 @@ func (c *Converter) recordStopReason(ev *anthropic.MessageStreamEventUnion) {
 			c.refusalText = refusalFallback
 		}
 	}
-	if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 {
+	if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 ||
+		ev.Usage.CacheReadInputTokens > 0 || ev.Usage.CacheCreationInputTokens > 0 {
 		c.usage = &model.ResponseUsage{
-			InputTokens:  int(ev.Usage.InputTokens),
-			OutputTokens: int(ev.Usage.OutputTokens),
+			InputTokens:              int(ev.Usage.InputTokens),
+			OutputTokens:             int(ev.Usage.OutputTokens),
+			CacheReadInputTokens:     int(ev.Usage.CacheReadInputTokens),
+			CacheCreationInputTokens: int(ev.Usage.CacheCreationInputTokens),
 		}
 		c.usage.TotalTokens = c.usage.InputTokens + c.usage.OutputTokens
 	}

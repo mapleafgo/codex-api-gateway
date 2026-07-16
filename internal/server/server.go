@@ -283,7 +283,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if conv.Failed() {
 			status = model.ResponseStatusFailed
 		}
-		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types)
+		var cacheRead, cacheCreate int
+		if u := conv.Usage(); u != nil {
+			cacheRead = u.CacheReadInputTokens
+			cacheCreate = u.CacheCreationInputTokens
+		}
+		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate)
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)

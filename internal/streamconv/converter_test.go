@@ -1409,3 +1409,32 @@ func TestPlaintextThinkingSetsEncryptedContent(t *testing.T) {
 		t.Fatalf("bad summary: %+v", items[0].Summary)
 	}
 }
+
+// TestUsageRecordsCacheTokens 复现 gap③:上游 message_delta 的 usage 含
+// cache_read_input_tokens / cache_creation_input_tokens,converter 必须透传,
+// 否则日志无法观测缓存命中。
+func TestUsageRecordsCacheTokens(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: "end_turn"},
+		Usage: anthropic.MessageDeltaUsage{
+			InputTokens:              50,
+			OutputTokens:             10,
+			CacheReadInputTokens:     1000,
+			CacheCreationInputTokens: 200,
+		},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	u := c.Usage()
+	if u == nil {
+		t.Fatal("expected usage after message_delta")
+	}
+	if u.CacheReadInputTokens != 1000 || u.CacheCreationInputTokens != 200 {
+		t.Fatalf("cache tokens not propagated: %+v", u)
+	}
+}
