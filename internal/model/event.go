@@ -211,6 +211,7 @@ type ContentPartOut struct {
 	Refusal *string `json:"refusal,omitempty"`
 }
 
+// MarshalJSON 按 content part 类型输出互斥的 Responses wire 字段。
 func (p ContentPartOut) MarshalJSON() ([]byte, error) {
 	if p.Type == ContentTypeRefusal {
 		refusal := ""

@@ -30,6 +30,7 @@ type OutputText struct {
 	Refusal *string `json:"refusal,omitempty"`
 }
 
+// MarshalJSON 按 content 类型输出互斥的 Responses wire 字段。
 func (p OutputText) MarshalJSON() ([]byte, error) {
 	if p.Type == ContentTypeRefusal {
 		refusal := ""
