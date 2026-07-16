@@ -487,6 +487,53 @@ func TestToolChoiceRequired(t *testing.T) {
 	}
 }
 
+func TestAllowedToolsFiltersAnthropicToolsAndUsesRequiredMode(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "keep", Parameters: map[string]any{"type": "object"}}},
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "drop", Parameters: map[string]any{"type": "object"}}},
+		},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+				Mode:  oairesponses.ToolChoiceAllowedModeRequired,
+				Tools: []map[string]any{{"type": "function", "name": "keep"}},
+			},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Tools) != 1 || out.Tools[0].OfTool.Name != "keep" {
+		t.Fatalf("allowed_tools did not filter tools: %+v", out.Tools)
+	}
+	if out.ToolChoice.OfAny == nil {
+		t.Fatalf("required allowed_tools should map to Anthropic any: %+v", out.ToolChoice)
+	}
+}
+
+func TestAllowedToolsErrorsWhenNoSupportedToolsRemain(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "available", Parameters: map[string]any{"type": "object"}}},
+		},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+				Mode:  oairesponses.ToolChoiceAllowedModeRequired,
+				Tools: []map[string]any{{"type": "function", "name": "missing"}},
+			},
+		},
+	}
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
+		t.Fatalf("expected allowed_tools error, got %v", err)
+	}
+}
+
 func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"parallel_tool_calls":false,"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})

@@ -137,7 +137,7 @@
 | `custom` | `tool_choice.tool(name)` | `supported` | 直接映射 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
-| `allowed_tools` | filtered tool set + choice mode | `deferred` | 第一批补齐目标 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 按名称过滤支持的 Anthropic 工具；hosted/MCP allowed 条目仍不支持 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice |
 

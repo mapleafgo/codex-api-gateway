@@ -120,7 +120,9 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 		return nil, err
 	}
 	injectStructuredOutput(out, req)
-	convertToolChoice(out, req)
+	if err := convertToolChoice(out, req); err != nil {
+		return nil, err
+	}
 	applyAnthropicCacheControl(out)
 	return out, nil
 }
@@ -644,15 +646,22 @@ func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.R
 	}
 }
 
-func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
+func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
 	if out.ToolChoice.OfTool != nil {
-		return // already forced by structured output
+		return nil // already forced by structured output
+	}
+	tc := req.ToolChoice
+	if tc.OfAllowedTools != nil {
+		if err := applyAllowedTools(out, tc.OfAllowedTools); err != nil {
+			return err
+		}
+		applyParallelToolChoice(out, req)
+		return nil
 	}
 	if len(out.Tools) == 0 {
-		return
+		return nil
 	}
 	defer applyParallelToolChoice(out, req)
-	tc := req.ToolChoice
 	if tc.OfToolChoiceMode.Valid() {
 		switch string(tc.OfToolChoiceMode.Value) {
 		case model.ToolChoiceAuto:
@@ -662,7 +671,7 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 		case model.ToolChoiceNone:
 			out.ToolChoice = anthropic.ToolChoiceUnionParam{OfNone: &anthropic.ToolChoiceNoneParam{}}
 		}
-		return
+		return nil
 	}
 	if tc.OfFunctionTool != nil {
 		out.ToolChoice = anthropic.ToolChoiceUnionParam{
@@ -681,6 +690,34 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 			OfTool: &anthropic.ToolChoiceToolParam{Name: "shell"},
 		}
 	}
+	return nil
+}
+
+func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.ToolChoiceAllowedParam) error {
+	allowedNames := map[string]bool{}
+	for _, tool := range allowed.Tools {
+		name, _ := tool["name"].(string)
+		if name != "" {
+			allowedNames[name] = true
+		}
+	}
+	var filtered []anthropic.ToolUnionParam
+	for _, tool := range out.Tools {
+		if tool.OfTool != nil && allowedNames[tool.OfTool.Name] {
+			filtered = append(filtered, tool)
+		}
+	}
+	if len(filtered) == 0 {
+		return fmt.Errorf("tool_choice allowed_tools has no supported tools")
+	}
+	out.Tools = filtered
+	switch allowed.Mode {
+	case oairesponses.ToolChoiceAllowedModeRequired:
+		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
+	default:
+		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
+	}
+	return nil
 }
 
 func applyParallelToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
