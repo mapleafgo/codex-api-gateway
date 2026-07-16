@@ -327,6 +327,41 @@ func TestIntegrationWebSearchRoundTrip(t *testing.T) {
 	}
 }
 
+// TestIntegrationCacheControlReachesUpstream verifies the gateway actually
+// emits cache_control to the upstream request body (system/tools/top-level),
+// closing the prompt-caching loop end-to-end.
+func TestIntegrationCacheControlReachesUpstream(t *testing.T) {
+	var requestBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBody = string(body)
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		f := w.(http.Flusher)
+		f.Flush()
+		for _, line := range textStreamLines() {
+			io.WriteString(w, "data: "+line+"\n\n")
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	postResponses(t, ts, `{"model":"gpt-5","instructions":"you are helpful","input":"hi","tools":[{"type":"function","name":"f","parameters":{"type":"object"}}],"stream":true}`)
+
+	if !strings.Contains(requestBody, "cache_control") {
+		t.Fatalf("upstream request missing cache_control: %s", requestBody)
+	}
+}
+
 // TestIntegrationToolMultiRound verifies tool_use streaming and second-round
 // enrichment via previous_response_id.
 func TestIntegrationToolMultiRound(t *testing.T) {

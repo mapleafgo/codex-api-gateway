@@ -3,6 +3,7 @@ package convert
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -1108,6 +1109,8 @@ func setLastToolCacheControl(tools []anthropic.ToolUnionParam, cc anthropic.Cach
 		last.OfTool.CacheControl = cc
 	case last.OfWebSearchTool20250305 != nil:
 		last.OfWebSearchTool20250305.CacheControl = cc
+	default:
+		slog.Warn("最后一个 tool 是未知变体，无法加 cache_control，tools 列表缓存将丢失")
 	}
 }
 

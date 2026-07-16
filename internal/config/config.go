@@ -293,6 +293,9 @@ func (c *Config) validate() error {
 	if c.Cache.TTL == "" {
 		c.Cache.TTL = "5m"
 	}
+	if c.Cache.TTL != "5m" && c.Cache.TTL != "1h" {
+		return fmt.Errorf("config: cache.ttl must be \"5m\" or \"1h\", got %q", c.Cache.TTL)
+	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
 		Cooldown:         Duration(30 * time.Second),

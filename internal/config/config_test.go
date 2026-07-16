@@ -136,6 +136,25 @@ sources:
 	if cfg.Logging.Format != "text" {
 		t.Fatalf("default logging.format: got %q, want text", cfg.Logging.Format)
 	}
+	if cfg.Cache.TTL != "5m" {
+		t.Fatalf("default cache.ttl: got %q, want 5m", cfg.Cache.TTL)
+	}
+}
+
+func TestCacheTTLValidatesWhitelist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: http://upstream
+cache:
+  ttl: 30m
+`), 0644)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected cache.ttl whitelist error for 30m, got nil")
+	}
 }
 
 func TestLoadParsesLoggingConfig(t *testing.T) {

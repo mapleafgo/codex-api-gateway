@@ -260,6 +260,18 @@ func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	}
 }
 
+// TestSetLastToolCacheControlUnknownVariantNoPanic 防御：最后一个 tool 是
+// 未知变体（未来 SDK 新增）时，default 分支只 Warn 不 panic。
+func TestSetLastToolCacheControlUnknownVariantNoPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked on unknown tool variant: %v", r)
+		}
+	}()
+	// 空 ToolUnionParam（所有变体 nil）触发 default 分支
+	setLastToolCacheControl([]anthropic.ToolUnionParam{{}}, anthropic.CacheControlEphemeralParam{})
+}
+
 // TestOnlyLatestReasoningPreservedAsThinking verifies the gateway trims
 // historical reasoning to the most recent item. Anthropic's extended-thinking
 // best practice is to carry only the latest thinking block across turns; older
