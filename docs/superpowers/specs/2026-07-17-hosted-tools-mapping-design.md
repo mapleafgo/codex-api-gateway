@@ -139,6 +139,7 @@ OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
 ```
 
 - 字段映射：`server_label`→`name`，`server_url`→`url`，`authorization`→`authorization_token`，`headers`→（Anthropic MCP connector 不暴露自定义 header，丢失），`allowed_tools`→`mcp_toolset` allowlist 模式（`default_config.enabled=false` + 命中项 `configs[name].enabled=true`）。
+- `require_approval`：Anthropic MCP connector **无审批协议**（Claude 直接执行 MCP 工具，无批准前置门）。`never`/缺省正常映射（两边语义一致：无审批直接执行）；`on_failure`/`if_referenced` → **fail-fast**（返回明确转换错误）——继续映射会让 Anthropic 直接执行工具，**悄悄剥夺客户端对破坏性工具的批准控制**，属安全语义不对齐，不可"丢失"了事。
 - `connector_id` / `tunnel_id`（OpenAI 私有 connector / Secure Tunnel）：Anthropic 无等价 → 不支持，请求时明确转换错误（保留这些来源时 fail-fast）。
 - **类型链约束**：标准 `MessageNewParams` 顶层无 `mcp_servers`、`ToolUnionParam` 无 `OfMCPToolset`。实现方案：`ToAnthropic` 额外产出 MCP 定义（server 列表 + toolset），`client.Stream` 在 marshal 后用类似 `injectStream` 的 JSON 注入把 `mcp_servers` 与 `mcp_toolset` 注入请求体（避免把整条类型链切到 beta）。
 
@@ -156,7 +157,7 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 #### 2.4 信息损失
 
 - `mcp_list_tools` 工具列表不回传（Anthropic 连接后注入系统提示，不通过 item 暴露）。
-- `require_approval` / `mcp_approval_request` / `mcp_approval_response`：Anthropic 无审批协议，丢失。
+- `require_approval`（`on_failure`/`if_referenced`）：Anthropic 无审批协议，网关 **fail-fast** 拒绝，不静默剥夺客户端批准控制；`never`/缺省正常映射。回程 Anthropic 不发审批 → 不产出 `mcp_approval_request`；历史 `mcp_approval_response` 回灌无 Anthropic 等价，丢弃并 WARN（raw_preserved）。
 - 自定义 `headers`：Anthropic MCP server 定义不暴露，丢失。
 - `connector_id` / `tunnel_id`：不支持，fail-fast。
 - 需 beta API（`mcp-client-2025-11-20`）；后端若不实现 beta endpoint 则上游自然报错（不属网关协议层判定）。
@@ -172,7 +173,8 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 | Tool `mcp` | unsupported_by_backend | `lossy_supported`（→beta mcp_servers+mcp_toolset） |
 | Input/Output `mcp_call` | unsupported_by_backend | `lossy_supported` |
 | Events `mcp_call*` | unsupported_by_backend | `lossy_supported` |
-| `mcp_list_tools` / `mcp_approval_*` | unsupported_by_backend | 保持 `unsupported_by_backend`（无等价） |
+| `mcp_list_tools` | unsupported_by_backend | 保持（Anthropic 不暴露工具列表 item） |
+| `mcp_approval_request` / `mcp_approval_response` | unsupported_by_backend | 保持（Anthropic 无审批协议；`require_approval≠never` 时请求 fail-fast，历史回灌 raw_preserved） |
 | `bash_code_execution_tool_result` / `text_editor_code_execution_tool_result` | deferred | 保持 `deferred` |
 
 ## 分批计划
