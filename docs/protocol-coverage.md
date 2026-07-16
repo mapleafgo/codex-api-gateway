@@ -49,8 +49,8 @@
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial behavior | `deferred` | `reasoning.encrypted_content` 与 logprobs/source include 需逐项分析 |
 | `metadata` | response echo / Anthropic metadata | `deferred` | 需确认是否转 Anthropic `metadata` 或仅 echo |
-| `prompt_cache_key` | prompt cache behavior | `deferred` | Anthropic prompt caching 语义不同 |
-| `prompt_cache_options` | cache control | `deferred` | 需和 Anthropic cache_control 对齐 |
+| `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control，此字段忽略 |
+| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义，忽略 |
 | `prompt_cache_retention` | none | `deferred` | deprecated 缓存保留策略（in_memory/24h），与 `prompt_cache_options` 独立；与 Anthropic cache_control 语义不同，当前静默忽略 |
 | `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力，当前静默忽略 |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
@@ -74,7 +74,7 @@
 | `input_file.file_data` | `document` block | `supported` | 以 base64/plain text 方式构造 document |
 | `input_file.file_url` | `document` block | `supported` | URL document |
 | `input_file.file_id` | none | `unsupported_by_backend` | 同 OpenAI Files 限制 |
-| `prompt_cache_breakpoint` | Anthropic cache_control | `deferred` | 需专项对齐缓存边界和 TTL |
+| `prompt_cache_breakpoint` | none | `unsupported_by_backend` | 网关已自主设 cache_control（system/tools 末尾 + 顶层 automatic），不读 OpenAI breakpoint，忽略 |
 
 ## Input Item Union
 

@@ -50,6 +50,11 @@ breaker:
 thinking:
   effort_budget: {minimal: 1024, low: 8000, medium: 16000, high: 32000, xhigh: 48000}
 
+# prompt cache（system / tools / messages 历史的缓存时效，降低多轮重复计费）
+# ttl: 5m（默认，适合连续多轮）| 1h（适合两轮间隔 >5m 的长任务）
+cache:
+  ttl: 5m
+
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
 # 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，
