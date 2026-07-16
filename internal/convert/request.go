@@ -619,9 +619,28 @@ func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionPa
 				return fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
 			}
 		}
+	case t.OfWebSearch != nil:
+		return appendWebSearchTool(out, t.OfWebSearch.Filters.AllowedDomains)
+	case t.OfWebSearchPreview != nil:
+		return appendWebSearchTool(out, nil)
 	default:
 		return fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", toolType(t))
 	}
+	return nil
+}
+
+// appendWebSearchTool maps an OpenAI web_search / web_search_preview tool to
+// Anthropic's native web search server tool (web_search_20250305). Both
+// backends treat web search as a hosted tool, so this is a real mapping, not a
+// drop. filters.allowed_domains maps to Anthropic allowed_domains; search_context_size
+// has no Anthropic equivalent (Anthropic controls volume via max_uses) and is
+// ignored in this MVP.
+func appendWebSearchTool(out *anthropic.MessageNewParams, allowedDomains []string) error {
+	out.Tools = append(out.Tools, anthropic.ToolUnionParam{
+		OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
+			AllowedDomains: allowedDomains,
+		},
+	})
 	return nil
 }
 

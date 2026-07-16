@@ -5,21 +5,29 @@ import "encoding/json"
 // OutputItem is a self-contained output item (message/tool call/reasoning)
 // used both for emitted output_item.added/done events and for session storage.
 type OutputItem struct {
-	Type             string       `json:"type"` // message | function_call | custom_tool_call | reasoning
-	ID               string       `json:"id"`
-	Status           string       `json:"status,omitempty"`
-	Role             string       `json:"role,omitempty"`    // message
-	Phase            string       `json:"phase,omitempty"`   // assistant message
-	Content          []OutputText `json:"content,omitempty"` // message
-	CallID           string       `json:"call_id,omitempty"` // tool call
-	Name             string       `json:"name,omitempty"`    // tool call
-	Arguments        string       `json:"arguments,omitempty"`
-	Input            string       `json:"input,omitempty"`             // custom_tool_call
-	Output           string       `json:"output,omitempty"`            // tool call output
-	Namespace        string       `json:"namespace,omitempty"`         // namespaced tool call
-	Summary          []OutputText `json:"summary,omitempty"`           // reasoning
-	EncryptedContent string       `json:"encrypted_content,omitempty"` // reasoning (redacted)
-	Signature        string       `json:"signature,omitempty"`         // reasoning (plaintext thinking)
+	Type             string           `json:"type"` // message | function_call | custom_tool_call | reasoning
+	ID               string           `json:"id"`
+	Status           string           `json:"status,omitempty"`
+	Role             string           `json:"role,omitempty"`    // message
+	Phase            string           `json:"phase,omitempty"`   // assistant message
+	Content          []OutputText     `json:"content,omitempty"` // message
+	CallID           string           `json:"call_id,omitempty"` // tool call
+	Name             string           `json:"name,omitempty"`    // tool call
+	Arguments        string           `json:"arguments,omitempty"`
+	Input            string           `json:"input,omitempty"`             // custom_tool_call
+	Output           string           `json:"output,omitempty"`            // tool call output
+	Namespace        string           `json:"namespace,omitempty"`         // namespaced tool call
+	Summary          []OutputText     `json:"summary,omitempty"`           // reasoning
+	EncryptedContent string           `json:"encrypted_content,omitempty"` // reasoning (redacted)
+	Signature        string           `json:"signature,omitempty"`         // reasoning (plaintext thinking)
+	Action           *WebSearchAction `json:"action,omitempty"`            // web_search_call
+}
+
+// WebSearchAction describes the action taken by a web_search_call output item.
+type WebSearchAction struct {
+	Type    string   `json:"type"`              // "search"
+	Query   string   `json:"query,omitempty"`   // search query (Codex reads query)
+	Queries []string `json:"queries,omitempty"` // search queries
 }
 
 // OutputText is one message content or reasoning summary part.

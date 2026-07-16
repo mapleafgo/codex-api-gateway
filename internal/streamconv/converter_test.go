@@ -528,6 +528,50 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	}
 }
 
+func TestWebSearchServerToolUseEmitsWebSearchCall(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:  "server_tool_use",
+			ID:    "toolu_ws1",
+			Name:  "web_search",
+			Input: map[string]any{"query": "golang tutorial"},
+		},
+	})
+	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
+	item := added["item"].(map[string]any)
+	if item["type"] != "web_search_call" {
+		t.Fatalf("expected web_search_call item, got %v", item["type"])
+	}
+	action := item["action"].(map[string]any)
+	if action["type"] != "search" || action["query"] != "golang tutorial" {
+		t.Fatalf("bad web search action: %v", action)
+	}
+	eventByType(t, evs, "response.web_search_call.in_progress")
+	eventByType(t, evs, "response.web_search_call.searching")
+
+	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:      "web_search_tool_result",
+			ToolUseID: "toolu_ws1",
+		},
+	})
+	eventByType(t, evs2, "response.web_search_call.completed")
+	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
+	doneItem := done["item"].(map[string]any)
+	if doneItem["status"] != "completed" {
+		t.Fatalf("expected web_search_call done status completed, got %v", doneItem["status"])
+	}
+}
+
 func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
@@ -540,7 +584,7 @@ func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
 			Type: "server_tool_use",
 			ID:   "srv_1",
-			Name: "web_search",
+			Name: "web_fetch",
 		},
 	})
 	if len(evs) != 1 || evs[0].Type != "response.failed" {

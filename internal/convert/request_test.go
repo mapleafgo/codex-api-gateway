@@ -206,6 +206,42 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 	}
 }
 
+func TestWebSearchToolMapsToAnthropicServerTool(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search","filters":{"allowed_domains":["example.com","docs.example.com"]}}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("web_search must not fail fast: %v", err)
+	}
+	ws := findWebSearchTool(out.Tools)
+	if ws == nil {
+		b, _ := json.Marshal(out.Tools)
+		t.Fatalf("web_search not mapped to Anthropic server tool: %s", b)
+	}
+	if len(ws.AllowedDomains) != 2 || ws.AllowedDomains[0] != "example.com" || ws.AllowedDomains[1] != "docs.example.com" {
+		t.Fatalf("allowed_domains not mapped from filters: %v", ws.AllowedDomains)
+	}
+}
+
+func TestWebSearchPreviewToolMapsToAnthropicServerTool(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search_preview"}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("web_search_preview must not fail fast: %v", err)
+	}
+	if findWebSearchTool(out.Tools) == nil {
+		t.Fatalf("web_search_preview not mapped: %+v", out.Tools)
+	}
+}
+
+func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20250305Param {
+	for _, tool := range tools {
+		if tool.OfWebSearchTool20250305 != nil {
+			return tool.OfWebSearchTool20250305
+		}
+	}
+	return nil
+}
+
 func TestToolCallsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search x"}]},{"type":"function_call","call_id":"c1","name":"search","arguments":"{\"q\":\"x\"}"},{"type":"function_call_output","call_id":"c1","output":"result-x"}],"tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
@@ -1109,7 +1145,7 @@ func TestParallelToolCallsFalsePreservesExplicitToolChoice(t *testing.T) {
 }
 
 func TestUnsupportedDeferredToolReturnsError(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search_preview"}],"tool_choice":"required","stream":true}`)
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"file_search"}],"tool_choice":"required","stream":true}`)
 	_, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
 		t.Fatalf("expected unsupported tool error, got %v", err)

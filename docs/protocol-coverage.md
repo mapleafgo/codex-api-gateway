@@ -80,7 +80,7 @@
 | `file_search_call` | none | `unsupported_by_backend` | Anthropic server tool 不等价 OpenAI file search |
 | `computer_call` | none | `unsupported_by_backend` | Computer use 需要专项执行环境 |
 | `computer_call_output` | none | `unsupported_by_backend` | 同上 |
-| `web_search_call` | Anthropic web search result/server tool | `deferred` | 两侧 hosted tool 语义不同 |
+| `web_search_call` | Anthropic web search result/server tool | `supported` | server_tool_use + web_search_tool_result 映射为 web_search_call 事件链（in_progress/searching/completed） |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
 | `function_call_output` | user `tool_result` | `supported` | output 转 text tool result |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
@@ -115,8 +115,8 @@
 | `file_search` | none | `unsupported_by_backend` | 无 OpenAI vector store 后端；请求时返回明确转换错误 |
 | `computer` | none | `unsupported_by_backend` | 需 computer use 执行环境；请求时返回明确转换错误 |
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
-| `web_search` | Anthropic web search server tool | `deferred` | hosted tool 语义不同；专项映射前请求时返回明确转换错误 |
-| `web_search_preview` | Anthropic web search server tool | `deferred` | hosted tool 语义不同；专项映射前请求时返回明确转换错误 |
+| `web_search` | Anthropic web search server tool (20250305) | `supported` | filters.allowed_domains → allowed_domains；search_context_size / user_location 暂未映射 |
+| `web_search_preview` | Anthropic web search server tool (20250305) | `supported` | 同 web_search，映射为同一 server tool |
 | `mcp` | none | `unsupported_by_backend` | MCP server/tool lifecycle 不等价；请求时返回明确转换错误 |
 | `code_interpreter` | Anthropic code execution tool | `deferred` | 需专项映射 outputs/events；专项映射前请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
@@ -160,7 +160,7 @@
 | `additional_tools` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
 | `compaction` | response compact API | `raw_preserved` | 非模型 stream output |
 | `file_search_call` | none | `unsupported_by_backend` | 无等价 |
-| `web_search_call` | Anthropic server web search | `deferred` | 需专项映射 |
+| `web_search_call` | Anthropic server web search | `supported` | server_tool_use + web_search_tool_result 映射 |
 | `computer_call` | none | `unsupported_by_backend` | 无等价 |
 | `computer_call_output` | none | `unsupported_by_backend` | 无等价 |
 | `program` | none | `unsupported_by_backend` | 无等价 |
@@ -211,9 +211,9 @@
 | `response.file_search_call.searching` | none | `unsupported_by_backend` | 无等价 |
 | `response.file_search_call.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.file_search_call.completed` | none | `unsupported_by_backend` | 无等价 |
-| `response.web_search_call.searching` | Anthropic web search | `deferred` | 需专项映射 |
-| `response.web_search_call.in_progress` | Anthropic web search | `deferred` | 需专项映射 |
-| `response.web_search_call.completed` | Anthropic web search | `deferred` | 需专项映射 |
+| `response.web_search_call.searching` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
+| `response.web_search_call.in_progress` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
+| `response.web_search_call.completed` | Anthropic web search | `supported` | web_search_tool_result 触发 |
 | `response.code_interpreter_call_code.delta` | Anthropic code execution | `deferred` | 需专项映射 |
 | `response.code_interpreter_call_code.done` | Anthropic code execution | `deferred` | 需专项映射 |
 | `response.code_interpreter_call.in_progress` | Anthropic code execution | `deferred` | 需专项映射 |
@@ -251,8 +251,8 @@
 | stream `thinking` | reasoning | `supported` | 已输出 reasoning events |
 | stream `redacted_thinking` | reasoning encrypted | `supported` | 已存 encrypted_content |
 | stream `tool_use` | function/custom tool call | `supported` | 已输出 tool call events |
-| stream `server_tool_use` | built-in tool call | `unsupported_by_backend` | 未映射时显式失败，不再静默丢弃 |
-| stream `web_search_tool_result` | web search call result | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call；web_fetch 等其他 server tool 仍显式失败 |
+| stream `web_search_tool_result` | web search call result | `supported` | 完成 web_search_call（completed + output_item.done） |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
 | stream `code_execution_tool_result` | code interpreter output | `deferred` | 未映射时当前会显式失败，需专项映射 |
 | stream `bash_code_execution_tool_result` | shell/code output | `deferred` | 未映射时当前会显式失败，需专项映射 |

@@ -165,6 +165,16 @@ type CustomToolCallInputDoneEvent struct {
 	Input          string `json:"input"`
 }
 
+// WebSearchCallEvent is the payload for response.web_search_call.in_progress /
+// .searching / .completed events. These events carry only identifiers; the item
+// itself travels via output_item.added/done.
+type WebSearchCallEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+}
+
 // OutputItemAddedEvent opens an output item.
 type OutputItemAddedEvent struct {
 	Type           string     `json:"type"`

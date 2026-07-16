@@ -39,6 +39,9 @@ var (
 	evFunctionCallArgumentsDone  = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
 	evCustomToolCallInputDelta   = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
 	evCustomToolCallInputDone    = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
+	evWebSearchCallInProgress    = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
+	evWebSearchCallSearching     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
+	evWebSearchCallCompleted     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
 )
 
 var (
@@ -50,10 +53,12 @@ var (
 	anMessageStop       = string(aconstant.ValueOf[aconstant.MessageStop]())
 	anError             = string(aconstant.ValueOf[aconstant.Error]())
 
-	anBlockText             = string(aconstant.ValueOf[aconstant.Text]())
-	anBlockThinking         = string(aconstant.ValueOf[aconstant.Thinking]())
-	anBlockRedactedThinking = string(aconstant.ValueOf[aconstant.RedactedThinking]())
-	anBlockToolUse          = string(aconstant.ValueOf[aconstant.ToolUse]())
+	anBlockText                = string(aconstant.ValueOf[aconstant.Text]())
+	anBlockThinking            = string(aconstant.ValueOf[aconstant.Thinking]())
+	anBlockRedactedThinking    = string(aconstant.ValueOf[aconstant.RedactedThinking]())
+	anBlockToolUse             = string(aconstant.ValueOf[aconstant.ToolUse]())
+	anBlockServerToolUse       = string(aconstant.ValueOf[aconstant.ServerToolUse]())
+	anBlockWebSearchToolResult = string(aconstant.ValueOf[aconstant.WebSearchToolResult]())
 
 	anDeltaText      = string(aconstant.ValueOf[aconstant.TextDelta]())
 	anDeltaThinking  = string(aconstant.ValueOf[aconstant.ThinkingDelta]())
@@ -90,6 +95,9 @@ type Converter struct {
 	toolArgBuilders map[int]*strings.Builder
 	customToolNames map[string]bool
 
+	// Web search state: Anthropic tool_use id -> output item index.
+	webSearchByToolUseID map[string]int
+
 	// Accumulators
 	textBuilder  strings.Builder
 	thinkBuilder strings.Builder
@@ -114,6 +122,7 @@ func New() *Converter {
 			"apply_patch": true,
 			"shell":       true,
 		},
+		webSearchByToolUseID: map[string]int{},
 	}
 }
 
@@ -226,6 +235,10 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		return c.handleThinkingStart(ev, true)
 	case anBlockToolUse:
 		return c.handleToolUseStart(ev)
+	case anBlockServerToolUse:
+		return c.handleServerToolUseStart(ev)
+	case anBlockWebSearchToolResult:
+		return c.handleWebSearchResultStart(ev)
 	}
 	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
 }
@@ -337,6 +350,73 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
 		OutputIndex: idx, Item: item,
 	})}
+}
+
+func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	// Only web_search maps to a Responses item; other server tools (web_fetch,
+	// code_execution, ...) have no safe Responses equivalent and fail the stream.
+	if ev.ContentBlock.Name != "web_search" {
+		return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
+	}
+	idx := c.itemOrder
+	c.itemOrder++
+	itemID := fmt.Sprintf("ws_%d", idx)
+	item := model.OutputItem{
+		Type:   model.ItemTypeWebSearchCall,
+		ID:     itemID,
+		Status: model.ResponseStatusInProgress,
+		Action: &model.WebSearchAction{Type: "search", Query: extractWebSearchQuery(ev.ContentBlock.Input)},
+	}
+	c.outputItems = append(c.outputItems, item)
+	c.webSearchByToolUseID[ev.ContentBlock.ID] = idx
+
+	return []model.SSEEvent{
+		model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: item,
+		}),
+		model.MarshalEvent(evWebSearchCallInProgress, model.WebSearchCallEvent{
+			Type: evWebSearchCallInProgress, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evWebSearchCallSearching, model.WebSearchCallEvent{
+			Type: evWebSearchCallSearching, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+	}
+}
+
+func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	idx, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]
+	if !ok || idx >= len(c.outputItems) {
+		return nil // no matching web_search server_tool_use; nothing to close
+	}
+	itemID := fmt.Sprintf("ws_%d", idx)
+	c.outputItems[idx].Status = model.ResponseStatusCompleted
+	return []model.SSEEvent{
+		model.MarshalEvent(evWebSearchCallCompleted, model.WebSearchCallEvent{
+			Type: evWebSearchCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: c.outputItems[idx],
+		}),
+	}
+}
+
+// extractWebSearchQuery pulls the search query out of an Anthropic web_search
+// server_tool_use input. The input is a free-form JSON value; the query lives
+// under the "query" key.
+func extractWebSearchQuery(input any) string {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if q, ok := m["query"].(string); ok {
+		return q
+	}
+	return ""
 }
 
 func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {

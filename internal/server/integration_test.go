@@ -266,6 +266,67 @@ func TestIntegrationPlainTextStream(t *testing.T) {
 	}
 }
 
+// TestIntegrationWebSearchRoundTrip verifies the full web search lifecycle:
+// the gateway maps a Codex web_search tool onto Anthropic's native web search
+// server tool on the way out, and translates the upstream server_tool_use +
+// web_search_tool_result blocks back into a Responses web_search_call item on
+// the way back.
+func TestIntegrationWebSearchRoundTrip(t *testing.T) {
+	var requestBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		requestBody = string(body)
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		f := w.(http.Flusher)
+		f.Flush()
+		for _, line := range []string{
+			`{"type":"message_start","message":{"id":"m_ws","model":"claude"}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"toolu_ws1","name":"web_search","input":{"query":"golang tutorial"}}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"toolu_ws1"}}`,
+			`{"type":"content_block_stop","index":1}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":3}}`,
+			`{"type":"message_stop"}`,
+		} {
+			io.WriteString(w, "data: "+line+"\n\n")
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	events := postResponses(t, ts, `{"model":"gpt-5","input":"search the web","tools":[{"type":"web_search","filters":{"allowed_domains":["example.com"]}}],"stream":true}`)
+
+	// Request side: filters.allowed_domains must reach the upstream as Anthropic's
+	// native web search server tool.
+	if !strings.Contains(requestBody, "allowed_domains") || !strings.Contains(requestBody, "example.com") {
+		t.Fatalf("upstream request missing mapped web search tool: %s", requestBody)
+	}
+
+	// Response side: server_tool_use + web_search_tool_result surface as a
+	// web_search_call item with the full status lifecycle.
+	requireEvent(t, events, "response.web_search_call.in_progress")
+	requireEvent(t, events, "response.web_search_call.searching")
+	requireEvent(t, events, "response.web_search_call.completed")
+	added := findEvent(t, events, "response.output_item.added")
+	item := added.data["item"].(map[string]any)
+	if item["type"] != "web_search_call" {
+		t.Fatalf("expected web_search_call output item, got %v", item["type"])
+	}
+}
+
 // TestIntegrationToolMultiRound verifies tool_use streaming and second-round
 // enrichment via previous_response_id.
 func TestIntegrationToolMultiRound(t *testing.T) {
@@ -510,7 +571,7 @@ func TestIntegrationUnsupportedBlockDoesNotPersistHiddenOutput(t *testing.T) {
 			`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hidden output"}}`,
 			`{"type":"content_block_stop","index":0}`,
-			`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search"}}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_fetch"}}`,
 		}
 		if calls.Add(1) == 2 {
 			lines = textStreamLines()
