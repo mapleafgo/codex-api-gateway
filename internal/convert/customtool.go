@@ -1,6 +1,9 @@
 package convert
 
-import oairesponses "github.com/openai/openai-go/v3/responses"
+import (
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
+	oairesponses "github.com/openai/openai-go/v3/responses"
+)
 
 // FreeformToolNames 返回请求里以 freeform custom tool 形式声明的工具名。
 // 这类工具（如 Codex 的 apply_patch）输入是 grammar/freeform 文本而非 JSON：
@@ -39,7 +42,7 @@ func appendFreeformToolName(names []string, tool oairesponses.ToolUnionParam) []
 		namespace := tool.OfNamespace
 		for _, nested := range namespace.Tools {
 			if nested.OfCustom != nil {
-				names = append(names, toolName(namespace.Name, nested.OfCustom.Name))
+				names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfCustom.Name))
 			}
 		}
 	}

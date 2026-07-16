@@ -1319,40 +1319,6 @@ func TestPlaintextThinkingSignatureRoundTrip(t *testing.T) {
 	}
 }
 
-func TestToInputSchema(t *testing.T) {
-	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"command": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		},
-		"required": []any{"command"}, // JSON 反序列化来源是 []any，非 []string
-	}
-	got := toInputSchema(schema)
-
-	props, ok := got.Properties.(map[string]any)
-	if !ok {
-		t.Fatalf("Properties = %T, want map[string]any", got.Properties)
-	}
-	if _, exists := props["command"]; !exists {
-		t.Errorf("Properties missing 'command': %#v", props)
-	}
-	if len(got.Required) != 1 || got.Required[0] != "command" {
-		t.Errorf("Required = %v, want [command]", got.Required)
-	}
-
-	// 回归：序列化后 input_schema 不得 properties 套 properties（智谱 400 code 1210 根因）。
-	b, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(b), `"properties":{"properties"`) {
-		t.Errorf("input_schema double-wrapped under properties: %s", b)
-	}
-	if !strings.Contains(string(b), `"type":"object"`) {
-		t.Errorf("input_schema missing type=object: %s", b)
-	}
-}
-
 // disable_response_storage=true 时 Codex 在 input 里带完整对话历史，
 // reasoning item 的 encrypted_content 携带 thinking signature。
 // 验证 convert 能从 encrypted_content 恢复 thinking block 的 signature。

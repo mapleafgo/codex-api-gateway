@@ -10,6 +10,7 @@ import (
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
@@ -407,11 +408,11 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
-	return appendToolUse(out, fc.CallID, toolName(fc.Namespace.Value, fc.Name), json.RawMessage(orDefault(fc.Arguments, `{}`)))
+	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), json.RawMessage(orDefault(fc.Arguments, `{}`)))
 }
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
-	return appendToolUse(out, call.CallID, toolName(call.Namespace.Value, call.Name), map[string]any{"input": call.Input})
+	return appendToolUse(out, call.CallID, toolcatalog.ToolName(call.Namespace.Value, call.Name), map[string]any{"input": call.Input})
 }
 
 func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemShellCallParam) error {
@@ -532,13 +533,6 @@ func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string
 	return nil
 }
 
-func toolName(namespace, name string) string {
-	if namespace == "" {
-		return name
-	}
-	return namespace + "__" + name
-}
-
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" {
@@ -567,96 +561,23 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 	}
 }
 
-// toInputSchema 将 Response 协议的完整 JSON schema（{type,properties,required,...}）
-// 映射为 Anthropic 的 ToolInputSchemaParam。Anthropic 把 schema 拆成 Properties +
-// Required + Type(默认 "object") 三个字段，不能把整个 schema 塞进 Properties —— 否则
-// 生成的 input_schema 会 properties 套 properties 双重包裹，被智谱等严格网关以 400 拒绝。
-func toInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
-	props, _ := schema["properties"].(map[string]any)
-	var required []string
-	switch r := schema["required"].(type) {
-	case []string:
-		required = r
-	case []any:
-		required = make([]string, 0, len(r))
-		for _, item := range r {
-			if s, ok := item.(string); ok {
-				required = append(required, s)
-			}
-		}
-	}
-	return anthropic.ToolInputSchemaParam{Properties: props, Required: required}
-}
-
 func convertTools(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
 	return appendToolList(out, req.Tools)
 }
 
 func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUnionParam) error {
 	for _, t := range tools {
-		if err := appendToolUnion(out, t); err != nil {
+		decls, err := toolcatalog.Declare(t)
+		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionParam) error {
-	switch {
-	case t.OfFunction != nil:
-		fn := t.OfFunction
-		return appendConvertedTool(out, fn.Name, fn.Parameters, optionalString(fn.Description), false)
-	case t.OfCustom != nil:
-		custom := t.OfCustom
-		return appendConvertedTool(out, custom.Name, freeformInputSchema(), optionalString(custom.Description), true)
-	case t.OfApplyPatch != nil:
-		return appendConvertedTool(out, "apply_patch", applyPatchInputSchema(), nil, true)
-	case t.OfShell != nil:
-		return appendConvertedTool(out, "shell", freeformInputSchema(), nil, true)
-	case t.OfLocalShell != nil:
-		return appendConvertedTool(out, "shell", freeformInputSchema(), nil, true)
-	case t.OfToolSearch != nil:
-		search := t.OfToolSearch
-		return appendConvertedTool(out, "tool_search", schemaFromAny(search.Parameters), optionalString(search.Description), false)
-	case t.OfNamespace != nil:
-		namespace := t.OfNamespace
-		for _, nested := range namespace.Tools {
-			if nested.OfFunction != nil {
-				fn := nested.OfFunction
-				if err := appendConvertedTool(out, toolName(namespace.Name, fn.Name), schemaFromAny(fn.Parameters), optionalString(fn.Description), false); err != nil {
-					return err
-				}
-			} else if nested.OfCustom != nil {
-				custom := nested.OfCustom
-				if err := appendConvertedTool(out, toolName(namespace.Name, custom.Name), freeformInputSchema(), optionalString(custom.Description), true); err != nil {
-					return err
-				}
-			} else {
-				return fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
+		for _, d := range decls {
+			if d.OfTool != nil && hasTool(out, d.OfTool.Name) {
+				return fmt.Errorf("tool conversion name conflict for %q", d.OfTool.Name)
 			}
+			out.Tools = append(out.Tools, d)
 		}
-	case t.OfWebSearch != nil:
-		return appendWebSearchTool(out, t.OfWebSearch.Filters.AllowedDomains)
-	case t.OfWebSearchPreview != nil:
-		return appendWebSearchTool(out, nil)
-	default:
-		return fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", toolType(t))
 	}
-	return nil
-}
-
-// appendWebSearchTool maps an OpenAI web_search / web_search_preview tool to
-// Anthropic's native web search server tool (web_search_20250305). Both
-// backends treat web search as a hosted tool, so this is a real mapping, not a
-// drop. filters.allowed_domains maps to Anthropic allowed_domains; search_context_size
-// has no Anthropic equivalent (Anthropic controls volume via max_uses) and is
-// ignored in this MVP.
-func appendWebSearchTool(out *anthropic.MessageNewParams, allowedDomains []string) error {
-	out.Tools = append(out.Tools, anthropic.ToolUnionParam{
-		OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
-			AllowedDomains: allowedDomains,
-		},
-	})
 	return nil
 }
 
@@ -682,20 +603,7 @@ func appendConvertedTool(out *anthropic.MessageNewParams, name string, schema ma
 	if hasTool(out, name) {
 		return fmt.Errorf("tool conversion name conflict for %q", name)
 	}
-	if schema == nil {
-		schema = map[string]any{"type": "object", "properties": map[string]any{}}
-	}
-	tool := &anthropic.ToolParam{
-		Name:        name,
-		InputSchema: toInputSchema(schema),
-	}
-	if description != nil {
-		tool.Description = aparam.NewOpt(*description)
-	}
-	if custom {
-		tool.Type = anthropic.ToolTypeCustom
-	}
-	out.Tools = append(out.Tools, anthropic.ToolUnionParam{OfTool: tool})
+	out.Tools = append(out.Tools, toolcatalog.ClientTool(name, schema, description, custom))
 	return nil
 }
 
@@ -713,33 +621,6 @@ func optionalString(v oparam.Opt[string]) *string {
 		return nil
 	}
 	return &v.Value
-}
-
-func schemaFromAny(v any) map[string]any {
-	schema, _ := v.(map[string]any)
-	return schema
-}
-
-func freeformInputSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"input": map[string]any{"type": "string"},
-		},
-		"required": []string{"input"},
-	}
-}
-
-func applyPatchInputSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"operation": map[string]any{"type": "string", "enum": []string{"create_file", "delete_file", "update_file"}},
-			"path":      map[string]any{"type": "string"},
-			"diff":      map[string]any{"type": "string"},
-		},
-		"required": []string{"operation", "path"},
-	}
 }
 
 func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
@@ -959,7 +840,7 @@ type toolIdentity struct {
 
 func (i toolIdentity) convertedName() string {
 	if i.namespace != "" {
-		return toolName(i.namespace, i.name)
+		return toolcatalog.ToolName(i.namespace, i.name)
 	}
 	return i.name
 }
@@ -1160,9 +1041,9 @@ func formatToolNames(tag string, tools []oairesponses.ToolUnionParam) string {
 			namespace := tool.OfNamespace
 			for _, nested := range namespace.Tools {
 				if nested.OfFunction != nil {
-					names = append(names, toolName(namespace.Name, nested.OfFunction.Name))
+					names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfFunction.Name))
 				} else if nested.OfCustom != nil {
-					names = append(names, toolName(namespace.Name, nested.OfCustom.Name))
+					names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfCustom.Name))
 				}
 			}
 		}
