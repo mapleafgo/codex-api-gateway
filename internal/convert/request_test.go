@@ -534,6 +534,58 @@ func TestAllowedToolsErrorsWhenNoSupportedToolsRemain(t *testing.T) {
 	}
 }
 
+func TestAllowedToolsJSONModesAndParallelToolCalls(t *testing.T) {
+	tests := []struct {
+		name           string
+		mode           string
+		parallel       string
+		wantAny        bool
+		wantDisablePar bool
+	}{
+		{name: "auto", mode: "auto"},
+		{name: "required", mode: "required", wantAny: true},
+		{name: "auto_parallel_false", mode: "auto", parallel: `,"parallel_tool_calls":false`, wantDisablePar: true},
+		{name: "required_parallel_false", mode: "required", parallel: `,"parallel_tool_calls":false`, wantAny: true, wantDisablePar: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":[
+					{"type":"function","name":"keep","parameters":{"type":"object"}},
+					{"type":"function","name":"drop","parameters":{"type":"object"}}
+				],
+				"tool_choice":{"type":"allowed_tools","mode":"`+tt.mode+`","tools":[{"type":"function","name":"keep"}]},
+				"stream":true`+tt.parallel+`
+			}`)
+			out, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Tools) != 1 || out.Tools[0].OfTool.Name != "keep" {
+				t.Fatalf("allowed_tools JSON path did not filter tools: %+v", out.Tools)
+			}
+			if tt.wantAny {
+				if out.ToolChoice.OfAny == nil {
+					t.Fatalf("required allowed_tools should map to any: %+v", out.ToolChoice)
+				}
+			} else if out.ToolChoice.OfAuto == nil {
+				t.Fatalf("auto allowed_tools should map to auto: %+v", out.ToolChoice)
+			}
+			gotDisable := out.ToolChoice.GetDisableParallelToolUse()
+			if tt.wantDisablePar {
+				if gotDisable == nil || !*gotDisable {
+					t.Fatalf("disable_parallel_tool_use not set: %+v", out.ToolChoice)
+				}
+			} else if gotDisable != nil {
+				t.Fatalf("disable_parallel_tool_use should be unset: %+v", out.ToolChoice)
+			}
+		})
+	}
+}
+
 func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"parallel_tool_calls":false,"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
