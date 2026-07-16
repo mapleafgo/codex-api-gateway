@@ -1087,8 +1087,22 @@ func applyAnthropicCacheControl(out *anthropic.MessageNewParams) {
 	if len(out.System) > 0 {
 		out.System[len(out.System)-1].CacheControl = cacheControl
 	}
-	if len(out.Tools) > 0 && out.Tools[len(out.Tools)-1].OfTool != nil {
-		out.Tools[len(out.Tools)-1].OfTool.CacheControl = cacheControl
+	setLastToolCacheControl(out.Tools, cacheControl)
+}
+
+// setLastToolCacheControl 给 tools 列表的最后一个 tool 加 cache_control,
+// 按 union 变体派发(OfTool / OfWebSearchTool20250305)。hosted server tool
+// 变体覆盖齐全后可继续在此 switch 扩展。
+func setLastToolCacheControl(tools []anthropic.ToolUnionParam, cc anthropic.CacheControlEphemeralParam) {
+	if len(tools) == 0 {
+		return
+	}
+	last := &tools[len(tools)-1]
+	switch {
+	case last.OfTool != nil:
+		last.OfTool.CacheControl = cc
+	case last.OfWebSearchTool20250305 != nil:
+		last.OfWebSearchTool20250305.CacheControl = cc
 	}
 }
 

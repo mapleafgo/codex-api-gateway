@@ -242,6 +242,24 @@ func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchToo
 	return nil
 }
 
+// TestCacheControlAppliedToNonFunctionTool 复现 gap②:最后一个 tool 是
+// web_search(OfWebSearchTool20250305)而非 function(OfTool)时,cache_control
+// 仍应加到该 tool 上,否则整个 tools 列表缓存丢失。
+func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search"}],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(out.Tools) == 0 || out.Tools[0].OfWebSearchTool20250305 == nil {
+		t.Fatalf("expected web_search tool to be mapped: %+v", out.Tools)
+	}
+	cc := out.Tools[0].OfWebSearchTool20250305.CacheControl
+	if cc.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
+		t.Fatalf("cache_control not applied to non-function tool: %+v", cc)
+	}
+}
+
 // TestOnlyLatestReasoningPreservedAsThinking verifies the gateway trims
 // historical reasoning to the most recent item. Anthropic's extended-thinking
 // best practice is to carry only the latest thinking block across turns; older
