@@ -668,6 +668,37 @@ func TestAllowedToolsJSONModesAndParallelToolCalls(t *testing.T) {
 	}
 }
 
+func TestAllowedToolsJSONSupportsNamelessTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		tool     string
+		wantName string
+	}{
+		{name: "shell", tool: `{"type":"shell"}`, wantName: "shell"},
+		{name: "local_shell", tool: `{"type":"local_shell"}`, wantName: "shell"},
+		{name: "apply_patch", tool: `{"type":"apply_patch"}`, wantName: "apply_patch"},
+		{name: "tool_search", tool: `{"type":"tool_search","execution":"client","parameters":{"type":"object"}}`, wantName: "tool_search"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":[`+tt.tool+`],
+				"tool_choice":{"type":"allowed_tools","mode":"required","tools":[`+tt.tool+`]}
+			}`)
+			out, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Tools) != 1 || out.Tools[0].OfTool == nil || out.Tools[0].OfTool.Name != tt.wantName {
+				t.Fatalf("allowed_tools did not retain %s: %+v", tt.wantName, out.Tools)
+			}
+		})
+	}
+}
+
 func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"parallel_tool_calls":false,"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})

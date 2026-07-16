@@ -837,28 +837,49 @@ func TestRefusalStopReasonEmitsRefusalPartAndContentFilter(t *testing.T) {
 		t.Fatalf("refusal should map to OpenAI content_filter: %s", last.Data)
 	}
 
-	for _, typ := range []string{"response.content_part.added", "response.content_part.done"} {
+	addedItem := eventData(t, eventByType(t, evs, "response.output_item.added"))["item"].(map[string]any)
+	if got := addedItem["status"]; got != "in_progress" {
+		t.Fatalf("added refusal item status = %#v, want in_progress", got)
+	}
+	if _, ok := addedItem["content"]; ok {
+		t.Fatalf("added refusal item should have empty content, got %#v", addedItem)
+	}
+
+	addedPart := eventData(t, eventByType(t, evs, "response.content_part.added"))["part"].(map[string]any)
+	if got := addedPart["refusal"]; got != "" {
+		t.Fatalf("added refusal part = %#v, want empty refusal", got)
+	}
+	if _, ok := addedPart["text"]; ok {
+		t.Fatalf("added refusal part should not include text field: %#v", addedPart)
+	}
+
+	delta := eventData(t, eventByType(t, evs, "response.refusal.delta"))
+	if got := delta["delta"]; got != "I can't help with that." {
+		t.Fatalf("refusal delta = %#v, want final refusal", got)
+	}
+
+	for _, typ := range []string{"response.refusal.done", "response.content_part.done"} {
 		data := eventData(t, eventByType(t, evs, typ))
+		if typ == "response.refusal.done" {
+			if got := data["refusal"]; got != "I can't help with that." {
+				t.Fatalf("%s refusal = %#v, want final refusal", typ, got)
+			}
+			continue
+		}
 		part := data["part"].(map[string]any)
 		if got := part["refusal"]; got != "I can't help with that." {
-			t.Fatalf("%s should include refusal field, got %#v", typ, part)
-		}
-		if _, ok := part["text"]; ok {
-			t.Fatalf("%s refusal part should not include text field: %#v", typ, part)
+			t.Fatalf("%s refusal = %#v, want final refusal", typ, got)
 		}
 	}
 
-	for _, typ := range []string{"response.output_item.added", "response.output_item.done"} {
-		data := eventData(t, eventByType(t, evs, typ))
-		item := data["item"].(map[string]any)
-		content := item["content"].([]any)
-		part := content[0].(map[string]any)
-		if got := part["refusal"]; got != "I can't help with that." {
-			t.Fatalf("%s item content should include refusal field, got %#v", typ, part)
-		}
-		if _, ok := part["text"]; ok {
-			t.Fatalf("%s refusal item content should not include text field: %#v", typ, part)
-		}
+	doneItem := eventData(t, eventByType(t, evs, "response.output_item.done"))["item"].(map[string]any)
+	if got := doneItem["status"]; got != "completed" {
+		t.Fatalf("done refusal item status = %#v, want completed", got)
+	}
+	doneContent := doneItem["content"].([]any)
+	donePart := doneContent[0].(map[string]any)
+	if got := donePart["refusal"]; got != "I can't help with that." {
+		t.Fatalf("done refusal item = %#v, want final refusal", got)
 	}
 
 	terminal := eventData(t, last)

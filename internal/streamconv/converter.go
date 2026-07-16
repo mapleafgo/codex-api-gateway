@@ -609,8 +609,18 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 	itemID := fmt.Sprintf("msg_%d", idx)
 	refusal := c.refusalText
 	refusalPart := model.OutputText{Type: model.ContentTypeRefusal, Refusal: &refusal}
+	emptyRefusal := ""
+	addedRefusalPart := model.ContentPartOut{Type: model.ContentTypeRefusal, Refusal: &emptyRefusal}
 	refusalEventPart := model.ContentPartOut{Type: model.ContentTypeRefusal, Refusal: &refusal}
-	item := model.OutputItem{
+	addedItem := model.OutputItem{
+		Type:    model.ItemTypeMessage,
+		ID:      itemID,
+		Role:    model.RoleAssistant,
+		Phase:   model.AssistantPhaseFinalAnswer,
+		Status:  model.ResponseStatusInProgress,
+		Content: []model.OutputText{},
+	}
+	doneItem := model.OutputItem{
 		Type:    model.ItemTypeMessage,
 		ID:      itemID,
 		Role:    model.RoleAssistant,
@@ -618,15 +628,15 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 		Status:  model.ResponseStatusCompleted,
 		Content: []model.OutputText{refusalPart},
 	}
-	c.outputItems = append(c.outputItems, item)
+	c.outputItems = append(c.outputItems, doneItem)
 
 	return []model.SSEEvent{
 		model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
-			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: item,
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: addedItem,
 		}),
 		model.MarshalEvent(evContentPartAdded, model.ContentPartAddedEvent{
 			Type: evContentPartAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
-			ItemID: itemID, Part: refusalEventPart,
+			ItemID: itemID, Part: addedRefusalPart,
 		}),
 		model.MarshalEvent(evRefusalDelta, model.RefusalDeltaEvent{
 			Type: evRefusalDelta, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
@@ -641,7 +651,7 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 			ItemID: itemID, Part: refusalEventPart,
 		}),
 		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: item,
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: doneItem,
 		}),
 	}
 }

@@ -225,22 +225,12 @@ func toInputItemParam(it model.OutputItem) oairesponses.ResponseInputItemUnionPa
 		if role == "" {
 			role = oairesponses.EasyInputMessageRoleAssistant
 		}
-		// Extract text from content parts.
-		var text string
-		for _, c := range it.Content {
-			if c.Text != "" {
-				if text != "" {
-					text += "\n"
-				}
-				text += c.Text
-			}
-		}
 		return oairesponses.ResponseInputItemUnionParam{
 			OfMessage: &oairesponses.EasyInputMessageParam{
 				Role:  role,
 				Phase: oairesponses.EasyInputMessagePhase(it.Phase),
 				Content: oairesponses.EasyInputMessageContentUnionParam{
-					OfString: oparam.NewOpt(text),
+					OfString: oparam.NewOpt(outputText(it.Content)),
 				},
 			},
 		}
@@ -789,6 +779,10 @@ func outputText(items []model.OutputText) string {
 	for _, item := range items {
 		if item.Text != "" {
 			parts = append(parts, item.Text)
+			continue
+		}
+		if item.Refusal != nil && *item.Refusal != "" {
+			parts = append(parts, *item.Refusal)
 		}
 	}
 	return joinText(parts)

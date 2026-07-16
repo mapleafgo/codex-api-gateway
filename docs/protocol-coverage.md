@@ -139,7 +139,7 @@
 | `custom` | `tool_choice.tool(name)` | `supported` | 直接映射 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 按名称过滤支持的 Anthropic 工具；hosted/MCP allowed 条目仍不支持 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | function/custom 按 name 过滤；shell/local_shell、apply_patch、tool_search 按 canonical 名称过滤；hosted/MCP allowed 条目仍不支持 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |
@@ -166,12 +166,12 @@
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
 | `code_interpreter_call` | Anthropic code execution | `deferred` | 需专项映射 |
-| `local_shell_call` | `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
-| `local_shell_call_output` | request replay only | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
-| `shell_call` | `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
-| `shell_call_output` | request replay only | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
-| `apply_patch_call` | `tool_use` name=`apply_patch` | `lossy_supported` | create/update diff 作为文本；delete 操作及调用者元数据未映射 |
-| `apply_patch_call_output` | request replay only | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
+| `local_shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
+| `local_shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
+| `shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
+| `shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
+| `apply_patch_call` | `tool_use` name=`apply_patch` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
+| `apply_patch_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
 | `mcp_call` | none | `unsupported_by_backend` | 无等价 |
 | `mcp_list_tools` | none | `unsupported_by_backend` | 无等价 |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 无等价 |

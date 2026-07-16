@@ -728,13 +728,11 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.ToolChoiceAllowedParam) error {
 	allowedNames := map[string]bool{}
 	for _, tool := range allowed.Tools {
-		if typ, _ := tool["type"].(string); !isSupportedAllowedToolType(typ) {
-			return fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
+		name, err := allowedToolName(tool)
+		if err != nil {
+			return err
 		}
-		name, _ := tool["name"].(string)
-		if name != "" {
-			allowedNames[name] = true
-		}
+		allowedNames[name] = true
 	}
 	var filtered []anthropic.ToolUnionParam
 	for _, tool := range out.Tools {
@@ -755,12 +753,23 @@ func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.To
 	return nil
 }
 
-func isSupportedAllowedToolType(typ string) bool {
+func allowedToolName(tool map[string]any) (string, error) {
+	typ, _ := tool["type"].(string)
 	switch typ {
-	case "function", "custom", "shell", "apply_patch":
-		return true
+	case "shell", "local_shell":
+		return "shell", nil
+	case "apply_patch":
+		return "apply_patch", nil
+	case "tool_search":
+		return "tool_search", nil
+	case "function", "custom":
+		name, _ := tool["name"].(string)
+		if name != "" {
+			return name, nil
+		}
+		return "", fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
 	default:
-		return false
+		return "", fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
 	}
 }
 

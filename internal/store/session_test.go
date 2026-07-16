@@ -116,6 +116,36 @@ func TestEnrichPreservesAssistantPhase(t *testing.T) {
 	}
 }
 
+func TestSaveResponseAndEnrichPreservesRefusalMessage(t *testing.T) {
+	s := New(0, 0, 0)
+	refusal := "I can't help with that."
+	s.SaveResponse("resp_refusal", "official", &oairesponses.ResponseNewParams{
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("unsafe request")},
+	}, []model.OutputItem{{
+		Type:  model.ItemTypeMessage,
+		ID:    "msg_refusal",
+		Role:  model.RoleAssistant,
+		Phase: model.AssistantPhaseFinalAnswer,
+		Content: []model.OutputText{{
+			Type:    model.ContentTypeRefusal,
+			Refusal: &refusal,
+		}},
+	}})
+
+	req := &oairesponses.ResponseNewParams{
+		PreviousResponseID: oparam.NewOpt("resp_refusal"),
+		Input:              oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("next request")},
+	}
+	s.Enrich(req, "official")
+
+	if len(req.Input.OfInputItemList) != 3 {
+		t.Fatalf("want previous input, refusal, and current input; got %d items", len(req.Input.OfInputItemList))
+	}
+	if got := messageText(req.Input.OfInputItemList[1]); got != "I can't help with that." {
+		t.Fatalf("replayed refusal message = %q, want refusal text", got)
+	}
+}
+
 func TestEnrichRoundTripsUnhandledInputItemRaw(t *testing.T) {
 	s := New(0, 0, 0)
 	compaction := oairesponses.ResponseInputItemParamOfCompaction("sealed-context")
