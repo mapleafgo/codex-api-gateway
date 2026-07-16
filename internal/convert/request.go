@@ -182,7 +182,7 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	if err := convertToolChoice(out, req); err != nil {
 		return nil, err
 	}
-	applyAnthropicCacheControl(out)
+	applyAnthropicCacheControl(out, cfg)
 	return out, nil
 }
 
@@ -1081,9 +1081,13 @@ func setDocumentTitle(block *anthropic.DocumentBlockParam, file *oairesponses.Re
 	}
 }
 
-func applyAnthropicCacheControl(out *anthropic.MessageNewParams) {
+func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Config) {
+	ttl := anthropic.CacheControlEphemeralTTLTTL5m
+	if cfg != nil && cfg.Cache.TTL == "1h" {
+		ttl = anthropic.CacheControlEphemeralTTLTTL1h
+	}
 	cacheControl := anthropic.NewCacheControlEphemeralParam()
-	cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+	cacheControl.TTL = ttl
 	out.CacheControl = cacheControl
 	if len(out.System) > 0 {
 		out.System[len(out.System)-1].CacheControl = cacheControl

@@ -1398,3 +1398,28 @@ func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 		t.Fatalf("top-level cache_control not set; message history won't be cached")
 	}
 }
+
+// TestCacheControlTTLFromConfig 复现 gap④:TTL 必须从 config.Cache.TTL 读,
+// "1h" 时顶层 cache_control 用 1h,默认 5m。
+func TestCacheControlTTLFromConfig(t *testing.T) {
+	t.Run("default 5m", func(t *testing.T) {
+		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+		out, err := ToAnthropic(req, &config.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
+			t.Fatalf("default TTL want 5m, got %v", out.CacheControl.TTL)
+		}
+	})
+	t.Run("1h from config", func(t *testing.T) {
+		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+		out, err := ToAnthropic(req, &config.Config{Cache: config.CacheCfg{TTL: "1h"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL1h {
+			t.Fatalf("configured TTL want 1h, got %v", out.CacheControl.TTL)
+		}
+	})
+}

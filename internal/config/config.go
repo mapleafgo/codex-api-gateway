@@ -37,6 +37,7 @@ type Config struct {
 	Session  SessionCfg  `koanf:"session" yaml:"session"`
 	Breaker  BreakerCfg  `koanf:"breaker" yaml:"breaker"`
 	Thinking ThinkingCfg `koanf:"thinking" yaml:"thinking"`
+	Cache    CacheCfg    `koanf:"cache" yaml:"cache"`
 	Sources  []Source    `koanf:"sources" yaml:"sources"`
 }
 
@@ -57,6 +58,11 @@ type SessionCfg struct {
 	TTL           Duration `koanf:"ttl" yaml:"ttl"`
 	MaxBytes      int64    `koanf:"max_bytes" yaml:"max_bytes"`
 	MaxEntryBytes int64    `koanf:"max_entry_bytes" yaml:"max_entry_bytes"`
+}
+
+// CacheCfg 配置 Anthropic prompt cache 的 TTL。
+type CacheCfg struct {
+	TTL string `koanf:"ttl" yaml:"ttl"` // "5m"(默认)或 "1h"
 }
 
 // BreakerCfg configures upstream failover and circuit breaking.
@@ -283,6 +289,9 @@ func (c *Config) validate() error {
 	}
 	if c.Session.TTL == 0 {
 		c.Session.TTL = Duration(time.Hour)
+	}
+	if c.Cache.TTL == "" {
+		c.Cache.TTL = "5m"
 	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
