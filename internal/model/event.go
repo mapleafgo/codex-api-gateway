@@ -206,9 +206,10 @@ type SummaryPart struct {
 
 // ContentPartOut is one content part emitted in content_part.added/done.
 type ContentPartOut struct {
-	Type    string  `json:"type"` // output_text | refusal
-	Text    string  `json:"text"`
-	Refusal *string `json:"refusal,omitempty"`
+	Type        string  `json:"type"` // output_text | refusal
+	Text        string  `json:"text"`
+	Annotations []any   `json:"annotations,omitempty"`
+	Refusal     *string `json:"refusal,omitempty"`
 }
 
 // MarshalJSON 按 content part 类型输出互斥的 Responses wire 字段。
@@ -226,12 +227,18 @@ func (p ContentPartOut) MarshalJSON() ([]byte, error) {
 			Refusal: refusal,
 		})
 	}
+	annotations := p.Annotations
+	if annotations == nil {
+		annotations = []any{}
+	}
 	return json.Marshal(struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		Annotations []any  `json:"annotations"`
 	}{
-		Type: p.Type,
-		Text: p.Text,
+		Type:        p.Type,
+		Text:        p.Text,
+		Annotations: annotations,
 	})
 }
 

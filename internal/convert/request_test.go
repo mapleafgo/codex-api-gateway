@@ -325,34 +325,80 @@ func TestLocalShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 }
 
 func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
-	req := &oairesponses.ResponseNewParams{
-		Model: "gpt-5",
-		Input: oairesponses.ResponseNewParamsInputUnion{
-			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
-				OfApplyPatchCall: &oairesponses.ResponseInputItemApplyPatchCallParam{
-					CallID: "call_patch",
-					Status: "completed",
-					Operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
-						OfUpdateFile: &oairesponses.ResponseInputItemApplyPatchCallOperationUpdateFileParam{
-							Path: "README.md",
-							Diff: "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch\n",
-						},
-					},
+	tests := []struct {
+		name      string
+		operation oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam
+		wantType  string
+		wantPath  string
+		wantDiff  *string
+	}{
+		{
+			name: "create",
+			operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+				OfCreateFile: &oairesponses.ResponseInputItemApplyPatchCallOperationCreateFileParam{
+					Path: "new.txt", Diff: "*** Add File: new.txt\n+new\n",
 				},
-			}},
+			},
+			wantType: "create_file", wantPath: "new.txt", wantDiff: stringPtr("*** Add File: new.txt\n+new\n"),
+		},
+		{
+			name: "update",
+			operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+				OfUpdateFile: &oairesponses.ResponseInputItemApplyPatchCallOperationUpdateFileParam{
+					Path: "README.md", Diff: "*** Update File: README.md\n@@\n-old\n+new\n",
+				},
+			},
+			wantType: "update_file", wantPath: "README.md", wantDiff: stringPtr("*** Update File: README.md\n@@\n-old\n+new\n"),
+		},
+		{
+			name: "delete",
+			operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+				OfDeleteFile: &oairesponses.ResponseInputItemApplyPatchCallOperationDeleteFileParam{Path: "old.txt"},
+			},
+			wantType: "delete_file", wantPath: "old.txt",
 		},
 	}
-	out, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &oairesponses.ResponseNewParams{
+				Model: "gpt-5",
+				Input: oairesponses.ResponseNewParamsInputUnion{
+					OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+						OfApplyPatchCall: &oairesponses.ResponseInputItemApplyPatchCallParam{
+							CallID: "call_patch", Status: "completed", Operation: tt.operation,
+						},
+					}},
+				},
+			}
+			out, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			toolUse := out.Messages[0].Content[0].OfToolUse
+			if toolUse == nil || toolUse.Name != "apply_patch" || toolUse.ID != "call_patch" {
+				t.Fatalf("bad apply_patch tool_use: %+v", out.Messages[0].Content[0])
+			}
+			input, ok := toolUse.Input.(map[string]any)
+			if !ok {
+				t.Fatalf("apply_patch input type = %T, want object", toolUse.Input)
+			}
+			if input["operation"] != tt.wantType || input["path"] != tt.wantPath {
+				t.Fatalf("apply_patch input = %#v, want operation=%q path=%q", input, tt.wantType, tt.wantPath)
+			}
+			if tt.wantDiff == nil {
+				if _, ok := input["diff"]; ok {
+					t.Fatalf("delete apply_patch input must not invent a diff: %#v", input)
+				}
+			} else if input["diff"] != *tt.wantDiff {
+				t.Fatalf("apply_patch diff = %#v, want %q", input["diff"], *tt.wantDiff)
+			}
+		})
 	}
-	toolUse := out.Messages[0].Content[0].OfToolUse
-	if toolUse == nil || toolUse.Name != "apply_patch" || toolUse.ID != "call_patch" {
-		t.Fatalf("bad apply_patch tool_use: %+v", out.Messages[0].Content[0])
-	}
-	if got := fmt.Sprint(toolUse.Input); !strings.Contains(got, "*** Begin Patch") {
-		t.Fatalf("apply_patch input lost diff: %#v", toolUse.Input)
-	}
+}
+
+func stringPtr(s string) *string {
+	return &s
 }
 
 func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
@@ -616,6 +662,112 @@ func TestAllowedToolsRejectsUnsupportedAllowedEntries(t *testing.T) {
 	}
 }
 
+func TestAllowedToolsRejectsPartialIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+		want  string
+	}{
+		{name: "missing_type", entry: `{"name":"keep"}`, want: "requires a type"},
+		{name: "missing_name", entry: `{"type":"function"}`, want: "requires a name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":[{"type":"function","name":"keep","parameters":{"type":"object"}}],
+				"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[`+tt.entry+`]}
+			}`)
+
+			_, err := ToAnthropic(req, &config.Config{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected incomplete allowed tool identity error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestAllowedToolsRejectsCrossTypeSameName(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "search", Parameters: map[string]any{"type": "object"}}},
+			{OfCustom: &oairesponses.CustomToolParam{Name: "search"}},
+		},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+				Mode:  oairesponses.ToolChoiceAllowedModeAuto,
+				Tools: []map[string]any{{"type": "function", "name": "search"}},
+			},
+		},
+	}
+
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), `conversion name conflict`) {
+		t.Fatalf("expected cross-type name conflict error, got %v", err)
+	}
+}
+
+func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "available", Parameters: map[string]any{"type": "object"}}},
+		},
+		Text: oairesponses.ResponseTextConfigParam{
+			Format: oairesponses.ResponseFormatTextConfigParamOfJSONSchema("result", map[string]any{"type": "object"}),
+		},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+				Mode:  oairesponses.ToolChoiceAllowedModeAuto,
+				Tools: []map[string]any{{"type": "mcp", "server_label": "unsupported"}},
+			},
+		},
+	}
+
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), `unsupported tool_choice`) {
+		t.Fatalf("expected structured output to validate unsupported allowed tool, got %v", err)
+	}
+}
+
+func TestAllowedToolsFiltersFunctionCustomAndShell(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "keep_function", Parameters: map[string]any{"type": "object"}}},
+			{OfCustom: &oairesponses.CustomToolParam{Name: "keep_custom"}},
+			{OfShell: &oairesponses.FunctionShellToolParam{}},
+			{OfFunction: &oairesponses.FunctionToolParam{Name: "drop", Parameters: map[string]any{"type": "object"}}},
+		},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+				Mode: oairesponses.ToolChoiceAllowedModeRequired,
+				Tools: []map[string]any{
+					{"type": "function", "name": "keep_function"},
+					{"type": "custom", "name": "keep_custom"},
+					{"type": "shell"},
+				},
+			},
+		},
+	}
+
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Tools) != 3 || findTool(out.Tools, "keep_function") == nil || findTool(out.Tools, "keep_custom") == nil || findTool(out.Tools, "shell") == nil {
+		t.Fatalf("allowed tools not filtered exactly: %+v", out.Tools)
+	}
+	if out.ToolChoice.OfAny == nil {
+		t.Fatalf("required allowed_tools should map to Anthropic any: %+v", out.ToolChoice)
+	}
+}
+
 func TestAllowedToolsJSONModesAndParallelToolCalls(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -739,7 +891,7 @@ func TestAllowedToolsJSONRejectsUnknownNamespaceChild(t *testing.T) {
 		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"missing"}]}]}
 	}`)
 	_, err := ToAnthropic(req, &config.Config{})
-	if err == nil || !strings.Contains(err.Error(), `namespace "crm" child "missing"`) {
+	if err == nil || !strings.Contains(err.Error(), `function "missing" in namespace "crm" is not declared`) {
 		t.Fatalf("expected explicit unknown namespace child error, got %v", err)
 	}
 }

@@ -24,9 +24,10 @@ type OutputItem struct {
 
 // OutputText is one message content or reasoning summary part.
 type OutputText struct {
-	Type    string  `json:"type"` // output_text | refusal | summary_text
-	Text    string  `json:"text"`
-	Refusal *string `json:"refusal,omitempty"`
+	Type        string  `json:"type"` // output_text | refusal | summary_text
+	Text        string  `json:"text"`
+	Annotations []any   `json:"annotations,omitempty"`
+	Refusal     *string `json:"refusal,omitempty"`
 }
 
 // MarshalJSON 保证 message item 的必填 content 字段即使为空也会写入 wire payload。
@@ -63,11 +64,26 @@ func (p OutputText) MarshalJSON() ([]byte, error) {
 			Refusal: refusal,
 		})
 	}
+	if p.Type != ContentTypeOutputText {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{
+			Type: p.Type,
+			Text: p.Text,
+		})
+	}
+	annotations := p.Annotations
+	if annotations == nil {
+		annotations = []any{}
+	}
 	return json.Marshal(struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		Annotations []any  `json:"annotations"`
 	}{
-		Type: p.Type,
-		Text: p.Text,
+		Type:        p.Type,
+		Text:        p.Text,
+		Annotations: annotations,
 	})
 }

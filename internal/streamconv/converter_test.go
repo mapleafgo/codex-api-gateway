@@ -752,6 +752,73 @@ func TestSequenceNumberMonotonic(t *testing.T) {
 	}
 }
 
+func TestTextWirePartsIncludeEmptyAnnotations(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_annotations", Model: "claude-test"},
+	})
+	textStart, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "text_delta", Text: "hello"},
+	})
+	blockStop, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: "end_turn"},
+	})
+	messageStop, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	events := append(textStart, blockStop...)
+	events = append(events, messageStop...)
+	for _, eventType := range []string{
+		"response.content_part.added",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.completed",
+	} {
+		found := false
+		for _, event := range events {
+			if event.Type != eventType {
+				continue
+			}
+			found = true
+			payload := decodePayload(t, event.Data)
+			switch eventType {
+			case "response.content_part.added", "response.content_part.done":
+				assertOutputTextAnnotations(t, eventType, payload["part"].(map[string]any))
+			case "response.output_item.done":
+				item := payload["item"].(map[string]any)
+				assertOutputTextAnnotations(t, eventType, item["content"].([]any)[0].(map[string]any))
+			case "response.completed":
+				response := payload["response"].(map[string]any)
+				item := response["output"].([]any)[0].(map[string]any)
+				assertOutputTextAnnotations(t, eventType, item["content"].([]any)[0].(map[string]any))
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s event", eventType)
+		}
+	}
+}
+
+func assertOutputTextAnnotations(t *testing.T, eventType string, part map[string]any) {
+	t.Helper()
+	if part["type"] != "output_text" {
+		t.Fatalf("%s part type = %#v, want output_text", eventType, part["type"])
+	}
+	annotations, ok := part["annotations"].([]any)
+	if !ok || len(annotations) != 0 {
+		t.Fatalf("%s output_text annotations = %#v, want []", eventType, part["annotations"])
+	}
+}
+
 func TestMaxTokensIncomplete(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
@@ -797,6 +864,12 @@ func TestPauseTurnDoesNotEmitInvalidIncompleteReason(t *testing.T) {
 	}
 	if strings.Contains(string(last.Data), `"reason":"pause_turn"`) {
 		t.Fatalf("pause_turn is not an OpenAI incomplete_details.reason: %s", last.Data)
+	}
+	payload := decodePayload(t, last.Data)
+	response, _ := payload["response"].(map[string]any)
+	details, ok := response["incomplete_details"]
+	if !ok || details != nil {
+		t.Fatalf("pause_turn incomplete response must include incomplete_details:null, got %v", response)
 	}
 }
 

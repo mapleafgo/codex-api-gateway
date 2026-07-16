@@ -94,7 +94,7 @@
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
-| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update diff 作为文本；delete 操作及调用者元数据未映射 |
+| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete 映射为 JSON object，保留 `operation`、`path` 与 create/update 的 `diff`；调用者元数据未映射 |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
 | `mcp_list_tools` | none | `unsupported_by_backend` | Anthropic remote MCP/connector 语义不同 |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 无等价审批协议 |
@@ -139,7 +139,7 @@
 | `custom` | `tool_choice.tool(name)` | `supported` | 直接映射 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | function/custom 按 name 过滤；namespace 内 function/custom 展开为 `namespace__child` 后过滤；shell/local_shell、apply_patch、tool_search 按 canonical 名称过滤；hosted/MCP allowed 条目仍不支持 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配；function/custom、namespace 子工具、shell/local_shell、apply_patch、tool_search 过滤后映射，转换名冲突和 hosted/MCP allowed 条目明确报错 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |

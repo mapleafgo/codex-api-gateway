@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 // ResponseObject is the `response` object embedded in created/in_progress/
 // completed/incomplete/failed events. Fields use omitempty so we emit exactly
 // the P2 fields we can populate, without SDK Response's 35+ zero fields.
@@ -24,6 +26,22 @@ type ResponseObject struct {
 	PreviousResponseID string             `json:"previous_response_id,omitempty"`
 	Truncation         string             `json:"truncation,omitempty"`
 	Store              *bool              `json:"store,omitempty"`
+}
+
+// MarshalJSON 保证 incomplete 响应始终包含 required 的 incomplete_details 字段。
+func (r ResponseObject) MarshalJSON() ([]byte, error) {
+	if r.Status != ResponseStatusIncomplete {
+		type responseObject ResponseObject
+		return json.Marshal(responseObject(r))
+	}
+	type responseObject ResponseObject
+	return json.Marshal(struct {
+		responseObject
+		IncompleteDetails *IncompleteDetails `json:"incomplete_details"`
+	}{
+		responseObject:    responseObject(r),
+		IncompleteDetails: r.IncompleteDetails,
+	})
 }
 
 // ResponseError is the error detail embedded in a failed ResponseObject.
