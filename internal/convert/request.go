@@ -141,8 +141,23 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 			anthropic.ContentBlockParamUnion{OfText: &anthropic.TextBlockParam{Text: req.Input.OfString.Value}},
 		))
 	}
+	// Trim historical reasoning to the most recent item. Anthropic's extended
+	// thinking best practice is to carry only the latest thinking block across
+	// turns — older ones add tokens and attention noise without helping the
+	// model, and a large accumulated thinking context pushes upstream models
+	// toward early end_turn. All reasoning signatures remain available via
+	// sigByID, so the preserved block still resolves its correct signature.
+	lastReasoning := -1
+	for i := range req.Input.OfInputItemList {
+		if req.Input.OfInputItemList[i].OfReasoning != nil {
+			lastReasoning = i
+		}
+	}
 	for i := range req.Input.OfInputItemList {
 		item := &req.Input.OfInputItemList[i]
+		if item.OfReasoning != nil && i != lastReasoning {
+			continue
+		}
 		if err := appendItem(out, &sysParts, item, sigByID); err != nil {
 			return nil, fmt.Errorf("convert input item: %w", err)
 		}

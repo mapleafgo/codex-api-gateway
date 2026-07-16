@@ -38,8 +38,10 @@
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
 | `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
+| `reasoning.generate_summary` | thinking display | `deferred` | deprecated，被 `reasoning.summary` 取代；值 auto/concise/detailed，当前静默忽略，是否复用 `summary` 路径需专项确认 |
 | `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
+| `text.verbosity` | none | `deferred` | Anthropic 无原生输出 verbosity 参数；可注入 system 提示模拟但非语义等价，当前静默忽略 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | session replay | `supported` | 依赖本地 store |
@@ -49,11 +51,15 @@
 | `metadata` | response echo / Anthropic metadata | `deferred` | 需确认是否转 Anthropic `metadata` 或仅 echo |
 | `prompt_cache_key` | prompt cache behavior | `deferred` | Anthropic prompt caching 语义不同 |
 | `prompt_cache_options` | cache control | `deferred` | 需和 Anthropic cache_control 对齐 |
+| `prompt_cache_retention` | none | `deferred` | deprecated 缓存保留策略（in_memory/24h），与 `prompt_cache_options` 独立；与 Anthropic cache_control 语义不同，当前静默忽略 |
+| `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力，当前静默忽略 |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
+| `context_management` | none | `deferred` | 请求级上下文管理开关（当前仅 compaction）；OpenAI 服务端自动压缩，Anthropic 无等价请求参数，网关未实现 compaction，当前静默忽略 |
 | `max_tool_calls` | none | `deferred` | Anthropic 无直接请求参数，可能需网关计数截断 |
 | `service_tier` | Anthropic `service_tier` | `deferred` | 需配置源是否允许透传 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
+| `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数，当前静默忽略 |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |
 | `top_logprobs` | none | `unsupported_by_backend` | Anthropic Messages 无 OpenAI output logprobs 等价 |
 | `user` | deprecated | `deferred` | OpenAI 已废弃，需决定忽略或映射 metadata |

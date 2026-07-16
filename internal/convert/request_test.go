@@ -242,6 +242,35 @@ func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchToo
 	return nil
 }
 
+// TestOnlyLatestReasoningPreservedAsThinking verifies the gateway trims
+// historical reasoning to the most recent item. Anthropic's extended-thinking
+// best practice is to carry only the latest thinking block across turns; older
+// ones add tokens and noise and push upstream models toward early end_turn.
+func TestOnlyLatestReasoningPreservedAsThinking(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
+		{"type":"reasoning","id":"rs_old","summary":[{"type":"summary_text","text":"old thinking"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+		{"type":"reasoning","id":"rs_new","summary":[{"type":"summary_text","text":"new thinking"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a2"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thinkTexts []string
+	for _, msg := range out.Messages {
+		for _, b := range msg.Content {
+			if b.OfThinking != nil {
+				thinkTexts = append(thinkTexts, b.OfThinking.Thinking)
+			}
+		}
+	}
+	if len(thinkTexts) != 1 || thinkTexts[0] != "new thinking" {
+		t.Fatalf("expected only latest reasoning preserved, got %v", thinkTexts)
+	}
+}
+
 func TestToolCallsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search x"}]},{"type":"function_call","call_id":"c1","name":"search","arguments":"{\"q\":\"x\"}"},{"type":"function_call_output","call_id":"c1","output":"result-x"}],"tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
