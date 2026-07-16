@@ -25,9 +25,16 @@ type OutputItem struct {
 
 // WebSearchAction describes the action taken by a web_search_call output item.
 type WebSearchAction struct {
-	Type    string   `json:"type"`              // "search"
-	Query   string   `json:"query,omitempty"`   // search query (Codex reads query)
-	Queries []string `json:"queries,omitempty"` // search queries
+	Type    string            `json:"type"`              // "search"
+	Query   string            `json:"query,omitempty"`   // search query (Codex reads query)
+	Queries []string          `json:"queries,omitempty"` // search queries
+	Sources []WebSearchSource `json:"sources,omitempty"` // result sources (filled on completion)
+}
+
+// WebSearchSource is one result source of a web_search_call.
+type WebSearchSource struct {
+	Type string `json:"type"` // "url"
+	URL  string `json:"url"`
 }
 
 // OutputText is one message content or reasoning summary part.

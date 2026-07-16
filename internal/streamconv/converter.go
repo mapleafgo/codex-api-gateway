@@ -400,6 +400,9 @@ func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventU
 	}
 	itemID := fmt.Sprintf("ws_%d", idx)
 	c.outputItems[idx].Status = model.ResponseStatusCompleted
+	if sources := extractWebSearchSources(ev.ContentBlock.Content); len(sources) > 0 && c.outputItems[idx].Action != nil {
+		c.outputItems[idx].Action.Sources = sources
+	}
 	return []model.SSEEvent{
 		model.MarshalEvent(evWebSearchCallCompleted, model.WebSearchCallEvent{
 			Type: evWebSearchCallCompleted, SequenceNumber: c.nextSeq(),
@@ -410,6 +413,19 @@ func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventU
 			OutputIndex: idx, Item: c.outputItems[idx],
 		}),
 	}
+}
+
+// extractWebSearchSources maps Anthropic web_search_tool_result entries to
+// OpenAI web_search_call sources. Only the URL is carried — title and
+// encrypted_content have no OpenAI equivalent field.
+func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBlockUnionContent) []model.WebSearchSource {
+	var out []model.WebSearchSource
+	for _, r := range content.OfWebSearchResultBlockArray {
+		if r.URL != "" {
+			out = append(out, model.WebSearchSource{Type: "url", URL: r.URL})
+		}
+	}
+	return out
 }
 
 // extractWebSearchQuery pulls the search query out of an Anthropic web_search

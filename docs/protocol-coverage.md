@@ -86,7 +86,7 @@
 | `file_search_call` | none | `unsupported_by_backend` | Anthropic server tool 不等价 OpenAI file search |
 | `computer_call` | none | `unsupported_by_backend` | Computer use 需要专项执行环境 |
 | `computer_call_output` | none | `unsupported_by_backend` | 同上 |
-| `web_search_call` | Anthropic web search result/server tool | `supported` | server_tool_use + web_search_tool_result 映射为 web_search_call 事件链（in_progress/searching/completed） |
+| `web_search_call` | Anthropic web search result/server tool | `supported` | server_tool_use + web_search_tool_result 映射为 web_search_call 事件链（in_progress/searching/completed），结果 URL 回显为 action.sources |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
 | `function_call_output` | user `tool_result` | `supported` | output 转 text tool result |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
@@ -166,7 +166,7 @@
 | `additional_tools` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
 | `compaction` | response compact API | `raw_preserved` | 非模型 stream output |
 | `file_search_call` | none | `unsupported_by_backend` | 无等价 |
-| `web_search_call` | Anthropic server web search | `supported` | server_tool_use + web_search_tool_result 映射 |
+| `web_search_call` | Anthropic server web search | `supported` | server_tool_use + web_search_tool_result 映射，结果 URL 回显为 sources |
 | `computer_call` | none | `unsupported_by_backend` | 无等价 |
 | `computer_call_output` | none | `unsupported_by_backend` | 无等价 |
 | `program` | none | `unsupported_by_backend` | 无等价 |

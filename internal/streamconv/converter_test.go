@@ -572,6 +572,49 @@ func TestWebSearchServerToolUseEmitsWebSearchCall(t *testing.T) {
 	}
 }
 
+func TestWebSearchResultSurfacesSources(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:  "server_tool_use",
+			ID:    "toolu_ws1",
+			Name:  "web_search",
+			Input: map[string]any{"query": "rust async"},
+		},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:      "web_search_tool_result",
+			ToolUseID: "toolu_ws1",
+			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{
+				OfWebSearchResultBlockArray: []anthropic.WebSearchResultBlock{
+					{Title: "A", URL: "https://a.example.com"},
+					{Title: "B", URL: "https://b.example.com"},
+				},
+			},
+		},
+	})
+	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
+	item := done["item"].(map[string]any)
+	action := item["action"].(map[string]any)
+	sources, ok := action["sources"].([]any)
+	if !ok || len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %v", action["sources"])
+	}
+	first := sources[0].(map[string]any)
+	if first["type"] != "url" || first["url"] != "https://a.example.com" {
+		t.Fatalf("bad first source: %v", first)
+	}
+}
+
 func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
