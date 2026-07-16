@@ -38,8 +38,8 @@
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
 | `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
-| `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与 `allowed_tools` 组合无等价能力，明确转换失败 |
-| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与 `allowed_tools` 组合无等价能力，明确转换失败 |
+| `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
+| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | session replay | `supported` | 依赖本地 store |
@@ -124,7 +124,7 @@
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 环境/skills 字段未完整映射 |
 | `shell` | client custom tool `shell` | `lossy_supported` | environment 未完整映射 |
 | `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
-| `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name |
+| `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`，其他类型明确转换失败 |
 | `tool_search` | client tool `tool_search` | `supported` | 当前按普通 tool 暴露 |
 | `apply_patch` | client custom tool `apply_patch` | `supported` | freeform input 支持 |
 
@@ -140,6 +140,7 @@
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 仅在已声明 `apply_patch` 时映射，否则明确转换失败 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 仅在已声明 `shell` 时映射；`local_shell` 不是此 specific choice 的等价声明 |
 | `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错；不能与 structured output 同时使用 |
+| structured output + explicit incompatible choice | none | `unsupported_by_backend` | synthetic structured-output tool 已被强制时，`none`、`auto`、`required`、其他 specific choice、`allowed_tools` 和未知 choice 均无等价语义，明确转换失败 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |

@@ -303,18 +303,21 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	if shouldStoreResponse(req) && !conv.Failed() && (execErr == nil || conv.Done()) {
 		items := conv.OutputItems()
-		if len(items) == 0 {
+		if !conv.Done() && len(items) == 0 {
 			if executedReq != nil {
 				items = collectOutput(executedReq)
 			} else {
 				items = collectOutput(req)
 			}
 		}
-		if executedReq != nil {
-			s.sess.SaveResponse(id, sourceName, executedReq, items)
-		} else {
-			s.sess.SaveResponse(id, sourceName, req, items)
+		reqToStore := executedReq
+		if reqToStore == nil {
+			reqToStore = req
 		}
+		if conv.Done() && len(items) == 0 {
+			reqToStore = nil
+		}
+		s.sess.SaveResponse(id, sourceName, reqToStore, items)
 		slog.Debug("保存会话上下文",
 			"response_id", id,
 			"source", sourceName,

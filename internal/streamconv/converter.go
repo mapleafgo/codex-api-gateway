@@ -579,7 +579,7 @@ func statusFor(reason string) (status, incompleteReason string) {
 func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
 	if c.stopReason == string(anthropic.StopReasonRefusal) {
-		c.outputItems = nil
+		c.resetOutputForRefusal()
 		out = append(out, c.emitRefusalEvents()...)
 	}
 
@@ -609,6 +609,22 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 		Type: eventType, SequenceNumber: c.nextSeq(), Response: resp,
 	}))
 	return out
+}
+
+func (c *Converter) resetOutputForRefusal() {
+	c.itemOrder = 0
+	c.openText = false
+	c.textItemIdx = 0
+	c.textContentIdx = 0
+	c.textBuilder.Reset()
+	c.openThinking = false
+	c.thinkItemIdx = 0
+	c.thinkSummaryIdx = 0
+	c.thinkBuilder.Reset()
+	c.sigBuilder.Reset()
+	c.toolCalls = map[int]toolCallState{}
+	c.toolArgBuilders = map[int]*strings.Builder{}
+	c.outputItems = []model.OutputItem{}
 }
 
 func (c *Converter) emitRefusalEvents() []model.SSEEvent {

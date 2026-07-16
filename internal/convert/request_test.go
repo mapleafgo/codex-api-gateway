@@ -753,6 +753,42 @@ func TestStructuredOutputRejectsAllowedToolsWithoutEquivalent(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputRejectsIncompatibleExplicitToolChoice(t *testing.T) {
+	tests := []struct {
+		name       string
+		tools      string
+		toolChoice string
+	}{
+		{name: "none", toolChoice: `"none"`},
+		{name: "auto", toolChoice: `"auto"`},
+		{name: "required", toolChoice: `"required"`},
+		{name: "function", tools: `[{"type":"function","name":"lookup","parameters":{"type":"object"}}]`, toolChoice: `{"type":"function","name":"lookup"}`},
+		{name: "custom", tools: `[{"type":"custom","name":"raw"}]`, toolChoice: `{"type":"custom","name":"raw"}`},
+		{name: "apply_patch", tools: `[{"type":"apply_patch"}]`, toolChoice: `{"type":"apply_patch"}`},
+		{name: "shell", tools: `[{"type":"shell"}]`, toolChoice: `{"type":"shell"}`},
+		{name: "unknown mode", toolChoice: `"unsupported"`},
+		{name: "unknown type", toolChoice: `{"type":"unsupported"}`},
+		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":`+orDefault(tt.tools, "[]")+`,
+				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
+				"tool_choice":`+tt.toolChoice+`
+			}`)
+
+			_, err := ToAnthropic(req, &config.Config{})
+			if err == nil {
+				t.Fatal("structured output must reject an explicit incompatible tool_choice")
+			}
+		})
+	}
+}
+
 func TestAllowedToolsRejectsUnknownMode(t *testing.T) {
 	req := mustReq(t, `{
 		"model":"gpt-5",
@@ -1010,6 +1046,35 @@ func TestAllowedToolsJSONRejectsUnknownNamespaceChild(t *testing.T) {
 	_, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `function "missing" in namespace "crm" is not declared`) {
 		t.Fatalf("expected explicit unknown namespace child error, got %v", err)
+	}
+}
+
+func TestNamespaceRejectsUnsupportedChild(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{{
+			OfNamespace: &oairesponses.NamespaceToolParam{
+				Name:  "crm",
+				Tools: []oairesponses.NamespaceToolToolUnionParam{{}},
+			},
+		}},
+	}
+
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported namespace tool") {
+		t.Fatalf("expected unsupported namespace child error, got %v", err)
+	}
+}
+
+func TestDecodeRejectsUnsupportedNamespaceChild(t *testing.T) {
+	_, err := DecodeResponseNewParams([]byte(`{
+		"model":"gpt-5",
+		"input":"hi",
+		"tools":[{"type":"namespace","name":"crm","tools":[{"type":"shell"}]}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "unsupported namespace tool type") {
+		t.Fatalf("expected unsupported namespace child error, got %v", err)
 	}
 }
 

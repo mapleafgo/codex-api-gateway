@@ -420,6 +420,77 @@ func TestIntegrationRefusalDoesNotPersistPartialText(t *testing.T) {
 	}
 }
 
+func TestIntegrationCompletedEmptyOutputDoesNotReplayInputToolCall(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputItem string
+	}{
+		{name: "function", inputItem: `{"type":"function_call","call_id":"call_input","name":"lookup","arguments":"{}"}`},
+		{name: "custom", inputItem: `{"type":"custom_tool_call","call_id":"call_input","name":"raw","input":"payload"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requestBodies []string
+			var requestMu sync.Mutex
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read upstream request: %v", err)
+				}
+				requestMu.Lock()
+				requestBodies = append(requestBodies, string(body))
+				requestMu.Unlock()
+
+				w.Header().Set("content-type", "text/event-stream")
+				for _, line := range []string{
+					`{"type":"message_start","message":{"id":"m_empty_output","model":"claude"}}`,
+					`{"type":"message_delta","delta":{"type":"message_delta","stop_reason":"end_turn"}}`,
+					`{"type":"message_stop"}`,
+				} {
+					if _, err := io.WriteString(w, "data: "+line+"\n\n"); err != nil {
+						t.Fatalf("write upstream response: %v", err)
+					}
+				}
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{
+				Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+				Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+			}
+			srv := New(cfg)
+			defer srv.Close()
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+
+			first := postResponses(t, ts, `{"model":"gpt-5","input":[`+tt.inputItem+`],"stream":true}`)
+			completed := findEvent(t, first, "response.completed")
+			response := completed.data["response"].(map[string]any)
+			output := response["output"].([]any)
+			if len(output) != 0 {
+				t.Fatalf("completed output = %#v, want empty", output)
+			}
+
+			entry, ok := srv.sess.Get("m_empty_output")
+			if !ok {
+				t.Fatal("completed empty response should be persisted")
+			}
+			if len(entry.Items) != 0 {
+				t.Fatalf("stored output = %#v, want empty", entry.Items)
+			}
+
+			postResponses(t, ts, `{"model":"gpt-5","previous_response_id":"m_empty_output","input":"follow-up","stream":true}`)
+			requestMu.Lock()
+			secondRequest := requestBodies[1]
+			requestMu.Unlock()
+			if strings.Contains(secondRequest, "call_input") {
+				t.Fatalf("previous_response_id replay injected input tool call: %s", secondRequest)
+			}
+		})
+	}
+}
+
 func TestIntegrationUnsupportedBlockDoesNotPersistHiddenOutput(t *testing.T) {
 	var calls atomic.Int64
 	var requestBodies []string

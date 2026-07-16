@@ -16,6 +16,9 @@ import (
 // DecodeResponseNewParams decodes a Responses request and restores union shapes
 // that openai-go cannot infer losslessly from plain JSON.
 func DecodeResponseNewParams(data []byte) (*oairesponses.ResponseNewParams, error) {
+	if err := validateNamespaceToolChildren(data); err != nil {
+		return nil, err
+	}
 	var req oairesponses.ResponseNewParams
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, err
@@ -62,7 +65,46 @@ func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) 
 		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
 			OfSpecificShellToolChoice: &oairesponses.ToolChoiceShellParam{},
 		}
+	default:
+		if !toolChoiceExplicit(req.ToolChoice) {
+			req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
+				OfToolChoiceMode: oparam.NewOpt(oairesponses.ToolChoiceOptions(typ)),
+			}
+		}
 	}
+}
+
+func validateNamespaceToolChildren(data []byte) error {
+	var raw struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for _, rawTool := range raw.Tools {
+		var tool struct {
+			Type  string            `json:"type"`
+			Tools []json.RawMessage `json:"tools"`
+		}
+		if err := json.Unmarshal(rawTool, &tool); err != nil {
+			return err
+		}
+		if tool.Type != "namespace" {
+			continue
+		}
+		for _, rawChild := range tool.Tools {
+			var child struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rawChild, &child); err != nil {
+				return err
+			}
+			if child.Type != "function" && child.Type != "custom" {
+				return fmt.Errorf("unsupported namespace tool type %q: Anthropic backend has no safe equivalent", child.Type)
+			}
+		}
+	}
+	return nil
 }
 
 // ToAnthropic converts a Response request into an Anthropic Messages request.
@@ -590,6 +632,8 @@ func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionPa
 				if err := appendConvertedTool(out, toolName(namespace.Name, custom.Name), freeformInputSchema(), optionalString(custom.Description), true); err != nil {
 					return err
 				}
+			} else {
+				return fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
 			}
 		}
 	default:
@@ -728,7 +772,13 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 		return nil
 	}
 	if out.ToolChoice.OfTool != nil {
-		return nil // already forced by structured output
+		if !toolChoiceExplicit(tc) {
+			return nil
+		}
+		if structuredToolChoiceEquivalent(out.ToolChoice.OfTool.Name, tc) {
+			return nil
+		}
+		return fmt.Errorf("structured output cannot be combined with explicit tool_choice: Anthropic has no equivalent forced-tool mode")
 	}
 	defer applyParallelToolChoice(out, req)
 	if tc.OfFunctionTool != nil {
@@ -754,10 +804,28 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 			out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
 		case model.ToolChoiceNone:
 			out.ToolChoice = anthropic.ToolChoiceUnionParam{OfNone: &anthropic.ToolChoiceNoneParam{}}
+		default:
+			return fmt.Errorf("unsupported tool_choice mode %q: Anthropic backend has no safe equivalent", tc.OfToolChoiceMode.Value)
 		}
 		return nil
 	}
 	return nil
+}
+
+func toolChoiceExplicit(tc oairesponses.ResponseNewParamsToolChoiceUnion) bool {
+	return tc.OfToolChoiceMode.Valid() ||
+		tc.OfAllowedTools != nil ||
+		tc.OfFunctionTool != nil ||
+		tc.OfHostedTool != nil ||
+		tc.OfMcpTool != nil ||
+		tc.OfCustomTool != nil ||
+		tc.OfSpecificApplyPatchToolChoice != nil ||
+		tc.OfSpecificShellToolChoice != nil ||
+		tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil
+}
+
+func structuredToolChoiceEquivalent(name string, tc oairesponses.ResponseNewParamsToolChoiceUnion) bool {
+	return tc.OfFunctionTool != nil && tc.OfFunctionTool.Name == name
 }
 
 func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesponses.ToolUnionParam, want toolIdentity) error {

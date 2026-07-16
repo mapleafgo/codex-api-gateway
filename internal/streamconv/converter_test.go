@@ -1009,28 +1009,34 @@ func TestRefusalWithoutDetailsStillEmitsRefusalEvents(t *testing.T) {
 
 func TestRefusalDiscardsPartialTextFromTerminalOutput(t *testing.T) {
 	c := New()
-	c.Feed(&anthropic.MessageStreamEventUnion{
+	var events []model.SSEEvent
+	startEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:    "message_start",
 		Message: anthropic.Message{ID: "msg_partial_refusal", Model: "claude-test"},
 	})
-	c.Feed(&anthropic.MessageStreamEventUnion{
+	events = append(events, startEvents...)
+	blockEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:         "content_block_start",
 		Index:        0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
 	})
-	c.Feed(&anthropic.MessageStreamEventUnion{
+	events = append(events, blockEvents...)
+	deltaEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_delta",
 		Index: 0,
 		Delta: anthropic.MessageStreamEventUnionDelta{Type: "text_delta", Text: "partial text"},
 	})
-	c.Feed(&anthropic.MessageStreamEventUnion{
+	events = append(events, deltaEvents...)
+	stopReasonEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type: "message_delta",
 		Delta: anthropic.MessageStreamEventUnionDelta{
 			StopReason:  anthropic.StopReasonRefusal,
 			StopDetails: anthropic.RefusalStopDetails{Explanation: "I can't help with that."},
 		},
 	})
-	events, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	events = append(events, stopReasonEvents...)
+	terminalEvents, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	events = append(events, terminalEvents...)
 
 	terminal := eventData(t, events[len(events)-1])
 	response := terminal["response"].(map[string]any)
@@ -1044,6 +1050,28 @@ func TestRefusalDiscardsPartialTextFromTerminalOutput(t *testing.T) {
 	}
 	if strings.Contains(string(events[len(events)-1].Data), "partial text") {
 		t.Fatalf("terminal response leaked partial text: %s", events[len(events)-1].Data)
+	}
+	terminalID := output[0].(map[string]any)["id"]
+	for _, typ := range []string{
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.refusal.delta",
+		"response.refusal.done",
+		"response.content_part.done",
+		"response.output_item.done",
+	} {
+		payload := eventData(t, eventByType(t, events, typ))
+		if got := payload["output_index"]; got != float64(0) {
+			t.Fatalf("%s output_index = %#v, want 0", typ, got)
+		}
+		if typ != "response.output_item.added" && typ != "response.output_item.done" {
+			if got := payload["content_index"]; got != float64(0) {
+				t.Fatalf("%s content_index = %#v, want 0", typ, got)
+			}
+			if got := payload["item_id"]; got != terminalID {
+				t.Fatalf("%s item_id = %#v, want %#v", typ, got, terminalID)
+			}
+		}
 	}
 	items := c.OutputItems()
 	if len(items) != 1 || len(items[0].Content) != 1 || items[0].Content[0].Refusal == nil {
