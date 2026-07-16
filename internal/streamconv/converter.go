@@ -61,6 +61,8 @@ var (
 	anDeltaInputJSON = string(aconstant.ValueOf[aconstant.InputJSONDelta]())
 )
 
+const refusalFallback = "I can't help with that."
+
 // Converter turns a stream of Anthropic SSE events into Response SSE events.
 type Converter struct {
 	respID      string
@@ -542,7 +544,7 @@ func (c *Converter) recordStopReason(ev *anthropic.MessageStreamEventUnion) {
 	if ev.Delta.StopReason == anthropic.StopReasonRefusal {
 		c.refusalText = ev.Delta.StopDetails.Explanation
 		if c.refusalText == "" {
-			c.refusalText = string(ev.Delta.StopDetails.Category)
+			c.refusalText = refusalFallback
 		}
 	}
 	if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 {
@@ -577,6 +579,7 @@ func statusFor(reason string) (status, incompleteReason string) {
 func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
 	if c.stopReason == string(anthropic.StopReasonRefusal) {
+		c.outputItems = nil
 		out = append(out, c.emitRefusalEvents()...)
 	}
 

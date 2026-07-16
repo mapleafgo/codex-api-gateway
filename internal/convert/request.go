@@ -716,7 +716,10 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	if tc.OfAllowedTools != nil {
 		if out.ToolChoice.OfTool != nil {
 			_, err := allowedToolNames(req.Tools, tc.OfAllowedTools)
-			return err
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("structured output cannot be combined with allowed_tools: Anthropic has no equivalent constrained forced-tool mode")
 		}
 		if err := applyAllowedTools(out, req.Tools, tc.OfAllowedTools); err != nil {
 			return err
@@ -727,10 +730,22 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	if out.ToolChoice.OfTool != nil {
 		return nil // already forced by structured output
 	}
+	defer applyParallelToolChoice(out, req)
+	if tc.OfFunctionTool != nil {
+		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "function", name: tc.OfFunctionTool.Name})
+	}
+	if tc.OfCustomTool != nil {
+		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "custom", name: tc.OfCustomTool.Name})
+	}
+	if tc.OfSpecificApplyPatchToolChoice != nil {
+		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "apply_patch", name: "apply_patch"})
+	}
+	if tc.OfSpecificShellToolChoice != nil {
+		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "shell", name: "shell"})
+	}
 	if len(out.Tools) == 0 {
 		return nil
 	}
-	defer applyParallelToolChoice(out, req)
 	if tc.OfToolChoiceMode.Valid() {
 		switch string(tc.OfToolChoiceMode.Value) {
 		case model.ToolChoiceAuto:
@@ -742,22 +757,19 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 		}
 		return nil
 	}
-	if tc.OfFunctionTool != nil {
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: tc.OfFunctionTool.Name},
-		}
-	} else if tc.OfCustomTool != nil {
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: tc.OfCustomTool.Name},
-		}
-	} else if tc.OfSpecificApplyPatchToolChoice != nil {
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: "apply_patch"},
-		}
-	} else if tc.OfSpecificShellToolChoice != nil {
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: "shell"},
-		}
+	return nil
+}
+
+func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesponses.ToolUnionParam, want toolIdentity) error {
+	identities, err := declaredToolIdentities(declared)
+	if err != nil {
+		return err
+	}
+	if !hasToolIdentity(identities, want) {
+		return fmt.Errorf("tool_choice %s is not declared", want)
+	}
+	out.ToolChoice = anthropic.ToolChoiceUnionParam{
+		OfTool: &anthropic.ToolChoiceToolParam{Name: want.convertedName()},
 	}
 	return nil
 }
@@ -778,10 +790,12 @@ func applyAllowedTools(out *anthropic.MessageNewParams, declared []oairesponses.
 	}
 	out.Tools = filtered
 	switch allowed.Mode {
+	case oairesponses.ToolChoiceAllowedModeAuto:
+		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
 	case oairesponses.ToolChoiceAllowedModeRequired:
 		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAny: &anthropic.ToolChoiceAnyParam{}}
 	default:
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
+		return fmt.Errorf("tool_choice allowed_tools mode %q is unsupported", allowed.Mode)
 	}
 	return nil
 }

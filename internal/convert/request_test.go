@@ -734,6 +734,123 @@ func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
 	}
 }
 
+func TestStructuredOutputRejectsAllowedToolsWithoutEquivalent(t *testing.T) {
+	for _, mode := range []string{"auto", "required"} {
+		t.Run(mode, func(t *testing.T) {
+			req := mustReq(t, `{
+				"model":"gpt-5",
+				"input":"hi",
+				"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
+				"tool_choice":{"type":"allowed_tools","mode":"`+mode+`","tools":[{"type":"function","name":"lookup"}]}
+			}`)
+
+			_, err := ToAnthropic(req, &config.Config{})
+			if err == nil || !strings.Contains(err.Error(), "structured output cannot be combined with allowed_tools") {
+				t.Fatalf("expected structured-output allowed_tools error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestAllowedToolsRejectsUnknownMode(t *testing.T) {
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":"hi",
+		"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+		"tool_choice":{"type":"allowed_tools","mode":"unexpected","tools":[{"type":"function","name":"lookup"}]}
+	}`)
+
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), `allowed_tools mode "unexpected"`) {
+		t.Fatalf("expected unknown allowed_tools mode error, got %v", err)
+	}
+}
+
+func TestSpecificToolChoiceRejectsUndeclaredIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "function_custom_same_name",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"custom","name":"search"}],"tool_choice":{"type":"function","name":"search"}}`,
+			want: `function "search" is not declared`,
+		},
+		{
+			name: "function_missing",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"other","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"search"}}`,
+			want: `function "search" is not declared`,
+		},
+		{
+			name: "apply_patch_missing",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"other","parameters":{"type":"object"}}],"tool_choice":{"type":"apply_patch"}}`,
+			want: `apply_patch "apply_patch" is not declared`,
+		},
+		{
+			name: "shell_missing",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"other","parameters":{"type":"object"}}],"tool_choice":{"type":"shell"}}`,
+			want: `shell "shell" is not declared`,
+		},
+		{
+			name: "shell_does_not_match_local_shell",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"local_shell"}],"tool_choice":{"type":"shell"}}`,
+			want: `shell "shell" is not declared`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestSpecificToolChoiceMapsDeclaredIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "function",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"lookup"}}`,
+			want: "lookup",
+		},
+		{
+			name: "custom",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"custom","name":"lookup"}],"tool_choice":{"type":"custom","name":"lookup"}}`,
+			want: "lookup",
+		},
+		{
+			name: "apply_patch",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"apply_patch"}],"tool_choice":{"type":"apply_patch"}}`,
+			want: "apply_patch",
+		},
+		{
+			name: "shell",
+			body: `{"model":"gpt-5","input":"hi","tools":[{"type":"shell"}],"tool_choice":{"type":"shell"}}`,
+			want: "shell",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != tt.want {
+				t.Fatalf("specific choice = %+v, want %q", out.ToolChoice, tt.want)
+			}
+		})
+	}
+}
+
 func TestAllowedToolsFiltersFunctionCustomAndShell(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",

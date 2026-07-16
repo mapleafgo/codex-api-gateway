@@ -38,10 +38,10 @@
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
 | `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
-| `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output |
-| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟 |
+| `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与 `allowed_tools` 组合无等价能力，明确转换失败 |
+| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与 `allowed_tools` 组合无等价能力，明确转换失败 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
-| `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持，详见 Tool Choice Union |
+| `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | session replay | `supported` | 依赖本地 store |
 | `store` | local session storage switch | `supported` | `false` 跳过存储与回填 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
@@ -135,11 +135,11 @@
 | `none` | `tool_choice.none` | `supported` | 直接映射 |
 | `auto` | `tool_choice.auto` | `supported` | 直接映射 |
 | `required` | `tool_choice.any` | `supported` | Anthropic 使用 `any` |
-| `function` | `tool_choice.tool(name)` | `supported` | 直接映射 |
-| `custom` | `tool_choice.tool(name)` | `supported` | 直接映射 |
-| `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
-| `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配；function/custom、namespace 子工具、shell/local_shell、apply_patch、tool_search 过滤后映射，转换名冲突和 hosted/MCP allowed 条目明确报错 |
+| `function` | `tool_choice.tool(name)` | `supported` | 仅在声明了相同 type/name 的 function 时映射，否则明确转换失败 |
+| `custom` | `tool_choice.tool(name)` | `supported` | 仅在声明了相同 type/name 的 custom 时映射，否则明确转换失败 |
+| `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 仅在已声明 `apply_patch` 时映射，否则明确转换失败 |
+| `shell` | `tool_choice.tool("shell")` | `supported` | 仅在已声明 `shell` 时映射；`local_shell` 不是此 specific choice 的等价声明 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错；不能与 structured output 同时使用 |
 | hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
 | `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |

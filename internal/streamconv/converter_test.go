@@ -1007,6 +1007,76 @@ func TestRefusalWithoutDetailsStillEmitsRefusalEvents(t *testing.T) {
 	}
 }
 
+func TestRefusalDiscardsPartialTextFromTerminalOutput(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_partial_refusal", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "text_delta", Text: "partial text"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			StopReason:  anthropic.StopReasonRefusal,
+			StopDetails: anthropic.RefusalStopDetails{Explanation: "I can't help with that."},
+		},
+	})
+	events, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	terminal := eventData(t, events[len(events)-1])
+	response := terminal["response"].(map[string]any)
+	output := response["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("terminal refusal output = %#v, want only refusal item", output)
+	}
+	content := output[0].(map[string]any)["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["refusal"] != "I can't help with that." {
+		t.Fatalf("terminal refusal content = %#v", content)
+	}
+	if strings.Contains(string(events[len(events)-1].Data), "partial text") {
+		t.Fatalf("terminal response leaked partial text: %s", events[len(events)-1].Data)
+	}
+	items := c.OutputItems()
+	if len(items) != 1 || len(items[0].Content) != 1 || items[0].Content[0].Refusal == nil {
+		t.Fatalf("stored output items = %#v, want only refusal", items)
+	}
+}
+
+func TestRefusalUsesReadableFallbackInsteadOfCategory(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_refusal_fallback", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			StopReason:  anthropic.StopReasonRefusal,
+			StopDetails: anthropic.RefusalStopDetails{Category: anthropic.RefusalStopDetailsCategoryCyber},
+		},
+	})
+	events, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	terminal := eventData(t, events[len(events)-1])
+	output := terminal["response"].(map[string]any)["output"].([]any)
+	part := output[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if part["refusal"] != "I can't help with that." {
+		t.Fatalf("refusal fallback = %#v, want readable text", part)
+	}
+	if part["refusal"] == "cyber" {
+		t.Fatalf("refusal must not expose category as text: %#v", part)
+	}
+}
+
 func TestEmptyOutputTextKeepsRequiredTextFields(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{

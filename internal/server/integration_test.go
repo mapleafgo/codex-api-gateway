@@ -352,6 +352,74 @@ func TestIntegrationToolMultiRound(t *testing.T) {
 	}
 }
 
+func TestIntegrationRefusalDoesNotPersistPartialText(t *testing.T) {
+	var calls atomic.Int64
+	var requestBodies []string
+	var requestMu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		requestMu.Lock()
+		requestBodies = append(requestBodies, string(body))
+		requestMu.Unlock()
+
+		lines := []string{
+			`{"type":"message_start","message":{"id":"m_partial_refusal","model":"claude"}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial text"}}`,
+			`{"type":"message_delta","delta":{"type":"message_delta","stop_reason":"refusal","stop_details":{"category":"cyber","explanation":"I can't help with that."}}}`,
+			`{"type":"message_stop"}`,
+		}
+		if calls.Add(1) == 2 {
+			lines = textStreamLines()
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		for _, line := range lines {
+			if _, err := io.WriteString(w, "data: "+line+"\n\n"); err != nil {
+				t.Fatalf("write upstream response: %v", err)
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	first := postResponses(t, ts, textStreamBody)
+	incomplete := findEvent(t, first, "response.incomplete")
+	output := incomplete.data["response"].(map[string]any)["output"].([]any)
+	if len(output) != 1 || strings.Contains(incomplete.rawData, "partial text") {
+		t.Fatalf("terminal refusal output = %#v, raw=%s", output, incomplete.rawData)
+	}
+
+	entry, ok := srv.sess.Get("m_partial_refusal")
+	if !ok {
+		t.Fatal("refusal response should be persisted for replay")
+	}
+	if len(entry.Items) != 1 || len(entry.Items[0].Content) != 1 || entry.Items[0].Content[0].Refusal == nil {
+		t.Fatalf("stored refusal items = %#v, want only refusal", entry.Items)
+	}
+
+	postResponses(t, ts, `{"model":"gpt-5","previous_response_id":"m_partial_refusal","input":"follow-up","stream":true}`)
+	requestMu.Lock()
+	secondRequest := requestBodies[1]
+	requestMu.Unlock()
+	if strings.Contains(secondRequest, "partial text") {
+		t.Fatalf("previous_response_id replay leaked partial text: %s", secondRequest)
+	}
+	if !strings.Contains(secondRequest, "I can't help with that.") {
+		t.Fatalf("previous_response_id replay omitted refusal: %s", secondRequest)
+	}
+}
+
 func TestIntegrationUnsupportedBlockDoesNotPersistHiddenOutput(t *testing.T) {
 	var calls atomic.Int64
 	var requestBodies []string
