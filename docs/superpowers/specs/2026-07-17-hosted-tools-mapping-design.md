@@ -51,15 +51,17 @@
 
 **痛点**：同一 tool 类型的行为散落在 6+ 处 switch——请求侧 `appendToolUnion`、`declaredToolIdentities`、`parseAllowedToolIdentities`、`formatToolNames`、`setLastToolCacheControl`、`FreeformToolNames`；回程侧 `handleBlockStart`、`handleServerToolUseStart`、`handleWebSearchResultStart`。新增一个 tool 要同步改 5–6 处，易遗漏（protocol-coverage 反复出现的原因）。
 
-**架构：catalog 驱动**。建立 tool 处理的单一事实来源（新增 `internal/convert/toolcatalog`，或并入 `convert`），每种 tool 在一处定义全部维度：
+**架构：catalog 驱动**。建立 tool 处理的单一事实来源（新增 `internal/convert/toolcatalog`，或并入 `convert`）。每种 tool 在一处登记其**完整生命周期四维度**，覆盖 SDK 已知的全部变体（OpenAI Tool Union 17 项 / Input Item 31 项 / Tool Choice 9 项 / Anthropic 回程 block 全集）：
 
-- **身份**：`openaiType`、固定名（`shell`/`apply_patch`/`tool_search`）或字段名、namespace 归属。
-- **类别 `kind`**：`clientTool`（→ `ToolParam`，客户端执行）/ `serverTool`（→ 标准 server tool union 变体，Anthropic 执行）/ `betaServerTool`（→ beta 注入，如 MCP）/ `unsupported`（fail-fast）。
-- **freeform**：custom freeform（回程把 tool_use input 解包成裸文本）。
-- **请求映射 `mapRequest`**：OpenAI tool → `anthropicDecl`（`ToolParam` / server tool union / beta 注入 / error）。
-- **回程映射**（server/beta tool）：`mapServerCall`（block → call item + events）、`mapResult`（result block → outputs + completed）。
+- **身份 identity**：`openaiType`、固定名（`shell`/`apply_patch`/`tool_search`）或字段名、namespace 归属、freeform 标记——统一服务于 `tool_choice`、`allowed_tools`、命名与回程 function/custom 判定。
+- **类别 kind**：`clientTool`（→ `ToolParam`，客户端执行）/ `serverTool`（→ 标准 server tool union 变体，Anthropic 执行）/ `betaServerTool`（→ beta 注入，如 MCP）/ `unsupported`（fail-fast 或 raw_preserved，按矩阵）。
+- **声明映射 mapDecl**：OpenAI Tool Union 变体 → Anthropic 声明（`ToolParam` / server tool union / beta 注入 / error）。
+- **回灌映射 mapReplay**：OpenAI Input Item 的 call+output 对 → Anthropic 历史 `tool_use`+`tool_result`（clientTool）或 server tool 回放（server/betaTool），服务多轮上下文。覆盖 `function/custom/shell/apply_patch/tool_search/web_search/code_interpreter/mcp` 调用与输出。
+- **流式映射 mapStream**：Anthropic 回程 block（`tool_use`/`server_tool_use`/`web_search_tool_result`/`code_execution_tool_result`/`mcp_tool_use`/`mcp_tool_result`/`web_fetch_*`/`bash`·`text_editor_code_execution_*`）→ Responses call item + events + outputs。
 
-请求侧与回程侧的 dispatch 全部改为遍历 catalog 查询，消除散落 switch。
+**全变体兜底**：SDK 每个变体在 catalog 都有登记——本批不支持的 hosted tool（`file_search`/`computer`/`computer_use_preview`/`image_generation`/`programmatic_tool_calling` 及其 input item / tool_choice）统一登记为 `unsupported`，按 `docs/protocol-coverage.md` 矩阵状态走 fail-fast 或 raw_preserved，**不再有散落 default 分支**。这是"通用性"的兑现：任何协议变体都有 catalog 处所，新增支持只需升级该登记的 kind 与映射。
+
+请求侧（声明/回灌/身份）与回程侧（流式）的 dispatch 全部改为遍历 catalog 查询，消除散落 switch。
 
 **收益**：新增 tool（code interpreter / MCP / 未来 hosted tool）= catalog 注册一项 + 提供映射函数，零散落 switch 改动；tool 行为集中、与 `docs/protocol-coverage.md` 矩阵一一对应、可审计。
 
