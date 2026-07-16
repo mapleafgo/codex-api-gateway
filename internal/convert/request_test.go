@@ -517,6 +517,23 @@ func TestUnsupportedToolDefinitionReturnsError(t *testing.T) {
 	}
 }
 
+func TestToolSearchOutputUnsupportedToolReturnsError(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{
+				oairesponses.ResponseInputItemParamOfToolSearchOutput([]oairesponses.ToolUnionParam{{
+					OfImageGeneration: &oairesponses.ToolImageGenerationParam{},
+				}}),
+			},
+		},
+	}
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
+		t.Fatalf("expected unsupported tool error, got %v", err)
+	}
+}
+
 func TestAllowedToolsFiltersAnthropicToolsAndUsesRequiredMode(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
@@ -561,6 +578,41 @@ func TestAllowedToolsErrorsWhenNoSupportedToolsRemain(t *testing.T) {
 	_, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
 		t.Fatalf("expected allowed_tools error, got %v", err)
+	}
+}
+
+func TestAllowedToolsRejectsUnsupportedAllowedEntries(t *testing.T) {
+	tests := []struct {
+		name string
+		tool map[string]any
+	}{
+		{name: "mcp", tool: map[string]any{"type": "mcp", "server_label": "deepwiki"}},
+		{name: "image_generation", tool: map[string]any{"type": "image_generation"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &oairesponses.ResponseNewParams{
+				Model: "gpt-5",
+				Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+				Tools: []oairesponses.ToolUnionParam{
+					{OfFunction: &oairesponses.FunctionToolParam{Name: "keep", Parameters: map[string]any{"type": "object"}}},
+				},
+				ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+					OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+						Mode: oairesponses.ToolChoiceAllowedModeRequired,
+						Tools: []map[string]any{
+							{"type": "function", "name": "keep"},
+							tt.tool,
+						},
+					},
+				},
+			}
+			_, err := ToAnthropic(req, &config.Config{})
+			if err == nil || !strings.Contains(err.Error(), "unsupported tool_choice") {
+				t.Fatalf("expected unsupported tool_choice error, got %v", err)
+			}
+		})
 	}
 }
 

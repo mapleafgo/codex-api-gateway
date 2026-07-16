@@ -442,7 +442,9 @@ func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 }
 
 func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instructionPart, output *oairesponses.ResponseToolSearchOutputItemParam) error {
-	appendToolList(out, output.Tools)
+	if err := appendToolList(out, output.Tools); err != nil {
+		return err
+	}
 	*sysParts = append(*sysParts, instructionPart{
 		role: model.RoleDeveloper,
 		text: formatToolNames("tool_search_output", output.Tools),
@@ -726,6 +728,9 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.ToolChoiceAllowedParam) error {
 	allowedNames := map[string]bool{}
 	for _, tool := range allowed.Tools {
+		if typ, _ := tool["type"].(string); !isSupportedAllowedToolType(typ) {
+			return fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
+		}
 		name, _ := tool["name"].(string)
 		if name != "" {
 			allowedNames[name] = true
@@ -748,6 +753,15 @@ func applyAllowedTools(out *anthropic.MessageNewParams, allowed *oairesponses.To
 		out.ToolChoice = anthropic.ToolChoiceUnionParam{OfAuto: &anthropic.ToolChoiceAutoParam{}}
 	}
 	return nil
+}
+
+func isSupportedAllowedToolType(typ string) bool {
+	switch typ {
+	case "function", "custom", "shell", "apply_patch":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyParallelToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
