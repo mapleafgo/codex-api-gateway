@@ -32,6 +32,7 @@ var (
 	ItemTypeReasoning          = string(oaconstant.ValueOf[oaconstant.Reasoning]())
 
 	ContentTypeOutputText  = string(oaconstant.ValueOf[oaconstant.OutputText]())
+	ContentTypeRefusal     = string(oaconstant.ValueOf[oaconstant.Refusal]())
 	ContentTypeSummaryText = string(oaconstant.ValueOf[oaconstant.SummaryText]())
 
 	StructuredOutputJSONObjectTool = string(oaconstant.ValueOf[oaconstant.JSONObject]())
@@ -47,8 +48,6 @@ const (
 
 	IncompleteReasonMaxOutputTokens = "max_output_tokens"
 	IncompleteReasonContentFilter   = "content_filter"
-	IncompleteReasonPauseTurn       = "pause_turn"
-	IncompleteReasonRefusal         = "refusal"
 
 	ReasoningSummaryConcise = string(oairesponses.ReasoningSummaryConcise)
 	ReasoningEffortNone     = string(oairesponses.ReasoningEffortNone)

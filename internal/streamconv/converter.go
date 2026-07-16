@@ -27,6 +27,8 @@ var (
 	evContentPartDone            = string(oaconstant.ValueOf[oaconstant.ResponseContentPartDone]())
 	evOutputTextDelta            = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
 	evOutputTextDone             = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
+	evRefusalDelta               = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDelta]())
+	evRefusalDone                = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDone]())
 	evReasoningTextDelta         = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
 	evReasoningTextDone          = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
 	evReasoningSummaryPartAdded  = string(oaconstant.ValueOf[oaconstant.ResponseReasoningSummaryPartAdded]())
@@ -91,9 +93,10 @@ type Converter struct {
 	thinkBuilder strings.Builder
 	sigBuilder   strings.Builder
 
-	stopReason string
-	usage      *model.ResponseUsage
-	completed  bool
+	stopReason  string
+	refusalText string
+	usage       *model.ResponseUsage
+	completed   bool
 
 	outputItems []model.OutputItem
 	echo        model.ResponseObjectParams
@@ -176,7 +179,7 @@ func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEven
 		c.recordStopReason(ev)
 	case anMessageStop:
 		if !c.completed {
-			out = append(out, c.handleComplete())
+			out = append(out, c.handleComplete()...)
 			c.completed = true
 		}
 	case anError:
@@ -511,6 +514,12 @@ func (c *Converter) emitSummaryEvents(itemID, text string) []model.SSEEvent {
 
 func (c *Converter) recordStopReason(ev *anthropic.MessageStreamEventUnion) {
 	c.stopReason = string(ev.Delta.StopReason)
+	if ev.Delta.StopReason == anthropic.StopReasonRefusal {
+		c.refusalText = ev.Delta.StopDetails.Explanation
+		if c.refusalText == "" {
+			c.refusalText = string(ev.Delta.StopDetails.Category)
+		}
+	}
 	if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 {
 		c.usage = &model.ResponseUsage{
 			InputTokens:  int(ev.Usage.InputTokens),
@@ -527,9 +536,9 @@ func statusFor(reason string) (status, incompleteReason string) {
 	case anthropic.StopReasonMaxTokens:
 		return model.ResponseStatusIncomplete, model.IncompleteReasonMaxOutputTokens
 	case anthropic.StopReasonPauseTurn:
-		return model.ResponseStatusIncomplete, model.IncompleteReasonPauseTurn
+		return model.ResponseStatusIncomplete, ""
 	case anthropic.StopReasonRefusal:
-		return model.ResponseStatusIncomplete, model.IncompleteReasonRefusal
+		return model.ResponseStatusIncomplete, model.IncompleteReasonContentFilter
 	case anthropic.StopReasonStopSequence:
 		return model.ResponseStatusCompleted, ""
 	default:
@@ -540,7 +549,12 @@ func statusFor(reason string) (status, incompleteReason string) {
 	}
 }
 
-func (c *Converter) handleComplete() model.SSEEvent {
+func (c *Converter) handleComplete() []model.SSEEvent {
+	var out []model.SSEEvent
+	if c.stopReason == string(anthropic.StopReasonRefusal) && c.refusalText != "" {
+		out = append(out, c.emitRefusalEvents()...)
+	}
+
 	status, incompleteReason := statusFor(c.stopReason)
 
 	resp := model.NewResponseObject(c.respID, status, c.model, c.createdAt, c.echo)
@@ -563,9 +577,50 @@ func (c *Converter) handleComplete() model.SSEEvent {
 		eventType = evResponseIncomplete
 	}
 
-	return model.MarshalEvent(eventType, model.TerminalResponseEvent{
+	out = append(out, model.MarshalEvent(eventType, model.TerminalResponseEvent{
 		Type: eventType, SequenceNumber: c.nextSeq(), Response: resp,
-	})
+	}))
+	return out
+}
+
+func (c *Converter) emitRefusalEvents() []model.SSEEvent {
+	idx := c.itemOrder
+	c.itemOrder++
+	itemID := fmt.Sprintf("msg_%d", idx)
+	item := model.OutputItem{
+		Type:    model.ItemTypeMessage,
+		ID:      itemID,
+		Role:    model.RoleAssistant,
+		Phase:   model.AssistantPhaseFinalAnswer,
+		Status:  model.ResponseStatusCompleted,
+		Content: []model.OutputText{{Type: model.ContentTypeRefusal, Text: c.refusalText}},
+	}
+	c.outputItems = append(c.outputItems, item)
+
+	return []model.SSEEvent{
+		model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: item,
+		}),
+		model.MarshalEvent(evContentPartAdded, model.ContentPartAddedEvent{
+			Type: evContentPartAdded, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
+			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeRefusal},
+		}),
+		model.MarshalEvent(evRefusalDelta, model.RefusalDeltaEvent{
+			Type: evRefusalDelta, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
+			ItemID: itemID, Delta: c.refusalText,
+		}),
+		model.MarshalEvent(evRefusalDone, model.RefusalDoneEvent{
+			Type: evRefusalDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
+			ItemID: itemID, Refusal: c.refusalText,
+		}),
+		model.MarshalEvent(evContentPartDone, model.ContentPartDoneEvent{
+			Type: evContentPartDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, ContentIndex: 0,
+			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeRefusal, Text: c.refusalText},
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(), OutputIndex: idx, Item: item,
+		}),
+	}
 }
 
 func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) model.SSEEvent {

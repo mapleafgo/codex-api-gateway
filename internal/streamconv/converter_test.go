@@ -2,10 +2,12 @@ package streamconv
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
 func evType(t *testing.T, data json.RawMessage) string {
@@ -15,6 +17,14 @@ func evType(t *testing.T, data json.RawMessage) string {
 		t.Fatalf("bad sse data: %v", err)
 	}
 	return m["type"].(string)
+}
+
+func eventTypes(evs []model.SSEEvent) []string {
+	out := make([]string, 0, len(evs))
+	for _, ev := range evs {
+		out = append(out, ev.Type)
+	}
+	return out
 }
 
 func TestConverterTextDelta(t *testing.T) {
@@ -671,6 +681,65 @@ func TestMaxTokensIncomplete(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected response.incomplete for max_tokens")
+}
+
+func TestPauseTurnDoesNotEmitInvalidIncompleteReason(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_pause", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: anthropic.StopReasonPauseTurn},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	last := evs[len(evs)-1]
+	if last.Type != "response.incomplete" {
+		t.Fatalf("expected response.incomplete, got %s", last.Type)
+	}
+	if strings.Contains(string(last.Data), `"reason":"pause_turn"`) {
+		t.Fatalf("pause_turn is not an OpenAI incomplete_details.reason: %s", last.Data)
+	}
+}
+
+func TestRefusalStopReasonEmitsRefusalPartAndContentFilter(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_refusal", Model: "claude-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			StopReason: anthropic.StopReasonRefusal,
+			StopDetails: anthropic.RefusalStopDetails{
+				Category:    anthropic.RefusalStopDetailsCategoryCyber,
+				Explanation: "I can't help with that.",
+			},
+		},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	types := eventTypes(evs)
+	for _, want := range []string{
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.refusal.delta",
+		"response.refusal.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.incomplete",
+	} {
+		if !slices.Contains(types, want) {
+			t.Fatalf("missing %s in %v", want, types)
+		}
+	}
+	last := evs[len(evs)-1]
+	if !strings.Contains(string(last.Data), `"reason":"content_filter"`) {
+		t.Fatalf("refusal should map to OpenAI content_filter: %s", last.Data)
+	}
 }
 
 func decodePayload(t *testing.T, data []byte) map[string]any {

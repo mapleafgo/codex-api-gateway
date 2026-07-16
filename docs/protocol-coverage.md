@@ -192,8 +192,8 @@
 | `response.output_text.delta` | `text_delta` | `supported` | 已输出 |
 | `response.output_text.done` | text block stop | `supported` | 已输出 |
 | `response.output_text.annotation.added` | `citations_delta` | `deferred` | 需映射 Anthropic citation |
-| `response.refusal.delta` | Anthropic refusal | `deferred` | 第一批补齐目标 |
-| `response.refusal.done` | Anthropic refusal | `deferred` | 第一批补齐目标 |
+| `response.refusal.delta` | Anthropic refusal | `supported` | 已输出 |
+| `response.refusal.done` | Anthropic refusal | `supported` | 已输出 |
 | `response.reasoning_text.delta` | `thinking_delta` | `supported` | 已输出 |
 | `response.reasoning_text.done` | thinking block stop | `supported` | 已输出 |
 | `response.reasoning_summary_part.added` | summarized thinking | `supported` | summarized 模式 |
@@ -282,15 +282,15 @@
 | response status | `queued` | none | `unsupported_by_backend` | 无队列状态 |
 | response status | `cancelled` | client cancel | `deferred` | 需决定是否生成 cancelled response |
 | incomplete reason | `max_output_tokens` | `max_tokens` | `supported` | 直接映射 |
-| incomplete reason | `content_filter` | policy/refusal | `deferred` | 第一批修正目标 |
+| incomplete reason | `content_filter` | policy/refusal | `supported` | refusal 映射 |
 | stop reason | none | `end_turn` | `supported` | completed |
 | stop reason | none | `tool_use` | `supported` | completed，客户端继续工具回合 |
 | stop reason | none | `stop_sequence` | `supported` | completed |
 | stop reason | none | `max_tokens` | `supported` | incomplete/max_output_tokens |
-| stop reason | none | `pause_turn` | `deferred` | 不能写入非官方 OpenAI incomplete reason |
-| stop reason | none | `refusal` | `deferred` | 不能写入非官方 OpenAI incomplete reason |
+| stop reason | none | `pause_turn` | `lossy_supported` | incomplete，但不写入非法 reason |
+| stop reason | none | `refusal` | `supported` | 映射为 content_filter 并输出 refusal 事件 |
 | content part | `output_text` | `text` | `supported` | 直接映射 |
-| content part | `refusal` | refusal stop/details | `deferred` | 第一批补齐目标 |
+| content part | `refusal` | refusal stop/details | `supported` | 已输出 |
 | content part | `reasoning_text` | `thinking` | `supported` | streaming part |
 | reasoning summary | `summary_text` | summarized thinking | `supported` | summarized 模式 |
 | tool choice | `auto` | `auto` | `supported` | 直接映射 |

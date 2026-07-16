@@ -29,6 +29,26 @@ type OutputTextDoneEvent struct {
 	Text           string `json:"text"`
 }
 
+// RefusalDeltaEvent 承载拒绝内容的增量文本。
+type RefusalDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index,omitempty"`
+	ItemID         string `json:"item_id"`
+	Delta          string `json:"delta"`
+}
+
+// RefusalDoneEvent 标记拒绝内容已经结束。
+type RefusalDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ContentIndex   int    `json:"content_index,omitempty"`
+	ItemID         string `json:"item_id"`
+	Refusal        string `json:"refusal"`
+}
+
 // ReasoningTextDeltaEvent carries a reasoning text token delta.
 type ReasoningTextDeltaEvent struct {
 	Type           string `json:"type"`
