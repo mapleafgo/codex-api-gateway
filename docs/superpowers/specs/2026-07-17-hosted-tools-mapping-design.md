@@ -1,7 +1,7 @@
 # Hosted Tools 代理映射设计（code interpreter / web search / MCP）
 
 日期: 2026-07-17
-状态: 设计草案，待用户 review
+状态: 设计定稿，批次 0 plan 就绪（`docs/superpowers/plans/2026-07-17-tool-catalog-refactor.md`）
 分支: `feat/hosted-tools`
 关联: `docs/protocol-coverage.md`（hosted tools 行的专项收尾）、`docs/superpowers/specs/2026-07-16-full-protocol-coverage-design.md`
 
@@ -23,7 +23,7 @@
 
 - 不在网关内自建代码沙箱或 MCP client 进程（即不做"网关托管执行"）。仅做协议映射，执行仍由 Anthropic 侧 hosted 能力承担。
 - 不伪装 Anthropic 没有的能力为成功；所有信息损失在矩阵与 README 显式登记。
-- 不改动 function / custom / shell / apply_patch / reasoning 等已 `supported` 路径。
+- 不改变已 `supported` 路径的**协议行为**：function / custom / shell / apply_patch / tool_search / namespace / web_search 在批次 0 会把实现迁移进 catalog（代码重构），但对外输入输出完全不变，由现有测试锁定；reasoning / compaction 等非 tool 路径不在 catalog 范围，保持原样。
 
 ## 可行性依据（资料 + SDK，三重交叉验证）
 
@@ -83,9 +83,9 @@ web_search 是当前唯一已实现的 server tool（`web_search` / `web_search_
 
 两端都是 hosted Python 沙箱，结构与 web search 同构（`server_tool_use` + 结果块，靠 `tool_use_id` 关联）。
 
-#### 1.1 请求侧（`internal/convert/request.go`）
+#### 1.1 请求侧（批次 A：catalog 注册 `code_interpreter` Spec，`serverTool`）
 
-`appendToolUnion` 新增分支：
+`mapDecl`：
 
 ```
 OpenAI OfCodeInterpreter{ Container: {type:auto, memory_limit, file_ids} | "cntr_xxx" }
@@ -94,11 +94,11 @@ OpenAI OfCodeInterpreter{ Container: {type:auto, memory_limit, file_ids} | "cntr
 
 - `container`（含 `file_ids` / `memory_limit` / 显式 `cntr_xxx`）**无 Anthropic 等价，丢弃**（Anthropic code execution 无状态单次执行、无 container 概念）。登记为已知损失。
 - 版本选择：`code_execution_20250522`（最稳定的标准变体；SDK 同时提供 20250825/20260120/20260521，可在配置层后续扩展，本轮固定 20250522）。
-- 同步更新：`declaredToolIdentities` / `parseAllowedToolIdentities` / `setLastToolCacheControl`（为 `OfCodeExecutionTool20250522` 变体加 cache_control 分支，参考现有 `OfWebSearchTool20250305` 分支）。
+- identity / tool_choice / allowed_tools 随 catalog 注册自动可用（批次 0 已统一）；`setLastToolCacheControl` 对 `OfCodeExecutionTool20250522` 变体的 cache_control 派发随 catalog 声明统一处理（与 web_search 同路径）。
 
 #### 1.2 回程流式（`internal/streamconv/converter.go`）
 
-当前 `code_execution` 走 `handleSkippedServerToolUseStart` / `handleSkippedBlockStart`（跳过）。改为真正映射，复刻 web search 的 `webSearchByToolUseID` 模式，新增 `codeExecByToolUseID`：
+当前 `code_execution` 走跳过（`handleSkippedServerToolUseStart` / `handleSkippedBlockStart`）。批次 A 在 catalog/streamconv 注册 `code_execution` 的回程 handler（复刻批次 0 为 web_search 建立的 `serverTool` 模式，按 `tool_use_id` 关联）：
 
 | Anthropic 事件 | Responses 事件 / item |
 |---|---|
@@ -112,7 +112,7 @@ OpenAI OfCodeInterpreter{ Container: {type:auto, memory_limit, file_ids} | "cntr
 
 #### 1.3 input 回灌（多轮）
 
-OpenAI input 里的历史 `code_interpreter_call` item：转成 Anthropic 历史内容块回放——`server_tool_use(code_execution, input={code})` + `code_execution_tool_result(stdout=outputs.logs)`，使模型在多轮上下文中保留历史代码与结果。`container_id` 丢弃。
+批次 A 在 catalog `mapReplay` 注册 `code_interpreter_call`：OpenAI input 历史项转成 Anthropic 历史内容块回放——`server_tool_use(code_execution, input={code})` + `code_execution_tool_result(stdout=outputs.logs)`，使模型在多轮上下文中保留历史代码与结果。`container_id` 丢弃。
 
 #### 1.4 衍生 server tool result（保持 `deferred`）
 
@@ -122,11 +122,11 @@ OpenAI input 里的历史 `code_interpreter_call` item：转成 Anthropic 历史
 
 **状态重评**：矩阵原判 `unsupported_by_backend`（"lifecycle 不等价"）。调研证实 Anthropic 提供 managed MCP connector（beta），语义等价于 OpenAI hosted MCP（都是服务端代连 remote MCP server、执行 tool）。故重评为 `lossy_supported`，损耗见 2.4。
 
-#### 2.1 client 层（`internal/anthropic/client.go`）
+#### 2.1 client 层（批次 B：`internal/anthropic/client.go`）
 
-请求含 MCP tool 时，`anthropic-beta` header 追加 `mcp-client-2025-11-20`（与现有 `interleaved-thinking-2025-05-14` 逗号分隔）。URL 不变（`/v1/messages`）。
+请求含 MCP tool 时，`anthropic-beta` header 追加 `mcp-client-2025-11-20`（与现有 `interleaved-thinking-2025-05-14` 逗号分隔）。URL 不变（`/v1/messages`）。触发条件由 catalog 声明（请求含 `betaServerTool` kind 的 tool）。
 
-#### 2.2 请求侧（`internal/convert/request.go`）
+#### 2.2 请求侧（批次 B：catalog 注册 `mcp` Spec，`betaServerTool`）
 
 ```
 OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
@@ -142,7 +142,7 @@ OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
 - `connector_id` / `tunnel_id`（OpenAI 私有 connector / Secure Tunnel）：Anthropic 无等价 → 不支持，请求时明确转换错误（保留这些来源时 fail-fast）。
 - **类型链约束**：标准 `MessageNewParams` 顶层无 `mcp_servers`、`ToolUnionParam` 无 `OfMCPToolset`。实现方案：`ToAnthropic` 额外产出 MCP 定义（server 列表 + toolset），`client.Stream` 在 marshal 后用类似 `injectStream` 的 JSON 注入把 `mcp_servers` 与 `mcp_toolset` 注入请求体（避免把整条类型链切到 beta）。
 
-#### 2.3 回程流式（`internal/streamconv/converter.go` + `client.go`）
+#### 2.3 回程流式（批次 B：catalog/streamconv 注册 `mcp_tool_use`/`mcp_tool_result` handler + `ScanEvents` probe）
 
 Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `MessageStreamEventUnion` / `ContentBlockStartEventContentBlockUnion` **无 `Of*` 变体承载**。方案：在 `ScanEvents` 增加 probe（参考现有 error 事件 probe 机制），识别 `type=mcp_tool_use` / `type=mcp_tool_result` 的 raw payload，合成 converter 可识别的结构化事件；converter 映射：
 
@@ -188,7 +188,7 @@ Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `Mes
 - 复刻 `internal/streamconv/converter_test.go` 的 web search 用例模式（server_tool_use → 事件链 → result → completed）。
 - wire 样本取自官方文档：code execution 的 `server_tool_use(code_execution)` + `code_execution_tool_result`；MCP 的 `mcp_tool_use` + `mcp_tool_result`。
 - 请求侧用 `internal/convert/request_test.go` 表驱动测试覆盖 tool 声明与 input 回灌。
-- 每项先写 RED 测试证明当前 fail-fast / 跳过，再实现，再 GREEN。涉及流式状态机补充 `task test-race`。
+- 批次 0 是纯重构，以现有测试为安全网（全程 GREEN，不写新 RED）；批次 A/B 是新能力，先写 RED 测试证明当前 fail-fast / 跳过，再实现，再 GREEN。涉及流式状态机补充 `task test-race`。
 
 ## 已知限制（同步更新 README「已知限制」与 `docs/protocol-coverage.md`）
 
