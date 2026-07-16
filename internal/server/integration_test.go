@@ -571,7 +571,7 @@ func TestIntegrationUnsupportedBlockDoesNotPersistHiddenOutput(t *testing.T) {
 			`{"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hidden output"}}`,
 			`{"type":"content_block_stop","index":0}`,
-			`{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_fetch"}}`,
+			`{"type":"content_block_start","index":1,"content_block":{"type":"totally_unknown_block"}}`,
 		}
 		if calls.Add(1) == 2 {
 			lines = textStreamLines()

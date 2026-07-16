@@ -625,9 +625,7 @@ func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 		Type:  "content_block_start",
 		Index: 0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "server_tool_use",
-			ID:   "srv_1",
-			Name: "web_fetch",
+			Type: "totally_unknown_block",
 		},
 	})
 	if len(evs) != 1 || evs[0].Type != "response.failed" {
@@ -649,7 +647,7 @@ func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 		t.Fatalf("failed response should have empty output: %v", output)
 	}
 	errObj := response["error"].(map[string]any)
-	if !strings.Contains(errObj["message"].(string), "server_tool_use") {
+	if !strings.Contains(errObj["message"].(string), "totally_unknown_block") {
 		t.Fatalf("failed event should name unsupported block: %v", errObj)
 	}
 	trailing, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
@@ -667,7 +665,7 @@ func TestUnsupportedAnthropicBlockSuppressesLaterErrorTerminal(t *testing.T) {
 	first, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type: "content_block_start",
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "server_tool_use",
+			Type: "totally_unknown_block",
 		},
 	})
 	errEv := &anthropic.MessageStreamEventUnion{Type: "error"}
@@ -688,6 +686,128 @@ func TestUnsupportedAnthropicBlockSuppressesLaterErrorTerminal(t *testing.T) {
 	}
 	if len(second) != 0 || len(third) != 0 {
 		t.Fatalf("completed converter should suppress later error/message_stop, got error=%+v stop=%+v", second, third)
+	}
+}
+
+// TestNonWebSearchServerToolUseSkippedNotFailed verifies that server tools
+// without a Responses equivalent (web_fetch, code_execution, ...) are silently
+// skipped instead of failing the stream. The block's start, delta, and stop
+// events are all ignored, and the stream completes normally.
+func TestNonWebSearchServerToolUseSkippedNotFailed(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_skip", Model: "claude-test"},
+	})
+
+	// text block before the skipped block — should produce events normally
+	textStart, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	eventByType(t, textStart, "response.output_item.added")
+
+	// web_fetch server_tool_use — must be skipped silently
+	skipStart, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "server_tool_use",
+			ID:   "srv_fetch",
+			Name: "web_fetch",
+		},
+	})
+	if len(skipStart) != 0 {
+		t.Fatalf("web_fetch server_tool_use should produce no events, got %+v", skipStart)
+	}
+
+	// delta for the skipped block — must be ignored
+	skipDelta, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 1,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: "{}"},
+	})
+	if len(skipDelta) != 0 {
+		t.Fatalf("delta for skipped block should produce no events, got %+v", skipDelta)
+	}
+
+	// web_fetch_tool_result — must also be skipped
+	resultStart, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 2,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "web_fetch_tool_result",
+		},
+	})
+	if len(resultStart) != 0 {
+		t.Fatalf("web_fetch_tool_result should produce no events, got %+v", resultStart)
+	}
+
+	// stop events for skipped blocks — must be ignored
+	for _, idx := range []int64{1, 2} {
+		stopEvs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+			Type:  "content_block_stop",
+			Index: idx,
+		})
+		if len(stopEvs) != 0 {
+			t.Fatalf("stop for skipped block %d should produce no events, got %+v", idx, stopEvs)
+		}
+	}
+
+	// text stop — should produce normal text done events
+	textStop, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_stop",
+		Index: 0,
+	})
+	eventByType(t, textStop, "response.output_text.done")
+
+	// message_stop — should complete normally, not fail
+	complete, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	completed := eventByType(t, complete, "response.completed")
+	resp := eventData(t, completed)["response"].(map[string]any)
+	if resp["status"] != "completed" {
+		t.Fatalf("expected completed status after skipping server tool, got %v", resp["status"])
+	}
+}
+
+// TestToolResultBlockSkippedNotFailed verifies that a tool_result content
+// block echoed back by some upstream backends is silently skipped instead
+// of failing the stream.
+func TestToolResultBlockSkippedNotFailed(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_tr", Model: "claude-test"},
+	})
+
+	// tool_result block echoed by upstream — must be skipped silently
+	skipStart, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "tool_result",
+		},
+	})
+	if len(skipStart) != 0 {
+		t.Fatalf("tool_result block should produce no events, got %+v", skipStart)
+	}
+
+	// stop for the skipped block — must be ignored
+	stopEvs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_stop",
+		Index: 0,
+	})
+	if len(stopEvs) != 0 {
+		t.Fatalf("stop for skipped tool_result block should produce no events, got %+v", stopEvs)
+	}
+
+	// message_stop — should complete normally, not fail
+	complete, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+	completed := eventByType(t, complete, "response.completed")
+	resp := eventData(t, completed)["response"].(map[string]any)
+	if resp["status"] != "completed" {
+		t.Fatalf("expected completed status after skipping tool_result, got %v", resp["status"])
 	}
 }
 

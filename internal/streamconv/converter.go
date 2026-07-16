@@ -61,6 +61,18 @@ var (
 	anBlockServerToolUse       = string(aconstant.ValueOf[aconstant.ServerToolUse]())
 	anBlockWebSearchToolResult = string(aconstant.ValueOf[aconstant.WebSearchToolResult]())
 
+	// tool_result 在 Anthropic 协议中只出现在请求侧，但某些后端会在响应流中
+	// 回传它，Responses API 没有对应的响应事件，静默跳过。
+	anBlockToolResult = string(aconstant.ValueOf[aconstant.ToolResult]())
+
+	// server-tool result / error block wire strings: no Responses equivalent,
+	// skipped gracefully instead of failing the stream.
+	anBlockWebFetchToolResult           = string(aconstant.ValueOf[aconstant.WebFetchToolResult]())
+	anBlockWebFetchToolResultError      = string(aconstant.ValueOf[aconstant.WebFetchToolResultError]())
+	anBlockWebSearchToolResultError     = string(aconstant.ValueOf[aconstant.WebSearchToolResultError]())
+	anBlockCodeExecutionToolResult      = string(aconstant.ValueOf[aconstant.CodeExecutionToolResult]())
+	anBlockCodeExecutionToolResultError = string(aconstant.ValueOf[aconstant.CodeExecutionToolResultError]())
+
 	anDeltaText      = string(aconstant.ValueOf[aconstant.TextDelta]())
 	anDeltaThinking  = string(aconstant.ValueOf[aconstant.ThinkingDelta]())
 	anDeltaSignature = string(aconstant.ValueOf[aconstant.SignatureDelta]())
@@ -99,6 +111,11 @@ type Converter struct {
 	// Web search state: Anthropic tool_use id -> output item index.
 	webSearchByToolUseID map[string]int
 
+	// skippedBlocks tracks block indices for server tools that have no
+	// Responses equivalent (web_fetch, code_execution, ...). Their start,
+	// delta and stop events are all ignored.
+	skippedBlocks map[int]bool
+
 	// Accumulators
 	textBuilder  strings.Builder
 	thinkBuilder strings.Builder
@@ -124,6 +141,7 @@ func New() *Converter {
 			"shell":       true,
 		},
 		webSearchByToolUseID: map[string]int{},
+		skippedBlocks:        map[int]bool{},
 	}
 }
 
@@ -244,6 +262,14 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		return c.handleServerToolUseStart(ev)
 	case anBlockWebSearchToolResult:
 		return c.handleWebSearchResultStart(ev)
+	case anBlockToolResult:
+		return c.handleSkippedBlockStart(ev)
+	case anBlockWebFetchToolResult,
+		anBlockWebFetchToolResultError,
+		anBlockWebSearchToolResultError,
+		anBlockCodeExecutionToolResult,
+		anBlockCodeExecutionToolResultError:
+		return c.handleSkippedBlockStart(ev)
 	}
 	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
 }
@@ -361,9 +387,10 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 
 func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	// Only web_search maps to a Responses item; other server tools (web_fetch,
-	// code_execution, ...) have no safe Responses equivalent and fail the stream.
+	// code_execution, ...) have no safe Responses equivalent and are skipped
+	// gracefully so the stream continues normally.
 	if ev.ContentBlock.Name != "web_search" {
-		return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
+		return c.handleSkippedServerToolUseStart(ev)
 	}
 	idx := c.itemOrder
 	c.itemOrder++
@@ -428,6 +455,29 @@ func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBloc
 	return out
 }
 
+// handleSkippedServerToolUseStart marks a non-web_search server_tool_use block
+// (web_fetch, code_execution, ...) as skipped. The block index is tracked so
+// subsequent delta and stop events for this index are also ignored.
+func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	blkIdx := int(ev.Index)
+	c.skippedBlocks[blkIdx] = true
+	slog.Debug("跳过无 Responses 等价物的 server_tool_use block",
+		"response_id", c.respID, "block_index", blkIdx, "name", ev.ContentBlock.Name)
+	return nil
+}
+
+// handleSkippedBlockStart marks a content block that has no Responses
+// equivalent (tool_result, web_fetch_tool_result, code_execution_tool_result,
+// ...) as skipped. The block index is tracked so subsequent delta and stop
+// events for this index are also ignored.
+func (c *Converter) handleSkippedBlockStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	blkIdx := int(ev.Index)
+	c.skippedBlocks[blkIdx] = true
+	slog.Debug("跳过无 Responses 等价物的 content block",
+		"response_id", c.respID, "block_index", blkIdx, "block_type", ev.ContentBlock.Type)
+	return nil
+}
+
 // extractWebSearchQuery pulls the search query out of an Anthropic web_search
 // server_tool_use input. The input is a free-form JSON value; the query lives
 // under the "query" key.
@@ -443,6 +493,10 @@ func extractWebSearchQuery(input any) string {
 }
 
 func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	blkIdx := int(ev.Index)
+	if c.skippedBlocks[blkIdx] {
+		return nil
+	}
 	switch ev.Delta.Type {
 	case anDeltaText:
 		if !c.openText {
@@ -495,6 +549,12 @@ func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []mo
 
 func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	var out []model.SSEEvent
+
+	blkIdx := int(ev.Index)
+	if c.skippedBlocks[blkIdx] {
+		delete(c.skippedBlocks, blkIdx)
+		return nil
+	}
 
 	if c.openText {
 		c.openText = false
@@ -553,7 +613,6 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		}))
 	}
 
-	blkIdx := int(ev.Index)
 	if state, ok := c.toolCalls[blkIdx]; ok {
 		itemIdx := state.itemIdx
 		itemID := fmt.Sprintf("fc_%d", itemIdx)
@@ -728,6 +787,7 @@ func (c *Converter) resetOutputForRefusal() {
 	c.toolCalls = map[int]toolCallState{}
 	c.toolArgBuilders = map[int]*strings.Builder{}
 	c.outputItems = []model.OutputItem{}
+	c.skippedBlocks = map[int]bool{}
 }
 
 func (c *Converter) emitRefusalEvents() []model.SSEEvent {
