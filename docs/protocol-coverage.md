@@ -110,15 +110,15 @@
 | OpenAI tool | Anthropic 映射 | 当前状态 | 说明 |
 |---|---|---|---|
 | `function` | client tool | `supported` | JSON schema 转 `input_schema` |
-| `file_search` | none | `unsupported_by_backend` | 无 OpenAI vector store 后端 |
-| `computer` | none | `unsupported_by_backend` | 需 computer use 执行环境 |
-| `computer_use_preview` | none | `unsupported_by_backend` | 同上 |
-| `web_search` | Anthropic web search server tool | `deferred` | hosted tool 语义不同 |
-| `web_search_preview` | Anthropic web search server tool | `deferred` | hosted tool 语义不同 |
-| `mcp` | none | `unsupported_by_backend` | MCP server/tool lifecycle 不等价 |
-| `code_interpreter` | Anthropic code execution tool | `deferred` | 需专项映射 outputs/events |
-| `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力 |
-| `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result |
+| `file_search` | none | `unsupported_by_backend` | 无 OpenAI vector store 后端；请求时返回明确转换错误 |
+| `computer` | none | `unsupported_by_backend` | 需 computer use 执行环境；请求时返回明确转换错误 |
+| `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
+| `web_search` | Anthropic web search server tool | `deferred` | hosted tool 语义不同；专项映射前请求时返回明确转换错误 |
+| `web_search_preview` | Anthropic web search server tool | `deferred` | hosted tool 语义不同；专项映射前请求时返回明确转换错误 |
+| `mcp` | none | `unsupported_by_backend` | MCP server/tool lifecycle 不等价；请求时返回明确转换错误 |
+| `code_interpreter` | Anthropic code execution tool | `deferred` | 需专项映射 outputs/events；专项映射前请求时返回明确转换错误 |
+| `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
+| `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 环境/skills 字段未完整映射 |
 | `shell` | client custom tool `shell` | `lossy_supported` | environment 未完整映射 |
 | `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
@@ -138,8 +138,9 @@
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 直接映射 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 直接映射 |
 | `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 按名称过滤支持的 Anthropic 工具；hosted/MCP allowed 条目仍不支持 |
-| hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟 |
-| `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice |
+| hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
+| `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
+| `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |
 
 ## Output Item Union
 

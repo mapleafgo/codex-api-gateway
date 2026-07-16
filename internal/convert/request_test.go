@@ -487,6 +487,36 @@ func TestToolChoiceRequired(t *testing.T) {
 	}
 }
 
+func TestUnsupportedHostedToolChoiceReturnsError(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfHostedTool: &oairesponses.ToolChoiceTypesParam{
+				Type: oairesponses.ToolChoiceTypesTypeImageGeneration,
+			},
+		},
+	}
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported tool_choice") {
+		t.Fatalf("expected unsupported tool_choice error, got %v", err)
+	}
+}
+
+func TestUnsupportedToolDefinitionReturnsError(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{{
+			OfImageGeneration: &oairesponses.ToolImageGenerationParam{},
+		}},
+	}
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
+		t.Fatalf("expected unsupported tool error, got %v", err)
+	}
+}
+
 func TestAllowedToolsFiltersAnthropicToolsAndUsesRequiredMode(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
@@ -614,17 +644,11 @@ func TestParallelToolCallsFalsePreservesExplicitToolChoice(t *testing.T) {
 	}
 }
 
-func TestToolChoiceDroppedWhenNoToolsSurvive(t *testing.T) {
+func TestUnsupportedDeferredToolReturnsError(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search_preview"}],"tool_choice":"required","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Tools) != 0 {
-		t.Fatalf("unsupported hosted tools should be dropped: %+v", out.Tools)
-	}
-	if out.ToolChoice.OfAuto != nil || out.ToolChoice.OfAny != nil || out.ToolChoice.OfTool != nil || out.ToolChoice.OfNone != nil {
-		t.Fatalf("tool_choice should be dropped when no tools survive: %+v", out.ToolChoice)
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
+		t.Fatalf("expected unsupported tool error, got %v", err)
 	}
 }
 

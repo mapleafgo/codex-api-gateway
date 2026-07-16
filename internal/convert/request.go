@@ -180,7 +180,9 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, output)
 	}
 	if item.OfAdditionalTools != nil {
-		appendToolList(out, item.OfAdditionalTools.Tools)
+		if err := appendToolList(out, item.OfAdditionalTools.Tools); err != nil {
+			return err
+		}
 		*sysParts = append(*sysParts, instructionPart{
 			role: model.RoleDeveloper,
 			text: formatToolNames("developer_tools", item.OfAdditionalTools.Tools),
@@ -524,17 +526,19 @@ func toInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
 }
 
 func convertTools(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
-	appendToolList(out, req.Tools)
+	return appendToolList(out, req.Tools)
+}
+
+func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUnionParam) error {
+	for _, t := range tools {
+		if err := appendToolUnion(out, t); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUnionParam) {
-	for _, t := range tools {
-		appendToolUnion(out, t)
-	}
-}
-
-func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionParam) {
+func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionParam) error {
 	switch {
 	case t.OfFunction != nil:
 		fn := t.OfFunction
@@ -562,7 +566,25 @@ func appendToolUnion(out *anthropic.MessageNewParams, t oairesponses.ToolUnionPa
 				appendConvertedTool(out, toolName(namespace.Name, custom.Name), freeformInputSchema(), optionalString(custom.Description), true)
 			}
 		}
+	default:
+		return fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", toolType(t))
 	}
+	return nil
+}
+
+func toolType(t oairesponses.ToolUnionParam) string {
+	if typ := t.GetType(); typ != nil && *typ != "" {
+		return *typ
+	}
+	raw, _ := json.Marshal(t)
+	var obj struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(raw, &obj)
+	if obj.Type != "" {
+		return obj.Type
+	}
+	return "unknown"
 }
 
 func appendConvertedTool(out *anthropic.MessageNewParams, name string, schema map[string]any, description *string, custom bool) {
@@ -647,10 +669,18 @@ func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.R
 }
 
 func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
+	tc := req.ToolChoice
+	switch {
+	case tc.OfHostedTool != nil:
+		return fmt.Errorf("unsupported tool_choice %q: hosted tools are not supported by this Anthropic backend", *tc.GetType())
+	case tc.OfMcpTool != nil:
+		return fmt.Errorf("unsupported tool_choice %q: MCP tool choice is not supported by this Anthropic backend", *tc.GetType())
+	case tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
+		return fmt.Errorf("unsupported tool_choice %q: programmatic tool calling is not supported by this Anthropic backend", *tc.GetType())
+	}
 	if out.ToolChoice.OfTool != nil {
 		return nil // already forced by structured output
 	}
-	tc := req.ToolChoice
 	if tc.OfAllowedTools != nil {
 		if err := applyAllowedTools(out, tc.OfAllowedTools); err != nil {
 			return err
