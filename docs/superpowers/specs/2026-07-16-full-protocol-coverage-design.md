@@ -23,8 +23,8 @@
 
 - 不在第一阶段实现 OpenAI hosted tools 的真实执行能力，例如 file search、image generation、computer use、MCP approval。
 - 不把 Anthropic 没有的能力伪装成成功转换。
-- 不引入新的第三方依赖；继续使用当前 `openai-go/v3 v3.42.0` 和 `anthropic-sdk-go v1.57.0`。
-- 不重写 scheduler、breaker、config、HTTP SSE 中继等与协议补齐无关的基础设施。
+- 不为了维持旧结构而牺牲协议正确性；允许重写历史代码和拆分现有模块，只要每一步有测试保护且范围服务于协议覆盖目标。
+- 不拒绝第三方依赖；允许并鼓励引入能显著降低实现复杂度、减少协议误差或提供成熟解析/生成能力的依赖。新依赖必须在实施计划中说明用途、替代方案和验证方式。
 
 ## 状态模型
 
@@ -65,6 +65,8 @@
 3. **raw 保真**：当前无法语义转换但可以避免丢弃，例如 unknown input item 存 raw JSON。
 4. **明确不支持**：无后端等价能力或模拟会误导客户端，例如 image generation hosted tool。
 5. **延期专项**：存在可能映射但风险较高，例如 code interpreter、web search server tool、MCP。
+
+实现可以重写现有转换、stream、session 或 model 层结构。判断标准不是“是否兼容旧代码形状”，而是协议覆盖矩阵是否更清晰、测试是否更直接、后续补齐是否更低风险。对明显适合成熟库处理的场景，例如 JSON Schema、JSON Patch / unified diff、协议枚举抽取、SSE 解析或文档化覆盖检查，可以引入第三方依赖，前提是依赖边界清晰且不会替代两侧官方 SDK 的协议来源地位。
 
 ### 错误与枚举策略
 
@@ -133,6 +135,8 @@
 | 全协议范围过大导致实施失控 | 用覆盖矩阵拆分，第一批只处理枚举、shell/apply_patch/refusal/diagnostic |
 | Anthropic 无等价能力时误报支持 | 统一使用 `unsupported_by_backend`，禁止假转换 |
 | Hosted tools 映射复杂 | 先登记，后续逐项专项设计 |
+| 为避免改动而堆叠兼容层 | 允许重写历史结构，任务边界按可测试交付拆分 |
+| 新依赖引入供应链和维护成本 | 实施计划中逐项说明用途、替代方案、版本和验证命令 |
 | SDK union 演进导致矩阵过期 | 后续可增加 SDK union 抽取工具，目前先人工维护矩阵 |
 | 当前工作树已有未提交实现改动 | 文档提交只 stage 新增文档，避免混入实现改动 |
 
