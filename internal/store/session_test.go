@@ -164,6 +164,147 @@ func TestEnrichRoundTripsShellCallRaw(t *testing.T) {
 	}
 }
 
+func TestEnrichRoundTripsShellAndApplyPatchRawItems(t *testing.T) {
+	tests := []struct {
+		name  string
+		input oairesponses.ResponseInputItemUnionParam
+		check func(t *testing.T, item oairesponses.ResponseInputItemUnionParam)
+	}{
+		{
+			name: "local_shell_call",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfLocalShellCall: &oairesponses.ResponseInputItemLocalShellCallParam{
+					ID:     "local_shell_1",
+					CallID: "call_local_shell",
+					Action: oairesponses.ResponseInputItemLocalShellCallActionParam{
+						Command: []string{"echo", "hi"},
+					},
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfLocalShellCall == nil || item.OfLocalShellCall.CallID != "call_local_shell" {
+					t.Fatalf("local_shell_call was not replayed: %+v", item)
+				}
+			},
+		},
+		{
+			name: "local_shell_call_output",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfLocalShellCallOutput: &oairesponses.ResponseInputItemLocalShellCallOutputParam{
+					ID:     "call_local_shell",
+					Output: "local ok",
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfLocalShellCallOutput == nil || item.OfLocalShellCallOutput.ID != "call_local_shell" {
+					t.Fatalf("local_shell_call_output was not replayed: %+v", item)
+				}
+			},
+		},
+		{
+			name: "shell_call",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfShellCall: &oairesponses.ResponseInputItemShellCallParam{
+					CallID: "call_shell",
+					Action: oairesponses.ResponseInputItemShellCallActionParam{
+						Commands: []string{"echo hi"},
+					},
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfShellCall == nil || item.OfShellCall.CallID != "call_shell" {
+					t.Fatalf("shell_call was not replayed: %+v", item)
+				}
+			},
+		},
+		{
+			name: "shell_call_output",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfShellCallOutput: &oairesponses.ResponseInputItemShellCallOutputParam{
+					CallID: "call_shell",
+					Output: []oairesponses.ResponseFunctionShellCallOutputContentParam{{
+						Stdout: "ok",
+						Stderr: "warn",
+					}},
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfShellCallOutput == nil || item.OfShellCallOutput.CallID != "call_shell" {
+					t.Fatalf("shell_call_output was not replayed: %+v", item)
+				}
+				if got := item.OfShellCallOutput.Output[0]; got.Stdout != "ok" || got.Stderr != "warn" {
+					t.Fatalf("shell_call_output lost stdout/stderr: %+v", got)
+				}
+			},
+		},
+		{
+			name: "apply_patch_call",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfApplyPatchCall: &oairesponses.ResponseInputItemApplyPatchCallParam{
+					CallID: "call_patch",
+					Status: "completed",
+					Operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+						OfUpdateFile: &oairesponses.ResponseInputItemApplyPatchCallOperationUpdateFileParam{
+							Path: "README.md",
+							Diff: "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch\n",
+						},
+					},
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfApplyPatchCall == nil || item.OfApplyPatchCall.CallID != "call_patch" {
+					t.Fatalf("apply_patch_call was not replayed: %+v", item)
+				}
+				if diff := item.OfApplyPatchCall.Operation.GetDiff(); diff == nil || !strings.Contains(*diff, "*** Begin Patch") {
+					t.Fatalf("apply_patch_call lost diff: %+v", item.OfApplyPatchCall.Operation)
+				}
+			},
+		},
+		{
+			name: "apply_patch_call_output",
+			input: oairesponses.ResponseInputItemUnionParam{
+				OfApplyPatchCallOutput: &oairesponses.ResponseInputItemApplyPatchCallOutputParam{
+					CallID: "call_patch",
+					Status: "completed",
+					Output: oparam.NewOpt("Done"),
+				},
+			},
+			check: func(t *testing.T, item oairesponses.ResponseInputItemUnionParam) {
+				t.Helper()
+				if item.OfApplyPatchCallOutput == nil || item.OfApplyPatchCallOutput.CallID != "call_patch" {
+					t.Fatalf("apply_patch_call_output was not replayed: %+v", item)
+				}
+				if !item.OfApplyPatchCallOutput.Output.Valid() || item.OfApplyPatchCallOutput.Output.Value != "Done" {
+					t.Fatalf("apply_patch_call_output lost output: %+v", item.OfApplyPatchCallOutput.Output)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(0, 0, time.Hour)
+			s.SaveContext("resp_"+tt.name, "src", []oairesponses.ResponseInputItemUnionParam{tt.input}, nil)
+			req := &oairesponses.ResponseNewParams{
+				PreviousResponseID: oparam.NewOpt("resp_" + tt.name),
+				Input: oairesponses.ResponseNewParamsInputUnion{
+					OfString: oparam.NewOpt("next"),
+				},
+			}
+			s.Enrich(req, "src")
+			if len(req.Input.OfInputItemList) == 0 {
+				t.Fatalf("expected replayed item")
+			}
+			tt.check(t, req.Input.OfInputItemList[0])
+		})
+	}
+}
+
 func TestEnrichPrependsStoredInputAndOutputContext(t *testing.T) {
 	s := New(0, 0, 0)
 	s.SaveContext("resp_1", "official", []oairesponses.ResponseInputItemUnionParam{

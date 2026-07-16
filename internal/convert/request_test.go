@@ -364,7 +364,12 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 					CallID: "call_shell",
 					Output: []oairesponses.ResponseFunctionShellCallOutputContentParam{{
 						Stdout: "ok",
+						Stderr: "warn",
 					}},
+				}},
+				{OfLocalShellCallOutput: &oairesponses.ResponseInputItemLocalShellCallOutputParam{
+					ID:     "call_local_shell",
+					Output: "local ok",
 				}},
 				{OfApplyPatchCallOutput: &oairesponses.ResponseInputItemApplyPatchCallOutputParam{
 					CallID: "call_patch",
@@ -381,8 +386,18 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 	if out.Messages[0].Content[0].OfToolResult.ToolUseID != "call_shell" {
 		t.Fatalf("shell output did not produce tool_result: %+v", out.Messages[0])
 	}
-	if out.Messages[0].Content[1].OfToolResult.ToolUseID != "call_patch" {
+	shellText := out.Messages[0].Content[0].OfToolResult.Content[0].OfText.Text
+	if !strings.Contains(shellText, "ok") || !strings.Contains(shellText, "warn") {
+		t.Fatalf("shell output lost stdout/stderr: %q", shellText)
+	}
+	if out.Messages[0].Content[1].OfToolResult.ToolUseID != "call_local_shell" {
+		t.Fatalf("local shell output did not produce tool_result: %+v", out.Messages[0])
+	}
+	if out.Messages[0].Content[2].OfToolResult.ToolUseID != "call_patch" {
 		t.Fatalf("apply_patch output did not produce tool_result: %+v", out.Messages[0])
+	}
+	if out.Messages[0].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("tool results should be in user message, got %s", out.Messages[0].Role)
 	}
 }
 
