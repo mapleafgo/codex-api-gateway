@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -175,7 +176,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		"store_explicit", storeExplicit,
 		"store_value", storeValue,
 		"store_effective", storeEffective,
-		slog.Group("input_item_type_counts", inputItemTypeCountAttrs(req.Input.OfInputItemList)...))
+		slog.Group("input_item_type_counts", inputItemTypeCountAttrs(req.Input.OfInputItemList)...),
+		slog.Group("tools", toolSummaryAttrs(req.Tools)...))
 	// 逐条打印 input item 类型，用于诊断 Codex 发来的对话历史结构
 	for i := range req.Input.OfInputItemList {
 		it := &req.Input.OfInputItemList[i]
@@ -255,10 +257,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}, func(ev *anthropic.MessageStreamEventUnion) error {
 		evCount++
 		blkType := ""
+		blkName := ""
 		if ev.Type == anContentBlockStart {
 			blkType = ev.ContentBlock.Type
+			blkName = ev.ContentBlock.Name
 		}
-		slog.Debug("收到上游流事件", "event_index", evCount, "event_type", ev.Type, "block_type", blkType)
+		slog.Debug("收到上游流事件", "event_index", evCount, "event_type", ev.Type, "block_index", ev.Index, "block_type", blkType, "block_name", blkName)
 		out, _ := conv.Feed(ev)
 		for _, e := range out {
 			slog.Debug("写出响应 SSE 事件", "event_type", e.Type)
@@ -515,6 +519,76 @@ func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) [
 		if counts[key] > 0 {
 			attrs = append(attrs, slog.Int(key, counts[key]))
 		}
+	}
+	return attrs
+}
+
+// toolSummaryAttrs 统计请求 tools[] 的类型分布，并展开 mcp tool 的 server 明细
+// （label/url/connector_id）与 client tool 名字，用于诊断日志：回答"Codex 发了
+// 哪些 tool 类型、有没有 type=mcp、mcp 长什么样、其余 tool 叫什么名字"。
+// MCP 链路定位的关键观测点（请求入口）。
+func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
+	counts := map[string]int{}
+	var mcpServers []string
+	var clientToolNames []string
+	for _, t := range tools {
+		switch {
+		case t.OfMcp != nil:
+			counts["mcp"]++
+			m := t.OfMcp
+			serverURL := ""
+			if m.ServerURL.Valid() {
+				serverURL = m.ServerURL.Value
+			}
+			mcpServers = append(mcpServers, fmt.Sprintf("label=%s url=%s connector=%s", m.ServerLabel, serverURL, m.ConnectorID))
+		case t.OfFunction != nil:
+			counts["function"]++
+			clientToolNames = append(clientToolNames, t.OfFunction.Name)
+		case t.OfCustom != nil:
+			counts["custom"]++
+			clientToolNames = append(clientToolNames, t.OfCustom.Name)
+		case t.OfWebSearch != nil:
+			counts["web_search"]++
+		case t.OfWebSearchPreview != nil:
+			counts["web_search_preview"]++
+		case t.OfCodeInterpreter != nil:
+			counts["code_interpreter"]++
+		case t.OfApplyPatch != nil:
+			counts["apply_patch"]++
+		case t.OfShell != nil:
+			counts["shell"]++
+		case t.OfLocalShell != nil:
+			counts["local_shell"]++
+		case t.OfToolSearch != nil:
+			counts["tool_search"]++
+		case t.OfNamespace != nil:
+			counts["namespace"]++
+			ns := t.OfNamespace
+			var nsChildren []string
+			for _, nt := range ns.Tools {
+				if nt.OfFunction != nil {
+					nsChildren = append(nsChildren, nt.OfFunction.Name)
+				} else if nt.OfCustom != nil {
+					nsChildren = append(nsChildren, nt.OfCustom.Name)
+				}
+			}
+			mcpServers = append(mcpServers, fmt.Sprintf("namespace=%s children=[%s]", ns.Name, strings.Join(nsChildren, ",")))
+		default:
+			counts["other"]++
+		}
+	}
+	keys := []string{"mcp", "function", "custom", "web_search", "web_search_preview", "code_interpreter", "apply_patch", "shell", "local_shell", "tool_search", "namespace", "other"}
+	attrs := []any{slog.Int("total", len(tools))}
+	for _, k := range keys {
+		if counts[k] > 0 {
+			attrs = append(attrs, slog.Int(k, counts[k]))
+		}
+	}
+	if len(mcpServers) > 0 {
+		attrs = append(attrs, slog.String("mcp_servers_detail", strings.Join(mcpServers, " | ")))
+	}
+	if len(clientToolNames) > 0 {
+		attrs = append(attrs, slog.String("client_tool_names", strings.Join(clientToolNames, ",")))
 	}
 	return attrs
 }
