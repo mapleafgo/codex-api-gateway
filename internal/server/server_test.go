@@ -582,3 +582,74 @@ func TestModelsEndpointRejectsPost(t *testing.T) {
 		t.Fatalf("status = %d, want 405", resp.StatusCode)
 	}
 }
+
+// TestModelsEndpointCodexModelInfoContract 验证 /v1/models 返回的每个 model 对象
+// 都包含 Codex serde 反序列化 ModelInfo 所需的全部 key。
+func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
+	// Codex 的 ModelInfo（codex-rs/protocol/src/openai_models.rs）中，
+	// 凡是未标注 #[serde(default)] 的字段（含 Option<T>），JSON key 必须存在，
+	// 否则 serde_json::from_slice::<ModelsResponse> 直接失败。
+	requiredKeys := []string{
+		"slug",
+		"display_name",
+		"description",
+		"supported_reasoning_levels",
+		"shell_type",
+		"visibility",
+		"supported_in_api",
+		"priority",
+		"availability_nux",
+		"upgrade",
+		"base_instructions",
+		"support_verbosity",
+		"default_verbosity",
+		"apply_patch_tool_type",
+		"truncation_policy",
+		"supports_parallel_tool_calls",
+		"experimental_supported_tools",
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		io.WriteString(w, `{"data":[{"type":"model","id":"claude-sonnet-4-20250514"}]}`)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{
+			{Name: "up", BaseURL: upstream.URL, ModelMap: map[string]string{"gpt-5": "claude"}},
+		},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body: %s", resp.StatusCode, body)
+	}
+
+	var raw struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v. body: %s", err, body)
+	}
+	if len(raw.Models) == 0 {
+		t.Fatalf("no models returned. body: %s", body)
+	}
+	for i, m := range raw.Models {
+		for _, key := range requiredKeys {
+			if _, ok := m[key]; !ok {
+				var slug json.RawMessage = m["slug"]
+				t.Errorf("model[%d] slug=%s 缺少 Codex serde required key %q", i, slug, key)
+			}
+		}
+	}
+}

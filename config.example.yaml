@@ -11,7 +11,7 @@
 
 # HTTP 服务
 server:
-  listen: ":8080"        # 监听地址；Codex 的 base_url 指向 http://<host>:8080/v1/responses
+  listen: ":8080"        # 监听地址；Codex 的 base_url 指向 http://<host>:8080/v1
 
 # 日志配置
 # level: debug | info | warn | error

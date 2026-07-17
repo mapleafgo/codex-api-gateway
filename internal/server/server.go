@@ -124,18 +124,23 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // 关键：SupportsSearchTool=true 让 Codex 启用 tool_search + MCP tools deferred。
 func codexModelInfo(slug string) model.CodexModelInfo {
 	return model.CodexModelInfo{
-		Slug:                             slug,
-		DisplayName:                      slug,
-		SupportedReasoningLevels:         []any{},
-		ShellType:                        "shell_command",
-		Visibility:                       "list",
-		SupportedInAPI:                   true,
-		Priority:                         0,
-		BaseInstructions:                 "",
+		Slug:                              slug,
+		DisplayName:                       slug,
+		Description:                       "",
+		SupportedReasoningLevels:          []any{},
+		ShellType:                         "shell_command",
+		Visibility:                        "list",
+		SupportedInAPI:                    true,
+		Priority:                          0,
+		AvailabilityNux:                   nil,
+		Upgrade:                           nil,
+		BaseInstructions:                  "",
 		SupportsReasoningSummaryParameter: true,
-		DefaultReasoningSummary:          "auto",
-		SupportVerbosity:                 false,
-		WebSearchToolType:                "text",
+		DefaultReasoningSummary:           "auto",
+		SupportVerbosity:                  false,
+		DefaultVerbosity:                  nil,
+		ApplyPatchToolType:                nil,
+		WebSearchToolType:                 "text",
 		TruncationPolicy: model.CodexTruncationPolicy{
 			Mode: "tokens", Limit: 100000,
 		},
@@ -146,7 +151,6 @@ func codexModelInfo(slug string) model.CodexModelInfo {
 		UseResponsesLite:           false,
 	}
 }
-
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

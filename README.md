@@ -49,6 +49,8 @@ go run ./cmd/server -config config.yaml
 http://127.0.0.1:8080/v1
 ```
 
+`base_url` 写到网关根（含 `/v1`）即可。Codex 会自动在 `base_url` 后拼接 `/responses` 发起对话、拼接 `/models` 拉取模型列表。**不要把 `base_url` 写成 `http://<host>:8080/v1/responses`**：那样 `/models` 请求会打到 `/v1/responses/models`，返回 404，导致 Codex 的 `/models` 命令拉不到模型。
+
 ## 配置
 
 完整示例见 [config.example.yaml](config.example.yaml)。
@@ -185,7 +187,7 @@ sources:
 
 ### `GET /v1/models`
 
-返回 OpenAI 格式模型列表。结果由两部分合并：
+返回 Codex `ModelsResponse` 格式（`{ "models": [ModelInfo] }`），而非 OpenAI 的 `{ data: [] }`。Codex 用该格式直接解析 `ModelInfo` 能力字段（如 `supports_search_tool`）。结果由两部分合并：
 
 - 第一个健康上游源的 `/v1/models` 返回值。
 - 本地配置中所有 `model_map` 的 OpenAI 侧别名。
