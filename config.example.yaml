@@ -16,10 +16,12 @@ server:
 # 日志配置
 # level: debug | info | warn | error
 # format: text | json
+# file: 非空时日志写入该文件（追加），为空写 stderr。排查时配合 level: debug。
 # debug 会输出输入项、流式事件、SSE 转换、会话保存等细粒度诊断日志。
 logging:
   level: info
   format: text
+  # file: gateway.log
 
 # 会话状态存储
 # enrich 机制：按 previous_response_id 缓存本轮有效 input + output，

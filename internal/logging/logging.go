@@ -18,10 +18,20 @@ import (
 )
 
 // Configure 将配置指定的 slog handler 安装为进程默认 logger。
-func Configure(cfg config.LoggingCfg) {
-	handler := NewHandler(os.Stderr, cfg)
+// File 非空时日志写入该文件（追加模式，进程生命周期常开）；为空则写 stderr。
+func Configure(cfg config.LoggingCfg) error {
+	out := io.Writer(os.Stderr)
+	if cfg.File != "" {
+		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("logging: 无法打开日志文件 %s: %w", cfg.File, err)
+		}
+		out = f
+	}
+	handler := NewHandler(out, cfg)
 	slog.SetDefault(slog.New(handler))
 	log.SetOutput(io.Discard)
+	return nil
 }
 
 // NewHandler 根据日志等级和格式返回 slog handler。

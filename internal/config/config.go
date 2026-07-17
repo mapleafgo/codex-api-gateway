@@ -50,6 +50,8 @@ type ServerCfg struct {
 type LoggingCfg struct {
 	Level  string `koanf:"level" yaml:"level"`
 	Format string `koanf:"format" yaml:"format"`
+	// File 非空时日志写入该文件（追加，进程生命周期常开）；为空则写 stderr。
+	File string `koanf:"file" yaml:"file"`
 }
 
 // SessionCfg configures previous_response_id session storage.
@@ -165,6 +167,7 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"server.listen", &cfg.Server.Listen},
 		{"logging.level", &cfg.Logging.Level},
 		{"logging.format", &cfg.Logging.Format},
+		{"logging.file", &cfg.Logging.File},
 		{"session.path", &cfg.Session.Path},
 		{"session.ttl", &cfg.Session.TTL},
 		{"session.max_bytes", &cfg.Session.MaxBytes},

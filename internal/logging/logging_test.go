@@ -3,6 +3,8 @@ package logging
 import (
 	"bytes"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -80,5 +82,35 @@ func TestNewHandlerUsesJSONFormat(t *testing.T) {
 	}
 	if !strings.Contains(got, `"level":"DEBUG"`) || !strings.Contains(got, `"source":"s1"`) {
 		t.Fatalf("json handler missing structured fields: %s", got)
+	}
+}
+
+func TestConfigureWritesToFile(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	path := filepath.Join(t.TempDir(), "test.log")
+	if err := Configure(config.LoggingCfg{Level: "debug", Format: "text", File: path}); err != nil {
+		t.Fatalf("Configure with file failed: %v", err)
+	}
+	slog.Info("file-output-marker", "key", "val")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(data), "file-output-marker") {
+		t.Fatalf("log file missing message, got: %s", data)
+	}
+}
+
+func TestConfigureFileOpenError(t *testing.T) {
+	// 路径指向已存在的目录，OpenFile 必失败；且不应改动默认 logger。
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dir := t.TempDir()
+	if err := Configure(config.LoggingCfg{Level: "debug", File: dir}); err == nil {
+		t.Fatal("Configure should fail when file path is a directory")
 	}
 }

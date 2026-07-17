@@ -21,7 +21,10 @@ func main() {
 		slog.Error("加载配置失败", "error", err)
 		os.Exit(1)
 	}
-	logging.Configure(cfg.Logging)
+	if err := logging.Configure(cfg.Logging); err != nil {
+		slog.Error("配置日志失败", "error", err)
+		os.Exit(1)
+	}
 
 	srv := server.New(cfg)
 	defer srv.Close()
