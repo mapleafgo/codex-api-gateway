@@ -108,6 +108,8 @@ Expected: 编译失败（`ItemTypeMcpCall`/`ServerLabel` 未定义）。
 
 ```go
 	if i.Type == ItemTypeMcpCall {
+		// mcp_call failed 由 Status=failed 表达，错误文本并入 Output。
+		// （OpenAI wire 的 error 字段为 nullable；本网关不单独产出 error 字段。）
 		return json.Marshal(struct {
 			Type        string `json:"type"`
 			ID          string `json:"id"`
@@ -116,11 +118,10 @@ Expected: 编译失败（`ItemTypeMcpCall`/`ServerLabel` 未定义）。
 			Name        string `json:"name"`
 			Arguments   string `json:"arguments"`
 			Output      string `json:"output,omitempty"`
-			Error       string `json:"error,omitempty"`
 		}{
 			Type: i.Type, ID: i.ID, Status: i.Status,
 			ServerLabel: i.ServerLabel, Name: i.Name, Arguments: i.Arguments,
-			Output: i.Output, Error: i.Error,
+			Output: i.Output,
 		})
 	}
 ```
@@ -607,25 +608,22 @@ func collectMCP(req *oairesponses.ResponseNewParams) (*anthropic.MCPInjection, e
 }
 
 // approvalMode 从 ToolMcpRequireApprovalUnionParam 取出审批模式字符串（"" 表缺省=never）。
+// SDK：OfMcpToolApprovalSetting 是 param.Opt[string]（值如 "never"/"on_failure"/"if_referenced"），
+// OfMcpToolApprovalFilter 是 filter 对象（近似需审批，降级为 on_failure）。
 func approvalMode(u oairesponses.ToolMcpRequireApprovalUnionParam) string {
-	if u.OfNever != nil {
-		return "never"
+	if u.OfMcpToolApprovalSetting.Valid() {
+		return u.OfMcpToolApprovalSetting.Value
 	}
-	if u.OfOnFailure != nil {
+	if u.OfMcpToolApprovalFilter != nil {
 		return "on_failure"
-	}
-	if u.OfIfReferenced != nil {
-		return "if_referenced"
 	}
 	return ""
 }
 
 // allowedMCPToolNames 从 allowed_tools union 取出命中的工具名列表。
+// SDK：OfMcpAllowedTools 是 []string（allowlist）；OfMcpToolFilter 是 filter 对象（本批不展开）。
 func allowedMCPToolNames(u oairesponses.ToolMcpAllowedToolsUnionParam) []string {
-	if u.OfAllowedToolsStringArray != nil {
-		return u.OfAllowedToolsStringArray
-	}
-	return nil
+	return u.OfMcpAllowedTools
 }
 ```
 
