@@ -304,10 +304,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockRedactedThinking:
 		return c.handleThinkingStart(ev, true)
 	case anBlockToolUse:
-		if kind := c.dispatchCallKind(ev); kind != nil {
-			return c.handleCallStart(ev, kind)
-		}
-		return c.handleToolUseStart(ev)
+		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockServerToolUse:
 		return c.handleServerToolUseStart(ev)
 	case anBlockWebSearchToolResult:
@@ -423,34 +420,6 @@ func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion, r
 	return []model.SSEEvent{model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
 		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
 		OutputIndex: idx, Item: c.outputItems[idx],
-	})}
-}
-
-func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	idx := c.itemOrder
-	c.itemOrder++
-	blkIdx := int(ev.Index)
-	custom := c.customToolNames[ev.ContentBlock.Name]
-	c.toolCalls[blkIdx] = toolCallState{itemIdx: idx, custom: custom}
-	c.toolArgBuilders[blkIdx] = &strings.Builder{}
-
-	itemID := fmt.Sprintf("fc_%d", idx)
-	itemType := model.ItemTypeFunctionCall
-	status := model.ResponseStatusInProgress
-	if custom {
-		itemID = fmt.Sprintf("ctc_%d", idx)
-		itemType = model.ItemTypeCustomToolCall
-		status = ""
-	}
-	item := model.OutputItem{
-		Type: itemType, ID: itemID, Status: status,
-		CallID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name,
-	}
-	c.outputItems = append(c.outputItems, item)
-
-	return []model.SSEEvent{model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
-		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
-		OutputIndex: idx, Item: item,
 	})}
 }
 

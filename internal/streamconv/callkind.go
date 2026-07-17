@@ -66,7 +66,7 @@ func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) call
 		case c.customToolNames[name]:
 			return customCallKind{}
 		case name == toolSearchName:
-			return nil
+			return toolSearchCallKind{}
 		default:
 			return functionCallKind{}
 		}
