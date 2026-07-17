@@ -16,7 +16,7 @@ import (
 // ResponseToolSearchCallArgumentsDelta/Done），arguments 只随 item 携带。
 type toolSearchCallKind struct{}
 
-func (toolSearchCallKind) itemType() string     { return model.ItemTypeToolSearchCall }
+func (toolSearchCallKind) itemType() string      { return model.ItemTypeToolSearchCall }
 func (toolSearchCallKind) idPrefix() string      { return "tsc" }
 func (toolSearchCallKind) tracksToolUseID() bool { return false }
 

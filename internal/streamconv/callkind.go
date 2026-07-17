@@ -19,9 +19,9 @@ import (
 //   - arguments 流式（delta.done / 一次性 done 给 / 状态事件 / 无）—— consumeDelta + finish
 //   - result 处理（无 / *_tool_result）—— handleResult
 type callKind interface {
-	itemType() string       // function_call / tool_search_call / web_search_call / ...
-	idPrefix() string       // fc / tsc / ws / ci / mcp_
-	tracksToolUseID() bool  // hosted call 关联 result block 用（注册 byToolUseID）
+	itemType() string      // function_call / tool_search_call / web_search_call / ...
+	idPrefix() string      // fc / tsc / ws / ci / mcp_
+	tracksToolUseID() bool // hosted call 关联 result block 用（注册 byToolUseID）
 
 	// buildItem 从 content_block_start 构建初始 OutputItem（status=in_progress）。
 	buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem
@@ -51,13 +51,8 @@ type callState struct {
 // 固定为 "tool_search"（declare.go）。回程 dispatch 按此硬匹配。
 const toolSearchName = "tool_search"
 
-// dispatchCallKind 按 content_block 类型 + name 选 callKind。
-// 未识别返回 nil：调用方回退到旧 handler（迁移过渡期）或 skip。
-//
-// 迁移进度：
-//   - S2：function 走通用流水线；custom / tool_search 仍回退旧 handleToolUseStart
-//   - S3/S4：custom / tool_search 迁入
-//   - S5/S6：server_tool_use / mcp_tool_use 迁入
+// dispatchCallKind 按 content_block 类型 + name 选 callKind。未识别的 server_tool_use
+// （如 web_fetch 等无 Responses 等价的 hosted tool）返回 nil，调用方按 skip 处理。
 func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) callKind {
 	switch ev.ContentBlock.Type {
 	case anBlockToolUse:

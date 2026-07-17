@@ -13,11 +13,12 @@ import (
 //
 // 事件链：output_item.added(code_interpreter_call, in_progress) → in_progress
 // → interpreting → code.delta/done（if code）。block stop 不产 done（在 result block
-// 完成）。result（code_execution_tool_result）由 handleCodeExecutionResultStart 处理
-//（S7 迁入 handleResult）。container_id 由网关合成（Anthropic 无 container，已知损失）。
+// 完成）。result（code_execution_tool_result）由 handleCallResult +
+// codeInterpreterCallKind.handleResult 驱动完成（completed + outputs(logs)）。
+// container_id 由网关合成（Anthropic 无 container，已知损失）。
 type codeInterpreterCallKind struct{}
 
-func (codeInterpreterCallKind) itemType() string     { return model.ItemTypeCodeInterpreterCall }
+func (codeInterpreterCallKind) itemType() string      { return model.ItemTypeCodeInterpreterCall }
 func (codeInterpreterCallKind) idPrefix() string      { return "ci" }
 func (codeInterpreterCallKind) tracksToolUseID() bool { return true }
 

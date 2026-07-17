@@ -14,7 +14,7 @@ import (
 // 无 result block（client 执行，结果经 function_call_output 下轮回灌）。
 type functionCallKind struct{}
 
-func (functionCallKind) itemType() string     { return model.ItemTypeFunctionCall }
+func (functionCallKind) itemType() string      { return model.ItemTypeFunctionCall }
 func (functionCallKind) idPrefix() string      { return "fc" }
 func (functionCallKind) tracksToolUseID() bool { return false }
 
@@ -29,9 +29,9 @@ func (functionCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.Mess
 		Type:      model.ItemTypeFunctionCall,
 		ID:        itemID,
 		Status:    model.ResponseStatusInProgress,
-		CallID:     ev.ContentBlock.ID,
-		Name:       name,
-		Namespace:  ns,
+		CallID:    ev.ContentBlock.ID,
+		Name:      name,
+		Namespace: ns,
 	}
 }
 

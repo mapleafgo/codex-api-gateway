@@ -8,6 +8,39 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
+// lookupHostedCallByResult 按 result block 类型选对应的 byToolUseID map + callKind。
+// 返回 (itemIdx, kind)；kind 为 nil 表示该 result block 无关联的 hosted call。
+//
+// hosted call（web_search/code_interpreter/mcp）在 content_block_start 时注册到
+// byToolUseID；其 server_tool_use block 的 content_block_stop 只从 callByBlockIdx 删除，
+// byToolUseID map 保留到 result 抵达——真实 SSE 流里 result block 是独立的
+// content_block，出现在 server_tool_use stop 之后。tool_result（GLM 方言回传 web search
+// 结果）仅在 webSearchByToolUseID 命中时有效，调用方（handleBlockStart）已做该判定。
+func (c *Converter) lookupHostedCallByResult(ev *anthropic.MessageStreamEventUnion, toolUseID string) (int, callKind) {
+	switch ev.ContentBlock.Type {
+	case anBlockWebSearchToolResult, anBlockToolResult:
+		idx, ok := c.webSearchByToolUseID[toolUseID]
+		if !ok {
+			return 0, nil
+		}
+		return idx, webSearchCallKind{}
+	case anBlockCodeExecutionToolResult:
+		idx, ok := c.codeExecutionByToolUseID[toolUseID]
+		if !ok {
+			return 0, nil
+		}
+		return idx, codeInterpreterCallKind{}
+	case anBlockMcpToolResult:
+		idx, ok := c.mcpCallByToolUseID[toolUseID]
+		if !ok {
+			return 0, nil
+		}
+		return idx, mcpCallKind{}
+	default:
+		return 0, nil
+	}
+}
+
 // handleCallStart 是通用 content_block_start 处理：分配 item → buildItem →
 // output_item.added → startEvents。调用方先 dispatchCallKind 拿到非 nil kind 再调用。
 func (c *Converter) handleCallStart(ev *anthropic.MessageStreamEventUnion, kind callKind) []model.SSEEvent {
@@ -74,19 +107,12 @@ func (c *Converter) handleCallStop(ev *anthropic.MessageStreamEventUnion) (event
 }
 
 // handleCallResult 处理 result block（web_search_tool_result / code_execution_tool_result /
-// mcp_tool_result / GLM 方言 tool_result）：按 tool_use_id 查找关联的 callState，
-// 交给 kind.handleResult 产出 completed/failed + output_item.done。
+// mcp_tool_result / GLM 方言 tool_result）：按 block 类型选对应的 byToolUseID map +
+// callKind，交给 kind.handleResult 产出 completed/failed + output_item.done。
 func (c *Converter) handleCallResult(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	toolUseID := ev.ContentBlock.ToolUseID
-	var st *callState
-	for _, s := range c.callByBlockIdx {
-		if s.callID == toolUseID {
-			st = s
-			break
-		}
+	itemIdx, kind := c.lookupHostedCallByResult(ev, ev.ContentBlock.ToolUseID)
+	if kind == nil {
+		return nil // 无关联的 hosted call
 	}
-	if st == nil {
-		return nil // 无关联的 call block
-	}
-	return st.kind.handleResult(c, ev, st.itemIdx)
+	return kind.handleResult(c, ev, itemIdx)
 }

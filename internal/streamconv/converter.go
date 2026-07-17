@@ -234,7 +234,7 @@ func (c *Converter) SetCustomToolNames(names []string) {
 
 // SetDeclaredServerTools 注入请求侧声明的标准 server tool 身份（去重）。
 // 回程 server_tool_use 在上游 name 失配（兼容端方言）时用它做身份回退，
-// 见 handleServerToolUseStart。
+// 见 dispatchCallKind 的 server_tool_use 分支与 webSearchCallKind.handleResult。
 func (c *Converter) SetDeclaredServerTools(ids []toolcatalog.Identity) {
 	c.declaredServerTools = ids
 }
@@ -493,8 +493,8 @@ func extractWebSearchQuery(input any) string {
 	return ""
 }
 
-// handleMcpToolUseStart 把（probe 合成的）mcp_tool_use 映射为 mcp_call item + 事件链。
-// Input 由 synthesizeMCPEvent 编码为 {server_name, name, arguments}：
+// decodeMcpUseInput 从 probe 合成的 mcp_tool_use Input 中取出 server_name/name/arguments。
+// Input 由 synthesizeMCPEvent 编码为 {server_name, name, arguments}。
 func decodeMcpUseInput(input any) (serverLabel, name, args string) {
 	m, ok := input.(map[string]any)
 	if !ok {

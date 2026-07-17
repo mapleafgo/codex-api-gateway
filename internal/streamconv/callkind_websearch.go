@@ -11,11 +11,11 @@ import (
 //
 // 事件链：output_item.added(web_search_call, in_progress) → web_search_call.in_progress
 // → web_search_call.searching。block stop 不产 done（web_search 在 result block 完成）。
-// result（web_search_tool_result / GLM 方言 tool_result）由 handleWebSearchResultStart
-// 处理（S7 迁入 handleResult）。
+// result（web_search_tool_result / GLM 方言 tool_result）由 handleCallResult +
+// webSearchCallKind.handleResult 驱动完成（completed + sources）。
 type webSearchCallKind struct{}
 
-func (webSearchCallKind) itemType() string     { return model.ItemTypeWebSearchCall }
+func (webSearchCallKind) itemType() string      { return model.ItemTypeWebSearchCall }
 func (webSearchCallKind) idPrefix() string      { return "ws" }
 func (webSearchCallKind) tracksToolUseID() bool { return true }
 

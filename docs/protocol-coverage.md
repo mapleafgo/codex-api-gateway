@@ -161,7 +161,7 @@
 | `function_call_output` | request replay only | `supported` | 作为 input item 回放 |
 | `custom_tool_call` | custom `tool_use` | `supported` | freeform input 解包 |
 | `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放 |
-| `tool_search_call` | `tool_use` name=`tool_search` | `deferred` | 当前会输出 function/custom，需专门输出 item |
+| `tool_search_call` | `tool_use` name=`tool_search` | `supported` | `toolSearchCallKind` 产出 `tool_search_call` item（execution=client，arguments 随 done 一次性给出，不流式 delta） |
 | `tool_search_output` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
 | `additional_tools` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
 | `compaction` | response compact API | `raw_preserved` | 非模型 stream output |

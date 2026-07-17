@@ -10,7 +10,7 @@ import (
 // input 经 customToolInput 从累积 args 解析（{"input": ...}）。无 result block。
 type customCallKind struct{}
 
-func (customCallKind) itemType() string     { return model.ItemTypeCustomToolCall }
+func (customCallKind) itemType() string      { return model.ItemTypeCustomToolCall }
 func (customCallKind) idPrefix() string      { return "ctc" }
 func (customCallKind) tracksToolUseID() bool { return false }
 
@@ -18,7 +18,7 @@ func (customCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.Messag
 	return model.OutputItem{
 		Type:   model.ItemTypeCustomToolCall,
 		ID:     itemID,
-		Status: "", // custom 不设 in_progress（与旧 handleToolUseStart 一致）
+		Status: "", // custom tool call 不设 in_progress（Codex 客户端按 done 即可渲染）
 		CallID: ev.ContentBlock.ID,
 		Name:   ev.ContentBlock.Name,
 	}

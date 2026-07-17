@@ -12,10 +12,11 @@ import (
 // arguments 在 start 时一次性给出（probe 合成的 Input 含完整 args，不流式 delta）：
 // output_item.added(mcp_call, in_progress) → mcp_call.in_progress →
 // mcp_call_arguments.delta/done（if args）。block stop 不产 done（在 result 完成）。
-// result（mcp_tool_result）由 handleMcpToolResultStart 处理（S7 迁入 handleResult）。
+// result（mcp_tool_result）由 handleCallResult + mcpCallKind.handleResult 驱动完成
+// （completed/failed + output）。
 type mcpCallKind struct{}
 
-func (mcpCallKind) itemType() string     { return model.ItemTypeMcpCall }
+func (mcpCallKind) itemType() string      { return model.ItemTypeMcpCall }
 func (mcpCallKind) idPrefix() string      { return "mcp" }
 func (mcpCallKind) tracksToolUseID() bool { return true }
 
