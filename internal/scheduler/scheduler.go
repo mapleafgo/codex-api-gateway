@@ -41,8 +41,9 @@ type Scheduler struct {
 	backoff  []time.Duration // injectable for tests; defaults to defaultBackoff
 }
 
-// RequestBuilder builds a source-specific Anthropic request.
-type RequestBuilder func(src config.Source) (*anthropic.MessageNewParams, error)
+// RequestBuilder builds a source-specific Anthropic request, plus an optional
+// MCPInjection for beta mcp_servers/mcp_toolset injection at the client layer.
+type RequestBuilder func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error)
 
 // New builds a Scheduler.
 func New(cfg *config.Config) *Scheduler {
@@ -147,9 +148,10 @@ func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
 
 // Execute tries sources by runtime priority with failover, and retries the
 // entire round with backoff when all sources fail or are circuit-open.
-func (s *Scheduler) Execute(ctx context.Context, req *anthropic.MessageNewParams, onEvent func(*anthropic.MessageStreamEventUnion) error) error {
-	_, err := s.ExecutePrepared(ctx, func(_ config.Source) (*anthropic.MessageNewParams, error) {
-		return req, nil
+// mcp 是可选的 MCPInjection；非空时透传给 client.Stream 注入 beta mcp_servers/mcp_toolset。
+func (s *Scheduler) Execute(ctx context.Context, req *anthropic.MessageNewParams, mcp *anthropicclient.MCPInjection, onEvent func(*anthropic.MessageStreamEventUnion) error) error {
+	_, err := s.ExecutePrepared(ctx, func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+		return req, mcp, nil
 	}, onEvent)
 	return err
 }
@@ -193,12 +195,12 @@ func (s *Scheduler) tryRoundPrepared(ctx context.Context, build RequestBuilder, 
 			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
 			continue
 		}
-		req, err := build(src)
+		req, mcp, err := build(src)
 		if err != nil {
 			slog.Warn("构建上游请求失败", "source", src.Name, "error", err)
 			return "", false, err
 		}
-		locked, err := s.trySource(ctx, &src, bk, req, onEvent)
+		locked, err := s.trySource(ctx, &src, bk, req, mcp, onEvent)
 		if locked {
 			return src.Name, true, err // propagate mid-stream error if any
 		}
@@ -211,7 +213,7 @@ func (s *Scheduler) tryRoundPrepared(ctx context.Context, build RequestBuilder, 
 }
 
 func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *breaker.Breaker,
-	req *anthropic.MessageNewParams, onEvent func(*anthropic.MessageStreamEventUnion) error) (bool, error) {
+	req *anthropic.MessageNewParams, mcp *anthropicclient.MCPInjection, onEvent func(*anthropic.MessageStreamEventUnion) error) (bool, error) {
 
 	timeout := time.Duration(s.cfg.BreakerFor(src).FirstByteTimeout)
 	fbCtx, cancel := context.WithCancel(ctx)
@@ -228,7 +230,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		"endpoint", src.BaseURL,
 		"model", string(req.Model),
 		"resolved_model", string(resolvedReq.Model))
-	body, err := s.client.Stream(fbCtx, src.BaseURL, src.APIKey, &resolvedReq)
+	body, err := s.client.Stream(fbCtx, src.BaseURL, src.APIKey, &resolvedReq, mcp)
 	if err != nil {
 		if ctx.Err() == nil {
 			oldState := bk.State()

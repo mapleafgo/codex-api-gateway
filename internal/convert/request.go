@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
+	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
@@ -112,7 +113,9 @@ func validateNamespaceToolChildren(data []byte) error {
 // ToAnthropic converts a Response request into an Anthropic Messages request.
 // prevItems carries stored output items from a previous turn; plaintext thinking
 // signatures are looked up by reasoning item ID and injected into ThinkingBlockParam.
-func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevItems ...model.OutputItem) (*anthropic.MessageNewParams, error) {
+// 第二个返回值是 MCP beta 注入定义（mcp_servers + mcp_toolset），由 collectMCP 产出；
+// 非 nil 时由 client 层注入到 marshal 后的请求体（SDK 不支持这组字段）。
+func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevItems ...model.OutputItem) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 	// Build a signature lookup from stored reasoning items.
 	sigByID := map[string]string{}
 	for _, it := range prevItems {
@@ -161,7 +164,7 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 			continue
 		}
 		if err := appendItem(out, &sysParts, item, sigByID); err != nil {
-			return nil, fmt.Errorf("convert input item: %w", err)
+			return nil, nil, fmt.Errorf("convert input item: %w", err)
 		}
 	}
 
@@ -176,16 +179,96 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	applyReasoning(out, req, cfg)
 
 	if err := convertTools(out, req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := injectStructuredOutput(out, req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := convertToolChoice(out, req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	applyAnthropicCacheControl(out, cfg)
-	return out, nil
+
+	mcp, err := collectMCP(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, mcp, nil
+}
+
+// collectMCP 扫描请求里的 mcp tool，产出 beta MCPInjection（mcp_servers + toolset）。
+// 字段映射见 spec 2.2；损失处理见 spec 2.4。
+// connector_id / tunnel_id 是 OpenAI 私有托管设施，不在 Anthropic 标准范围 → fail-fast。
+func collectMCP(req *oairesponses.ResponseNewParams) (*anthropicclient.MCPInjection, error) {
+	var inj anthropicclient.MCPInjection
+	for _, t := range req.Tools {
+		if t.OfMcp == nil {
+			continue
+		}
+		m := t.OfMcp
+		if m.ConnectorID != "" {
+			return nil, fmt.Errorf("mcp connector_id %q is not supported: use server_url form instead", m.ConnectorID)
+		}
+		if m.TunnelID.Valid() && m.TunnelID.Value != "" {
+			return nil, fmt.Errorf("mcp tunnel_id %q is not supported: use server_url form instead", m.TunnelID.Value)
+		}
+		serverURL := ""
+		if m.ServerURL.Valid() {
+			serverURL = m.ServerURL.Value
+		}
+		if serverURL == "" {
+			return nil, fmt.Errorf("mcp server %q requires server_url (connector_id/tunnel_id unsupported)", m.ServerLabel)
+		}
+		token := ""
+		if m.Authorization.Valid() {
+			token = m.Authorization.Value
+		}
+		// headers：择优提取 Authorization: Bearer → authorization_token（authorization 空时回退）。
+		if bearer, ok := m.Headers["Authorization"]; ok && token == "" {
+			token = strings.TrimPrefix(bearer, "Bearer ")
+		}
+		for k := range m.Headers {
+			if k != "Authorization" {
+				slog.Warn("丢弃 MCP server 自定义 header（Anthropic 仅支持单一 authorization_token）",
+					"server_label", m.ServerLabel, "header", k)
+			}
+		}
+		// require_approval：Anthropic MCP 无审批协议。never/缺省正常；其余降级 never + WARN。
+		if appr := approvalMode(m.RequireApproval); appr != "" && appr != "never" {
+			slog.Warn("MCP require_approval 降级为 never（Anthropic 无审批协议，工具将直接执行）",
+				"server_label", m.ServerLabel, "require_approval", appr)
+		}
+		inj.Servers = append(inj.Servers, anthropicclient.MCPServer{
+			Type: "url", URL: serverURL, Name: m.ServerLabel, AuthorizationToken: token,
+		})
+		enabled := allowedMCPToolNames(m.AllowedTools)
+		inj.Toolsets = append(inj.Toolsets, anthropicclient.MCPToolset{
+			MCPServerName: m.ServerLabel, EnabledTools: enabled,
+		})
+	}
+	if inj.Empty() {
+		return nil, nil
+	}
+	return &inj, nil
+}
+
+// approvalMode 从 ToolMcpRequireApprovalUnionParam 取出审批模式字符串（"" 表缺省=never）。
+// SDK：OfMcpToolApprovalSetting 是 param.Opt[string]（值如 "never"/"on_failure"/"if_referenced"），
+// OfMcpToolApprovalFilter 是 filter 对象（近似需审批，降级为 on_failure）。
+func approvalMode(u oairesponses.ToolMcpRequireApprovalUnionParam) string {
+	if u.OfMcpToolApprovalSetting.Valid() {
+		return u.OfMcpToolApprovalSetting.Value
+	}
+	if u.OfMcpToolApprovalFilter != nil {
+		return "on_failure"
+	}
+	return ""
+}
+
+// allowedMCPToolNames 从 allowed_tools union 取出命中的工具名列表。
+// SDK：OfMcpAllowedTools 是 []string（allowlist）；OfMcpToolFilter 是 filter 对象（本批不展开）。
+func allowedMCPToolNames(u oairesponses.ToolMcpAllowedToolsUnionParam) []string {
+	return u.OfMcpAllowedTools
 }
 
 type instructionPart struct {

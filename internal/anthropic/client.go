@@ -103,7 +103,9 @@ func truncForLog(b []byte, n int) string {
 }
 
 // Stream POSTs the request and returns the streaming response body.
-func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams) (io.ReadCloser, error) {
+// mcp 非 nil 时把 mcp_servers（顶层）+ mcp_toolset（tools[] 追加）注入请求体，
+// 并补上 beta header mcp-client-2025-11-20（与 thinking beta 共存）。
+func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection) (io.ReadCloser, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -112,6 +114,11 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// NewStreaming 方法层而非请求参数），而本服务是纯流式中继网关，须显式注入
 	// stream:true，否则上游按非流式返回完整 JSON 而非 SSE。
 	if body, err = injectStream(body); err != nil {
+		return nil, err
+	}
+	// MCP 是 beta server tool：mcp_servers + mcp_toolset 必须在 marshal 后注入
+	// （SDK 不支持这组字段），否则上游无法识别 MCP 定义。
+	if body, err = injectMCP(body, mcp); err != nil {
 		return nil, err
 	}
 	// base_url 在配置里只写到各网关根地址，Messages 路径 /v1/messages 由
@@ -132,8 +139,16 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// the one it knows and ignores the other.
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	// anthropic-beta：thinking 与 MCP beta 可共存（逗号分隔），mergeBetaHeader 去重。
+	beta := ""
 	if thinkingEnabled(req) {
-		httpReq.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		beta = "interleaved-thinking-2025-05-14"
+	}
+	if !mcp.Empty() {
+		beta = mergeBetaHeader(beta)
+	}
+	if beta != "" {
+		httpReq.Header.Set("anthropic-beta", beta)
 	}
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {

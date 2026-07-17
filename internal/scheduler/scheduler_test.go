@@ -64,7 +64,7 @@ func TestFailoverOnUpstreamError(t *testing.T) {
 	}
 	s := New(cfg)
 	var sawStart bool
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error {
 			if ev.Type == "message_start" {
 				sawStart = true
@@ -88,7 +88,7 @@ func TestAllSourcesFail(t *testing.T) {
 		Sources: []config.Source{makeSource("bad", bad.URL, 0)},
 	}
 	s := New(cfg)
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("want ErrAllSourcesFailed, got %v", err)
@@ -124,7 +124,7 @@ func TestLockedSourceNoSwitch(t *testing.T) {
 	}
 	s := New(cfg)
 	var eventCount int
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error {
 			eventCount++
 			return nil
@@ -170,7 +170,7 @@ func TestSlowFirstByteLongStream(t *testing.T) {
 	}
 	s := New(cfg)
 	var eventCount int
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error {
 			eventCount++
 			return nil
@@ -210,7 +210,7 @@ func TestModelMapResolvedBeforeStream(t *testing.T) {
 		},
 	}
 	s := New(cfg)
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "gpt-5", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "gpt-5", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -242,7 +242,7 @@ func TestRetryOnAllFail(t *testing.T) {
 	}
 	s := New(cfg)
 	s.backoff = testBackoff
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("want ErrAllSourcesFailed, got %v", err)
@@ -273,7 +273,7 @@ func TestNoRetryWhenMaxRetriesZero(t *testing.T) {
 	}
 	s := New(cfg)
 	s.backoff = testBackoff
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("want ErrAllSourcesFailed, got %v", err)
@@ -312,7 +312,7 @@ func TestRetryCtxCancel(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		cancel()
 	}()
-	err := s.Execute(ctx, &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(ctx, &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
@@ -351,7 +351,7 @@ func TestDegradeMovesSourceToEnd(t *testing.T) {
 	// Send 3 requests: each tries A first (500), failovers to B (success).
 	// After 3 failures on A, A is degraded -> moved to end.
 	for i := 0; i < 3; i++ {
-		err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+		err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 			func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 		if err != nil {
 			t.Fatalf("execute %d: %v", i, err)
@@ -407,7 +407,7 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 	// Phase 0: A fails 3 times -> degraded -> moved to end.
 	// B also fails each time but never degrades (threshold=100).
 	for i := 0; i < 3; i++ {
-		s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+		s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 			func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	}
 
@@ -422,7 +422,7 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 	// Phase 1: A succeeds. B still fails. Request tries B first (fails), then A (succeeds).
 	// A's success transitions degraded->normal, which restores it to originalIndex=0.
 	phase.Store(1)
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if err != nil {
 		t.Fatalf("execute should succeed via A: %v", err)
@@ -477,7 +477,7 @@ func TestCircuitOpenSourceSkipped(t *testing.T) {
 	}
 
 	// Execute: A should be skipped (Allow()=false), B should serve.
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if err != nil {
 		t.Fatalf("execute should succeed via B: %v", err)
@@ -541,7 +541,7 @@ func TestAllCircuitOpenTriggersRetry(t *testing.T) {
 	// Round 2: same pattern.
 	// Backoff 5ms > cooldown 3ms -> halfOpen.
 	// Round 3: same pattern. attempt=3 == mr=3 -> break.
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("want ErrAllSourcesFailed, got %v", err)
@@ -592,7 +592,7 @@ func TestWatchdogFiresRecordsFailure(t *testing.T) {
 	s := New(cfg)
 
 	var sawStart bool
-	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+	err := s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 		func(ev *anthropic.MessageStreamEventUnion) error {
 			if ev.Type == "message_start" {
 				sawStart = true
@@ -670,7 +670,7 @@ func TestConcurrentExecuteRuntimeOrderStable(t *testing.T) {
 			defer wg.Done()
 			// Execute may succeed or fail; we only care that it doesn't
 			// panic or corrupt shared state.
-			_ = s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64},
+			_ = s.Execute(context.Background(), &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil,
 				func(ev *anthropic.MessageStreamEventUnion) error { return nil })
 		}()
 	}

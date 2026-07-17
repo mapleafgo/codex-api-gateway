@@ -24,7 +24,7 @@ func mustReq(t *testing.T, body string) *oairesponses.ResponseNewParams {
 
 func TestTextRequestConverts(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestTextRequestConverts(t *testing.T) {
 
 func TestReasoningEffortMapsToThinking(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
+	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestReasoningEffortMapsToThinking(t *testing.T) {
 
 func TestReasoningEffortNoneDisables(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none"},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestReasoningEffortNoneDisables(t *testing.T) {
 
 func TestDeveloperRoleFoldsToSystem(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"rules"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestDeveloperRoleFoldsToSystem(t *testing.T) {
 
 func TestSystemConversionPreservesInstructionRoles(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"top rules"}]},{"type":"message","role":"developer","content":[{"type":"input_text","text":"developer rules"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestSystemConversionPreservesInstructionRoles(t *testing.T) {
 
 func TestAssistantPhaseNotInjectedIntoAnthropicText(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"input_text","text":"I am checking files."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestAdditionalToolsAndToolSearchItemsConvert(t *testing.T) {
 		{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"raw_edit","description":"raw edit"}]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"use the loaded tools"}]}
 	],"tools":[{"type":"tool_search","execution":"client","description":"search deferred tools","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestCompactionItemsPreservedAsSystemContext(t *testing.T) {
 		{"type":"compaction_trigger"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 	],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 		{"type":"mcp_approval_response","approval_request_id":"apr_1","approve":true,"reason":"user approved"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 	],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 
 func TestWebSearchToolMapsToAnthropicServerTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search","filters":{"allowed_domains":["example.com","docs.example.com"]}}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatalf("web_search must not fail fast: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestWebSearchToolMapsToAnthropicServerTool(t *testing.T) {
 
 func TestWebSearchPreviewToolMapsToAnthropicServerTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search_preview"}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatalf("web_search_preview must not fail fast: %v", err)
 	}
@@ -247,7 +247,7 @@ func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchToo
 // 仍应加到该 tool 上,否则整个 tools 列表缓存丢失。
 func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search"}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestOnlyLatestReasoningPreservedAsThinking(t *testing.T) {
 		{"type":"reasoning","id":"rs_new","summary":[{"type":"summary_text","text":"new thinking"}]},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a2"}]}
 	],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestOnlyLatestReasoningPreservedAsThinking(t *testing.T) {
 
 func TestToolCallsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search x"}]},{"type":"function_call","call_id":"c1","name":"search","arguments":"{\"q\":\"x\"}"},{"type":"function_call_output","call_id":"c1","output":"result-x"}],"tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestCustomToolCallInputAndOutputConvert(t *testing.T) {
 		{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
 		{"type":"custom_tool_call_output","call_id":"c1","output":"ok"}
 	],"tools":[{"type":"custom","name":"apply_patch"}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 			}},
 		},
 	}
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +408,7 @@ func TestLocalShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 			}},
 		},
 	}
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
 					}},
 				},
 			}
-			out, err := ToAnthropic(req, &config.Config{})
+			out, _, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -522,7 +522,7 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 			},
 		},
 	}
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 
 func TestStructuredOutputInjectsTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"give me json"}]}],"text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"v":{"type":"number"}}}}},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestStructuredOutputInjectsTool(t *testing.T) {
 
 func TestJsonObjectFormatInjectsTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"give me json"}]}],"text":{"format":{"type":"json_object"}},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestJsonObjectFormatInjectsTool(t *testing.T) {
 
 func TestDefaultMaxTokens(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +585,7 @@ func TestDefaultMaxTokens(t *testing.T) {
 
 func TestThinkingBudgetRaisesMaxTokens(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
+	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +599,7 @@ func TestThinkingBudgetRaisesMaxTokens(t *testing.T) {
 
 func TestReasoningSummaryConciseSetsDisplay(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium","summary":"concise"},"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"medium": 16000}}})
+	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"medium": 16000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestReasoningSummaryConciseSetsDisplay(t *testing.T) {
 
 func TestToolChoiceAuto(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"tool_choice":"auto","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +621,7 @@ func TestToolChoiceAuto(t *testing.T) {
 
 func TestToolChoiceRequired(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"tool_choice":"required","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func TestUnsupportedHostedToolChoiceReturnsError(t *testing.T) {
 			},
 		},
 	}
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tool_choice") {
 		t.Fatalf("expected unsupported tool_choice error, got %v", err)
 	}
@@ -654,7 +654,7 @@ func TestUnsupportedToolDefinitionReturnsError(t *testing.T) {
 			OfImageGeneration: &oairesponses.ToolImageGenerationParam{},
 		}},
 	}
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
 		t.Fatalf("expected unsupported tool error, got %v", err)
 	}
@@ -671,7 +671,7 @@ func TestToolSearchOutputUnsupportedToolReturnsError(t *testing.T) {
 			},
 		},
 	}
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
 		t.Fatalf("expected unsupported tool error, got %v", err)
 	}
@@ -692,7 +692,7 @@ func TestAllowedToolsFiltersAnthropicToolsAndUsesRequiredMode(t *testing.T) {
 			},
 		},
 	}
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func TestAllowedToolsErrorsWhenNoSupportedToolsRemain(t *testing.T) {
 			},
 		},
 	}
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "allowed_tools") {
 		t.Fatalf("expected allowed_tools error, got %v", err)
 	}
@@ -751,7 +751,7 @@ func TestAllowedToolsRejectsUnsupportedAllowedEntries(t *testing.T) {
 					},
 				},
 			}
-			_, err := ToAnthropic(req, &config.Config{})
+			_, _, err := ToAnthropic(req, &config.Config{})
 			if err == nil || !strings.Contains(err.Error(), "unsupported tool_choice") {
 				t.Fatalf("expected unsupported tool_choice error, got %v", err)
 			}
@@ -777,7 +777,7 @@ func TestAllowedToolsRejectsPartialIdentity(t *testing.T) {
 				"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[`+tt.entry+`]}
 			}`)
 
-			_, err := ToAnthropic(req, &config.Config{})
+			_, _, err := ToAnthropic(req, &config.Config{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected incomplete allowed tool identity error containing %q, got %v", tt.want, err)
 			}
@@ -801,7 +801,7 @@ func TestAllowedToolsRejectsCrossTypeSameName(t *testing.T) {
 		},
 	}
 
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `conversion name conflict`) {
 		t.Fatalf("expected cross-type name conflict error, got %v", err)
 	}
@@ -825,7 +825,7 @@ func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
 		},
 	}
 
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `unsupported tool_choice`) {
 		t.Fatalf("expected structured output to validate unsupported allowed tool, got %v", err)
 	}
@@ -842,7 +842,7 @@ func TestStructuredOutputRejectsAllowedToolsWithoutEquivalent(t *testing.T) {
 				"tool_choice":{"type":"allowed_tools","mode":"`+mode+`","tools":[{"type":"function","name":"lookup"}]}
 			}`)
 
-			_, err := ToAnthropic(req, &config.Config{})
+			_, _, err := ToAnthropic(req, &config.Config{})
 			if err == nil || !strings.Contains(err.Error(), "structured output cannot be combined with allowed_tools") {
 				t.Fatalf("expected structured-output allowed_tools error, got %v", err)
 			}
@@ -878,7 +878,7 @@ func TestStructuredOutputRejectsIncompatibleExplicitToolChoice(t *testing.T) {
 				"tool_choice":`+tt.toolChoice+`
 			}`)
 
-			_, err := ToAnthropic(req, &config.Config{})
+			_, _, err := ToAnthropic(req, &config.Config{})
 			if err == nil {
 				t.Fatal("structured output must reject an explicit incompatible tool_choice")
 			}
@@ -894,7 +894,7 @@ func TestAllowedToolsRejectsUnknownMode(t *testing.T) {
 		"tool_choice":{"type":"allowed_tools","mode":"unexpected","tools":[{"type":"function","name":"lookup"}]}
 	}`)
 
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `allowed_tools mode "unexpected"`) {
 		t.Fatalf("expected unknown allowed_tools mode error, got %v", err)
 	}
@@ -935,7 +935,7 @@ func TestSpecificToolChoiceRejectsUndeclaredIdentity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
+			_, _, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
@@ -973,7 +973,7 @@ func TestSpecificToolChoiceMapsDeclaredIdentity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
+			out, _, err := ToAnthropic(mustReq(t, tt.body), &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1006,7 +1006,7 @@ func TestAllowedToolsFiltersFunctionCustomAndShell(t *testing.T) {
 		},
 	}
 
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1044,7 +1044,7 @@ func TestAllowedToolsJSONModesAndParallelToolCalls(t *testing.T) {
 				"tool_choice":{"type":"allowed_tools","mode":"`+tt.mode+`","tools":[{"type":"function","name":"keep"}]},
 				"stream":true`+tt.parallel+`
 			}`)
-			out, err := ToAnthropic(req, &config.Config{})
+			out, _, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1090,7 +1090,7 @@ func TestAllowedToolsJSONSupportsNamelessTools(t *testing.T) {
 				"tools":[`+tt.tool+`],
 				"tool_choice":{"type":"allowed_tools","mode":"required","tools":[`+tt.tool+`]}
 			}`)
-			out, err := ToAnthropic(req, &config.Config{})
+			out, _, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1116,7 +1116,7 @@ func TestAllowedToolsJSONSupportsNamespaceChildren(t *testing.T) {
 					{"type":"custom","name":"raw"}
 				]}]}
 			}`)
-			out, err := ToAnthropic(req, &config.Config{})
+			out, _, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1140,7 +1140,7 @@ func TestAllowedToolsJSONRejectsUnknownNamespaceChild(t *testing.T) {
 		"tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}],
 		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"missing"}]}]}
 	}`)
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `function "missing" in namespace "crm" is not declared`) {
 		t.Fatalf("expected explicit unknown namespace child error, got %v", err)
 	}
@@ -1158,7 +1158,7 @@ func TestNamespaceRejectsUnsupportedChild(t *testing.T) {
 		}},
 	}
 
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported namespace tool") {
 		t.Fatalf("expected unsupported namespace child error, got %v", err)
 	}
@@ -1177,7 +1177,7 @@ func TestDecodeRejectsUnsupportedNamespaceChild(t *testing.T) {
 
 func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"parallel_tool_calls":false,"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1191,7 +1191,7 @@ func TestParallelToolCallsFalseDisablesAnthropicParallelUse(t *testing.T) {
 
 func TestParallelToolCallsFalsePreservesExplicitToolChoice(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"search"},"parallel_tool_calls":false,"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1205,7 +1205,7 @@ func TestParallelToolCallsFalsePreservesExplicitToolChoice(t *testing.T) {
 
 func TestUnsupportedDeferredToolReturnsError(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"file_search"}],"tool_choice":"required","stream":true}`)
-	_, err := ToAnthropic(req, &config.Config{})
+	_, _, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported tool") {
 		t.Fatalf("expected unsupported tool error, got %v", err)
 	}
@@ -1213,7 +1213,7 @@ func TestUnsupportedDeferredToolReturnsError(t *testing.T) {
 
 func TestInputFileDataConvertsToAnthropicDocument(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"read this"},{"type":"input_file","filename":"log.pdf","file_data":"data:application/pdf;base64,JVBERi0x"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1234,7 @@ func TestInputFileDataConvertsToAnthropicDocument(t *testing.T) {
 
 func TestInputFileURLConvertsToAnthropicDocument(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_file","filename":"log.pdf","file_url":"https://example.com/log.pdf"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1252,7 +1252,7 @@ func TestInputFileURLConvertsToAnthropicDocument(t *testing.T) {
 
 func TestSystemGetsAnthropicCacheControl(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","instructions":"be brief","input":"hi","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1266,7 +1266,7 @@ func TestSystemGetsAnthropicCacheControl(t *testing.T) {
 
 func TestLastToolGetsAnthropicCacheControl(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"function","name":"first","parameters":{"type":"object"}},{"type":"function","name":"last","parameters":{"type":"object"}}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1283,7 @@ func TestLastToolGetsAnthropicCacheControl(t *testing.T) {
 
 func TestStringInput(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hello world","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1300,7 +1300,7 @@ func TestPlaintextThinkingSignatureRoundTrip(t *testing.T) {
 	prevItems := []model.OutputItem{
 		{Type: "reasoning", ID: "rs_0", Signature: "EqQBCg..."},
 	}
-	out, err := ToAnthropic(req, &config.Config{}, prevItems...)
+	out, _, err := ToAnthropic(req, &config.Config{}, prevItems...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1324,7 +1324,7 @@ func TestPlaintextThinkingSignatureRoundTrip(t *testing.T) {
 // 验证 convert 能从 encrypted_content 恢复 thinking block 的 signature。
 func TestReasoningEncryptedContentAsSignatureZDR(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"reasoning","id":"rs_0","summary":[{"type":"summary_text","text":"think"}],"encrypted_content":"sigZDR"},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1345,7 +1345,7 @@ func TestReasoningEncryptedContentAsSignatureZDR(t *testing.T) {
 // redacted thinking（无 summary 文本）的 encrypted_content 应转为 redacted_thinking block。
 func TestRedactedThinkingFromEncryptedContent(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"reasoning","id":"rs_0","encrypted_content":"redactedData"},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1368,7 +1368,7 @@ func TestRedactedThinkingFromEncryptedContent(t *testing.T) {
 // breakpoint,顶层 marker 覆盖到 messages 末尾)。
 func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1382,7 +1382,7 @@ func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 func TestCacheControlTTLFromConfig(t *testing.T) {
 	t.Run("default 5m", func(t *testing.T) {
 		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-		out, err := ToAnthropic(req, &config.Config{})
+		out, _, err := ToAnthropic(req, &config.Config{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1392,7 +1392,7 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 	})
 	t.Run("1h from config", func(t *testing.T) {
 		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-		out, err := ToAnthropic(req, &config.Config{Cache: config.CacheCfg{TTL: "1h"}})
+		out, _, err := ToAnthropic(req, &config.Config{Cache: config.CacheCfg{TTL: "1h"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1411,7 +1411,7 @@ func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"run"}]},
 		{"type":"code_interpreter_call","id":"ci_1","status":"completed","container_id":"cntr_x","code":"print(2)","outputs":[{"type":"logs","logs":"2\n"}]}
 	],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatalf("replay must not fail: %v", err)
 	}
@@ -1430,5 +1430,36 @@ func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"2\n"`) {
 		t.Fatalf("logs stdout must be preserved in code_execution_tool_result: %s", raw)
+	}
+}
+
+// TestMcpToolProducesMCPInjection 验证 mcp tool 产出 MCPInjection
+// （mcp_servers + toolset allowlist），且 mcp 不进入标准 tools[] 列表。
+func TestMcpToolProducesMCPInjection(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","allowed_tools":["get"]},{"type":"web_search"}],"stream":true}`)
+	out, mcp, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("mcp must not fail fast: %v", err)
+	}
+	if mcp == nil || len(mcp.Servers) != 1 || mcp.Servers[0].Name != "weather" {
+		t.Fatalf("MCPInjection not produced: %+v", mcp)
+	}
+	if len(mcp.Toolsets) != 1 || len(mcp.Toolsets[0].EnabledTools) != 1 {
+		t.Fatalf("toolset allowlist wrong: %+v", mcp.Toolsets)
+	}
+	// mcp tool 不进标准 tools[]（web_search 进，mcp 不进）
+	for _, tool := range out.Tools {
+		if tool.OfTool != nil && tool.OfTool.Name == "weather" {
+			t.Fatal("mcp must not appear as standard ToolParam")
+		}
+	}
+}
+
+// TestMcpConnectorIDFailsFast 验证 connector_id 是 OpenAI 私有托管设施，
+// 不在 Anthropic 标准范围，必须 fail-fast。
+func TestMcpConnectorIDFailsFast(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"s","connector_id":"cntr_x"}],"stream":true}`)
+	if _, _, err := ToAnthropic(req, &config.Config{}); err == nil {
+		t.Fatal("connector_id must fail fast")
 	}
 }

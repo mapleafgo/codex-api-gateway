@@ -13,6 +13,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
+	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
@@ -187,7 +188,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	ordered := s.cfg.OrderedSources()
 	if len(ordered) > 0 {
-		if _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
+		if _, _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
 			slog.Warn("预转换响应请求失败", "source", ordered[0].Name, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
@@ -217,10 +218,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	var evCount int
 	var executedReq *oairesponses.ResponseNewParams
-	sourceName, execErr := s.sch.ExecutePrepared(r.Context(), func(src config.Source) (*anthropic.MessageNewParams, error) {
-		reqForSource, anthReq, err := s.buildAnthropicRequest(body, src)
+	sourceName, execErr := s.sch.ExecutePrepared(r.Context(), func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+		reqForSource, anthReq, mcp, err := s.buildAnthropicRequest(body, src)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		executedReq = reqForSource
 		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
@@ -248,7 +249,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
 				"source", src.Name, "thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
 		}
-		return anthReq, nil
+		return anthReq, mcp, nil
 	}, func(ev *anthropic.MessageStreamEventUnion) error {
 		evCount++
 		blkType := ""
@@ -351,10 +352,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, error) {
+func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 	req, err := convert.DecodeResponseNewParams(body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var prevItems []model.OutputItem
 	if shouldStoreResponse(req) {
@@ -374,11 +375,11 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 			"previous_response_id", req.PreviousResponseID.Value,
 			"store", false)
 	}
-	anthReq, err := convert.ToAnthropic(req, s.cfg, prevItems...)
+	anthReq, mcp, err := convert.ToAnthropic(req, s.cfg, prevItems...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return req, anthReq, nil
+	return req, anthReq, mcp, nil
 }
 
 func writeSSE(w io.Writer, e model.SSEEvent) {

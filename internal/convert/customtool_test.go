@@ -15,7 +15,7 @@ func TestCustomToolNotDropped(t *testing.T) {
 		{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},
 		{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}
 	]}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true,"tools":[
 		{"type":"apply_patch"}
 	]}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestShellToolNotDroppedAndCanBeForced(t *testing.T) {
 		"tools":[{"type":"shell"}],
 		"tool_choice":{"type":"shell"}
 	}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestLocalShellToolNotDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true,"tools":[
 		{"type":"local_shell"}
 	]}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestApplyPatchToolChoiceCanBeForced(t *testing.T) {
 		"tools":[{"type":"apply_patch"}],
 		"tool_choice":{"type":"apply_patch"}
 	}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestNamespaceFunctionAndCustomToolsNotDropped(t *testing.T) {
 			{"type":"custom","name":"raw","description":"raw command"}
 		]}
 	]}`)
-	out, err := ToAnthropic(req, &config.Config{})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

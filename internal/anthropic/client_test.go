@@ -67,7 +67,7 @@ func TestStreamAuthHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rc, err := New().Stream(context.Background(), srv.URL, "test-key-123", &anthropic.MessageNewParams{})
+	rc, err := New().Stream(context.Background(), srv.URL, "test-key-123", &anthropic.MessageNewParams{}, nil)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
