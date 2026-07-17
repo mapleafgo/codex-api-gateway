@@ -126,6 +126,11 @@ type Converter struct {
 	toolArgBuilders map[int]*strings.Builder
 	customToolNames map[string]bool
 
+	// declaredServerTools 是请求侧声明的标准 server tool 身份（去重）。回程
+	// server_tool_use 在上游 name 失配（兼容端方言，如 GLM 的 web_search_prime）
+	// 时，若此集合唯一可确定，则忽略 name 按该身份回退 dispatch。
+	declaredServerTools []toolcatalog.Identity
+
 	// Web search state: Anthropic tool_use id -> output item index.
 	webSearchByToolUseID map[string]int
 
@@ -231,6 +236,13 @@ func (c *Converter) SetCustomToolNames(names []string) {
 	}
 }
 
+// SetDeclaredServerTools 注入请求侧声明的标准 server tool 身份（去重）。
+// 回程 server_tool_use 在上游 name 失配（兼容端方言）时用它做身份回退，
+// 见 handleServerToolUseStart。
+func (c *Converter) SetDeclaredServerTools(ids []toolcatalog.Identity) {
+	c.declaredServerTools = ids
+}
+
 // Feed processes one Anthropic event; returns Response SSE events to emit.
 func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEvent, error) {
 	if c.completed {
@@ -293,11 +305,11 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockWebSearchToolResult:
 		return c.handleWebSearchResultStart(ev)
 	case anBlockToolResult:
-		// 兼容后端把 web_search_tool_result 误传为 tool_result 的情况：
-		// 若该块的 tool_use_id 对应一个已知的 web_search server_tool_use，
-		// 则按 web search 结果处理，否则静默跳过。
+		// 兼容端（如 GLM）常态以 tool_result block 回传 web search 结果，
+		// 而非标准的 web_search_tool_result。若该块的 tool_use_id 对应一个
+		// 已知的 web_search server_tool_use，按 web search 结果处理；否则静默跳过。
 		if _, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]; ok {
-			slog.Warn("后端将 web_search_tool_result 传为 tool_result，按 web search 结果兼容处理",
+			slog.Debug("web search 结果以 tool_result 形态回传，按 web search 结果处理",
 				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID)
 			return c.handleWebSearchResultStart(ev)
 		}
@@ -435,13 +447,23 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 }
 
 func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	// 只有 catalog 已注册的 hosted server tool 才映射为 Responses item；
-	// 其余 server_tool_use（web_fetch、未注册的未来 server tool …）无安全
-	// Responses 等价物，跳过以保持流继续。
-	id, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name)
-	if !ok {
-		return c.handleSkippedServerToolUseStart(ev)
+	// 身份判定优先级：
+	//  1. 上游 name 精确匹配（标准 Anthropic 名，亦用于多 server tool 消歧）；
+	//  2. name 失配（兼容端方言，如 GLM 的 web_search_prime）时，回退到请求
+	//     侧声明的 server tool 集合——唯一可确定则忽略 name 按它 dispatch。
+	// 仍无法确定（未声明 / 多义方言）才跳过，以保持流继续。
+	if id, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name); ok {
+		return c.dispatchServerToolUse(ev, id)
 	}
+	if len(c.declaredServerTools) == 1 {
+		return c.dispatchServerToolUse(ev, c.declaredServerTools[0])
+	}
+	return c.handleSkippedServerToolUseStart(ev)
+}
+
+// dispatchServerToolUse 按 server tool 身份路由到对应的回程 handler。
+// web_fetch 等无 Responses 等价物的类型不在此列（由调用方 skip）。
+func (c *Converter) dispatchServerToolUse(ev *anthropic.MessageStreamEventUnion, id toolcatalog.Identity) []model.SSEEvent {
 	switch id.OpenAIType {
 	case "web_search":
 		return c.handleWebSearchServerToolUseStart(ev)

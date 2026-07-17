@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 func evType(t *testing.T, data json.RawMessage) string {
@@ -919,6 +920,76 @@ func TestToolResultWithWebSearchToolUseIDCompletesWebSearchCall(t *testing.T) {
 	item := done["item"].(map[string]any)
 	if item["status"] != "completed" {
 		t.Fatalf("web_search_call should be completed via compatible tool_result, got %v", item["status"])
+	}
+}
+
+// TestServerToolUseAliasedNameFallsBackToDeclaredServerTool verifies that when a
+// compatibility backend returns a server_tool_use whose name is a non-standard
+// alias (e.g. GLM's "web_search_prime") missing from the catalog, the converter
+// falls back to the sole declared server tool identity and still emits a
+// web_search_call instead of dropping the block. The follow-up tool_result
+// (carrying the alias tool_use_id) then completes the call via the existing
+// tool_result-compatible branch — covering the full GLM wire shape end to end.
+func TestServerToolUseAliasedNameFallsBackToDeclaredServerTool(t *testing.T) {
+	c := New()
+	c.SetDeclaredServerTools([]toolcatalog.Identity{{OpenAIType: "web_search", Name: "web_search"}})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m_glm", Model: "glm-5.2"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:  "server_tool_use",
+			ID:    "toolu_ws_glm",
+			Name:  "web_search_prime", // GLM 方言名，不在 catalog
+			Input: map[string]any{"query": "rust async"},
+		},
+	})
+	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
+	item := added["item"].(map[string]any)
+	if item["type"] != "web_search_call" {
+		t.Fatalf("aliased server_tool_use should fall back to web_search_call, got %v", item["type"])
+	}
+	action := item["action"].(map[string]any)
+	if action["query"] != "rust async" {
+		t.Fatalf("query should be carried through fallback: %v", action)
+	}
+	eventByType(t, evs, "response.web_search_call.searching")
+
+	// 后端以 tool_result（非 web_search_tool_result）回传结果，tool_use_id 指向该 call。
+	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:      "tool_result",
+			ToolUseID: "toolu_ws_glm",
+		},
+	})
+	eventByType(t, evs2, "response.web_search_call.completed")
+}
+
+// TestServerToolUseAliasedNameSkippedWhenUndeclared verifies that an unrecognized
+// server_tool_use name is still dropped (no item emitted) when no server tool was
+// declared — the fallback only applies to tools the client actually requested,
+// so a backend self-invoked tool we never asked for remains skipped.
+func TestServerToolUseAliasedNameSkippedWhenUndeclared(t *testing.T) {
+	c := New() // 未声明任何 server tool
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m_undeclared", Model: "x"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "server_tool_use",
+			Name: "web_search_prime",
+		},
+	})
+	if len(evs) != 0 {
+		t.Fatalf("undeclared aliased server_tool_use should be skipped, got %d events", len(evs))
 	}
 }
 

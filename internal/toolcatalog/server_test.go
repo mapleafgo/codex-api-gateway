@@ -17,6 +17,25 @@ func TestServerToolByAnthropicName(t *testing.T) {
 	}
 }
 
+func TestIsServerTool(t *testing.T) {
+	cases := []struct {
+		id   Identity
+		want bool
+	}{
+		{Identity{OpenAIType: "web_search"}, true},
+		{Identity{OpenAIType: "code_interpreter"}, true},
+		{Identity{OpenAIType: "function"}, false},
+		{Identity{OpenAIType: "custom"}, false},
+		{Identity{OpenAIType: "shell"}, false},
+		{Identity{OpenAIType: "mcp"}, false}, // beta server tool，走独立 probe
+	}
+	for _, tc := range cases {
+		if got := IsServerTool(tc.id); got != tc.want {
+			t.Fatalf("IsServerTool(%+v) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestApplyCacheControlRecognizedVariants(t *testing.T) {
 	cc := anthropic.CacheControlEphemeralParam{TTL: anthropic.CacheControlEphemeralTTLTTL5m}
 

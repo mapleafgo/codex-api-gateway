@@ -209,6 +209,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	conv.SetEcho(echoFromRequest(req))
 	conv.SetClientModel(string(req.Model))
 	conv.SetCustomToolNames(convert.FreeformToolNames(req))
+	conv.SetDeclaredServerTools(convert.DeclaredServerTools(req))
 	// Codex TUI 只渲染 reasoning_summary_* 事件，reasoning_text.* 事件不会被显示。
 	// 模型 catalog 的 default_reasoning_summary 常为 "none"，导致 effort 已开启时
 	// 用户仍看不到思考。只要 effort 已开启（非 none），就强制使用 summary 事件格式。
@@ -225,6 +226,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		executedReq = reqForSource
 		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
+		conv.SetDeclaredServerTools(convert.DeclaredServerTools(reqForSource))
 		sysLen := 0
 		for _, b := range anthReq.System {
 			sysLen += len(b.Text)

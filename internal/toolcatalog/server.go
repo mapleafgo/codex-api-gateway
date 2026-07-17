@@ -17,6 +17,26 @@ func ServerToolByAnthropicName(name string) (Identity, bool) {
 	return id, ok
 }
 
+// serverToolOpenAITypes 是已注册 server tool 的 OpenAIType 集合，由
+// serverToolByAnthropicName 的 value 推导。IsServerTool 据此判定一个请求侧
+// 身份是否为标准 server tool；新增 server tool 自动覆盖，无需另行登记。
+var serverToolOpenAITypes = func() map[string]bool {
+	m := make(map[string]bool, len(serverToolByAnthropicName))
+	for _, id := range serverToolByAnthropicName {
+		m[id.OpenAIType] = true
+	}
+	return m
+}()
+
+// IsServerTool 报告一个请求侧 Identity 是否为标准 server tool（web_search /
+// code_interpreter）。回程用它从请求声明的工具里筛出 server tool 身份：
+// 当上游 name 失配（兼容端方言，如 GLM 的 web_search_prime）时，若声明的
+// server tool 唯一可确定，则忽略 name 按此身份回退 dispatch。beta server
+// tool（MCP）走独立 probe 路径，不计入。
+func IsServerTool(id Identity) bool {
+	return serverToolOpenAITypes[id.OpenAIType]
+}
+
 // ApplyCacheControl 把 cache_control 写入一个 Anthropic tool union 的对应变体。
 // 返回是否成功识别变体；未识别返回 false（调用方 WARN，避免静默丢失缓存）。
 // code_execution 变体已注册；新增 server tool 变体后在此 switch 扩展。
