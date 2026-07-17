@@ -158,6 +158,11 @@ func TestToolSearchCallItemMarshalsRequiredFields(t *testing.T) {
 	if got["type"] != "tool_search_call" {
 		t.Fatalf("bad type: %v", got["type"])
 	}
+	// arguments 必须是 JSON object（map），不是 string——Codex serde 反序列化成
+	// SearchToolCallParams struct，string 会导致 parse 失败 → tool_search 返回空。
+	if _, ok := got["arguments"].(map[string]any); !ok {
+		t.Fatalf("tool_search_call arguments must be JSON object (not string), got %T: %s", got["arguments"], raw)
+	}
 	if got["execution"] != "client" {
 		t.Fatalf("bad execution: %v", got["execution"])
 	}

@@ -97,16 +97,22 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 	if i.Type == ItemTypeToolSearchCall {
 		// tool_search_call 的 required keys（id/call_id/arguments/execution）即使
 		// 为空也必须输出（OpenAI wire api:"required"）；无 name 字段（区别于 function_call）。
+		// arguments 必须是 JSON object（不是 string）——Codex 用 serde 反序列化成
+		// SearchToolCallParams struct，string 会导致 parse 失败 → tool_search 报错返回空。
+		args := i.Arguments
+		if args == "" {
+			args = "{}"
+		}
 		return json.Marshal(struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			CallID    string `json:"call_id"`
-			Arguments string `json:"arguments"`
-			Execution string `json:"execution"`
-			Status    string `json:"status,omitempty"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			CallID    string          `json:"call_id"`
+			Arguments json.RawMessage `json:"arguments"`
+			Execution string          `json:"execution"`
+			Status    string          `json:"status,omitempty"`
 		}{
 			Type: i.Type, ID: i.ID, CallID: i.CallID,
-			Arguments: i.Arguments, Execution: i.Execution, Status: i.Status,
+			Arguments: json.RawMessage(args), Execution: i.Execution, Status: i.Status,
 		})
 	}
 	if i.Type != ItemTypeMessage {
