@@ -25,6 +25,7 @@ type OutputItem struct {
 	Code             string                  `json:"code,omitempty"`              // code_interpreter_call
 	Outputs          []CodeInterpreterOutput `json:"outputs,omitempty"`           // code_interpreter_call
 	ServerLabel      string                  `json:"server_label,omitempty"`      // mcp_call
+	Execution        string                  `json:"execution,omitempty"`         // tool_search_call（client/server）
 }
 
 // WebSearchAction describes the action taken by a web_search_call output item.
@@ -91,6 +92,21 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 			Type: i.Type, ID: i.ID, Status: i.Status,
 			ServerLabel: i.ServerLabel, Name: i.Name, Arguments: i.Arguments,
 			Output: i.Output,
+		})
+	}
+	if i.Type == ItemTypeToolSearchCall {
+		// tool_search_call 的 required keys（id/call_id/arguments/execution）即使
+		// 为空也必须输出（OpenAI wire api:"required"）；无 name 字段（区别于 function_call）。
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Arguments string `json:"arguments"`
+			Execution string `json:"execution"`
+			Status    string `json:"status,omitempty"`
+		}{
+			Type: i.Type, ID: i.ID, CallID: i.CallID,
+			Arguments: i.Arguments, Execution: i.Execution, Status: i.Status,
 		})
 	}
 	if i.Type != ItemTypeMessage {
