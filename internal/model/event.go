@@ -175,6 +175,32 @@ type WebSearchCallEvent struct {
 	ItemID         string `json:"item_id"`
 }
 
+// CodeInterpreterCallEvent 用于 code_interpreter_call 的 in_progress / interpreting / completed 事件。
+type CodeInterpreterCallEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+}
+
+// CodeInterpreterCallCodeDeltaEvent 用于 response.code_interpreter_call_code.delta。
+type CodeInterpreterCallCodeDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Delta          string `json:"delta"`
+}
+
+// CodeInterpreterCallCodeDoneEvent 用于 response.code_interpreter_call_code.done。
+type CodeInterpreterCallCodeDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Code           string `json:"code"`
+}
+
 // OutputItemAddedEvent opens an output item.
 type OutputItemAddedEvent struct {
 	Type           string     `json:"type"`

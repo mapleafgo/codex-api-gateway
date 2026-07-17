@@ -21,6 +21,9 @@ type OutputItem struct {
 	EncryptedContent string           `json:"encrypted_content,omitempty"` // reasoning (redacted)
 	Signature        string           `json:"signature,omitempty"`         // reasoning (plaintext thinking)
 	Action           *WebSearchAction `json:"action,omitempty"`            // web_search_call
+	ContainerID      string                  `json:"container_id,omitempty"` // code_interpreter_call
+	Code             string                  `json:"code,omitempty"`         // code_interpreter_call
+	Outputs          []CodeInterpreterOutput `json:"outputs,omitempty"`      // code_interpreter_call
 }
 
 // WebSearchAction describes the action taken by a web_search_call output item.
@@ -37,6 +40,13 @@ type WebSearchSource struct {
 	URL  string `json:"url"`
 }
 
+// CodeInterpreterOutput is one output of a code_interpreter_call (logs / image).
+// 本批仅承载 logs；image（file_id→url）不可转换，丢弃 + WARN。
+type CodeInterpreterOutput struct {
+	Type string `json:"type"` // "logs"
+	Logs string `json:"logs,omitempty"`
+}
+
 // OutputText is one message content or reasoning summary part.
 type OutputText struct {
 	Type        string  `json:"type"` // output_text | refusal | summary_text
@@ -47,6 +57,20 @@ type OutputText struct {
 
 // MarshalJSON 保证 message item 的必填 content 字段即使为空也会写入 wire payload。
 func (i OutputItem) MarshalJSON() ([]byte, error) {
+	if i.Type == ItemTypeCodeInterpreterCall {
+		return json.Marshal(struct {
+			Type        string                  `json:"type"`
+			ID          string                  `json:"id"`
+			Status      string                  `json:"status"`
+			ContainerID string                  `json:"container_id"`
+			Code        string                  `json:"code"`
+			Outputs     []CodeInterpreterOutput `json:"outputs"`
+		}{
+			Type: i.Type, ID: i.ID, Status: i.Status,
+			ContainerID: i.ContainerID, Code: i.Code,
+			Outputs: i.Outputs,
+		})
+	}
 	if i.Type != ItemTypeMessage {
 		type outputItem OutputItem
 		return json.Marshal(outputItem(i))

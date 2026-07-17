@@ -37,6 +37,7 @@ var (
 	ItemTypeApplyPatchCall       = string(oaconstant.ValueOf[oaconstant.ApplyPatchCall]())
 	ItemTypeApplyPatchCallOutput = string(oaconstant.ValueOf[oaconstant.ApplyPatchCallOutput]())
 	ItemTypeWebSearchCall        = string(oaconstant.ValueOf[oaconstant.WebSearchCall]())
+	ItemTypeCodeInterpreterCall  = string(oaconstant.ValueOf[oaconstant.CodeInterpreterCall]())
 
 	ContentTypeOutputText  = string(oaconstant.ValueOf[oaconstant.OutputText]())
 	ContentTypeRefusal     = string(oaconstant.ValueOf[oaconstant.Refusal]())
