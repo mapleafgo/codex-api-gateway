@@ -92,3 +92,83 @@ func TestMergeBetaHeader(t *testing.T) {
 		t.Fatalf("must dedupe: %q", got)
 	}
 }
+
+// TestSynthesizeMCPEventToolUse 验证 probe 把 raw beta mcp_tool_use JSON
+// 转成合成 content_block_start 事件，Input 编码 server_name/name/arguments 三字段。
+func TestSynthesizeMCPEventToolUse(t *testing.T) {
+	payload := []byte(`{"type":"mcp_tool_use","id":"toolu_x","name":"get","server_name":"weather","input":{"q":"sf"}}`)
+	ev, err := synthesizeMCPEvent(payload)
+	if err != nil {
+		t.Fatalf("synthesizeMCPEvent: %v", err)
+	}
+	if ev.Type != "content_block_start" {
+		t.Fatalf("Type=%q want content_block_start", ev.Type)
+	}
+	cb := ev.ContentBlock
+	if cb.Type != "mcp_tool_use" || cb.ID != "toolu_x" || cb.Name != "get" {
+		t.Fatalf("bad tool_use header: %+v", cb)
+	}
+	m, ok := cb.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("Input not map: %T", cb.Input)
+	}
+	if m["server_name"] != "weather" || m["name"] != "get" {
+		t.Fatalf("bad Input map: %v", m)
+	}
+	if m["arguments"] != `{"q":"sf"}` {
+		t.Fatalf("bad arguments: %v", m["arguments"])
+	}
+	// is_error slot must be empty for tool_use
+	if cb.Content.RetrievedAt != "" {
+		t.Fatalf("tool_use RetrievedAt must be empty, got %q", cb.Content.RetrievedAt)
+	}
+}
+
+// TestSynthesizeMCPEventToolResultOK 验证 mcp_tool_result 的 content[]{text}
+// 被折叠进 Content.URL，is_error=false 时 RetrievedAt 留空。
+func TestSynthesizeMCPEventToolResultOK(t *testing.T) {
+	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_x","is_error":false,"content":[{"type":"text","text":"sunny"},{"type":"text","text":" day"}]}`)
+	ev, err := synthesizeMCPEvent(payload)
+	if err != nil {
+		t.Fatalf("synthesizeMCPEvent: %v", err)
+	}
+	cb := ev.ContentBlock
+	if cb.Type != "mcp_tool_result" || cb.ToolUseID != "toolu_x" {
+		t.Fatalf("bad tool_result header: %+v", cb)
+	}
+	if cb.Content.URL != "sunny day" {
+		t.Fatalf("URL slot (output) = %q want %q", cb.Content.URL, "sunny day")
+	}
+	if cb.Content.RetrievedAt != "" {
+		t.Fatalf("is_error=false must leave RetrievedAt empty, got %q", cb.Content.RetrievedAt)
+	}
+}
+
+// TestSynthesizeMCPEventToolResultError 验证 is_error=true 时 RetrievedAt 被置位。
+func TestSynthesizeMCPEventToolResultError(t *testing.T) {
+	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_y","is_error":true,"content":[{"type":"text","text":"boom"}]}`)
+	ev, err := synthesizeMCPEvent(payload)
+	if err != nil {
+		t.Fatalf("synthesizeMCPEvent: %v", err)
+	}
+	cb := ev.ContentBlock
+	if cb.Content.URL != "boom" {
+		t.Fatalf("URL slot = %q want boom", cb.Content.URL)
+	}
+	if cb.Content.RetrievedAt == "" {
+		t.Fatalf("is_error=true must set RetrievedAt non-empty")
+	}
+}
+
+// TestSynthesizeMCPEventToolResultInvalidContent 验证 content 非 array 时
+// mcpResultText 退化为原始 JSON 文本（不丢错误信息）。
+func TestSynthesizeMCPEventToolResultInvalidContent(t *testing.T) {
+	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_z","content":"raw string"}`)
+	ev, err := synthesizeMCPEvent(payload)
+	if err != nil {
+		t.Fatalf("synthesizeMCPEvent: %v", err)
+	}
+	if ev.ContentBlock.Content.URL != `"raw string"` {
+		t.Fatalf("fallback URL = %q want raw JSON %q", ev.ContentBlock.Content.URL, `"raw string"`)
+	}
+}

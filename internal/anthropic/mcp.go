@@ -3,6 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"strings"
+
+	asdk "github.com/anthropics/anthropic-sdk-go"
 )
 
 // MCPBetaHeader 是 MCP managed connector 所需的 anthropic-beta 值。
@@ -82,4 +84,67 @@ func mergeBetaHeader(existing string) string {
 		return existing
 	}
 	return existing + "," + MCPBetaHeader
+}
+
+// synthesizeMCPEvent 把 beta mcp block 的 raw JSON 解析成合成 MessageStreamEventUnion，
+// 使 converter 能用标准 ev.ContentBlock 字段消费（Type/ID/Input/Name/Content/ToolUseID）。
+// mcp_tool_use / mcp_tool_result 是 beta block，标准 MessageStreamEventUnion 无 Of* 变体，
+// 标准反序列化会丢字段，故由 ScanEvents 在标准 unmarshal 之前探测并改走本函数。
+func synthesizeMCPEvent(payload []byte) (*asdk.MessageStreamEventUnion, error) {
+	var raw struct {
+		Type       string          `json:"type"`
+		ID         string          `json:"id"`
+		Name       string          `json:"name"`
+		ServerName string          `json:"server_name"`
+		Input      json.RawMessage `json:"input"`
+		ToolUseID  string          `json:"tool_use_id"`
+		IsError    bool            `json:"is_error"`
+		Content    json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, err
+	}
+	ev := &asdk.MessageStreamEventUnion{Type: "content_block_start"}
+	cb := asdk.ContentBlockStartEventContentBlockUnion{Type: raw.Type}
+	switch raw.Type {
+	case "mcp_tool_use":
+		cb.ID = raw.ID
+		cb.Name = raw.Name
+		// server_name 无标准 ContentBlock 字段槽，编码进 Input：
+		// {server_name, name, arguments}。converter handler 按此约定读取。
+		cb.Input = map[string]any{
+			"server_name": raw.ServerName,
+			"name":        raw.Name,
+			"arguments":   string(raw.Input),
+		}
+	case "mcp_tool_result":
+		cb.ToolUseID = raw.ToolUseID
+		// output 文本与 is_error 标志无标准 ContentBlock 字段槽：
+		// - Content.URL 承载 output 文本（拼自 content[]{type,text}）
+		// - Content.RetrievedAt 非空 = is_error（内部契约，无语义含义）
+		cb.Content = asdk.ContentBlockStartEventContentBlockUnionContent{
+			URL: mcpResultText(raw.Content),
+		}
+		if raw.IsError {
+			cb.Content.RetrievedAt = "1"
+		}
+	}
+	ev.ContentBlock = cb
+	return ev, nil
+}
+
+// mcpResultText 从 mcp_tool_result.content（[]{type,text}）拼出纯文本。
+// 解析失败时退化为原始 JSON 文本，避免丢失上游返回的错误信息。
+func mcpResultText(content json.RawMessage) string {
+	var parts []map[string]any
+	if json.Unmarshal(content, &parts) != nil {
+		return string(content)
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if t, ok := p["text"].(string); ok {
+			b.WriteString(t)
+		}
+	}
+	return b.String()
 }

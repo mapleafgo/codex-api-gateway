@@ -1460,6 +1460,67 @@ func TestEmptyOutputTextKeepsRequiredTextFields(t *testing.T) {
 	}
 }
 
+func TestMcpToolUseEmitsMcpCall(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
+	// 模拟 ScanEvents probe 合成的 mcp_tool_use 事件
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "mcp_tool_use", ID: "toolu_mcp1", Name: "get",
+			Input: map[string]any{"server_name": "weather", "name": "get", "arguments": `{"q":"sf"}`},
+		},
+	})
+	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
+	item := added["item"].(map[string]any)
+	if item["type"] != "mcp_call" || item["server_label"] != "weather" || item["name"] != "get" {
+		t.Fatalf("bad mcp_call item: %v", item)
+	}
+	if item["arguments"] != `{"q":"sf"}` {
+		t.Fatalf("bad arguments: %v", item["arguments"])
+	}
+	eventByType(t, evs, "response.mcp_call.in_progress")
+	eventByType(t, evs, "response.mcp_call_arguments.delta")
+	eventByType(t, evs, "response.mcp_call_arguments.done")
+
+	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "mcp_tool_result", ToolUseID: "toolu_mcp1",
+			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{URL: "sunny"},
+		},
+	})
+	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
+	doneItem := done["item"].(map[string]any)
+	if doneItem["status"] != "completed" || doneItem["output"] != "sunny" {
+		t.Fatalf("bad mcp_call done: %v", doneItem)
+	}
+}
+
+func TestMcpToolResultErrorEmitsFailed(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "mcp_tool_use", ID: "toolu_mcp2", Name: "get",
+			Input: map[string]any{"server_name": "w", "name": "get", "arguments": "{}"},
+		},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "mcp_tool_result", ToolUseID: "toolu_mcp2",
+			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{URL: "boom", RetrievedAt: "1"},
+		},
+	})
+	eventByType(t, evs, "response.mcp_call.failed")
+	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
+	if done["item"].(map[string]any)["status"] != "failed" {
+		t.Fatalf("expected failed status")
+	}
+}
+
 func decodePayload(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var m map[string]any

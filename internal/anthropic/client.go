@@ -232,6 +232,20 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 			continue
 		}
 
+		// mcp_tool_use / mcp_tool_result 是 beta block，标准 MessageStreamEventUnion
+		// 无 Of* 变体，标准 unmarshal 会丢字段（server_name/input/tool_use_id/...）。
+		// 探测 raw type，命中时构造合成 content_block_start 事件交由 converter 处理。
+		if json.Unmarshal([]byte(payload), &probe) == nil && (probe.Type == "mcp_tool_use" || probe.Type == "mcp_tool_result") {
+			synthetic, err := synthesizeMCPEvent([]byte(payload))
+			if err != nil {
+				return fmt.Errorf("parse mcp block: %w: %s", err, truncForLog([]byte(payload), 500))
+			}
+			if err := fn(synthetic); err != nil {
+				return err
+			}
+			continue
+		}
+
 		var ev anthropic.MessageStreamEventUnion
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			return fmt.Errorf("parse SSE data: %w: %s", err, truncForLog([]byte(payload), 500))

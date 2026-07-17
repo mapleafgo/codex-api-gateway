@@ -50,6 +50,12 @@ var (
 	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
 	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
 	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
+
+	evMcpCallInProgress     = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallInProgress]())
+	evMcpCallArgumentsDelta = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDelta]())
+	evMcpCallArgumentsDone  = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDone]())
+	evMcpCallCompleted      = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallCompleted]())
+	evMcpCallFailed         = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallFailed]())
 )
 
 var (
@@ -79,6 +85,11 @@ var (
 	anBlockWebSearchToolResultError     = string(aconstant.ValueOf[aconstant.WebSearchToolResultError]())
 	anBlockCodeExecutionToolResult      = string(aconstant.ValueOf[aconstant.CodeExecutionToolResult]())
 	anBlockCodeExecutionToolResultError = string(aconstant.ValueOf[aconstant.CodeExecutionToolResultError]())
+
+	// beta mcp block：aconstant 无对应（beta only），硬编码 wire 字符串。
+	// ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
+	anBlockMcpToolUse    = "mcp_tool_use"
+	anBlockMcpToolResult = "mcp_tool_result"
 
 	anDeltaText      = string(aconstant.ValueOf[aconstant.TextDelta]())
 	anDeltaThinking  = string(aconstant.ValueOf[aconstant.ThinkingDelta]())
@@ -121,6 +132,9 @@ type Converter struct {
 	// Code execution state: Anthropic tool_use id -> output item index.
 	codeExecutionByToolUseID map[string]int
 
+	// MCP call state: Anthropic mcp_tool_use id -> output item index.
+	mcpCallByToolUseID map[string]int
+
 	// skippedBlocks tracks block indices for server tools that have no
 	// Responses equivalent (web_fetch, code_execution, ...). Their start,
 	// delta and stop events are all ignored.
@@ -152,6 +166,7 @@ func New() *Converter {
 		},
 		webSearchByToolUseID:     map[string]int{},
 		codeExecutionByToolUseID: map[string]int{},
+		mcpCallByToolUseID:       map[string]int{},
 		skippedBlocks:            map[int]bool{},
 	}
 }
@@ -300,6 +315,10 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		anBlockWebSearchToolResultError,
 		anBlockCodeExecutionToolResultError:
 		return c.handleSkippedBlockStart(ev)
+	case anBlockMcpToolUse:
+		return c.handleMcpToolUseStart(ev)
+	case anBlockMcpToolResult:
+		return c.handleMcpToolResultStart(ev)
 	}
 	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
 }
@@ -644,6 +663,116 @@ func extractWebSearchQuery(input any) string {
 		return q
 	}
 	return ""
+}
+
+// handleMcpToolUseStart 把（probe 合成的）mcp_tool_use 映射为 mcp_call item + 事件链。
+// Input 由 synthesizeMCPEvent 编码为 {server_name, name, arguments}：
+//   - server_name 取为 Responses 的 server_label
+//   - arguments 是原始 input JSON 字符串（完整一次性下发，无流式增量）
+//
+// 事件链：output_item.added → in_progress → [arguments.delta/done]。
+func (c *Converter) handleMcpToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	idx := c.itemOrder
+	c.itemOrder++
+	itemID := fmt.Sprintf("mcp_%d", idx)
+	serverLabel, toolName, args := decodeMcpUseInput(ev.ContentBlock.Input)
+	item := model.OutputItem{
+		Type:        model.ItemTypeMcpCall,
+		ID:          itemID,
+		Status:      model.ResponseStatusInProgress,
+		ServerLabel: serverLabel,
+		Name:        toolName,
+		Arguments:   args,
+	}
+	c.outputItems = append(c.outputItems, item)
+	c.mcpCallByToolUseID[ev.ContentBlock.ID] = idx
+
+	out := []model.SSEEvent{
+		model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: item,
+		}),
+		model.MarshalEvent(evMcpCallInProgress, model.McpCallEvent{
+			Type: evMcpCallInProgress, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+	}
+	if args != "" {
+		out = append(out,
+			model.MarshalEvent(evMcpCallArgumentsDelta, model.McpCallArgumentsDeltaEvent{
+				Type: evMcpCallArgumentsDelta, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, ItemID: itemID, Delta: args,
+			}),
+			model.MarshalEvent(evMcpCallArgumentsDone, model.McpCallArgumentsDoneEvent{
+				Type: evMcpCallArgumentsDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, ItemID: itemID, Arguments: args,
+			}),
+		)
+	}
+	return out
+}
+
+// decodeMcpUseInput 从 mcp_tool_use 的合成 Input map 中取出
+// server_name（→ server_label）、name、arguments 三字段。
+// 类型断言失败时返回空串（synthesizeMCPEvent 保证输入为 map[string]any）。
+func decodeMcpUseInput(input any) (serverLabel, name, args string) {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return "", "", ""
+	}
+	if v, ok := m["server_name"].(string); ok {
+		serverLabel = v
+	}
+	if v, ok := m["name"].(string); ok {
+		name = v
+	}
+	if v, ok := m["arguments"].(string); ok {
+		args = v
+	}
+	return
+}
+
+// handleMcpToolResultStart 把（probe 合成的）mcp_tool_result 映射为 mcp_call 的
+// output + completed/failed 事件。
+//
+// 字段槽契约（与 synthesizeMCPEvent 对齐）：
+//   - ev.ContentBlock.Content.URL 承载 output 文本
+//   - ev.ContentBlock.Content.RetrievedAt 非空 = is_error 标志
+//
+// 找不到关联的 mcp_tool_use 时返回 nil（兼容孤立 result block）。
+func (c *Converter) handleMcpToolResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	idx, ok := c.mcpCallByToolUseID[ev.ContentBlock.ToolUseID]
+	if !ok || idx >= len(c.outputItems) {
+		return nil
+	}
+	itemID := fmt.Sprintf("mcp_%d", idx)
+	rc := ev.ContentBlock.Content
+	isError := rc.RetrievedAt != ""
+	c.outputItems[idx].Output = rc.URL
+	if isError {
+		c.outputItems[idx].Status = model.ResponseStatusFailed
+		return []model.SSEEvent{
+			model.MarshalEvent(evMcpCallFailed, model.McpCallEvent{
+				Type: evMcpCallFailed, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, ItemID: itemID,
+			}),
+			model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, Item: c.outputItems[idx],
+			}),
+		}
+	}
+	c.outputItems[idx].Status = model.ResponseStatusCompleted
+	return []model.SSEEvent{
+		model.MarshalEvent(evMcpCallCompleted, model.McpCallEvent{
+			Type: evMcpCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: c.outputItems[idx],
+		}),
+	}
 }
 
 func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
