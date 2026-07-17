@@ -313,6 +313,15 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfCodeInterpreterCall != nil {
 		return appendCodeInterpreterCall(out, item.OfCodeInterpreterCall)
 	}
+	// 历史 MCP items（mcp_call / mcp_list_tools / mcp_approval_request / mcp_approval_response）
+	// 无标准 Anthropic 请求侧 content block 变体（ContentBlockParamUnion 无 OfMCPToolUse 等），
+	// 回灌暂不支持 → 显式丢弃 + WARN（避免 raw JSON 污染 system context）。
+	if item.OfMcpCall != nil || item.OfMcpListTools != nil ||
+		item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
+		slog.Warn("丢弃历史 MCP item（Anthropic 请求侧无标准 mcp block 变体，回灌暂不支持）",
+			"item_type", mcpHistoryItemType(item), "call_id", mcpHistoryItemID(item))
+		return nil
+	}
 	if item.OfLocalShellCall != nil {
 		return appendLocalShellCall(out, item.OfLocalShellCall)
 	}
@@ -645,6 +654,36 @@ func codeInterpreterLogs(outputs []oairesponses.ResponseCodeInterpreterToolCallO
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// mcpHistoryItemType 返回历史 MCP input item 的人类可读类型标签，用于 WARN 日志。
+func mcpHistoryItemType(item *oairesponses.ResponseInputItemUnionParam) string {
+	switch {
+	case item.OfMcpCall != nil:
+		return "mcp_call"
+	case item.OfMcpListTools != nil:
+		return "mcp_list_tools"
+	case item.OfMcpApprovalRequest != nil:
+		return "mcp_approval_request"
+	case item.OfMcpApprovalResponse != nil:
+		return "mcp_approval_response"
+	}
+	return "unknown"
+}
+
+// mcpHistoryItemID 返回历史 MCP input item 的标识符（call_id / approval_request_id），用于 WARN 日志。
+func mcpHistoryItemID(item *oairesponses.ResponseInputItemUnionParam) string {
+	switch {
+	case item.OfMcpCall != nil:
+		return item.OfMcpCall.ID
+	case item.OfMcpListTools != nil:
+		return item.OfMcpListTools.ID
+	case item.OfMcpApprovalRequest != nil:
+		return item.OfMcpApprovalRequest.ID
+	case item.OfMcpApprovalResponse != nil:
+		return item.OfMcpApprovalResponse.ApprovalRequestID
+	}
+	return ""
 }
 
 func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string) error {

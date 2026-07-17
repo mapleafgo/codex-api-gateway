@@ -102,10 +102,10 @@
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
 | `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete 映射为 JSON object，保留 `operation`、`path` 与 create/update 的 `diff`；调用者元数据未映射 |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
-| `mcp_list_tools` | none | `unsupported_by_backend` | Anthropic remote MCP/connector 语义不同 |
-| `mcp_approval_request` | none | `unsupported_by_backend` | 无等价审批协议 |
-| `mcp_approval_response` | none | `unsupported_by_backend` | 无等价审批协议 |
-| `mcp_call` | none | `unsupported_by_backend` | 无安全等价映射 |
+| `mcp_list_tools` | none | `dropped` | Anthropic 请求侧无标准 mcp block 变体；历史回灌时丢弃 + WARN（item_type + call_id） |
+| `mcp_approval_request` | none | `dropped` | Anthropic 无等价审批协议；历史回灌时丢弃 + WARN |
+| `mcp_approval_response` | none | `dropped` | Anthropic 无等价审批协议；历史回灌时丢弃 + WARN |
+| `mcp_call` | none | `dropped` | Anthropic 请求侧无标准 mcp block 变体；历史回灌时丢弃 + WARN（item_type + call_id） |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
 | `custom_tool_call_output` | user `tool_result` | `supported` | output text 支持 |
 | `compaction_trigger` | system marker | `raw_preserved` | Anthropic 无等价事件 |

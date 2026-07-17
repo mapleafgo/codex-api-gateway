@@ -189,7 +189,7 @@ func TestCompactionItemsPreservedAsSystemContext(t *testing.T) {
 
 func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
-		{"type":"mcp_approval_response","approval_request_id":"apr_1","approve":true,"reason":"user approved"},
+		{"type":"image_generation_call","id":"ig_1","status":"completed","result":"base64data"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 	],"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
@@ -200,8 +200,8 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 		t.Fatalf("expected unsupported item system context: %+v", out.System)
 	}
 	got := out.System[0].Text
-	if !strings.Contains(got, "<openai_input_item type=\"mcp_approval_response\">") ||
-		!strings.Contains(got, `"approval_request_id":"apr_1"`) {
+	if !strings.Contains(got, "<openai_input_item type=\"image_generation_call\">") ||
+		!strings.Contains(got, `"id":"ig_1"`) {
 		t.Fatalf("unsupported item not preserved: %q", got)
 	}
 }
@@ -1430,6 +1430,51 @@ func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"2\n"`) {
 		t.Fatalf("logs stdout must be preserved in code_execution_tool_result: %s", raw)
+	}
+}
+
+// TestMcpHistoryInputItemsDroppedWithWarn 验证历史 MCP input items
+// （mcp_call / mcp_list_tools / mcp_approval_request / mcp_approval_response）
+// 被显式丢弃 + WARN，不污染 system context 也不报错。
+// Anthropic 请求侧 ContentBlockParamUnion 无标准 mcp block 变体，回灌暂不支持。
+func TestMcpHistoryInputItemsDroppedWithWarn(t *testing.T) {
+	tests := []struct {
+		name string
+		item string
+	}{
+		{
+			name: "mcp_call",
+			item: `{"type":"mcp_call","id":"mcp_1","status":"completed","server_label":"w","name":"get","arguments":"{}","output":"r"}`,
+		},
+		{
+			name: "mcp_list_tools",
+			item: `{"type":"mcp_list_tools","id":"mcp_lt_1","server_label":"w","tools":[{"name":"get","description":"d","input_schema":{}}]}`,
+		},
+		{
+			name: "mcp_approval_request",
+			item: `{"type":"mcp_approval_request","id":"mcp_ar_1","server_label":"w","name":"get","arguments":"{}"}`,
+		},
+		{
+			name: "mcp_approval_response",
+			item: `{"type":"mcp_approval_response","approval_request_id":"mcp_ar_1","approve":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustReq(t, fmt.Sprintf(`{"model":"gpt-5","input":[
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
+				%s
+			],"stream":true}`, tt.item))
+			out, _, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatalf("%s history must not error (drop+warn): %v", tt.name, err)
+			}
+			raw, _ := json.Marshal(out)
+			// MCP item 内容不得泄漏到 system context 或 messages（必须显式丢弃，不走 unknown 保留分支）
+			if strings.Contains(string(raw), "openai_input_item") {
+				t.Fatalf("%s must be dropped, but fell through to unknownInputItemPart: %s", tt.name, raw)
+			}
+		})
 	}
 }
 
