@@ -79,11 +79,17 @@ var (
 
 	// server-tool result / error block wire strings: no Responses equivalent,
 	// skipped gracefully instead of failing the stream.
-	anBlockWebFetchToolResult           = string(aconstant.ValueOf[aconstant.WebFetchToolResult]())
-	anBlockWebFetchToolResultError      = string(aconstant.ValueOf[aconstant.WebFetchToolResultError]())
-	anBlockWebSearchToolResultError     = string(aconstant.ValueOf[aconstant.WebSearchToolResultError]())
-	anBlockCodeExecutionToolResult      = string(aconstant.ValueOf[aconstant.CodeExecutionToolResult]())
-	anBlockCodeExecutionToolResultError = string(aconstant.ValueOf[aconstant.CodeExecutionToolResultError]())
+	anBlockWebFetchToolResult                     = string(aconstant.ValueOf[aconstant.WebFetchToolResult]())
+	anBlockWebFetchToolResultError                = string(aconstant.ValueOf[aconstant.WebFetchToolResultError]())
+	anBlockWebSearchToolResultError               = string(aconstant.ValueOf[aconstant.WebSearchToolResultError]())
+	anBlockCodeExecutionToolResult                = string(aconstant.ValueOf[aconstant.CodeExecutionToolResult]())
+	anBlockCodeExecutionToolResultError           = string(aconstant.ValueOf[aconstant.CodeExecutionToolResultError]())
+	anBlockBashCodeExecutionToolResult            = string(aconstant.ValueOf[aconstant.BashCodeExecutionToolResult]())
+	anBlockBashCodeExecutionToolResultError       = string(aconstant.ValueOf[aconstant.BashCodeExecutionToolResultError]())
+	anBlockTextEditorCodeExecutionToolResult      = string(aconstant.ValueOf[aconstant.TextEditorCodeExecutionToolResult]())
+	anBlockTextEditorCodeExecutionToolResultError = string(aconstant.ValueOf[aconstant.TextEditorCodeExecutionToolResultError]())
+	anBlockToolSearchToolResult                   = string(aconstant.ValueOf[aconstant.ToolSearchToolResult]())
+	anBlockToolSearchToolResultError              = string(aconstant.ValueOf[aconstant.ToolSearchToolResultError]())
 
 	// beta mcp block：aconstant 无对应（beta only），硬编码 wire 字符串。
 	// ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
@@ -320,7 +326,13 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockWebFetchToolResult,
 		anBlockWebFetchToolResultError,
 		anBlockWebSearchToolResultError,
-		anBlockCodeExecutionToolResultError:
+		anBlockCodeExecutionToolResultError,
+		anBlockBashCodeExecutionToolResult,
+		anBlockBashCodeExecutionToolResultError,
+		anBlockTextEditorCodeExecutionToolResult,
+		anBlockTextEditorCodeExecutionToolResultError,
+		anBlockToolSearchToolResult,
+		anBlockToolSearchToolResultError:
 		return c.handleSkippedBlockStart(ev)
 	case anBlockMcpToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))

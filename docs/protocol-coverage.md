@@ -261,9 +261,9 @@
 | stream `web_search_tool_result` | web search call result | `supported` | 完成 web_search_call（completed + output_item.done） |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
 | stream `code_execution_tool_result` | code interpreter output | `supported` | 映射为 code_interpreter_call completed + outputs(logs)；`file_id` 丢弃 + WARN；`code_execution_tool_result_error` 无法转 completed |
-| stream `bash_code_execution_tool_result` | shell/code output | `deferred` | 未映射时当前会显式失败，需专项映射 |
-| stream `text_editor_code_execution_tool_result` | apply_patch/text editor output | `deferred` | 未映射时当前会显式失败，需专项映射 |
-| stream `tool_search_tool_result` | tool_search_output | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `bash_code_execution_tool_result` | none | `unsupported_by_backend` | Anthropic 托管 shell 执行结果，OpenAI Responses 无等价输出 item；对应 server_tool_use 在 start 阶段已 skip，result 阶段同步 skip + WARN，不中断流 |
+| stream `text_editor_code_execution_tool_result` | none | `unsupported_by_backend` | Anthropic 托管 text editor 执行结果，OpenAI Responses 无等价；对应 server_tool_use start 阶段已 skip，result 同步 skip + WARN |
+| stream `tool_search_tool_result` | none | `unsupported_by_backend` | Anthropic 服务端 tool_search 结果，网关的 tool_search 走客户端工具语义（非 server tool），此 server-side result 无等价；start 阶段已 skip，result 同步 skip + WARN |
 | stream `container_upload` | none | `unsupported_by_backend` | 无 OpenAI Responses 等价输出 |
 | stream `mid_conversation_system` | none | `deferred` | 需决定是否转 developer/system marker |
 | event `ping` | no-op | `supported` | 忽略是正确行为 |

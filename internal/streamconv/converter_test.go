@@ -1733,3 +1733,51 @@ func TestUsageRecordsCacheTokens(t *testing.T) {
 		t.Fatalf("cache tokens not propagated: %+v", u)
 	}
 }
+
+// TestAnthropicServerToolResultsSkippedNotFailed 验证 Anthropic 的
+// bash/text_editor/tool_search 系列 server-tool result block（含 error 变体）
+// 被静默跳过，而不是落到 handleUnsupportedBlock 把整个流转成 response.failed。
+// 这些 block 对应的 server_tool_use 在 start 阶段已 skip（catalog 无 Responses 等价），
+// result 阶段必须保持一致：skip + WARN，不中断流。
+func TestAnthropicServerToolResultsSkippedNotFailed(t *testing.T) {
+	for _, blockType := range []string{
+		"bash_code_execution_tool_result",
+		"bash_code_execution_tool_result_error",
+		"text_editor_code_execution_tool_result",
+		"text_editor_code_execution_tool_result_error",
+		"tool_search_tool_result",
+		"tool_search_tool_result_error",
+	} {
+		t.Run(blockType, func(t *testing.T) {
+			c := New()
+			c.Feed(&anthropic.MessageStreamEventUnion{
+				Type:    "message_start",
+				Message: anthropic.Message{ID: "m", Model: "x"},
+			})
+			evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+				Type:  "content_block_start",
+				Index: 0,
+				ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+					Type: blockType,
+				},
+			})
+			if len(evs) != 0 {
+				t.Fatalf("%s 应被跳过（无事件），实际得到 %+v", blockType, evs)
+			}
+			if c.Done() {
+				t.Fatalf("%s 跳过不应标记 converter 完成", blockType)
+			}
+			// 后续 message_stop 应能正常产出 completed，证明流未被中断。
+			trailing, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+			completed := false
+			for _, e := range trailing {
+				if e.Type == "response.completed" {
+					completed = true
+				}
+			}
+			if !completed {
+				t.Fatalf("%s 跳过后流应仍能正常 completed，实际 trailing: %+v", blockType, trailing)
+			}
+		})
+	}
+}
