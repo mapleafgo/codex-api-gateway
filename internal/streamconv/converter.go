@@ -122,12 +122,10 @@ type Converter struct {
 	thinkRedacted   bool // current thinking block is redacted
 
 	// Tool call state
-	toolCalls       map[int]toolCallState // block index -> output item state（custom 旧路径）
-	toolArgBuilders map[int]*strings.Builder
 	customToolNames map[string]bool
 
 	// callByBlockIdx 是通用 call 流水线的进行中状态（block index → *callState），
-	// 覆盖 function/tool_search/web_search/code_interpreter/mcp；custom 仍用 toolCalls。
+	// 覆盖全部 6 类 call（function/custom/tool_search/web_search/code_interpreter/mcp）。
 	callByBlockIdx map[int]*callState
 
 	// declaredServerTools 是请求侧声明的标准 server tool 身份（去重）。回程
@@ -167,9 +165,7 @@ type Converter struct {
 // New returns a fresh converter.
 func New() *Converter {
 	return &Converter{
-		toolCalls:       map[int]toolCallState{},
-		toolArgBuilders: map[int]*strings.Builder{},
-		callByBlockIdx:  map[int]*callState{},
+		callByBlockIdx: map[int]*callState{},
 		customToolNames: map[string]bool{
 			"apply_patch": true,
 			"shell":       true,
@@ -179,11 +175,6 @@ func New() *Converter {
 		mcpCallByToolUseID:       map[string]int{},
 		skippedBlocks:            map[int]bool{},
 	}
-}
-
-type toolCallState struct {
-	itemIdx int
-	custom  bool
 }
 
 func (c *Converter) nextSeq() int64 { c.seq++; return c.seq }
@@ -679,22 +670,6 @@ func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []mo
 		if evs, handled := c.handleCallDelta(ev); handled {
 			return evs
 		}
-		blkIdx := int(ev.Index)
-		state, ok := c.toolCalls[blkIdx]
-		if !ok {
-			return nil
-		}
-		if b, ok := c.toolArgBuilders[blkIdx]; ok {
-			b.WriteString(ev.Delta.PartialJSON)
-		}
-		if state.custom {
-			return nil
-		}
-		return []model.SSEEvent{model.MarshalEvent(evFunctionCallArgumentsDelta, model.FunctionCallArgumentsDeltaEvent{
-			Type: evFunctionCallArgumentsDelta, SequenceNumber: c.nextSeq(),
-			OutputIndex: state.itemIdx, ItemID: fmt.Sprintf("fc_%d", state.itemIdx),
-			Delta: ev.Delta.PartialJSON,
-		})}
 	}
 	return nil
 }
@@ -767,52 +742,6 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 
 	if evs, handled := c.handleCallStop(ev); handled {
 		return evs
-	}
-	if state, ok := c.toolCalls[blkIdx]; ok {
-		itemIdx := state.itemIdx
-		itemID := fmt.Sprintf("fc_%d", itemIdx)
-		args := ""
-		if b, ok := c.toolArgBuilders[blkIdx]; ok {
-			args = b.String()
-		}
-		if state.custom {
-			itemID = fmt.Sprintf("ctc_%d", itemIdx)
-			input := customToolInput(args)
-			if itemIdx < len(c.outputItems) {
-				c.outputItems[itemIdx].Input = input
-			}
-			if input != "" {
-				out = append(out, model.MarshalEvent(evCustomToolCallInputDelta, model.CustomToolCallInputDeltaEvent{
-					Type: evCustomToolCallInputDelta, SequenceNumber: c.nextSeq(),
-					OutputIndex: itemIdx, ItemID: itemID, Delta: input,
-				}))
-			}
-			out = append(out, model.MarshalEvent(evCustomToolCallInputDone, model.CustomToolCallInputDoneEvent{
-				Type: evCustomToolCallInputDone, SequenceNumber: c.nextSeq(),
-				OutputIndex: itemIdx, ItemID: itemID, Input: input,
-			}))
-			out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-				OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
-			}))
-			delete(c.toolCalls, blkIdx)
-			delete(c.toolArgBuilders, blkIdx)
-			return out
-		}
-		if itemIdx < len(c.outputItems) {
-			c.outputItems[itemIdx].Arguments = args
-			c.outputItems[itemIdx].Status = model.ResponseStatusCompleted
-		}
-		out = append(out, model.MarshalEvent(evFunctionCallArgumentsDone, model.FunctionCallArgumentsDoneEvent{
-			Type: evFunctionCallArgumentsDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: itemIdx, ItemID: itemID, Arguments: args,
-		}))
-		out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
-		}))
-		delete(c.toolCalls, blkIdx)
-		delete(c.toolArgBuilders, blkIdx)
 	}
 
 	return out
@@ -942,8 +871,6 @@ func (c *Converter) resetOutputForRefusal() {
 	c.thinkSummaryIdx = 0
 	c.thinkBuilder.Reset()
 	c.sigBuilder.Reset()
-	c.toolCalls = map[int]toolCallState{}
-	c.toolArgBuilders = map[int]*strings.Builder{}
 	c.outputItems = []model.OutputItem{}
 	c.skippedBlocks = map[int]bool{}
 }
