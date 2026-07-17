@@ -122,9 +122,13 @@ type Converter struct {
 	thinkRedacted   bool // current thinking block is redacted
 
 	// Tool call state
-	toolCalls       map[int]toolCallState // block index -> output item state
+	toolCalls       map[int]toolCallState // block index -> output item state（custom 旧路径）
 	toolArgBuilders map[int]*strings.Builder
 	customToolNames map[string]bool
+
+	// callByBlockIdx 是通用 call 流水线的进行中状态（block index → *callState），
+	// 覆盖 function/tool_search/web_search/code_interpreter/mcp；custom 仍用 toolCalls。
+	callByBlockIdx map[int]*callState
 
 	// declaredServerTools 是请求侧声明的标准 server tool 身份（去重）。回程
 	// server_tool_use 在上游 name 失配（兼容端方言，如 GLM 的 web_search_prime）
@@ -165,6 +169,7 @@ func New() *Converter {
 	return &Converter{
 		toolCalls:       map[int]toolCallState{},
 		toolArgBuilders: map[int]*strings.Builder{},
+		callByBlockIdx:  map[int]*callState{},
 		customToolNames: map[string]bool{
 			"apply_patch": true,
 			"shell":       true,
@@ -299,6 +304,9 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockRedactedThinking:
 		return c.handleThinkingStart(ev, true)
 	case anBlockToolUse:
+		if kind := c.dispatchCallKind(ev); kind != nil {
+			return c.handleCallStart(ev, kind)
+		}
 		return c.handleToolUseStart(ev)
 	case anBlockServerToolUse:
 		return c.handleServerToolUseStart(ev)
@@ -854,6 +862,9 @@ func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []mo
 		}
 		return nil
 	case anDeltaInputJSON:
+		if evs, handled := c.handleCallDelta(ev); handled {
+			return evs
+		}
 		blkIdx := int(ev.Index)
 		state, ok := c.toolCalls[blkIdx]
 		if !ok {
@@ -940,6 +951,9 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		}))
 	}
 
+	if evs, handled := c.handleCallStop(ev); handled {
+		return evs
+	}
 	if state, ok := c.toolCalls[blkIdx]; ok {
 		itemIdx := state.itemIdx
 		itemID := fmt.Sprintf("fc_%d", itemIdx)
