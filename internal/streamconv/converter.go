@@ -136,8 +136,8 @@ type Converter struct {
 	mcpCallByToolUseID map[string]int
 
 	// skippedBlocks tracks block indices for server tools that have no
-	// Responses equivalent (web_fetch, code_execution, ...). Their start,
-	// delta and stop events are all ignored.
+	// Responses equivalent (web_fetch, uncatalogued future tools, ...).
+	// Their start, delta and stop events are all ignored.
 	skippedBlocks map[int]bool
 
 	// Accumulators
@@ -436,7 +436,7 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 
 func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	// 只有 catalog 已注册的 hosted server tool 才映射为 Responses item；
-	// 其余 server_tool_use（web_fetch、code_execution …批次 0 未注册）无安全
+	// 其余 server_tool_use（web_fetch、未注册的未来 server tool …）无安全
 	// Responses 等价物，跳过以保持流继续。
 	id, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name)
 	if !ok {
@@ -628,9 +628,10 @@ func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBloc
 	return out
 }
 
-// handleSkippedServerToolUseStart marks a non-web_search server_tool_use block
-// (web_fetch, code_execution, ...) as skipped. The block index is tracked so
-// subsequent delta and stop events for this index are also ignored.
+// handleSkippedServerToolUseStart marks an uncatalogued server_tool_use block
+// (web_fetch, future tools not yet in the catalog, ...) as skipped. The block
+// index is tracked so subsequent delta and stop events for this index are also
+// ignored.
 func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	blkIdx := int(ev.Index)
 	c.skippedBlocks[blkIdx] = true

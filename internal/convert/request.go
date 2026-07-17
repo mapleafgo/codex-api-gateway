@@ -319,7 +319,7 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfMcpCall != nil || item.OfMcpListTools != nil ||
 		item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
 		slog.Warn("丢弃历史 MCP item（Anthropic 请求侧无标准 mcp block 变体，回灌暂不支持）",
-			"item_type", mcpHistoryItemType(item), "call_id", mcpHistoryItemID(item))
+			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
 		return nil
 	}
 	if item.OfLocalShellCall != nil {
