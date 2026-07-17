@@ -640,6 +640,11 @@ func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventU
 // extractWebSearchSources maps Anthropic web_search_tool_result entries to
 // OpenAI web_search_call sources. Only the URL is carried — title and
 // encrypted_content have no OpenAI equivalent field.
+//
+// 兼容端（如 GLM web_search_prime）不把结果放进 tool_result block 的 content
+// （实测 content 各字段皆空），而是用 text 自述承载 result_summary + link，
+// 已由 text 路径透传给客户端。故此处只处理标准 web_search_tool_result 数组，
+// 不解析 text——拆 text 违背透传契约，且 link 已对客户端可见。
 func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBlockUnionContent) []model.WebSearchSource {
 	var out []model.WebSearchSource
 	for _, r := range content.OfWebSearchResultBlockArray {
