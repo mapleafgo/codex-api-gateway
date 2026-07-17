@@ -78,7 +78,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	// 收集所有模型 ID（上游 + 本地 model_map 别名），去重。
 	seen := make(map[string]bool)
-	var entries []model.Entry
+
+	// Codex 期望 /v1/models 返回 { "models": [ModelInfo] }（不是 OpenAI {data:[]}）。
+	// Codex 用 serde_json::from_slice::<ModelsResponse> 直接解析，若返回 OpenAI 格式，
+	// 解析失败/拿到空 ModelInfo → supports_search_tool 默认 false → MCP deferred 不工作。
+	// 故返回 CodexModelsResponse，补全 ModelInfo 能力字段（关键是 supports_search_tool=true）。
+	var infos []model.CodexModelInfo
 
 	// 1) 上游模型列表
 	if body, err := s.sch.ListModels(r.Context()); err != nil {
@@ -94,11 +99,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				seen[m.ID] = true
-				entries = append(entries, model.Entry{
-					ID: m.ID, Object: model.ObjectModel,
-					Created: parseCreated(m.CreatedAt, s.startedAt),
-					OwnedBy: "anthropic",
-				})
+				infos = append(infos, codexModelInfo(m.ID))
 			}
 		}
 	}
@@ -109,29 +110,43 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[name] = true
-		entries = append(entries, model.Entry{
-			ID: name, Object: model.ObjectModel, Created: s.startedAt, OwnedBy: "codex-api-gateway",
-		})
+		infos = append(infos, codexModelInfo(name))
 	}
 
-	resp := model.ListResponse{Object: model.ObjectList, Data: entries}
+	resp := model.CodexModelsResponse{Models: infos}
 	w.Header().Set("content-type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("写出模型列表响应失败", "error", err)
 	}
 }
 
-// parseCreated 将 Anthropic RFC3339 时间戳转为 Unix 秒；解析失败时回退到 fallback。
-func parseCreated(rfc3339 string, fallback int64) int64 {
-	if rfc3339 == "" {
-		return fallback
+// codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补全能力字段。
+// 关键：SupportsSearchTool=true 让 Codex 启用 tool_search + MCP tools deferred。
+func codexModelInfo(slug string) model.CodexModelInfo {
+	return model.CodexModelInfo{
+		Slug:                             slug,
+		DisplayName:                      slug,
+		SupportedReasoningLevels:         []any{},
+		ShellType:                        "shell_command",
+		Visibility:                       "list",
+		SupportedInAPI:                   true,
+		Priority:                         0,
+		BaseInstructions:                 "",
+		SupportsReasoningSummaryParameter: true,
+		DefaultReasoningSummary:          "auto",
+		SupportVerbosity:                 false,
+		WebSearchToolType:                "text",
+		TruncationPolicy: model.CodexTruncationPolicy{
+			Mode: "tokens", Limit: 100000,
+		},
+		SupportsParallelToolCalls:  true,
+		ExperimentalSupportedTools: []string{},
+		InputModalities:            []string{"text", "image"},
+		SupportsSearchTool:         true,
+		UseResponsesLite:           false,
 	}
-	t, err := time.Parse(time.RFC3339, rfc3339)
-	if err != nil {
-		return fallback
-	}
-	return t.Unix()
 }
+
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -561,6 +576,7 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			counts["local_shell"]++
 		case t.OfToolSearch != nil:
 			counts["tool_search"]++
+			mcpServers = append(mcpServers, fmt.Sprintf("tool_search execution=%s", t.OfToolSearch.Execution))
 		case t.OfNamespace != nil:
 			counts["namespace"]++
 			ns := t.OfNamespace

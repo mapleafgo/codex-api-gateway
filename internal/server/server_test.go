@@ -508,31 +508,25 @@ func TestModelsEndpointMergesUpstreamAndLocal(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body: %s", resp.StatusCode, body)
 	}
-	var ml model.ListResponse
+	var ml model.CodexModelsResponse
 	if err := json.Unmarshal(body, &ml); err != nil {
 		t.Fatalf("unmarshal: %v. body: %s", err, body)
 	}
-	if ml.Object != "list" {
-		t.Fatalf("object = %q, want \"list\"", ml.Object)
-	}
 	// 应包含 4 个模型：2 个上游 + 2 个本地别名
 	ids := make(map[string]bool)
-	for _, m := range ml.Data {
-		if m.Object != "model" {
-			t.Fatalf("model %q object = %q, want \"model\"", m.ID, m.Object)
+	for _, m := range ml.Models {
+		ids[m.Slug] = true
+		if !m.SupportsSearchTool {
+			t.Fatalf("model %q supports_search_tool = false, want true", m.Slug)
 		}
-		if m.Created <= 0 {
-			t.Fatalf("model %q created = %d, want positive", m.ID, m.Created)
-		}
-		ids[m.ID] = true
 	}
 	for _, want := range []string{"claude-sonnet-4-20250514", "claude-opus-4-20250514", "gpt-5", "gpt-5.5"} {
 		if !ids[want] {
-			t.Fatalf("missing model %q in response: %+v", want, ml.Data)
+			t.Fatalf("missing model %q in response: %+v", want, ml.Models)
 		}
 	}
-	if len(ml.Data) != 4 {
-		t.Fatalf("expected 4 models (2 upstream + 2 local), got %d: %+v", len(ml.Data), ml.Data)
+	if len(ml.Models) != 4 {
+		t.Fatalf("expected 4 models (2 upstream + 2 local), got %d: %+v", len(ml.Models), ml.Models)
 	}
 }
 
@@ -558,12 +552,15 @@ func TestModelsEndpointFallbackLocalOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200. body: %s", resp.StatusCode, body)
 	}
-	var ml model.ListResponse
+	var ml model.CodexModelsResponse
 	if err := json.Unmarshal(body, &ml); err != nil {
 		t.Fatalf("unmarshal: %v. body: %s", err, body)
 	}
-	if len(ml.Data) != 1 || ml.Data[0].ID != "gpt-5" {
-		t.Fatalf("expected only gpt-5, got %+v", ml.Data)
+	if len(ml.Models) != 1 || ml.Models[0].Slug != "gpt-5" {
+		t.Fatalf("expected only gpt-5, got %+v", ml.Models)
+	}
+	if !ml.Models[0].SupportsSearchTool {
+		t.Fatalf("supports_search_tool = false, want true (enables MCP deferred + tool_search)")
 	}
 }
 
