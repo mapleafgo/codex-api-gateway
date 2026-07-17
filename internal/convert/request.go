@@ -623,17 +623,35 @@ func toolSearchArgumentsInput(args any) any {
 }
 
 func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instructionPart, output *oairesponses.ResponseToolSearchOutputItemParam) error {
-	if err := appendToolList(out, output.Tools); err != nil {
-		return err
+	names := formatToolNames("tool_search_output", output.Tools)
+	for _, t := range output.Tools {
+		ids, _ := toolcatalog.Inspect(t)
+		for _, id := range ids {
+			slog.Info("tool_search 暴露工具", "openai_type", id.OpenAIType, "name", id.Name, "namespace", id.Namespace, "converted", id.ConvertedName())
+		}
+	}
+	slog.Info("tool_search_output 回灌", "call_id", output.CallID.Value, "tool_count", len(output.Tools), "names", names)
+	// tool_search 多轮回灌可能含重复 tool（不同轮搜到同一工具），跳过已声明的。
+	for _, t := range output.Tools {
+		decls, err := toolcatalog.Declare(t)
+		if err != nil {
+			return err
+		}
+		for _, d := range decls {
+			if d.OfTool != nil && hasTool(out, d.OfTool.Name) {
+				continue // 跳过已声明（多轮重复）
+			}
+			out.Tools = append(out.Tools, d)
+		}
 	}
 	*sysParts = append(*sysParts, instructionPart{
 		role: model.RoleDeveloper,
-		text: formatToolNames("tool_search_output", output.Tools),
+		text: names,
 	})
 	if !output.CallID.Valid() || output.CallID.Value == "" {
 		return nil
 	}
-	return appendToolResult(out, output.CallID.Value, formatToolNames("tool_search_output", output.Tools))
+	return appendToolResult(out, output.CallID.Value, names)
 }
 
 // appendCodeInterpreterCall 把历史 code_interpreter_call input item 回放为 Anthropic
