@@ -38,6 +38,8 @@ func Inspect(t oairesponses.ToolUnionParam) ([]Identity, error) {
 			}
 		}
 		return out, nil
+	case t.OfCodeInterpreter != nil:
+		return []Identity{{OpenAIType: "code_interpreter", Name: "code_interpreter"}}, nil
 	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
 		return []Identity{{OpenAIType: "web_search", Name: "web_search"}}, nil
 	default:

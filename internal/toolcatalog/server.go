@@ -6,7 +6,8 @@ import "github.com/anthropics/anthropic-sdk-go"
 // streamconv 用它判定一个 server_tool_use 是否对应已注册的 hosted server tool；
 // 批次 A 注册 code_execution 后在此追加，回程 dispatch 自动覆盖。
 var serverToolByAnthropicName = map[string]Identity{
-	"web_search": {OpenAIType: "web_search", Name: "web_search", Freeform: false},
+	"web_search":     {OpenAIType: "web_search", Name: "web_search", Freeform: false},
+	"code_execution": {OpenAIType: "code_interpreter", Name: "code_interpreter"},
 }
 
 // ServerToolByAnthropicName 查询一个 Anthropic server_tool_use name 是否对应
@@ -25,6 +26,8 @@ func ApplyCacheControl(tool *anthropic.ToolUnionParam, cc anthropic.CacheControl
 		tool.OfTool.CacheControl = cc
 	case tool.OfWebSearchTool20250305 != nil:
 		tool.OfWebSearchTool20250305.CacheControl = cc
+	case tool.OfCodeExecutionTool20250522 != nil:
+		tool.OfCodeExecutionTool20250522.CacheControl = cc
 	default:
 		return false
 	}

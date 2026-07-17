@@ -45,6 +45,11 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 			}
 		}
 		return out, nil
+	case t.OfCodeInterpreter != nil:
+		// container（file_ids / memory_limit / 显式 cntr_xxx）无 Anthropic 等价，丢弃。
+		// Anthropic code execution 无状态单次执行、无 container 概念（已知损失）。
+		// Name 由 SDK default 为 code_execution，无需显式设。
+		return []anthropic.ToolUnionParam{{OfCodeExecutionTool20250522: &anthropic.CodeExecutionTool20250522Param{}}}, nil
 	case t.OfWebSearch != nil:
 		return []anthropic.ToolUnionParam{{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
 			AllowedDomains: t.OfWebSearch.Filters.AllowedDomains,

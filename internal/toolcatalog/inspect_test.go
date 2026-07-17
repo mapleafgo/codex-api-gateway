@@ -19,6 +19,7 @@ func TestInspectClientTools(t *testing.T) {
 		{"local_shell", oairesponses.ToolUnionParam{OfLocalShell: &oairesponses.ToolLocalShellParam{}}, Identity{OpenAIType: "local_shell", Name: "shell", Freeform: true}},
 		{"tool_search", oairesponses.ToolUnionParam{OfToolSearch: &oairesponses.ToolSearchToolParam{}}, Identity{OpenAIType: "tool_search", Name: "tool_search"}},
 		{"web_search", oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{}}, Identity{OpenAIType: "web_search", Name: "web_search"}},
+		{"code_interpreter", oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}}, Identity{OpenAIType: "code_interpreter", Name: "code_interpreter"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

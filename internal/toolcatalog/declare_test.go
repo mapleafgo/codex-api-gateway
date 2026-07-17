@@ -61,6 +61,16 @@ func TestDeclareWebSearchPreviewNoDomains(t *testing.T) {
 	}
 }
 
+func TestDeclareCodeInterpreterMapsToCodeExecution(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}})
+	if err != nil {
+		t.Fatalf("code_interpreter must not fail fast: %v", err)
+	}
+	if decls[0].OfCodeExecutionTool20250522 == nil {
+		t.Fatalf("code_interpreter not mapped to code_execution: %+v", decls)
+	}
+}
+
 func TestDeclareUnsupportedErrors(t *testing.T) {
 	if _, err := Declare(oairesponses.ToolUnionParam{}); err == nil {
 		t.Fatal("expected error for unsupported tool")
