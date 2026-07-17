@@ -44,6 +44,12 @@ var (
 	evWebSearchCallInProgress    = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
 	evWebSearchCallSearching     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
 	evWebSearchCallCompleted     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
+
+	evCodeInterpreterCallInProgress   = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInProgress]())
+	evCodeInterpreterCallInterpreting = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInterpreting]())
+	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
+	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
+	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
 )
 
 var (
@@ -112,6 +118,9 @@ type Converter struct {
 	// Web search state: Anthropic tool_use id -> output item index.
 	webSearchByToolUseID map[string]int
 
+	// Code execution state: Anthropic tool_use id -> output item index.
+	codeExecutionByToolUseID map[string]int
+
 	// skippedBlocks tracks block indices for server tools that have no
 	// Responses equivalent (web_fetch, code_execution, ...). Their start,
 	// delta and stop events are all ignored.
@@ -141,8 +150,9 @@ func New() *Converter {
 			"apply_patch": true,
 			"shell":       true,
 		},
-		webSearchByToolUseID: map[string]int{},
-		skippedBlocks:        map[int]bool{},
+		webSearchByToolUseID:     map[string]int{},
+		codeExecutionByToolUseID: map[string]int{},
+		skippedBlocks:            map[int]bool{},
 	}
 }
 
@@ -277,10 +287,17 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 			return c.handleWebSearchResultStart(ev)
 		}
 		return c.handleSkippedBlockStart(ev)
+	case anBlockCodeExecutionToolResult:
+		// code_execution_tool_result（非 error）若关联已知 code_execution
+		// server_tool_use，则映射为 code_interpreter_call 的 outputs + completed；
+		// 否则按 skip 处理（含未关联的孤立 result block）。
+		if _, ok := c.codeExecutionByToolUseID[ev.ContentBlock.ToolUseID]; ok {
+			return c.handleCodeExecutionResultStart(ev)
+		}
+		return c.handleSkippedBlockStart(ev)
 	case anBlockWebFetchToolResult,
 		anBlockWebFetchToolResultError,
 		anBlockWebSearchToolResultError,
-		anBlockCodeExecutionToolResult,
 		anBlockCodeExecutionToolResultError:
 		return c.handleSkippedBlockStart(ev)
 	}
@@ -402,9 +419,23 @@ func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUni
 	// 只有 catalog 已注册的 hosted server tool 才映射为 Responses item；
 	// 其余 server_tool_use（web_fetch、code_execution …批次 0 未注册）无安全
 	// Responses 等价物，跳过以保持流继续。
-	if _, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name); !ok {
+	id, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name)
+	if !ok {
 		return c.handleSkippedServerToolUseStart(ev)
 	}
+	switch id.OpenAIType {
+	case "web_search":
+		return c.handleWebSearchServerToolUseStart(ev)
+	case "code_interpreter":
+		return c.handleCodeExecutionServerToolUseStart(ev)
+	}
+	return c.handleSkippedServerToolUseStart(ev)
+}
+
+// handleWebSearchServerToolUseStart 把 Anthropic server_tool_use(web_search)
+// 映射为 web_search_call item + 事件链（逐字搬迁自原 handleServerToolUseStart
+// 的 web_search 分支，行为不变）。
+func (c *Converter) handleWebSearchServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	idx := c.itemOrder
 	c.itemOrder++
 	itemID := fmt.Sprintf("ws_%d", idx)
@@ -431,6 +462,116 @@ func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUni
 			OutputIndex: idx, ItemID: itemID,
 		}),
 	}
+}
+
+// handleCodeExecutionServerToolUseStart 把 Anthropic server_tool_use(code_execution)
+// 映射为 code_interpreter_call item + 事件链。
+// container_id 由网关合成（Anthropic 无 container，已知损失）。
+// input.code 假设为 {"code": "..."}，字段名以 RED/wire 锁定。
+func (c *Converter) handleCodeExecutionServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	idx := c.itemOrder
+	c.itemOrder++
+	itemID := fmt.Sprintf("ci_%d", idx)
+	code := extractCodeExecutionCode(ev.ContentBlock.Input)
+	item := model.OutputItem{
+		Type:        model.ItemTypeCodeInterpreterCall,
+		ID:          itemID,
+		Status:      model.ResponseStatusInProgress,
+		ContainerID: fmt.Sprintf("ci_container_%d", idx),
+		Code:        code,
+		Outputs:     []model.CodeInterpreterOutput{},
+	}
+	c.outputItems = append(c.outputItems, item)
+	c.codeExecutionByToolUseID[ev.ContentBlock.ID] = idx
+
+	out := []model.SSEEvent{
+		model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: item,
+		}),
+		model.MarshalEvent(evCodeInterpreterCallInProgress, model.CodeInterpreterCallEvent{
+			Type: evCodeInterpreterCallInProgress, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evCodeInterpreterCallInterpreting, model.CodeInterpreterCallEvent{
+			Type: evCodeInterpreterCallInterpreting, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+	}
+	if code != "" {
+		out = append(out,
+			model.MarshalEvent(evCodeInterpreterCallCodeDelta, model.CodeInterpreterCallCodeDeltaEvent{
+				Type: evCodeInterpreterCallCodeDelta, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, ItemID: itemID, Delta: code,
+			}),
+			model.MarshalEvent(evCodeInterpreterCallCodeDone, model.CodeInterpreterCallCodeDoneEvent{
+				Type: evCodeInterpreterCallCodeDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: idx, ItemID: itemID, Code: code,
+			}),
+		)
+	}
+	return out
+}
+
+// extractCodeExecutionCode 从 server_tool_use(code_execution) 的 input 取出代码。
+// input 是 free-form JSON，假设 {"code": "..."}（spec 第 113 行风险点，RED 锁定）。
+func extractCodeExecutionCode(input any) string {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if c, ok := m["code"].(string); ok {
+		return c
+	}
+	return ""
+}
+
+// handleCodeExecutionResultStart 把 code_execution_tool_result 映射为
+// code_interpreter_call 的 outputs（stdout/stderr → logs）+ completed。
+// file_id（代码生成的文件）无 url 凭据不可转换，丢弃 + WARN。
+func (c *Converter) handleCodeExecutionResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	idx, ok := c.codeExecutionByToolUseID[ev.ContentBlock.ToolUseID]
+	if !ok || idx >= len(c.outputItems) {
+		return nil // 无关联的 code_execution server_tool_use，交由 handleBlockStart 兜底 skip
+	}
+	itemID := fmt.Sprintf("ci_%d", idx)
+	// code_execution_tool_result 的 stdout/stderr 在 ev.ContentBlock.Content
+	// （CodeExecutionToolResultBlockContentUnion），而非顶层或 AsCodeExecutionToolResult。
+	// 生成的文件列表在其 Content.OfContent（[]CodeExecutionOutputBlock）。
+	rc := ev.ContentBlock.Content
+	logs := foldExecutionLogs(rc.Stdout, rc.Stderr)
+	c.outputItems[idx].Status = model.ResponseStatusCompleted
+	if logs != "" {
+		c.outputItems[idx].Outputs = []model.CodeInterpreterOutput{{Type: "logs", Logs: logs}}
+	}
+	for _, out := range rc.Content.OfContent {
+		if out.FileID != "" {
+			slog.Warn("丢弃 code execution 生成的文件（无 OpenAI files url 凭据）",
+				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID, "file_id", out.FileID)
+		}
+	}
+	return []model.SSEEvent{
+		model.MarshalEvent(evCodeInterpreterCallCompleted, model.CodeInterpreterCallEvent{
+			Type: evCodeInterpreterCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: idx, Item: c.outputItems[idx],
+		}),
+	}
+}
+
+// foldExecutionLogs 把 stdout 与非空 stderr 合并为 logs 文本（OpenAI logs 承载 stdout/stderr）。
+func foldExecutionLogs(stdout, stderr string) string {
+	var parts []string
+	if stdout != "" {
+		parts = append(parts, stdout)
+	}
+	if stderr != "" {
+		parts = append(parts, stderr)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {

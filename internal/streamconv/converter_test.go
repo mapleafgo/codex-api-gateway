@@ -615,6 +615,79 @@ func TestWebSearchResultSurfacesSources(t *testing.T) {
 	}
 }
 
+func TestCodeExecutionServerToolUseEmitsCodeInterpreterCall(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:  "server_tool_use",
+			ID:    "toolu_ci1",
+			Name:  "code_execution",
+			Input: map[string]any{"code": "print(3)"},
+		},
+	})
+	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
+	item := added["item"].(map[string]any)
+	if item["type"] != "code_interpreter_call" {
+		t.Fatalf("expected code_interpreter_call, got %v", item["type"])
+	}
+	if item["code"] != "print(3)" {
+		t.Fatalf("bad code: %v", item["code"])
+	}
+	if item["container_id"] == "" {
+		t.Fatal("container_id must be synthesized")
+	}
+	eventByType(t, evs, "response.code_interpreter_call.in_progress")
+	eventByType(t, evs, "response.code_interpreter_call.interpreting")
+	eventByType(t, evs, "response.code_interpreter_call_code.delta")
+	eventByType(t, evs, "response.code_interpreter_call_code.done")
+
+	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_start",
+		Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type:      "code_execution_tool_result",
+			ToolUseID: "toolu_ci1",
+			// stdout 在 Content（CodeExecutionToolResultBlockContentUnion），非顶层。
+			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{Stdout: "3\n"},
+		},
+	})
+	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
+	doneItem := done["item"].(map[string]any)
+	if doneItem["status"] != "completed" {
+		t.Fatalf("expected completed, got %v", doneItem["status"])
+	}
+	outputs := doneItem["outputs"].([]any)
+	if outputs[0].(map[string]any)["logs"] != "3\n" {
+		t.Fatalf("bad logs output: %v", outputs[0])
+	}
+}
+
+func TestCodeExecutionResultStderrFoldedIntoLogs(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "server_tool_use", ID: "toolu_ci2", Name: "code_execution", Input: map[string]any{"code": "x"},
+		},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
+			Type: "code_execution_tool_result", ToolUseID: "toolu_ci2",
+			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{Stdout: "out", Stderr: "err"},
+		},
+	})
+	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
+	logs := done["item"].(map[string]any)["outputs"].([]any)[0].(map[string]any)["logs"]
+	if !strings.Contains(logs.(string), "out") || !strings.Contains(logs.(string), "err") {
+		t.Fatalf("stdout+stderr must fold into logs: %v", logs)
+	}
+}
+
 func TestUnsupportedAnthropicBlockFailsInsteadOfSilentDrop(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
