@@ -33,6 +33,8 @@ func (c *Converter) handleCallStart(ev *anthropic.MessageStreamEventUnion, kind 
 			c.webSearchByToolUseID[ev.ContentBlock.ID] = idx
 		case codeInterpreterCallKind:
 			c.codeExecutionByToolUseID[ev.ContentBlock.ID] = idx
+		case mcpCallKind:
+			c.mcpCallByToolUseID[ev.ContentBlock.ID] = idx
 		}
 	}
 

@@ -336,7 +336,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		anBlockCodeExecutionToolResultError:
 		return c.handleSkippedBlockStart(ev)
 	case anBlockMcpToolUse:
-		return c.handleMcpToolUseStart(ev)
+		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockMcpToolResult:
 		return c.handleMcpToolResultStart(ev)
 	}

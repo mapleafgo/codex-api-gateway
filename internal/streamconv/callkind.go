@@ -79,6 +79,8 @@ func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) call
 		if len(c.declaredServerTools) == 1 {
 			return c.serverToolKindByID(c.declaredServerTools[0])
 		}
+	case anBlockMcpToolUse:
+		return mcpCallKind{}
 	}
 	return nil
 }
