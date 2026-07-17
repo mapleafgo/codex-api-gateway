@@ -393,6 +393,35 @@ func TestShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 	}
 }
 
+// TestToolSearchArgumentsInputIsObject 锁定 tool_search_call 的 arguments（Codex
+// 回灌历史时通常是 JSON 字符串）必须转成 tool_use input 的 JSON object 形态。
+// 若以字符串透传，GLM 会收到 input="..." 而非 object，对它 .get() 直接 500
+// （"'str' object has no attribute 'get'"）——S4 修复回程产出 tool_search_call
+// 后，请求侧 appendToolSearchCall 这条回灌路径才被触发，暴露本 bug。
+func TestToolSearchArgumentsInputIsObject(t *testing.T) {
+	// string（含空串）→ json.RawMessage，必须以 '{' 开头（object），不是 '"'
+	for _, in := range []any{`{"query":"fetch"}`, ""} {
+		got := toolSearchArgumentsInput(in)
+		raw, ok := got.(json.RawMessage)
+		if !ok {
+			t.Fatalf("input %v: want json.RawMessage, got %T", in, got)
+		}
+		s := string(raw)
+		if len(s) == 0 || s[0] != '{' {
+			t.Fatalf("input %v: must marshal as JSON object, got %q", in, s)
+		}
+	}
+	// nil → {}
+	if s := string(toolSearchArgumentsInput(nil).(json.RawMessage)); s != "{}" {
+		t.Fatalf("nil want {}, got %s", s)
+	}
+	// 已是 object/map → 原样透传
+	m := map[string]any{"a": 1}
+	if toolSearchArgumentsInput(m) == nil {
+		t.Fatal("map input should pass through unchanged")
+	}
+}
+
 func TestLocalShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",

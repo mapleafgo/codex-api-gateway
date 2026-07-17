@@ -604,7 +604,22 @@ func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	if callID == "" {
 		callID = call.ID.Value
 	}
-	return appendToolUse(out, callID, "tool_search", call.Arguments)
+	return appendToolUse(out, callID, "tool_search", toolSearchArgumentsInput(call.Arguments))
+}
+
+// toolSearchArgumentsInput 把 tool_search_call 的 arguments 转成 Anthropic
+// tool_use input（必须 JSON object）。Codex 回灌历史时 arguments 通常是 JSON
+// 字符串，若直接当 input，上游会收到字符串而非对象 → "'str' object has no
+// attribute 'get'" 500。string/nil → json.RawMessage（保持 object 形态）。
+func toolSearchArgumentsInput(args any) any {
+	switch v := args.(type) {
+	case string:
+		return json.RawMessage(orDefault(v, `{}`))
+	case nil:
+		return json.RawMessage(`{}`)
+	default:
+		return v // 已是 object/map，原样透传
+	}
 }
 
 func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instructionPart, output *oairesponses.ResponseToolSearchOutputItemParam) error {
