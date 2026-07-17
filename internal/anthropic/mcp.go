@@ -45,10 +45,11 @@ func injectMCP(body []byte, mcp *MCPInjection) ([]byte, error) {
 	}
 	servers := make([]any, 0, len(mcp.Servers))
 	for _, s := range mcp.Servers {
-		servers = append(servers, map[string]any{
-			"type": "url", "url": s.URL, "name": s.Name,
-			"authorization_token": s.AuthorizationToken,
-		})
+		server := map[string]any{"type": "url", "url": s.URL, "name": s.Name}
+		if s.AuthorizationToken != "" {
+			server["authorization_token"] = s.AuthorizationToken
+		}
+		servers = append(servers, server)
 	}
 	obj["mcp_servers"] = servers
 

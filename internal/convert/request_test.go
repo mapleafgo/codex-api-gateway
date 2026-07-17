@@ -1463,3 +1463,90 @@ func TestMcpConnectorIDFailsFast(t *testing.T) {
 		t.Fatal("connector_id must fail fast")
 	}
 }
+
+// TestMcpTunnelIDFailsFast 验证 tunnel_id 是 OpenAI 私有托管设施，
+// 不在 Anthropic 标准范围，必须 fail-fast。
+func TestMcpTunnelIDFailsFast(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"s","tunnel_id":"tnl_x"}],"stream":true}`)
+	if _, _, err := ToAnthropic(req, &config.Config{}); err == nil {
+		t.Fatal("tunnel_id must fail fast")
+	}
+}
+
+// TestMcpAllowedToolsFilterDegradesToAllEnabled 验证 allowed_tools filter 变体
+// 不支持精确映射，降级为全启用（EnabledTools 空 → default_config.enabled=true）。
+func TestMcpAllowedToolsFilterDegradesToAllEnabled(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","allowed_tools":{"read_only":true}}],"stream":true}`)
+	_, mcp, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("filter variant must not fail fast: %v", err)
+	}
+	if mcp == nil || len(mcp.Toolsets) != 1 {
+		t.Fatalf("MCPInjection toolset missing: %+v", mcp)
+	}
+	if len(mcp.Toolsets[0].EnabledTools) != 0 {
+		t.Fatalf("filter variant must degrade to empty EnabledTools (all-enabled), got: %v", mcp.Toolsets[0].EnabledTools)
+	}
+}
+
+// TestMcpHeadersCustomHeaderDiscarded 验证自定义 header（非 Authorization）
+// 被丢弃（WARN），但请求仍成功且 token 不受影响。
+func TestMcpHeadersCustomHeaderDiscarded(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","headers":{"X-Custom":"val"}}],"stream":true}`)
+	_, mcp, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("custom header must not fail fast: %v", err)
+	}
+	if mcp == nil || len(mcp.Servers) != 1 {
+		t.Fatalf("MCPInjection not produced: %+v", mcp)
+	}
+	if mcp.Servers[0].AuthorizationToken != "" {
+		t.Fatalf("custom header must not leak into authorization_token: %q", mcp.Servers[0].AuthorizationToken)
+	}
+}
+
+// TestMcpRequireApprovalNonNeverDegrades 验证 require_approval 非 never 时
+// 降级为 never（WARN），请求仍成功。
+func TestMcpRequireApprovalNonNeverDegrades(t *testing.T) {
+	for _, appr := range []string{"on_failure", "if_referenced"} {
+		t.Run(appr, func(t *testing.T) {
+			req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","require_approval":"`+appr+`"}],"stream":true}`)
+			_, _, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatalf("require_approval=%s must not fail fast: %v", appr, err)
+			}
+		})
+	}
+}
+
+// TestMcpAuthorizationHeaderFallback 验证 authorization 字段为空时，
+// 从 headers["Authorization"] 提取 token（去除 "Bearer " 前缀）。
+func TestMcpAuthorizationHeaderFallback(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","headers":{"Authorization":"Bearer tok-from-header"}}],"stream":true}`)
+	_, mcp, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("header fallback must not fail: %v", err)
+	}
+	if mcp == nil || len(mcp.Servers) != 1 {
+		t.Fatalf("MCPInjection not produced: %+v", mcp)
+	}
+	if mcp.Servers[0].AuthorizationToken != "tok-from-header" {
+		t.Fatalf("expected token from header, got: %q", mcp.Servers[0].AuthorizationToken)
+	}
+}
+
+// TestMcpAuthorizationCollisionWarns 验证 authorization 字段与 headers["Authorization"]
+// 同时设置时，headers 值被忽略（WARN），authorization 字段优先。
+func TestMcpAuthorizationCollisionWarns(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"mcp","server_label":"weather","server_url":"https://s.example","authorization":"tok-field","headers":{"Authorization":"Bearer tok-header"}}],"stream":true}`)
+	_, mcp, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("collision must not fail fast: %v", err)
+	}
+	if mcp == nil || len(mcp.Servers) != 1 {
+		t.Fatalf("MCPInjection not produced: %+v", mcp)
+	}
+	if mcp.Servers[0].AuthorizationToken != "tok-field" {
+		t.Fatalf("authorization field must win over header, got: %q", mcp.Servers[0].AuthorizationToken)
+	}
+}

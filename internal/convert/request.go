@@ -224,8 +224,13 @@ func collectMCP(req *oairesponses.ResponseNewParams) (*anthropicclient.MCPInject
 			token = m.Authorization.Value
 		}
 		// headers：择优提取 Authorization: Bearer → authorization_token（authorization 空时回退）。
-		if bearer, ok := m.Headers["Authorization"]; ok && token == "" {
-			token = strings.TrimPrefix(bearer, "Bearer ")
+		if bearer, ok := m.Headers["Authorization"]; ok {
+			if token != "" {
+				slog.Warn("MCP server 同时设置 authorization 字段与 headers[Authorization]，headers 值被忽略",
+					"server_label", m.ServerLabel)
+			} else {
+				token = strings.TrimPrefix(bearer, "Bearer ")
+			}
 		}
 		for k := range m.Headers {
 			if k != "Authorization" {
@@ -241,6 +246,10 @@ func collectMCP(req *oairesponses.ResponseNewParams) (*anthropicclient.MCPInject
 		inj.Servers = append(inj.Servers, anthropicclient.MCPServer{
 			Type: "url", URL: serverURL, Name: m.ServerLabel, AuthorizationToken: token,
 		})
+		if m.AllowedTools.OfMcpToolFilter != nil {
+			slog.Warn("mcp allowed_tools filter 不支持精确映射，降级为全启用（toolset default_config.enabled=true）",
+				"server_label", m.ServerLabel)
+		}
 		enabled := allowedMCPToolNames(m.AllowedTools)
 		inj.Toolsets = append(inj.Toolsets, anthropicclient.MCPToolset{
 			MCPServerName: m.ServerLabel, EnabledTools: enabled,
