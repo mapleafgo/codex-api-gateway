@@ -5,6 +5,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 // callKind 描述一种回程 call（来自 tool_use / server_tool_use / mcp_tool_use block）
@@ -58,10 +59,9 @@ const toolSearchName = "tool_search"
 //   - S3/S4：custom / tool_search 迁入
 //   - S5/S6：server_tool_use / mcp_tool_use 迁入
 func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) callKind {
-	if ev.ContentBlock.Type == anBlockToolUse {
+	switch ev.ContentBlock.Type {
+	case anBlockToolUse:
 		name := ev.ContentBlock.Name
-		// custom 工具（含 shell/apply_patch）走 customCallKind；tool_search 暂仍
-		// 回退旧 handler（S4 迁移）；其余 tool_use 走 function 流水线。
 		switch {
 		case c.customToolNames[name]:
 			return customCallKind{}
@@ -70,6 +70,25 @@ func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) call
 		default:
 			return functionCallKind{}
 		}
+	case anBlockServerToolUse:
+		// 身份判定：上游 name 精确匹配优先；失配（方言如 GLM web_search_prime）时
+		// 回退到 declaredServerTools 唯一身份。其余 skip。
+		if id, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name); ok {
+			return c.serverToolKindByID(id)
+		}
+		if len(c.declaredServerTools) == 1 {
+			return c.serverToolKindByID(c.declaredServerTools[0])
+		}
+	}
+	return nil
+}
+
+func (c *Converter) serverToolKindByID(id toolcatalog.Identity) callKind {
+	switch id.OpenAIType {
+	case "web_search":
+		return webSearchCallKind{}
+	case "code_interpreter":
+		return codeInterpreterCallKind{}
 	}
 	return nil
 }

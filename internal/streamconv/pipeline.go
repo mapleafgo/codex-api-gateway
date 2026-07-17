@@ -26,6 +26,15 @@ func (c *Converter) handleCallStart(ev *anthropic.MessageStreamEventUnion, kind 
 		name:       ev.ContentBlock.Name,
 		argBuilder: &strings.Builder{},
 	}
+	// hosted call（web_search/code_interpreter/mcp）注册 byToolUseID 关联 result block。
+	if kind.tracksToolUseID() {
+		switch kind.(type) {
+		case webSearchCallKind:
+			c.webSearchByToolUseID[ev.ContentBlock.ID] = idx
+		case codeInterpreterCallKind:
+			c.codeExecutionByToolUseID[ev.ContentBlock.ID] = idx
+		}
+	}
 
 	out := []model.SSEEvent{model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
 		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),

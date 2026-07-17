@@ -306,7 +306,10 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockServerToolUse:
-		return c.handleServerToolUseStart(ev)
+		if kind := c.dispatchCallKind(ev); kind != nil {
+			return c.handleCallStart(ev, kind)
+		}
+		return c.handleSkippedServerToolUseStart(ev)
 	case anBlockWebSearchToolResult:
 		return c.handleWebSearchResultStart(ev)
 	case anBlockToolResult:
