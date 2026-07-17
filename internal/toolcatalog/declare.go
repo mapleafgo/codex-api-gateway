@@ -50,6 +50,10 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		// Anthropic code execution 无状态单次执行、无 container 概念（已知损失）。
 		// Name 由 SDK default 为 code_execution，无需显式设。
 		return []anthropic.ToolUnionParam{{OfCodeExecutionTool20250522: &anthropic.CodeExecutionTool20250522Param{}}}, nil
+	case t.OfMcp != nil:
+		// MCP 是 beta server tool，不产出标准 ToolUnionParam；
+		// 其请求定义由 convert.collectMCP 产出 MCPInjection，client 注入。
+		return nil, nil
 	case t.OfWebSearch != nil:
 		return []anthropic.ToolUnionParam{{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
 			AllowedDomains: t.OfWebSearch.Filters.AllowedDomains,

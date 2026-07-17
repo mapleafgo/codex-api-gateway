@@ -15,6 +15,9 @@ const (
 	// KindServerTool 映射为 Anthropic 标准 server tool union 变体，
 	// 由 Anthropic 托管执行（web_search）。
 	KindServerTool Kind = "server_tool"
+	// KindBetaServerTool 需 beta API（如 MCP connector），由 convert 产出
+	// beta 注入定义、client 层注入请求体（非标准 ToolUnionParam）。
+	KindBetaServerTool Kind = "beta_server_tool"
 	// KindUnsupported 无安全等价物，按 protocol-coverage 矩阵 fail-fast 或 raw_preserved。
 	KindUnsupported Kind = "unsupported"
 )
