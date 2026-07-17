@@ -232,6 +232,7 @@ go run ./cmd/server -config config.yaml
 
 - `input_image.file_id` 不支持。Anthropic 图片块只支持 base64 或 URL，网关无法在没有 OpenAI 凭据的情况下解析 OpenAI Files 的 `file_id`。
 - **code interpreter**：`container`（file_ids / memory_limit / 显式 container）、代码生成文件（`file_id`→`url`）不可转换；`code_execution_tool_result_error` 无法转 completed。详见[协议覆盖矩阵](docs/protocol-coverage.md)。
+- **MCP**：`mcp_list_tools` 工具列表、`require_approval` 审批流（≠never 时降级为 never + WARN）、自定义 `headers`（仅 `Authorization: Bearer` 提取到 `authorization_token`）、`connector_id`/`tunnel_id` 不可转换（fail-fast）；历史 MCP item 回灌暂不支持（丢弃 + WARN）；需后端支持 beta `mcp-client-2025-11-20`。详见[协议覆盖矩阵](docs/protocol-coverage.md)。
 - `tool_choice: {type: "allowed_tools", tools: [...]}` 会按声明工具精确过滤，并仅将 `auto`/`required` 映射为 Anthropic `auto`/`any`；与 structured output 组合或包含不支持条目时会 fail-fast。详见[协议覆盖矩阵](docs/protocol-coverage.md)。
 - 请求里没有 Anthropic 等价语义的 Responses 字段会被接受，但不保证映射到上游。
 

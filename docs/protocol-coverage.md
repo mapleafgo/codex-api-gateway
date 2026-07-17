@@ -123,7 +123,7 @@
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
 | `web_search` | Anthropic web search server tool (20250305) | `supported` | filters.allowed_domains → allowed_domains；search_context_size / user_location 暂未映射 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `supported` | 同 web_search，映射为同一 server tool |
-| `mcp` | none | `unsupported_by_backend` | MCP server/tool lifecycle 不等价；请求时返回明确转换错误 |
+| `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | 映射为 Anthropic beta managed MCP connector；`require_approval≠never` 降级 never + WARN；自定义 `headers` 仅 `Authorization: Bearer` 提取到 `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需后端支持 beta `mcp-client-2025-11-20` |
 | `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明为 `code_execution_20250522` server tool；`container`（file_ids / memory_limit / 显式 container）不可转换，请求侧显式 container 被丢弃 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
@@ -179,10 +179,10 @@
 | `shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
 | `apply_patch_call` | `tool_use` name=`apply_patch` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
 | `apply_patch_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
-| `mcp_call` | none | `unsupported_by_backend` | 无等价 |
-| `mcp_list_tools` | none | `unsupported_by_backend` | 无等价 |
-| `mcp_approval_request` | none | `unsupported_by_backend` | 无等价 |
-| `mcp_approval_response` | none | `unsupported_by_backend` | 无等价 |
+| `mcp_call` | Anthropic beta MCP `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | server_tool_use(mcp_tool_use) + mcp_tool_result 映射为 mcp_call 事件链；error 变体并入 failed（is_error） |
+| `mcp_list_tools` | none | `unsupported_by_backend` | Anthropic 不暴露 MCP 工具列表 item；自动忽略 |
+| `mcp_approval_request` | none | `unsupported_by_backend` | Anthropic 无审批协议；`require_approval≠never` 降级为 never + WARN，历史回灌 dropped |
+| `mcp_approval_response` | none | `unsupported_by_backend` | Anthropic 无审批协议；同上 |
 
 ## Responses SSE Events
 
@@ -229,11 +229,11 @@
 | `response.image_generation_call.generating` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.partial_image` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.completed` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call_arguments.delta` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call_arguments.done` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call.in_progress` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call.completed` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call.failed` | none | `unsupported_by_backend` | 无等价 |
+| `response.mcp_call_arguments.delta` | Anthropic beta MCP `input_json_delta` | `lossy_supported` | mcp_tool_use 的 input_json_delta 映射为 arguments.delta |
+| `response.mcp_call_arguments.done` | Anthropic beta MCP `tool_use` block stop | `lossy_supported` | server_tool_use stop 映射为 arguments.done |
+| `response.mcp_call.in_progress` | Anthropic beta MCP `server_tool_use` | `lossy_supported` | server_tool_use(mcp_tool_use) 触发 |
+| `response.mcp_call.completed` | Anthropic beta MCP `mcp_tool_result` | `lossy_supported` | mcp_tool_result 触发；output 为结果文本 |
+| `response.mcp_call.failed` | Anthropic beta MCP `mcp_tool_result` (is_error) | `lossy_supported` | mcp_tool_result 的 is_error 变体映射为 failed |
 | `response.mcp_list_tools.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.mcp_list_tools.completed` | none | `unsupported_by_backend` | 无等价 |
 | `response.mcp_list_tools.failed` | none | `unsupported_by_backend` | 无等价 |
