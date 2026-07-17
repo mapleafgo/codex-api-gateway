@@ -1,6 +1,8 @@
 package streamconv
 
 import (
+	"fmt"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
@@ -50,5 +52,22 @@ func (webSearchCallKind) finish(c *Converter, st *callState, args string) (model
 }
 
 func (webSearchCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
-	return nil // S7 迁入
+	if itemIdx >= len(c.outputItems) {
+		return nil
+	}
+	itemID := fmt.Sprintf("ws_%d", itemIdx)
+	c.outputItems[itemIdx].Status = model.ResponseStatusCompleted
+	if sources := extractWebSearchSources(ev.ContentBlock.Content); len(sources) > 0 && c.outputItems[itemIdx].Action != nil {
+		c.outputItems[itemIdx].Action.Sources = sources
+	}
+	return []model.SSEEvent{
+		model.MarshalEvent(evWebSearchCallCompleted, model.WebSearchCallEvent{
+			Type: evWebSearchCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
+		}),
+	}
 }

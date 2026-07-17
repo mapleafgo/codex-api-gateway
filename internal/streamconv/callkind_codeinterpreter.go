@@ -2,6 +2,7 @@ package streamconv
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
@@ -68,5 +69,30 @@ func (codeInterpreterCallKind) finish(c *Converter, st *callState, args string) 
 }
 
 func (codeInterpreterCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
-	return nil // S7 迁入
+	if itemIdx >= len(c.outputItems) {
+		return nil
+	}
+	itemID := fmt.Sprintf("ci_%d", itemIdx)
+	rc := ev.ContentBlock.Content
+	logs := foldExecutionLogs(rc.Stdout, rc.Stderr)
+	c.outputItems[itemIdx].Status = model.ResponseStatusCompleted
+	if logs != "" {
+		c.outputItems[itemIdx].Outputs = []model.CodeInterpreterOutput{{Type: "logs", Logs: logs}}
+	}
+	for _, out := range rc.Content.OfContent {
+		if out.FileID != "" {
+			slog.Warn("丢弃 code execution 生成的文件（无 OpenAI files url 凭据）",
+				"response_id", c.respID, "file_id", out.FileID)
+		}
+	}
+	return []model.SSEEvent{
+		model.MarshalEvent(evCodeInterpreterCallCompleted, model.CodeInterpreterCallEvent{
+			Type: evCodeInterpreterCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
+		}),
+	}
 }

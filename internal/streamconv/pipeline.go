@@ -72,3 +72,21 @@ func (c *Converter) handleCallStop(ev *anthropic.MessageStreamEventUnion) (event
 	delete(c.callByBlockIdx, int(ev.Index))
 	return evts, true
 }
+
+// handleCallResult 处理 result block（web_search_tool_result / code_execution_tool_result /
+// mcp_tool_result / GLM 方言 tool_result）：按 tool_use_id 查找关联的 callState，
+// 交给 kind.handleResult 产出 completed/failed + output_item.done。
+func (c *Converter) handleCallResult(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	toolUseID := ev.ContentBlock.ToolUseID
+	var st *callState
+	for _, s := range c.callByBlockIdx {
+		if s.callID == toolUseID {
+			st = s
+			break
+		}
+	}
+	if st == nil {
+		return nil // 无关联的 call block
+	}
+	return st.kind.handleResult(c, ev, st.itemIdx)
+}

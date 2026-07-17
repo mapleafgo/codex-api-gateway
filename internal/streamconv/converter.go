@@ -302,7 +302,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		}
 		return c.handleSkippedServerToolUseStart(ev)
 	case anBlockWebSearchToolResult:
-		return c.handleWebSearchResultStart(ev)
+		return c.handleCallResult(ev)
 	case anBlockToolResult:
 		// 兼容端（如 GLM）常态以 tool_result block 回传 web search 结果，
 		// 而非标准的 web_search_tool_result。若该块的 tool_use_id 对应一个
@@ -310,15 +310,12 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		if _, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]; ok {
 			slog.Debug("web search 结果以 tool_result 形态回传，按 web search 结果处理",
 				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID)
-			return c.handleWebSearchResultStart(ev)
+			return c.handleCallResult(ev)
 		}
 		return c.handleSkippedBlockStart(ev)
 	case anBlockCodeExecutionToolResult:
-		// code_execution_tool_result（非 error）若关联已知 code_execution
-		// server_tool_use，则映射为 code_interpreter_call 的 outputs + completed；
-		// 否则按 skip 处理（含未关联的孤立 result block）。
 		if _, ok := c.codeExecutionByToolUseID[ev.ContentBlock.ToolUseID]; ok {
-			return c.handleCodeExecutionResultStart(ev)
+			return c.handleCallResult(ev)
 		}
 		return c.handleSkippedBlockStart(ev)
 	case anBlockWebFetchToolResult,
@@ -329,7 +326,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockMcpToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockMcpToolResult:
-		return c.handleMcpToolResultStart(ev)
+		return c.handleCallResult(ev)
 	}
 	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
 }
@@ -428,42 +425,6 @@ func extractCodeExecutionCode(input any) string {
 	return ""
 }
 
-// handleCodeExecutionResultStart 把 code_execution_tool_result 映射为
-// code_interpreter_call 的 outputs（stdout/stderr → logs）+ completed。
-// file_id（代码生成的文件）无 url 凭据不可转换，丢弃 + WARN。
-func (c *Converter) handleCodeExecutionResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	idx, ok := c.codeExecutionByToolUseID[ev.ContentBlock.ToolUseID]
-	if !ok || idx >= len(c.outputItems) {
-		return nil // 无关联的 code_execution server_tool_use，交由 handleBlockStart 兜底 skip
-	}
-	itemID := fmt.Sprintf("ci_%d", idx)
-	// code_execution_tool_result 的 stdout/stderr 在 ev.ContentBlock.Content
-	// （CodeExecutionToolResultBlockContentUnion），而非顶层或 AsCodeExecutionToolResult。
-	// 生成的文件列表在其 Content.OfContent（[]CodeExecutionOutputBlock）。
-	rc := ev.ContentBlock.Content
-	logs := foldExecutionLogs(rc.Stdout, rc.Stderr)
-	c.outputItems[idx].Status = model.ResponseStatusCompleted
-	if logs != "" {
-		c.outputItems[idx].Outputs = []model.CodeInterpreterOutput{{Type: "logs", Logs: logs}}
-	}
-	for _, out := range rc.Content.OfContent {
-		if out.FileID != "" {
-			slog.Warn("丢弃 code execution 生成的文件（无 OpenAI files url 凭据）",
-				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID, "file_id", out.FileID)
-		}
-	}
-	return []model.SSEEvent{
-		model.MarshalEvent(evCodeInterpreterCallCompleted, model.CodeInterpreterCallEvent{
-			Type: evCodeInterpreterCallCompleted, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, ItemID: itemID,
-		}),
-		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, Item: c.outputItems[idx],
-		}),
-	}
-}
-
 // foldExecutionLogs 把 stdout 与非空 stderr 合并为 logs 文本（OpenAI logs 承载 stdout/stderr）。
 func foldExecutionLogs(stdout, stderr string) string {
 	var parts []string
@@ -474,28 +435,6 @@ func foldExecutionLogs(stdout, stderr string) string {
 		parts = append(parts, stderr)
 	}
 	return strings.Join(parts, "\n")
-}
-
-func (c *Converter) handleWebSearchResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	idx, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]
-	if !ok || idx >= len(c.outputItems) {
-		return nil // no matching web_search server_tool_use; nothing to close
-	}
-	itemID := fmt.Sprintf("ws_%d", idx)
-	c.outputItems[idx].Status = model.ResponseStatusCompleted
-	if sources := extractWebSearchSources(ev.ContentBlock.Content); len(sources) > 0 && c.outputItems[idx].Action != nil {
-		c.outputItems[idx].Action.Sources = sources
-	}
-	return []model.SSEEvent{
-		model.MarshalEvent(evWebSearchCallCompleted, model.WebSearchCallEvent{
-			Type: evWebSearchCallCompleted, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, ItemID: itemID,
-		}),
-		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, Item: c.outputItems[idx],
-		}),
-	}
 }
 
 // extractWebSearchSources maps Anthropic web_search_tool_result entries to
@@ -588,48 +527,6 @@ func decodeMcpResultInput(input any) (output string, isError bool) {
 		isError = v
 	}
 	return
-}
-
-// handleMcpToolResultStart 把（probe 合成的）mcp_tool_result 映射为 mcp_call 的
-// output + completed/failed 事件。
-//
-// Input 编码契约（与 synthesizeMCPEvent 对齐）：
-//   - Input["output"] 承载 output 文本
-//   - Input["is_error"] = is_error 标志
-//
-// 找不到关联的 mcp_tool_use 时返回 nil（兼容孤立 result block）。
-func (c *Converter) handleMcpToolResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	idx, ok := c.mcpCallByToolUseID[ev.ContentBlock.ToolUseID]
-	if !ok || idx >= len(c.outputItems) {
-		return nil
-	}
-	itemID := fmt.Sprintf("mcp_%d", idx)
-	output, isError := decodeMcpResultInput(ev.ContentBlock.Input)
-	c.outputItems[idx].Output = output
-	if isError {
-		c.outputItems[idx].Status = model.ResponseStatusFailed
-		return []model.SSEEvent{
-			model.MarshalEvent(evMcpCallFailed, model.McpCallEvent{
-				Type: evMcpCallFailed, SequenceNumber: c.nextSeq(),
-				OutputIndex: idx, ItemID: itemID,
-			}),
-			model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-				OutputIndex: idx, Item: c.outputItems[idx],
-			}),
-		}
-	}
-	c.outputItems[idx].Status = model.ResponseStatusCompleted
-	return []model.SSEEvent{
-		model.MarshalEvent(evMcpCallCompleted, model.McpCallEvent{
-			Type: evMcpCallCompleted, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, ItemID: itemID,
-		}),
-		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: idx, Item: c.outputItems[idx],
-		}),
-	}
 }
 
 func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {

@@ -1,6 +1,8 @@
 package streamconv
 
 import (
+	"fmt"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
@@ -61,5 +63,34 @@ func (mcpCallKind) finish(c *Converter, st *callState, args string) (model.Outpu
 }
 
 func (mcpCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
-	return nil // S7 迁入
+	if itemIdx >= len(c.outputItems) {
+		return nil
+	}
+	itemID := fmt.Sprintf("mcp_%d", itemIdx)
+	output, isError := decodeMcpResultInput(ev.ContentBlock.Input)
+	c.outputItems[itemIdx].Output = output
+	if isError {
+		c.outputItems[itemIdx].Status = model.ResponseStatusFailed
+		return []model.SSEEvent{
+			model.MarshalEvent(evMcpCallFailed, model.McpCallEvent{
+				Type: evMcpCallFailed, SequenceNumber: c.nextSeq(),
+				OutputIndex: itemIdx, ItemID: itemID,
+			}),
+			model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+				OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
+			}),
+		}
+	}
+	c.outputItems[itemIdx].Status = model.ResponseStatusCompleted
+	return []model.SSEEvent{
+		model.MarshalEvent(evMcpCallCompleted, model.McpCallEvent{
+			Type: evMcpCallCompleted, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, ItemID: itemID,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
+		}),
+	}
 }
