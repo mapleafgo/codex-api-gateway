@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
 )
 
@@ -398,10 +399,10 @@ func (c *Converter) handleToolUseStart(ev *anthropic.MessageStreamEventUnion) []
 }
 
 func (c *Converter) handleServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
-	// Only web_search maps to a Responses item; other server tools (web_fetch,
-	// code_execution, ...) have no safe Responses equivalent and are skipped
-	// gracefully so the stream continues normally.
-	if ev.ContentBlock.Name != "web_search" {
+	// 只有 catalog 已注册的 hosted server tool 才映射为 Responses item；
+	// 其余 server_tool_use（web_fetch、code_execution …批次 0 未注册）无安全
+	// Responses 等价物，跳过以保持流继续。
+	if _, ok := toolcatalog.ServerToolByAnthropicName(ev.ContentBlock.Name); !ok {
 		return c.handleSkippedServerToolUseStart(ev)
 	}
 	idx := c.itemOrder
