@@ -870,20 +870,14 @@ func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Con
 	setLastToolCacheControl(out.Tools, cacheControl)
 }
 
-// setLastToolCacheControl 给 tools 列表的最后一个 tool 加 cache_control,
-// 按 union 变体派发(OfTool / OfWebSearchTool20250305)。hosted server tool
-// 变体覆盖齐全后可继续在此 switch 扩展。
+// setLastToolCacheControl 给 tools 列表的最后一个 tool 加 cache_control，
+// 派发由 toolcatalog.ApplyCacheControl 承载（覆盖所有已知 server tool 变体）。
 func setLastToolCacheControl(tools []anthropic.ToolUnionParam, cc anthropic.CacheControlEphemeralParam) {
 	if len(tools) == 0 {
 		return
 	}
 	last := &tools[len(tools)-1]
-	switch {
-	case last.OfTool != nil:
-		last.OfTool.CacheControl = cc
-	case last.OfWebSearchTool20250305 != nil:
-		last.OfWebSearchTool20250305.CacheControl = cc
-	default:
+	if !toolcatalog.ApplyCacheControl(last, cc) {
 		slog.Warn("最后一个 tool 是未知变体，无法加 cache_control，tools 列表缓存将丢失")
 	}
 }
