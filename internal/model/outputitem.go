@@ -5,25 +5,25 @@ import "encoding/json"
 // OutputItem is a self-contained output item (message/tool call/reasoning)
 // used both for emitted output_item.added/done events and for session storage.
 type OutputItem struct {
-	Type             string           `json:"type"` // message | function_call | custom_tool_call | reasoning
-	ID               string           `json:"id"`
-	Status           string           `json:"status,omitempty"`
-	Role             string           `json:"role,omitempty"`    // message
-	Phase            string           `json:"phase,omitempty"`   // assistant message
-	Content          []OutputText     `json:"content,omitempty"` // message
-	CallID           string           `json:"call_id,omitempty"` // tool call
-	Name             string           `json:"name,omitempty"`    // tool call
-	Arguments        string           `json:"arguments,omitempty"`
-	Input            string           `json:"input,omitempty"`             // custom_tool_call
-	Output           string           `json:"output,omitempty"`            // tool call output
-	Namespace        string           `json:"namespace,omitempty"`         // namespaced tool call
-	Summary          []OutputText     `json:"summary,omitempty"`           // reasoning
-	EncryptedContent string           `json:"encrypted_content,omitempty"` // reasoning (redacted)
-	Signature        string           `json:"signature,omitempty"`         // reasoning (plaintext thinking)
-	Action           *WebSearchAction `json:"action,omitempty"`            // web_search_call
-	ContainerID      string                  `json:"container_id,omitempty"` // code_interpreter_call
-	Code             string                  `json:"code,omitempty"`         // code_interpreter_call
-	Outputs          []CodeInterpreterOutput `json:"outputs,omitempty"`      // code_interpreter_call
+	Type             string                  `json:"type"` // message | function_call | custom_tool_call | reasoning
+	ID               string                  `json:"id"`
+	Status           string                  `json:"status,omitempty"`
+	Role             string                  `json:"role,omitempty"`    // message
+	Phase            string                  `json:"phase,omitempty"`   // assistant message
+	Content          []OutputText            `json:"content,omitempty"` // message
+	CallID           string                  `json:"call_id,omitempty"` // tool call
+	Name             string                  `json:"name,omitempty"`    // tool call
+	Arguments        string                  `json:"arguments,omitempty"`
+	Input            string                  `json:"input,omitempty"`             // custom_tool_call
+	Output           string                  `json:"output,omitempty"`            // tool call output
+	Namespace        string                  `json:"namespace,omitempty"`         // namespaced tool call
+	Summary          []OutputText            `json:"summary,omitempty"`           // reasoning
+	EncryptedContent string                  `json:"encrypted_content,omitempty"` // reasoning (redacted)
+	Signature        string                  `json:"signature,omitempty"`         // reasoning (plaintext thinking)
+	Action           *WebSearchAction        `json:"action,omitempty"`            // web_search_call
+	ContainerID      string                  `json:"container_id,omitempty"`      // code_interpreter_call
+	Code             string                  `json:"code,omitempty"`              // code_interpreter_call
+	Outputs          []CodeInterpreterOutput `json:"outputs,omitempty"`           // code_interpreter_call
 }
 
 // WebSearchAction describes the action taken by a web_search_call output item.
@@ -58,6 +58,10 @@ type OutputText struct {
 // MarshalJSON 保证 message item 的必填 content 字段即使为空也会写入 wire payload。
 func (i OutputItem) MarshalJSON() ([]byte, error) {
 	if i.Type == ItemTypeCodeInterpreterCall {
+		outputs := i.Outputs
+		if outputs == nil {
+			outputs = []CodeInterpreterOutput{}
+		}
 		return json.Marshal(struct {
 			Type        string                  `json:"type"`
 			ID          string                  `json:"id"`
@@ -68,7 +72,7 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 		}{
 			Type: i.Type, ID: i.ID, Status: i.Status,
 			ContainerID: i.ContainerID, Code: i.Code,
-			Outputs: i.Outputs,
+			Outputs: outputs,
 		})
 	}
 	if i.Type != ItemTypeMessage {
