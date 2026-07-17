@@ -93,10 +93,10 @@ func TestMergeBetaHeader(t *testing.T) {
 	}
 }
 
-// TestSynthesizeMCPEventToolUse 验证 probe 把 raw beta mcp_tool_use JSON
-// 转成合成 content_block_start 事件，Input 编码 server_name/name/arguments 三字段。
+// TestSynthesizeMCPEventToolUse 验证 probe 把 content_block_start envelope 内的
+// beta mcp_tool_use 转成合成事件，Input 编码 server_name/name/arguments 三字段。
 func TestSynthesizeMCPEventToolUse(t *testing.T) {
-	payload := []byte(`{"type":"mcp_tool_use","id":"toolu_x","name":"get","server_name":"weather","input":{"q":"sf"}}`)
+	payload := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"mcp_tool_use","id":"toolu_x","name":"get","server_name":"weather","input":{"q":"sf"}}}`)
 	ev, err := synthesizeMCPEvent(payload)
 	if err != nil {
 		t.Fatalf("synthesizeMCPEvent: %v", err)
@@ -118,16 +118,12 @@ func TestSynthesizeMCPEventToolUse(t *testing.T) {
 	if m["arguments"] != `{"q":"sf"}` {
 		t.Fatalf("bad arguments: %v", m["arguments"])
 	}
-	// is_error slot must be empty for tool_use
-	if cb.Content.RetrievedAt != "" {
-		t.Fatalf("tool_use RetrievedAt must be empty, got %q", cb.Content.RetrievedAt)
-	}
 }
 
 // TestSynthesizeMCPEventToolResultOK 验证 mcp_tool_result 的 content[]{text}
-// 被折叠进 Content.URL，is_error=false 时 RetrievedAt 留空。
+// 被折叠进 Input["output"]，is_error=false。
 func TestSynthesizeMCPEventToolResultOK(t *testing.T) {
-	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_x","is_error":false,"content":[{"type":"text","text":"sunny"},{"type":"text","text":" day"}]}`)
+	payload := []byte(`{"type":"content_block_start","index":1,"content_block":{"type":"mcp_tool_result","tool_use_id":"toolu_x","is_error":false,"content":[{"type":"text","text":"sunny"},{"type":"text","text":" day"}]}}`)
 	ev, err := synthesizeMCPEvent(payload)
 	if err != nil {
 		t.Fatalf("synthesizeMCPEvent: %v", err)
@@ -136,39 +132,51 @@ func TestSynthesizeMCPEventToolResultOK(t *testing.T) {
 	if cb.Type != "mcp_tool_result" || cb.ToolUseID != "toolu_x" {
 		t.Fatalf("bad tool_result header: %+v", cb)
 	}
-	if cb.Content.URL != "sunny day" {
-		t.Fatalf("URL slot (output) = %q want %q", cb.Content.URL, "sunny day")
+	m, ok := cb.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("Input not map: %T", cb.Input)
 	}
-	if cb.Content.RetrievedAt != "" {
-		t.Fatalf("is_error=false must leave RetrievedAt empty, got %q", cb.Content.RetrievedAt)
+	if m["output"] != "sunny day" {
+		t.Fatalf("output = %q want %q", m["output"], "sunny day")
+	}
+	if m["is_error"] != false {
+		t.Fatalf("is_error = %v want false", m["is_error"])
 	}
 }
 
-// TestSynthesizeMCPEventToolResultError 验证 is_error=true 时 RetrievedAt 被置位。
+// TestSynthesizeMCPEventToolResultError 验证 is_error=true 时 Input["is_error"]=true。
 func TestSynthesizeMCPEventToolResultError(t *testing.T) {
-	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_y","is_error":true,"content":[{"type":"text","text":"boom"}]}`)
+	payload := []byte(`{"type":"content_block_start","index":1,"content_block":{"type":"mcp_tool_result","tool_use_id":"toolu_y","is_error":true,"content":[{"type":"text","text":"boom"}]}}`)
 	ev, err := synthesizeMCPEvent(payload)
 	if err != nil {
 		t.Fatalf("synthesizeMCPEvent: %v", err)
 	}
 	cb := ev.ContentBlock
-	if cb.Content.URL != "boom" {
-		t.Fatalf("URL slot = %q want boom", cb.Content.URL)
+	m, ok := cb.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("Input not map: %T", cb.Input)
 	}
-	if cb.Content.RetrievedAt == "" {
-		t.Fatalf("is_error=true must set RetrievedAt non-empty")
+	if m["output"] != "boom" {
+		t.Fatalf("output = %q want boom", m["output"])
+	}
+	if m["is_error"] != true {
+		t.Fatalf("is_error = %v want true", m["is_error"])
 	}
 }
 
 // TestSynthesizeMCPEventToolResultInvalidContent 验证 content 非 array 时
 // mcpResultText 退化为原始 JSON 文本（不丢错误信息）。
 func TestSynthesizeMCPEventToolResultInvalidContent(t *testing.T) {
-	payload := []byte(`{"type":"mcp_tool_result","tool_use_id":"toolu_z","content":"raw string"}`)
+	payload := []byte(`{"type":"content_block_start","index":1,"content_block":{"type":"mcp_tool_result","tool_use_id":"toolu_z","content":"raw string"}}`)
 	ev, err := synthesizeMCPEvent(payload)
 	if err != nil {
 		t.Fatalf("synthesizeMCPEvent: %v", err)
 	}
-	if ev.ContentBlock.Content.URL != `"raw string"` {
-		t.Fatalf("fallback URL = %q want raw JSON %q", ev.ContentBlock.Content.URL, `"raw string"`)
+	m, ok := ev.ContentBlock.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("Input not map: %T", ev.ContentBlock.Input)
+	}
+	if m["output"] != `"raw string"` {
+		t.Fatalf("fallback output = %q want raw JSON %q", m["output"], `"raw string"`)
 	}
 }

@@ -232,10 +232,18 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 			continue
 		}
 
-		// mcp_tool_use / mcp_tool_result 是 beta block，标准 MessageStreamEventUnion
-		// 无 Of* 变体，标准 unmarshal 会丢字段（server_name/input/tool_use_id/...）。
-		// 探测 raw type，命中时构造合成 content_block_start 事件交由 converter 处理。
-		if json.Unmarshal([]byte(payload), &probe) == nil && (probe.Type == "mcp_tool_use" || probe.Type == "mcp_tool_result") {
+		// beta mcp blocks live inside content_block_start envelopes; standard
+		// unmarshal drops beta fields (server_name/is_error/content). Probe the
+		// envelope + nested content_block.type, synthesize an event carrying the
+		// beta fields in Input.
+		var envelope struct {
+			Type         string `json:"type"`
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
+		}
+		if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Type == "content_block_start" &&
+			(envelope.ContentBlock.Type == "mcp_tool_use" || envelope.ContentBlock.Type == "mcp_tool_result") {
 			synthetic, err := synthesizeMCPEvent([]byte(payload))
 			if err != nil {
 				return fmt.Errorf("parse mcp block: %w: %s", err, truncForLog([]byte(payload), 500))

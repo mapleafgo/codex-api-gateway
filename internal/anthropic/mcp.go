@@ -86,12 +86,28 @@ func mergeBetaHeader(existing string) string {
 	return existing + "," + MCPBetaHeader
 }
 
-// synthesizeMCPEvent 把 beta mcp block 的 raw JSON 解析成合成 MessageStreamEventUnion，
-// 使 converter 能用标准 ev.ContentBlock 字段消费（Type/ID/Input/Name/Content/ToolUseID）。
-// mcp_tool_use / mcp_tool_result 是 beta block，标准 MessageStreamEventUnion 无 Of* 变体，
-// 标准反序列化会丢字段，故由 ScanEvents 在标准 unmarshal 之前探测并改走本函数。
+// synthesizeMCPEvent 把 beta mcp block 的 raw JSON（content_block_start envelope）
+// 解析成合成 MessageStreamEventUnion，使 converter 能用标准 ev.ContentBlock 字段
+// 消费（Type/ID/Input/Name/ToolUseID）。
+//
+// mcp_tool_use / mcp_tool_result 是 beta block，标准 MessageStreamEventUnion 无 Of*
+// 变体，标准反序列化会丢字段，故由 ScanEvents 在标准 unmarshal 之前探测 envelope
+// + 嵌套 content_block.type 并改走本函数。
+//
+// Input-encoding contract: MCP beta blocks are synthesized into content_block_start
+// events; beta fields (server_name/is_error/...) are encoded into ContentBlock.Input
+// as a map because the standard union has no slots for them — converter handlers
+// decode by the same contract:
+//   - mcp_tool_use    → Input: {server_name, name, arguments}
+//   - mcp_tool_result → Input: {output, is_error}
 func synthesizeMCPEvent(payload []byte) (*asdk.MessageStreamEventUnion, error) {
-	var raw struct {
+	var env struct {
+		ContentBlock json.RawMessage `json:"content_block"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return nil, err
+	}
+	var blk struct {
 		Type       string          `json:"type"`
 		ID         string          `json:"id"`
 		Name       string          `json:"name"`
@@ -101,32 +117,25 @@ func synthesizeMCPEvent(payload []byte) (*asdk.MessageStreamEventUnion, error) {
 		IsError    bool            `json:"is_error"`
 		Content    json.RawMessage `json:"content"`
 	}
-	if err := json.Unmarshal(payload, &raw); err != nil {
+	if err := json.Unmarshal(env.ContentBlock, &blk); err != nil {
 		return nil, err
 	}
 	ev := &asdk.MessageStreamEventUnion{Type: "content_block_start"}
-	cb := asdk.ContentBlockStartEventContentBlockUnion{Type: raw.Type}
-	switch raw.Type {
+	cb := asdk.ContentBlockStartEventContentBlockUnion{Type: blk.Type}
+	switch blk.Type {
 	case "mcp_tool_use":
-		cb.ID = raw.ID
-		cb.Name = raw.Name
-		// server_name 无标准 ContentBlock 字段槽，编码进 Input：
-		// {server_name, name, arguments}。converter handler 按此约定读取。
+		cb.ID = blk.ID
+		cb.Name = blk.Name
 		cb.Input = map[string]any{
-			"server_name": raw.ServerName,
-			"name":        raw.Name,
-			"arguments":   string(raw.Input),
+			"server_name": blk.ServerName,
+			"name":        blk.Name,
+			"arguments":   string(blk.Input),
 		}
 	case "mcp_tool_result":
-		cb.ToolUseID = raw.ToolUseID
-		// output 文本与 is_error 标志无标准 ContentBlock 字段槽：
-		// - Content.URL 承载 output 文本（拼自 content[]{type,text}）
-		// - Content.RetrievedAt 非空 = is_error（内部契约，无语义含义）
-		cb.Content = asdk.ContentBlockStartEventContentBlockUnionContent{
-			URL: mcpResultText(raw.Content),
-		}
-		if raw.IsError {
-			cb.Content.RetrievedAt = "1"
+		cb.ToolUseID = blk.ToolUseID
+		cb.Input = map[string]any{
+			"output":   mcpResultText(blk.Content),
+			"is_error": blk.IsError,
 		}
 	}
 	ev.ContentBlock = cb

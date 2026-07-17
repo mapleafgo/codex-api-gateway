@@ -150,6 +150,8 @@ OpenAI OfMcp{ server_label, server_url|connector_id|tunnel_id, authorization,
 
 Anthropic 回程 `mcp_tool_use` / `mcp_tool_result` 是 beta block，标准 `MessageStreamEventUnion` / `ContentBlockStartEventContentBlockUnion` **无 `Of*` 变体承载**。方案：在 `ScanEvents` 增加 probe（参考现有 error 事件 probe 机制），识别 `type=mcp_tool_use` / `type=mcp_tool_result` 的 raw payload，解析成 converter 内部中间信号；converter 新增 `handleMcpToolUseStart` / `handleMcpToolResultStart`（与 `handleServerToolUseStart` / `handleWebSearchResultStart` 平级）消费并映射：
 
+> **C1 勘误（2026-07-17）**：上段"识别 `type=mcp_tool_use` 的 raw payload"不准确——beta mcp block 实际嵌套在 `content_block_start` envelope 内（`{"type":"content_block_start","content_block":{"type":"mcp_tool_use",...}}`），顶层 type 是 `content_block_start`。probe 已修正为检测 envelope + 嵌套 `content_block.type`。
+
 | Anthropic block | Responses 事件 / item |
 |---|---|
 | `mcp_tool_use{id,name,server_name,input}` | `output_item.added`（`mcp_call`，`server_label`=server_name，arguments=input JSON）；`mcp_call.in_progress`；`mcp_call_arguments.delta` + `done` |

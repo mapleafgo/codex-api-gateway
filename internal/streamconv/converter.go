@@ -732,12 +732,29 @@ func decodeMcpUseInput(input any) (serverLabel, name, args string) {
 	return
 }
 
+// decodeMcpResultInput 从 mcp_tool_result 的合成 Input map 中取出
+// output 文本与 is_error 标志。
+// 类型断言失败时返回空值（synthesizeMCPEvent 保证输入为 map[string]any）。
+func decodeMcpResultInput(input any) (output string, isError bool) {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if v, ok := m["output"].(string); ok {
+		output = v
+	}
+	if v, ok := m["is_error"].(bool); ok {
+		isError = v
+	}
+	return
+}
+
 // handleMcpToolResultStart 把（probe 合成的）mcp_tool_result 映射为 mcp_call 的
 // output + completed/failed 事件。
 //
-// 字段槽契约（与 synthesizeMCPEvent 对齐）：
-//   - ev.ContentBlock.Content.URL 承载 output 文本
-//   - ev.ContentBlock.Content.RetrievedAt 非空 = is_error 标志
+// Input 编码契约（与 synthesizeMCPEvent 对齐）：
+//   - Input["output"] 承载 output 文本
+//   - Input["is_error"] = is_error 标志
 //
 // 找不到关联的 mcp_tool_use 时返回 nil（兼容孤立 result block）。
 func (c *Converter) handleMcpToolResultStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
@@ -746,9 +763,8 @@ func (c *Converter) handleMcpToolResultStart(ev *anthropic.MessageStreamEventUni
 		return nil
 	}
 	itemID := fmt.Sprintf("mcp_%d", idx)
-	rc := ev.ContentBlock.Content
-	isError := rc.RetrievedAt != ""
-	c.outputItems[idx].Output = rc.URL
+	output, isError := decodeMcpResultInput(ev.ContentBlock.Input)
+	c.outputItems[idx].Output = output
 	if isError {
 		c.outputItems[idx].Status = model.ResponseStatusFailed
 		return []model.SSEEvent{

@@ -1487,7 +1487,7 @@ func TestMcpToolUseEmitsMcpCall(t *testing.T) {
 		Type: "content_block_start", Index: 1,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
 			Type: "mcp_tool_result", ToolUseID: "toolu_mcp1",
-			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{URL: "sunny"},
+			Input: map[string]any{"output": "sunny", "is_error": false},
 		},
 	})
 	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
@@ -1511,7 +1511,7 @@ func TestMcpToolResultErrorEmitsFailed(t *testing.T) {
 		Type: "content_block_start", Index: 1,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
 			Type: "mcp_tool_result", ToolUseID: "toolu_mcp2",
-			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{URL: "boom", RetrievedAt: "1"},
+			Input: map[string]any{"output": "boom", "is_error": true},
 		},
 	})
 	eventByType(t, evs, "response.mcp_call.failed")
