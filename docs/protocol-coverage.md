@@ -95,7 +95,7 @@
 | `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 与 encrypted/signature 处理已有 |
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image output item |
-| `code_interpreter_call` | Anthropic code execution tool | `deferred` | 两侧 tool/result/event 结构需专项映射 |
+| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container`（file_ids / memory_limit / 显式 container）与生成文件的 `file_id`→`url` 不可转换，container_id 丢弃 |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
@@ -124,7 +124,7 @@
 | `web_search` | Anthropic web search server tool (20250305) | `supported` | filters.allowed_domains → allowed_domains；search_context_size / user_location 暂未映射 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `supported` | 同 web_search，映射为同一 server tool |
 | `mcp` | none | `unsupported_by_backend` | MCP server/tool lifecycle 不等价；请求时返回明确转换错误 |
-| `code_interpreter` | Anthropic code execution tool | `deferred` | 需专项映射 outputs/events；专项映射前请求时返回明确转换错误 |
+| `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明为 `code_execution_20250522` server tool；`container`（file_ids / memory_limit / 显式 container）不可转换，请求侧显式 container 被丢弃 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 环境/skills 字段未完整映射 |
@@ -172,7 +172,7 @@
 | `program` | none | `unsupported_by_backend` | 无等价 |
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
-| `code_interpreter_call` | Anthropic code execution | `deferred` | 需专项映射 |
+| `code_interpreter_call` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) + code_execution_tool_result 映射为 code_interpreter_call 事件链；生成文件的 `file_id`→`url` 不可转换，stderr/return_code 并入 logs |
 | `local_shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
 | `local_shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
 | `shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
@@ -220,11 +220,11 @@
 | `response.web_search_call.searching` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
 | `response.web_search_call.in_progress` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
 | `response.web_search_call.completed` | Anthropic web search | `supported` | web_search_tool_result 触发 |
-| `response.code_interpreter_call_code.delta` | Anthropic code execution | `deferred` | 需专项映射 |
-| `response.code_interpreter_call_code.done` | Anthropic code execution | `deferred` | 需专项映射 |
-| `response.code_interpreter_call.in_progress` | Anthropic code execution | `deferred` | 需专项映射 |
-| `response.code_interpreter_call.interpreting` | Anthropic code execution | `deferred` | 需专项映射 |
-| `response.code_interpreter_call.completed` | Anthropic code execution | `deferred` | 需专项映射 |
+| `response.code_interpreter_call_code.delta` | Anthropic code execution | `lossy_supported` | code_execution server_tool_use 的 input_json_delta 映射 |
+| `response.code_interpreter_call_code.done` | Anthropic code execution | `lossy_supported` | server_tool_use block stop 映射 |
+| `response.code_interpreter_call.in_progress` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) 触发 |
+| `response.code_interpreter_call.interpreting` | Anthropic code execution | `lossy_supported` | input_json_delta 结束后触发 |
+| `response.code_interpreter_call.completed` | Anthropic code execution | `lossy_supported` | code_execution_tool_result 触发；error 变体仍为 deferred |
 | `response.image_generation_call.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.generating` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.partial_image` | none | `unsupported_by_backend` | 无等价 |
@@ -260,7 +260,7 @@
 | stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call；web_fetch 等其他 server tool 仍显式失败 |
 | stream `web_search_tool_result` | web search call result | `supported` | 完成 web_search_call（completed + output_item.done） |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
-| stream `code_execution_tool_result` | code interpreter output | `deferred` | 未映射时当前会显式失败，需专项映射 |
+| stream `code_execution_tool_result` | code interpreter output | `supported` | 映射为 code_interpreter_call completed + outputs(logs)；`file_id` 丢弃 + WARN；`code_execution_tool_result_error` 无法转 completed |
 | stream `bash_code_execution_tool_result` | shell/code output | `deferred` | 未映射时当前会显式失败，需专项映射 |
 | stream `text_editor_code_execution_tool_result` | apply_patch/text editor output | `deferred` | 未映射时当前会显式失败，需专项映射 |
 | stream `tool_search_tool_result` | tool_search_output | `deferred` | 未映射时当前会显式失败，需专项映射 |
