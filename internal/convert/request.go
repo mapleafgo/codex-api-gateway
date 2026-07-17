@@ -218,6 +218,9 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfToolSearchOutput != nil {
 		return appendToolSearchOutput(out, sysParts, item.OfToolSearchOutput)
 	}
+	if item.OfCodeInterpreterCall != nil {
+		return appendCodeInterpreterCall(out, item.OfCodeInterpreterCall)
+	}
 	if item.OfLocalShellCall != nil {
 		return appendLocalShellCall(out, item.OfLocalShellCall)
 	}
@@ -515,6 +518,41 @@ func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instruc
 		return nil
 	}
 	return appendToolResult(out, output.CallID.Value, formatToolNames("tool_search_output", output.Tools))
+}
+
+// appendCodeInterpreterCall 把历史 code_interpreter_call input item 回放为 Anthropic
+// 历史 content block：server_tool_use(code_execution, input={code}) + code_execution_tool_result。
+// container_id 丢弃（Anthropic code execution 无 container 概念）。
+// image 输出（OfImage）不可转换，直接忽略——回灌静默。
+func appendCodeInterpreterCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCodeInterpreterToolCallParam) error {
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
+		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
+	}
+	last := &out.Messages[len(out.Messages)-1]
+	last.Content = append(last.Content, anthropic.NewServerToolUseBlock(
+		call.ID, map[string]any{"code": call.Code.Value}, anthropic.ServerToolUseBlockParamNameCodeExecution,
+	))
+
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
+		out.Messages = append(out.Messages, anthropic.NewUserMessage())
+	}
+	last = &out.Messages[len(out.Messages)-1]
+	last.Content = append(last.Content, anthropic.NewCodeExecutionToolResultBlock(
+		anthropic.CodeExecutionResultBlockParam{Stdout: codeInterpreterLogs(call.Outputs)},
+		call.ID,
+	))
+	return nil
+}
+
+// codeInterpreterLogs 把 code_interpreter_call 的 logs outputs 拼成单段 stdout 文本。
+func codeInterpreterLogs(outputs []oairesponses.ResponseCodeInterpreterToolCallOutputUnionParam) string {
+	var parts []string
+	for _, o := range outputs {
+		if o.OfLogs != nil && o.OfLogs.Logs != "" {
+			parts = append(parts, o.OfLogs.Logs)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string) error {

@@ -1401,3 +1401,34 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 		}
 	})
 }
+
+// TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult 验证历史
+// code_interpreter_call input item 回放为 Anthropic 历史内容块：
+// server_tool_use(code_execution, input={code}) + code_execution_tool_result。
+// container_id 必须丢弃（Anthropic code execution 无 container 概念）。
+func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"run"}]},
+		{"type":"code_interpreter_call","id":"ci_1","status":"completed","container_id":"cntr_x","code":"print(2)","outputs":[{"type":"logs","logs":"2\n"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("replay must not fail: %v", err)
+	}
+	raw, _ := json.Marshal(out.Messages)
+	if !strings.Contains(string(raw), `"code_execution"`) {
+		t.Fatalf("server_tool_use(code_execution) not replayed: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"code_execution_result"`) {
+		t.Fatalf("code_execution_tool_result not replayed: %s", raw)
+	}
+	if strings.Contains(string(raw), `"cntr_x"`) {
+		t.Fatalf("container_id must be dropped on replay: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"print(2)"`) {
+		t.Fatalf("code text must be preserved in server_tool_use input: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"2\n"`) {
+		t.Fatalf("logs stdout must be preserved in code_execution_tool_result: %s", raw)
+	}
+}
