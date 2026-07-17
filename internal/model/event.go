@@ -201,6 +201,32 @@ type CodeInterpreterCallCodeDoneEvent struct {
 	Code           string `json:"code"`
 }
 
+// McpCallEvent 用于 mcp_call 的 in_progress / completed / failed 事件。
+type McpCallEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+}
+
+// McpCallArgumentsDeltaEvent 用于 response.mcp_call_arguments.delta。
+type McpCallArgumentsDeltaEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Delta          string `json:"delta"`
+}
+
+// McpCallArgumentsDoneEvent 用于 response.mcp_call_arguments.done。
+type McpCallArgumentsDoneEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	OutputIndex    int    `json:"output_index"`
+	ItemID         string `json:"item_id"`
+	Arguments      string `json:"arguments"`
+}
+
 // OutputItemAddedEvent opens an output item.
 type OutputItemAddedEvent struct {
 	Type           string     `json:"type"`

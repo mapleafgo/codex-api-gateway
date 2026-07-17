@@ -24,6 +24,7 @@ type OutputItem struct {
 	ContainerID      string                  `json:"container_id,omitempty"`      // code_interpreter_call
 	Code             string                  `json:"code,omitempty"`              // code_interpreter_call
 	Outputs          []CodeInterpreterOutput `json:"outputs,omitempty"`           // code_interpreter_call
+	ServerLabel      string                  `json:"server_label,omitempty"`      // mcp_call
 }
 
 // WebSearchAction describes the action taken by a web_search_call output item.
@@ -73,6 +74,23 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 			Type: i.Type, ID: i.ID, Status: i.Status,
 			ContainerID: i.ContainerID, Code: i.Code,
 			Outputs: outputs,
+		})
+	}
+	if i.Type == ItemTypeMcpCall {
+		// mcp_call failed 由 Status=failed 表达，错误文本并入 Output。
+		// （OpenAI wire 的 error 字段为 nullable；本网关不单独产出 error 字段。）
+		return json.Marshal(struct {
+			Type        string `json:"type"`
+			ID          string `json:"id"`
+			Status      string `json:"status,omitempty"`
+			ServerLabel string `json:"server_label"`
+			Name        string `json:"name"`
+			Arguments   string `json:"arguments"`
+			Output      string `json:"output,omitempty"`
+		}{
+			Type: i.Type, ID: i.ID, Status: i.Status,
+			ServerLabel: i.ServerLabel, Name: i.Name, Arguments: i.Arguments,
+			Output: i.Output,
 		})
 	}
 	if i.Type != ItemTypeMessage {
