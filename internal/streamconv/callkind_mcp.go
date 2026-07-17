@@ -95,3 +95,39 @@ func (mcpCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUn
 		}),
 	}
 }
+
+// decodeMcpUseInput 从 probe 合成的 mcp_tool_use Input 中取出 server_name/name/arguments。
+// Input 由 synthesizeMCPEvent 编码为 {server_name, name, arguments}。
+func decodeMcpUseInput(input any) (serverLabel, name, args string) {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return "", "", ""
+	}
+	if v, ok := m["server_name"].(string); ok {
+		serverLabel = v
+	}
+	if v, ok := m["name"].(string); ok {
+		name = v
+	}
+	if v, ok := m["arguments"].(string); ok {
+		args = v
+	}
+	return
+}
+
+// decodeMcpResultInput 从 mcp_tool_result 的合成 Input map 中取出
+// output 文本与 is_error 标志。
+// 类型断言失败时返回空值（synthesizeMCPEvent 保证输入为 map[string]any）。
+func decodeMcpResultInput(input any) (output string, isError bool) {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if v, ok := m["output"].(string); ok {
+		output = v
+	}
+	if v, ok := m["is_error"].(bool); ok {
+		isError = v
+	}
+	return
+}

@@ -1,6 +1,8 @@
 package streamconv
 
 import (
+	"encoding/json"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
@@ -56,4 +58,17 @@ func (customCallKind) finish(c *Converter, st *callState, args string) (model.Ou
 
 func (customCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
 	return nil
+}
+
+// customToolInput 从累积的 custom tool args（{"input": ...}）中解出 input 文本。
+// 解析失败时原样返回 raw。
+func customToolInput(raw string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return raw
+	}
+	if input, ok := obj["input"].(string); ok {
+		return input
+	}
+	return raw
 }

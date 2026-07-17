@@ -2,7 +2,6 @@
 package streamconv
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -414,47 +413,6 @@ func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion, r
 	})}
 }
 
-func extractCodeExecutionCode(input any) string {
-	m, ok := input.(map[string]any)
-	if !ok {
-		return ""
-	}
-	if c, ok := m["code"].(string); ok {
-		return c
-	}
-	return ""
-}
-
-// foldExecutionLogs 把 stdout 与非空 stderr 合并为 logs 文本（OpenAI logs 承载 stdout/stderr）。
-func foldExecutionLogs(stdout, stderr string) string {
-	var parts []string
-	if stdout != "" {
-		parts = append(parts, stdout)
-	}
-	if stderr != "" {
-		parts = append(parts, stderr)
-	}
-	return strings.Join(parts, "\n")
-}
-
-// extractWebSearchSources maps Anthropic web_search_tool_result entries to
-// OpenAI web_search_call sources. Only the URL is carried — title and
-// encrypted_content have no OpenAI equivalent field.
-//
-// 兼容端（如 GLM web_search_prime）不把结果放进 tool_result block 的 content
-// （实测 content 各字段皆空），而是用 text 自述承载 result_summary + link，
-// 已由 text 路径透传给客户端。故此处只处理标准 web_search_tool_result 数组，
-// 不解析 text——拆 text 违背透传契约，且 link 已对客户端可见。
-func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBlockUnionContent) []model.WebSearchSource {
-	var out []model.WebSearchSource
-	for _, r := range content.OfWebSearchResultBlockArray {
-		if r.URL != "" {
-			out = append(out, model.WebSearchSource{Type: "url", URL: r.URL})
-		}
-	}
-	return out
-}
-
 // handleSkippedServerToolUseStart marks an uncatalogued server_tool_use block
 // (web_fetch, future tools not yet in the catalog, ...) as skipped. The block
 // index is tracked so subsequent delta and stop events for this index are also
@@ -477,56 +435,6 @@ func (c *Converter) handleSkippedBlockStart(ev *anthropic.MessageStreamEventUnio
 	slog.Warn("跳过无 Responses 等价物的 content block，对应数据被丢弃",
 		"response_id", c.respID, "block_index", blkIdx, "block_type", ev.ContentBlock.Type)
 	return nil
-}
-
-// extractWebSearchQuery pulls the search query out of an Anthropic web_search
-// server_tool_use input. The input is a free-form JSON value; the query lives
-// under the "query" key.
-func extractWebSearchQuery(input any) string {
-	m, ok := input.(map[string]any)
-	if !ok {
-		return ""
-	}
-	if q, ok := m["query"].(string); ok {
-		return q
-	}
-	return ""
-}
-
-// decodeMcpUseInput 从 probe 合成的 mcp_tool_use Input 中取出 server_name/name/arguments。
-// Input 由 synthesizeMCPEvent 编码为 {server_name, name, arguments}。
-func decodeMcpUseInput(input any) (serverLabel, name, args string) {
-	m, ok := input.(map[string]any)
-	if !ok {
-		return "", "", ""
-	}
-	if v, ok := m["server_name"].(string); ok {
-		serverLabel = v
-	}
-	if v, ok := m["name"].(string); ok {
-		name = v
-	}
-	if v, ok := m["arguments"].(string); ok {
-		args = v
-	}
-	return
-}
-
-// decodeMcpResultInput 从 mcp_tool_result 的合成 Input map 中取出
-// output 文本与 is_error 标志。
-// 类型断言失败时返回空值（synthesizeMCPEvent 保证输入为 map[string]any）。
-func decodeMcpResultInput(input any) (output string, isError bool) {
-	m, ok := input.(map[string]any)
-	if !ok {
-		return "", false
-	}
-	if v, ok := m["output"].(string); ok {
-		output = v
-	}
-	if v, ok := m["is_error"].(bool); ok {
-		isError = v
-	}
-	return
 }
 
 func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
@@ -642,17 +550,6 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 	}
 
 	return out
-}
-
-func customToolInput(raw string) string {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
-		return raw
-	}
-	if input, ok := obj["input"].(string); ok {
-		return input
-	}
-	return raw
 }
 
 func (c *Converter) emitSummaryEvents(itemID, text string) []model.SSEEvent {

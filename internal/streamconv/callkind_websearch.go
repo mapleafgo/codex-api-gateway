@@ -71,3 +71,34 @@ func (webSearchCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamE
 		}),
 	}
 }
+
+// extractWebSearchSources maps Anthropic web_search_tool_result entries to
+// OpenAI web_search_call sources. Only the URL is carried — title and
+// encrypted_content have no OpenAI equivalent field.
+//
+// 兼容端（如 GLM web_search_prime）不把结果放进 tool_result block 的 content
+// （实测 content 各字段皆空），而是用 text 自述承载 result_summary + link，
+// 已由 text 路径透传给客户端。故此处只处理标准 web_search_tool_result 数组，
+// 不解析 text——拆 text 违背透传契约，且 link 已对客户端可见。
+func extractWebSearchSources(content anthropic.ContentBlockStartEventContentBlockUnionContent) []model.WebSearchSource {
+	var out []model.WebSearchSource
+	for _, r := range content.OfWebSearchResultBlockArray {
+		if r.URL != "" {
+			out = append(out, model.WebSearchSource{Type: "url", URL: r.URL})
+		}
+	}
+	return out
+}
+
+// extractWebSearchQuery 从 web_search server_tool_use 的 Input 中取出 query。
+// Input 是自由 JSON 值，query 在 "query" 键下。
+func extractWebSearchQuery(input any) string {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if q, ok := m["query"].(string); ok {
+		return q
+	}
+	return ""
+}

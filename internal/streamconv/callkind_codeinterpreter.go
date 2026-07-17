@@ -3,6 +3,7 @@ package streamconv
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
@@ -96,4 +97,28 @@ func (codeInterpreterCallKind) handleResult(c *Converter, ev *anthropic.MessageS
 			OutputIndex: itemIdx, Item: c.outputItems[itemIdx],
 		}),
 	}
+}
+
+// extractCodeExecutionCode 从 code_execution server_tool_use 的 Input 中取出 code 文本。
+func extractCodeExecutionCode(input any) string {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if c, ok := m["code"].(string); ok {
+		return c
+	}
+	return ""
+}
+
+// foldExecutionLogs 把 stdout 与非空 stderr 合并为 logs 文本（OpenAI logs 承载 stdout/stderr）。
+func foldExecutionLogs(stdout, stderr string) string {
+	var parts []string
+	if stdout != "" {
+		parts = append(parts, stdout)
+	}
+	if stderr != "" {
+		parts = append(parts, stderr)
+	}
+	return strings.Join(parts, "\n")
 }
