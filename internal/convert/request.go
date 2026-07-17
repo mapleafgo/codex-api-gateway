@@ -581,21 +581,6 @@ func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUn
 	return nil
 }
 
-func toolType(t oairesponses.ToolUnionParam) string {
-	if typ := t.GetType(); typ != nil && *typ != "" {
-		return *typ
-	}
-	raw, _ := json.Marshal(t)
-	var obj struct {
-		Type string `json:"type"`
-	}
-	_ = json.Unmarshal(raw, &obj)
-	if obj.Type != "" {
-		return obj.Type
-	}
-	return "unknown"
-}
-
 func appendConvertedTool(out *anthropic.MessageNewParams, name string, schema map[string]any, description *string, custom bool) error {
 	if name == "" {
 		return fmt.Errorf("tool conversion requires a name")
@@ -681,16 +666,16 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	}
 	defer applyParallelToolChoice(out, req)
 	if tc.OfFunctionTool != nil {
-		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "function", name: tc.OfFunctionTool.Name})
+		return applySpecificToolChoice(out, req.Tools, toolcatalog.Identity{OpenAIType: "function", Name: tc.OfFunctionTool.Name})
 	}
 	if tc.OfCustomTool != nil {
-		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "custom", name: tc.OfCustomTool.Name})
+		return applySpecificToolChoice(out, req.Tools, toolcatalog.Identity{OpenAIType: "custom", Name: tc.OfCustomTool.Name})
 	}
 	if tc.OfSpecificApplyPatchToolChoice != nil {
-		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "apply_patch", name: "apply_patch"})
+		return applySpecificToolChoice(out, req.Tools, toolcatalog.Identity{OpenAIType: "apply_patch", Name: "apply_patch"})
 	}
 	if tc.OfSpecificShellToolChoice != nil {
-		return applySpecificToolChoice(out, req.Tools, toolIdentity{typ: "shell", name: "shell"})
+		return applySpecificToolChoice(out, req.Tools, toolcatalog.Identity{OpenAIType: "shell", Name: "shell"})
 	}
 	if len(out.Tools) == 0 {
 		return nil
@@ -727,7 +712,7 @@ func structuredToolChoiceEquivalent(name string, tc oairesponses.ResponseNewPara
 	return tc.OfFunctionTool != nil && tc.OfFunctionTool.Name == name
 }
 
-func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesponses.ToolUnionParam, want toolIdentity) error {
+func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesponses.ToolUnionParam, want toolcatalog.Identity) error {
 	identities, err := declaredToolIdentities(declared)
 	if err != nil {
 		return err
@@ -736,7 +721,7 @@ func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesp
 		return fmt.Errorf("tool_choice %s is not declared", want)
 	}
 	out.ToolChoice = anthropic.ToolChoiceUnionParam{
-		OfTool: &anthropic.ToolChoiceToolParam{Name: want.convertedName()},
+		OfTool: &anthropic.ToolChoiceToolParam{Name: want.ConvertedName()},
 	}
 	return nil
 }
@@ -782,94 +767,51 @@ func allowedToolNames(declared []oairesponses.ToolUnionParam, allowed *oairespon
 			if !hasToolIdentity(declaredIdentities, identity) {
 				return nil, fmt.Errorf("tool_choice allowed_tools entry %s is not declared", identity)
 			}
-			allowedNames[identity.convertedName()] = true
+			allowedNames[identity.ConvertedName()] = true
 		}
 	}
 	return allowedNames, nil
 }
 
-func declaredToolIdentities(tools []oairesponses.ToolUnionParam) ([]toolIdentity, error) {
-	identities := make([]toolIdentity, 0, len(tools))
+func declaredToolIdentities(tools []oairesponses.ToolUnionParam) ([]toolcatalog.Identity, error) {
+	identities := make([]toolcatalog.Identity, 0, len(tools))
 	for _, tool := range tools {
-		switch {
-		case tool.OfFunction != nil:
-			identities = append(identities, toolIdentity{typ: "function", name: tool.OfFunction.Name})
-		case tool.OfCustom != nil:
-			identities = append(identities, toolIdentity{typ: "custom", name: tool.OfCustom.Name})
-		case tool.OfApplyPatch != nil:
-			identities = append(identities, toolIdentity{typ: "apply_patch", name: "apply_patch"})
-		case tool.OfShell != nil:
-			identities = append(identities, toolIdentity{typ: "shell", name: "shell"})
-		case tool.OfLocalShell != nil:
-			identities = append(identities, toolIdentity{typ: "local_shell", name: "shell"})
-		case tool.OfToolSearch != nil:
-			identities = append(identities, toolIdentity{typ: "tool_search", name: "tool_search"})
-		case tool.OfNamespace != nil:
-			for _, nested := range tool.OfNamespace.Tools {
-				if nested.OfFunction != nil {
-					identities = append(identities, toolIdentity{typ: "function", namespace: tool.OfNamespace.Name, name: nested.OfFunction.Name})
-					continue
-				}
-				if nested.OfCustom != nil {
-					identities = append(identities, toolIdentity{typ: "custom", namespace: tool.OfNamespace.Name, name: nested.OfCustom.Name})
-					continue
-				}
-				return nil, fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
-			}
-		default:
-			return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", toolType(tool))
+		ids, err := toolcatalog.Inspect(tool)
+		if err != nil {
+			return nil, err
 		}
+		identities = append(identities, ids...)
 	}
 	return identities, nil
 }
 
-func hasToolIdentity(identities []toolIdentity, want toolIdentity) bool {
+func hasToolIdentity(identities []toolcatalog.Identity, want toolcatalog.Identity) bool {
 	for _, identity := range identities {
-		if identity == want {
+		if identity.Equal(want) {
 			return true
 		}
 	}
 	return false
 }
 
-type toolIdentity struct {
-	typ       string
-	namespace string
-	name      string
-}
-
-func (i toolIdentity) convertedName() string {
-	if i.namespace != "" {
-		return toolcatalog.ToolName(i.namespace, i.name)
-	}
-	return i.name
-}
-
-func (i toolIdentity) String() string {
-	if i.namespace != "" {
-		return fmt.Sprintf("%s %q in namespace %q", i.typ, i.name, i.namespace)
-	}
-	return fmt.Sprintf("%s %q", i.typ, i.name)
-}
-
-func parseAllowedToolIdentities(tool map[string]any) ([]toolIdentity, error) {
+func parseAllowedToolIdentities(tool map[string]any) ([]toolcatalog.Identity, error) {
 	typ, ok := tool["type"].(string)
 	if !ok || typ == "" {
 		return nil, fmt.Errorf("tool_choice allowed_tools entry requires a type")
 	}
 	switch typ {
 	case "shell", "local_shell":
-		return []toolIdentity{{typ: typ, name: "shell"}}, nil
+		return []toolcatalog.Identity{{OpenAIType: typ, Name: "shell"}}, nil
 	case "apply_patch":
-		return []toolIdentity{{typ: typ, name: "apply_patch"}}, nil
+		return []toolcatalog.Identity{{OpenAIType: typ, Name: "apply_patch"}}, nil
 	case "tool_search":
-		return []toolIdentity{{typ: typ, name: "tool_search"}}, nil
+		return []toolcatalog.Identity{{OpenAIType: typ, Name: "tool_search"}}, nil
 	case "function", "custom":
 		name, _ := tool["name"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
 		}
-		return []toolIdentity{{typ: typ, name: name}}, nil
+		return []toolcatalog.Identity{{OpenAIType: typ, Name: name}}, nil
 	case "namespace":
 		return parseAllowedNamespaceToolIdentities(tool)
 	default:
@@ -877,7 +819,7 @@ func parseAllowedToolIdentities(tool map[string]any) ([]toolIdentity, error) {
 	}
 }
 
-func parseAllowedNamespaceToolIdentities(tool map[string]any) ([]toolIdentity, error) {
+func parseAllowedNamespaceToolIdentities(tool map[string]any) ([]toolcatalog.Identity, error) {
 	namespace, _ := tool["name"].(string)
 	if namespace == "" {
 		return nil, fmt.Errorf("tool_choice allowed_tools namespace requires a name")
@@ -886,7 +828,7 @@ func parseAllowedNamespaceToolIdentities(tool map[string]any) ([]toolIdentity, e
 	if len(rawTools) == 0 {
 		return nil, fmt.Errorf("tool_choice allowed_tools namespace %q requires tools", namespace)
 	}
-	identities := make([]toolIdentity, 0, len(rawTools))
+	identities := make([]toolcatalog.Identity, 0, len(rawTools))
 	for _, rawTool := range rawTools {
 		nested, ok := rawTool.(map[string]any)
 		if !ok {
@@ -900,7 +842,7 @@ func parseAllowedNamespaceToolIdentities(tool map[string]any) ([]toolIdentity, e
 		if name == "" {
 			return nil, fmt.Errorf("tool_choice allowed_tools namespace %q child %q requires a name", namespace, typ)
 		}
-		identities = append(identities, toolIdentity{typ: typ, namespace: namespace, name: name})
+		identities = append(identities, toolcatalog.Identity{OpenAIType: typ, Namespace: namespace, Name: name})
 	}
 	return identities, nil
 }
@@ -1026,26 +968,12 @@ func formatInstructionParts(parts []instructionPart) string {
 func formatToolNames(tag string, tools []oairesponses.ToolUnionParam) string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		switch {
-		case tool.OfFunction != nil:
-			names = append(names, tool.OfFunction.Name)
-		case tool.OfCustom != nil:
-			names = append(names, tool.OfCustom.Name)
-		case tool.OfApplyPatch != nil:
-			names = append(names, "apply_patch")
-		case tool.OfShell != nil || tool.OfLocalShell != nil:
-			names = append(names, "shell")
-		case tool.OfToolSearch != nil:
-			names = append(names, "tool_search")
-		case tool.OfNamespace != nil:
-			namespace := tool.OfNamespace
-			for _, nested := range namespace.Tools {
-				if nested.OfFunction != nil {
-					names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfFunction.Name))
-				} else if nested.OfCustom != nil {
-					names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfCustom.Name))
-				}
-			}
+		ids, err := toolcatalog.Inspect(tool)
+		if err != nil {
+			continue // 未知 tool 跳过，与原 switch 无 default 语义一致
+		}
+		for _, id := range ids {
+			names = append(names, id.ConvertedName())
 		}
 	}
 	body, err := json.Marshal(names)

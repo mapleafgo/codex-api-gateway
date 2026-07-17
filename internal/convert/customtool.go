@@ -31,19 +31,13 @@ func FreeformToolNames(req *oairesponses.ResponseNewParams) []string {
 }
 
 func appendFreeformToolName(names []string, tool oairesponses.ToolUnionParam) []string {
-	switch {
-	case tool.OfCustom != nil:
-		names = append(names, tool.OfCustom.Name)
-	case tool.OfApplyPatch != nil:
-		names = append(names, "apply_patch")
-	case tool.OfShell != nil || tool.OfLocalShell != nil:
-		names = append(names, "shell")
-	case tool.OfNamespace != nil:
-		namespace := tool.OfNamespace
-		for _, nested := range namespace.Tools {
-			if nested.OfCustom != nil {
-				names = append(names, toolcatalog.ToolName(namespace.Name, nested.OfCustom.Name))
-			}
+	ids, err := toolcatalog.Inspect(tool)
+	if err != nil {
+		return names
+	}
+	for _, id := range ids {
+		if id.Freeform {
+			names = append(names, id.ConvertedName())
 		}
 	}
 	return names
