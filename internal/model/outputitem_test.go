@@ -135,3 +135,55 @@ func TestMcpCallItemCarriesOutputForFailedState(t *testing.T) {
 		t.Fatalf("mcp_call wire must not emit error field: %s", raw)
 	}
 }
+
+// TestToolSearchCallItemMarshalsRequiredFields 锁定 tool_search_call wire
+// 的必填字段 id/call_id/arguments/execution/status/type，且不带 name
+// （tool_search_call 无 name 字段，与 function_call 区分）。
+func TestToolSearchCallItemMarshalsRequiredFields(t *testing.T) {
+	item := OutputItem{
+		Type: ItemTypeToolSearchCall, ID: "tsc_0", CallID: "call_ts",
+		Arguments: `{"query":"fetch"}`, Execution: "client", Status: ResponseStatusCompleted,
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, key := range []string{"type", "id", "call_id", "arguments", "execution", "status"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("tool_search_call wire missing required key %q: %s", key, raw)
+		}
+	}
+	if got["type"] != "tool_search_call" {
+		t.Fatalf("bad type: %v", got["type"])
+	}
+	if got["execution"] != "client" {
+		t.Fatalf("bad execution: %v", got["execution"])
+	}
+	// tool_search_call 无 name 字段（默认别名 marshal 会带 name:""，必须排除）
+	if _, ok := got["name"]; ok {
+		t.Fatalf("tool_search_call wire must not emit name: %s", raw)
+	}
+}
+
+// TestToolSearchCallItemEmptyFieldsStillEmitRequiredKeys 锁定即使 arguments
+// 为空也必须输出键（dedicated MarshalJSON 分支无 omitempty，对齐 mcp_call）。
+func TestToolSearchCallItemEmptyFieldsStillEmitRequiredKeys(t *testing.T) {
+	item := OutputItem{
+		Type: ItemTypeToolSearchCall, ID: "tsc_1", CallID: "call_ts2",
+		Execution: "client", Status: ResponseStatusInProgress,
+		// Arguments 故意留空
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, key := range []string{"id", "call_id", "arguments", "execution"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("tool_search_call wire missing required key %q when empty: %s", key, raw)
+		}
+	}
+}

@@ -358,6 +358,58 @@ func TestConverterOutputItemsFunctionCall(t *testing.T) {
 	}
 }
 
+// TestConverterToolSearchCallProducesToolSearchCallItem 锁定 tool_use(tool_search)
+// 必须产出 tool_search_call item（非 function_call）——Codex 的 tool_search 懒加载
+// 依赖该 item type，落到 function_call 会导致 Codex abort（修复回归点）。
+func TestConverterToolSearchCallProducesToolSearchCallItem(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_ts", Name: "tool_search"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"query":"fetch"}`},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_stop",
+		Index: 0,
+	})
+
+	// tool_search_call 无专门 delta/done 事件，不得产 function_call_arguments.*
+	for _, e := range evs {
+		if typ := evType(t, e.Data); strings.HasPrefix(typ, "response.function_call_arguments.") {
+			t.Fatalf("tool_search must not emit function_call_arguments events, got %s", typ)
+		}
+	}
+
+	items := c.OutputItems()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 output item, got %d: %+v", len(items), items)
+	}
+	if items[0].Type != "tool_search_call" {
+		t.Fatalf("expected tool_search_call, got %+v", items[0])
+	}
+	if items[0].CallID != "call_ts" {
+		t.Fatalf("expected CallID call_ts, got %q", items[0].CallID)
+	}
+	if items[0].Arguments != `{"query":"fetch"}` {
+		t.Fatalf("expected Arguments {\"query\":\"fetch\"}, got %q", items[0].Arguments)
+	}
+	if items[0].Execution != "client" {
+		t.Fatalf("expected Execution client, got %q", items[0].Execution)
+	}
+	if items[0].Name != "" {
+		t.Fatalf("tool_search_call must not have name, got %q", items[0].Name)
+	}
+}
+
 func TestConverterOutputItemsCustomToolCall(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
