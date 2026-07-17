@@ -60,9 +60,14 @@ const toolSearchName = "tool_search"
 func (c *Converter) dispatchCallKind(ev *anthropic.MessageStreamEventUnion) callKind {
 	if ev.ContentBlock.Type == anBlockToolUse {
 		name := ev.ContentBlock.Name
-		// custom 工具（含 shell/apply_patch，由 customToolNames 标记）与 tool_search
-		// 暂仍走旧 handler；其余 tool_use 走通用 function 流水线。
-		if !c.customToolNames[name] && name != toolSearchName {
+		// custom 工具（含 shell/apply_patch）走 customCallKind；tool_search 暂仍
+		// 回退旧 handler（S4 迁移）；其余 tool_use 走 function 流水线。
+		switch {
+		case c.customToolNames[name]:
+			return customCallKind{}
+		case name == toolSearchName:
+			return nil
+		default:
 			return functionCallKind{}
 		}
 	}
