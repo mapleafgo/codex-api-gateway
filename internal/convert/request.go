@@ -795,56 +795,7 @@ func hasToolIdentity(identities []toolcatalog.Identity, want toolcatalog.Identit
 }
 
 func parseAllowedToolIdentities(tool map[string]any) ([]toolcatalog.Identity, error) {
-	typ, ok := tool["type"].(string)
-	if !ok || typ == "" {
-		return nil, fmt.Errorf("tool_choice allowed_tools entry requires a type")
-	}
-	switch typ {
-	case "shell", "local_shell":
-		return []toolcatalog.Identity{{OpenAIType: typ, Name: "shell"}}, nil
-	case "apply_patch":
-		return []toolcatalog.Identity{{OpenAIType: typ, Name: "apply_patch"}}, nil
-	case "tool_search":
-		return []toolcatalog.Identity{{OpenAIType: typ, Name: "tool_search"}}, nil
-	case "function", "custom":
-		name, _ := tool["name"].(string)
-		if name == "" {
-			return nil, fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
-		}
-		return []toolcatalog.Identity{{OpenAIType: typ, Name: name}}, nil
-	case "namespace":
-		return parseAllowedNamespaceToolIdentities(tool)
-	default:
-		return nil, fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
-	}
-}
-
-func parseAllowedNamespaceToolIdentities(tool map[string]any) ([]toolcatalog.Identity, error) {
-	namespace, _ := tool["name"].(string)
-	if namespace == "" {
-		return nil, fmt.Errorf("tool_choice allowed_tools namespace requires a name")
-	}
-	rawTools, _ := tool["tools"].([]any)
-	if len(rawTools) == 0 {
-		return nil, fmt.Errorf("tool_choice allowed_tools namespace %q requires tools", namespace)
-	}
-	identities := make([]toolcatalog.Identity, 0, len(rawTools))
-	for _, rawTool := range rawTools {
-		nested, ok := rawTool.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("tool_choice allowed_tools namespace %q has invalid child", namespace)
-		}
-		typ, _ := nested["type"].(string)
-		if typ != "function" && typ != "custom" {
-			return nil, fmt.Errorf("unsupported tool_choice allowed_tools namespace %q child type %q", namespace, typ)
-		}
-		name, _ := nested["name"].(string)
-		if name == "" {
-			return nil, fmt.Errorf("tool_choice allowed_tools namespace %q child %q requires a name", namespace, typ)
-		}
-		identities = append(identities, toolcatalog.Identity{OpenAIType: typ, Namespace: namespace, Name: name})
-	}
-	return identities, nil
+	return toolcatalog.InspectAllowed(tool)
 }
 
 func applyParallelToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
