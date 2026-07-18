@@ -8,7 +8,7 @@ import (
 // TestCustomToolInputPreservesV4APatch 锁定 customToolInput 透传 V4A patch 时不
 // 修改内容——尤其空内容行 "+"（单加号）必须原样保留。apply_patch 的 V4A 格式
 // 要求 Add File 块每行以 + 开头、空行用 "+" 表示；若网关剥离 + 会让 codex
-// 校验报 "” is not a valid hunk header"。此测试锁定网关不做此类剥离，
+// 校验报 "'' is not a valid hunk header"。此测试锁定网关不做此类剥离，
 // 把 apply_patch 格式问题的责任界定在模型侧（上游生成的 patch 本身）。
 func TestCustomToolInputPreservesV4APatch(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: /tmp/x\n+# title\n+\n+body line\n*** End Patch"
