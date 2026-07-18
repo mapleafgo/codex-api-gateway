@@ -174,6 +174,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	}
 	if systemText := formatInstructionParts(sysParts); systemText != "" {
 		out.System = []anthropic.TextBlockParam{{Text: systemText}}
+		// DEBUG 记录实际发给上游的 system 文本，便于排查 prompt 注入 / 指令丢失异常。
+		// 截断到 2000 rune 防止巨量日志（compaction encrypted_content 可达数十 KB）；
+		// 字节数概览已由 server 层 "请求转换完成" 的 system_bytes 提供。
+		slog.Debug("发送到上游的 system 消息",
+			"system_bytes", len(systemText),
+			"system_parts", len(sysParts),
+			"system_text", truncateRunesForLog(systemText, 2000))
 	}
 
 	applyReasoning(out, req, cfg)
@@ -1263,4 +1270,17 @@ func joinNonEmpty(sep string, parts []string) string {
 		}
 	}
 	return strings.Join(nonEmpty, sep)
+}
+
+// truncateRunesForLog 按 rune 截断字符串用于日志输出，超出 max 时追加省略标记，
+// 避免多字节字符被切断产生乱码，同时控制日志体积。
+func truncateRunesForLog(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + fmt.Sprintf("...(+%d runes)", len(r)-max)
 }
