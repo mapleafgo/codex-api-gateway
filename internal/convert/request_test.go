@@ -341,6 +341,58 @@ func TestToolCallsConvert(t *testing.T) {
 	}
 }
 
+// TestFunctionCallOutputLargeTextPreserved 锁定网关对 function_call_output
+// 大文本的完整透传：SKILL.md 全文通过 exec_command 读取后，以 function_call_output
+// 形式回灌，网关须把它原样转成 Anthropic tool_result 的 text block，不得截断。
+// 这是 skill 加载机制在网关链路上能否工作的关键转译点。
+func TestFunctionCallOutputLargeTextPreserved(t *testing.T) {
+	// 构造一段 ~8KB 的伪 SKILL.md 全文（真实 skill 正文量级），含多行结构与中文。
+	skillBody := strings.Repeat("# SKILL section line 中文内容保持完整\n", 300)
+	raw, err := json.Marshal(skillBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"sed -n 1,260p SKILL.md\"}"},{"type":"function_call_output","call_id":"c1","output":%s}],"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}],"stream":true}`,
+		string(raw))
+	req := mustReq(t, payload)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// tool_result 应在最后一条 user message 里，且文本完整等于 skillBody。
+	last := out.Messages[len(out.Messages)-1]
+	if last.Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("last message role = %v, want user", last.Role)
+	}
+	var got string
+	for _, b := range last.Content {
+		if b.OfToolResult != nil && b.OfToolResult.ToolUseID == "c1" {
+			for _, c := range b.OfToolResult.Content {
+				if c.OfText != nil {
+					got += c.OfText.Text
+				}
+			}
+		}
+	}
+	if got != skillBody {
+		t.Fatalf("function_call_output 大文本被截断或篡改: got len=%d want len=%d\nfirst diff at byte %d",
+			len(got), len(skillBody), firstDiff(got, skillBody))
+	}
+}
+
+func firstDiff(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
 func TestCustomToolCallInputAndOutputConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"edit"}]},
