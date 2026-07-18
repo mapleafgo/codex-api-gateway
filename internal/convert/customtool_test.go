@@ -159,13 +159,12 @@ func TestFreeformToolNames(t *testing.T) {
 	}
 }
 
-func TestFreeformToolNamesFromAdditionalToolsAndToolSearchOutput(t *testing.T) {
+func TestFreeformToolNamesFromToolSearchOutput(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
-		{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"adhoc"}]},
 		{"type":"tool_search_output","tools":[{"type":"custom","name":"loaded_raw"}]}
 	],"stream":true}`)
 	got := FreeformToolNames(req)
-	for _, name := range []string{"adhoc", "loaded_raw"} {
+	for _, name := range []string{"loaded_raw"} {
 		if !contains(got, name) {
 			t.Fatalf("missing %q in %v", name, got)
 		}

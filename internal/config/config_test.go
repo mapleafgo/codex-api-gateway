@@ -17,7 +17,6 @@ func TestLoadOverridesWithEnvProvider(t *testing.T) {
 server: {listen: ":9090"}
 session: {ttl: 30m, path: /tmp/codex-session-test, max_bytes: 1048576, max_entry_bytes: 262144}
 breaker: {first_byte_timeout: 8s, degrade_threshold: 3, recover_threshold: 1, cooldown: 20s, half_open_probes: 1, recovery: normal}
-thinking: {effort_budget: {minimal: 1024, low: 8000, medium: 16000, high: 32000}}
 sources:
   - name: official
     base_url: https://api.anthropic.com
@@ -37,9 +36,6 @@ sources:
 	}
 	if cfg.Logging.Level != "debug" {
 		t.Fatalf("env did not override logging.level: %q", cfg.Logging.Level)
-	}
-	if cfg.EffortBudget("medium") != 16000 {
-		t.Fatalf("bad effort budget")
 	}
 	if cfg.Breaker.DegradeThreshold != 3 {
 		t.Fatalf("bad degrade_threshold: %d", cfg.Breaker.DegradeThreshold)
@@ -374,20 +370,20 @@ sources:
 	}
 }
 
-func TestModelsDedupAndSorted(t *testing.T) {
+func TestConfiguredModelSlugsSorted(t *testing.T) {
+	ctxWindow := int64(200000)
 	c := &Config{
-		Sources: []Source{
-			{Name: "s1", ModelMap: map[string]string{"gpt-5": "claude-sonnet-4", "gpt-5.5": "glm-5.2"}},
-			{Name: "s2", ModelMap: map[string]string{"gpt-5": "claude-opus-4", "o3": "claude-haiku"}},
-			{Name: "s3"}, // 空 model_map
+		ModelOverrides: map[string]ModelOverride{
+			"gpt-5.5": {ContextWindow: &ctxWindow},
+			"gpt-5":   {ContextWindow: &ctxWindow},
+			"o3":      {ContextWindow: &ctxWindow},
 		},
 	}
-	models := c.Models()
-	if len(models) != 3 {
-		t.Fatalf("expected 3 unique models, got %d: %v", len(models), models)
-	}
-	// 应按字母序排序
+	models := c.ConfiguredModelSlugs()
 	want := []string{"gpt-5", "gpt-5.5", "o3"}
+	if len(models) != len(want) {
+		t.Fatalf("expected %d models, got %d: %v", len(want), len(models), models)
+	}
 	for i, m := range models {
 		if m != want[i] {
 			t.Fatalf("models[%d] = %q, want %q (full: %v)", i, m, want[i], models)
@@ -395,12 +391,123 @@ func TestModelsDedupAndSorted(t *testing.T) {
 	}
 }
 
-func TestModelsEmptyWhenNoMaps(t *testing.T) {
-	c := &Config{
-		Sources: []Source{{Name: "s1"}, {Name: "s2"}},
-	}
-	models := c.Models()
+func TestConfiguredModelSlugsEmpty(t *testing.T) {
+	c := &Config{}
+	models := c.ConfiguredModelSlugs()
 	if len(models) != 0 {
 		t.Fatalf("expected empty model list, got %v", models)
+	}
+}
+
+// TestLoadModelOverridesParsesSupportsImage 验证 models.<slug> 下的 supports_image
+// 配置能被正确解析到 ModelOverride.SupportsImageDetailOriginal，并经 codexModelInfo
+// 输出为 Codex 的 supports_image_detail_original JSON 字段。
+// yaml key 故意用 supports_image（简洁），输出仍对齐 Codex 原字段名。
+func TestLoadModelOverridesParsesSupportsImage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+server: {listen: ":9090"}
+sources:
+  - name: official
+    base_url: https://api.anthropic.com
+    api_key: yaml-secret
+models:
+  gpt-5:
+    context_window: 200000
+    supports_image: true
+`), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ov, ok := cfg.ModelOverrides["gpt-5"]
+	if !ok {
+		t.Fatalf("models.gpt-5 未被解析")
+	}
+	if ov.ContextWindow == nil || *ov.ContextWindow != 200000 {
+		t.Fatalf("context_window 解析错误: %v", ov.ContextWindow)
+	}
+	if ov.SupportsImageDetailOriginal == nil || !*ov.SupportsImageDetailOriginal {
+		t.Fatalf("supports_image 未解析到 SupportsImageDetailOriginal: %v", ov.SupportsImageDetailOriginal)
+	}
+}
+
+// TestLoadBaseInstructionsFile 验证 base_instructions_file 文件加载：
+// 相对路径基于 config 文件目录解析，内容写入 cfg.BaseInstructions。
+func TestLoadBaseInstructionsFile(t *testing.T) {
+	dir := t.TempDir()
+	const content = "You are a test agent with gateway_guidance."
+	biPath := filepath.Join(dir, "bi.txt")
+	if err := os.WriteFile(biPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write bi file: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(cfgPath, []byte(`
+server: {listen: ":9090"}
+breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+base_instructions_file: bi.txt
+sources:
+  - name: official
+    base_url: https://api.anthropic.com
+    api_key: k
+`), 0644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.BaseInstructions != content {
+		t.Fatalf("BaseInstructions = %q, want %q", cfg.BaseInstructions, content)
+	}
+	if cfg.BaseInstructionsFile != "bi.txt" {
+		t.Fatalf("BaseInstructionsFile = %q, want bi.txt", cfg.BaseInstructionsFile)
+	}
+}
+
+// TestLoadBaseInstructionsFileMissing 验证降级策略：文件缺失不阻断启动，
+// BaseInstructions 保持空串（沿用 Codex 内置指令），仅在日志输出 WARN。
+func TestLoadBaseInstructionsFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(cfgPath, []byte(`
+breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+base_instructions_file: nope.txt
+sources:
+  - name: official
+    base_url: https://api.anthropic.com
+    api_key: k
+`), 0644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("文件缺失应降级而非报错, got: %v", err)
+	}
+	if cfg.BaseInstructions != "" {
+		t.Fatalf("BaseInstructions 应降级为空串, got len=%d", len(cfg.BaseInstructions))
+	}
+}
+
+// TestLoadWarnsDeprecatedSystemSuffix 验证 system_suffix 触发 WARN（兼容旧配置）。
+func TestLoadWarnsDeprecatedSystemSuffix(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(cfgPath, []byte(`
+breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+system_suffix: "legacy"
+sources:
+  - name: official
+    base_url: https://api.anthropic.com
+    api_key: k
+`), 0644)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// SystemSuffix 已移除字段；只要 Load 不报错、不 panic 即可（WARN 在日志里）。
+	if cfg == nil {
+		t.Fatalf("cfg == nil")
 	}
 }

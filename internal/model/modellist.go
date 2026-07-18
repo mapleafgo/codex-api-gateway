@@ -1,35 +1,5 @@
 package model
 
-// AnthropicModelsResponse 是 Anthropic 兼容后端 GET /v1/models 的响应格式。
-type AnthropicModelsResponse struct {
-	Data    []AnthropicModel `json:"data"`
-	FirstID string           `json:"first_id"`
-	LastID  string           `json:"last_id"`
-	HasMore bool             `json:"has_more"`
-}
-
-// AnthropicModel 是 Anthropic 模型列表中的单个条目。
-type AnthropicModel struct {
-	Type        string `json:"type"` // 固定 "model"
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	CreatedAt   string `json:"created_at"` // RFC3339
-}
-
-// ListResponse 是 OpenAI 兼容的 GET /v1/models 响应格式。
-type ListResponse struct {
-	Object string  `json:"object"` // 固定 "list"
-	Data   []Entry `json:"data"`
-}
-
-// Entry 对应 OpenAI Model 对象。
-type Entry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"` // 固定 "model"
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-}
-
 // CodexModelsResponse 是 Codex 期望的 /v1/models 响应格式（ModelsResponse）。
 // Codex 的 SharedModelsManager 用 serde_json::from_slice::<ModelsResponse> 直接解析，
 // 期望 { "models": [ModelInfo] }（不是 OpenAI 的 { data: [] }）。
@@ -39,25 +9,59 @@ type CodexModelsResponse struct {
 	Models []CodexModelInfo `json:"models"`
 }
 
-// CodexModelInfo 对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo
-// （对齐 0.144.5，共 37 个外部可反序列化字段；used_fallback_model_metadata
-// 被 skip_deserializing 忽略）。
+// CodexModelInfo 对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo（0.144.5）。
+// 字段语义与 serde 约束（来自源码逐项确认）：
 //
-// serde 约束（决定 JSON key 是否必须出现）：
-//   - 无 #[serde(default)] 的字段（含 Option<T>）：key 必须出现，可为 null。
-//     → Go 侧用具名字段 + 指针类型 + 必填值，不用 omitempty。
-//   - 有 #[serde(default)] 的字段：Codex 自动补零值，可省略。
-//     → Go 侧加 omitempty，零值不出现在 JSON 中。
+// 必填字段（无 #[serde(default)]，JSON key 必须出现）：
+//   - slug: 模型 slug（客户端请求时使用的名字）
+//   - display_name: 展示名（UI/日志）
+//   - description: 模型描述（Option<String>，可为 null）
+//   - supported_reasoning_levels: 支持的 reasoning effort 预设列表，元素 {effort,description}；
+//     空 [] 合法但表示该模型不支持任何 reasoning 预设
+//   - shell_type: shell 执行类型，取值 default/local/unified_exec/disabled/shell_command
+//   - visibility: 模型在 picker 的可见性，取值 list/hide/none
+//   - supported_in_api: 是否在 API 可用
+//   - priority: 排序优先级（数字越小越靠前）
+//   - availability_nux / upgrade: Option，null 即可
+//   - base_instructions: 基础 system prompt（**非空时会整体替换 Codex 内置 BASE_INSTRUCTIONS**，
+//     网关保持空串，命令补丁走 system_suffix 追加而非替换）
+//   - supports_reasoning_summaries: 是否接受 Responses API reasoning.summary 参数
+//   - support_verbosity / default_verbosity: verbosity 开关与默认值
+//   - apply_patch_tool_type: Option<ApplyPatchToolType>，"freeform" 启用 apply_patch 工具，
+//     null 则不注册 apply_patch（模型只能靠 shell 绕路改文件）
+//   - truncation_policy: 工具输出截断策略 {mode: tokens|bytes, limit}
+//   - supports_parallel_tool_calls: 是否支持并行工具调用
+//   - experimental_supported_tools: 实验性工具名列表
 //
-// 关键字段：SupportsSearchTool=true 让 MCP tools 进 deferred + tool_search 工作。
-// SupportsReasoningSummaries（0.144.5）/ SupportsReasoningSummaryParameter（main）
-// 双写以同时兼容两个版本：旧版把它当必填字段，新版 serde(default) 忽略多余 key。
+// 可选字段（有 #[serde(default)]，零值省略；网关只在必要时给值）：
+//   - context_window / max_context_window: 上下文窗口大小（必须告知，Codex 默认 None）
+//   - auto_compact_token_limit: 自动压缩阈值
+//   - supports_search_tool: 启用 tool_search + MCP deferred（网关核心，必须 true）
+//   - supports_image_detail_original: 是否支持图片识别（原尺寸 detail），默认 false
+//   - include_skills_usage_instructions: 注入 skills 使用说明块，默认 true（启用 skill 发现引导）
+//   - web_search_tool_type: web search 能力类型 text|text_and_image（仅声明，不自动注册工具）
+//   - input_modalities: 支持的输入模态 ["text","image"]
+//   - effective_context_window_percent: 输入 token 占窗口百分比
+//   - default_reasoning_summary: 默认 reasoning summary auto|none|detailed|concise（省略=auto）
+//   - use_responses_lite: Responses Lite 协议路径（*bool，硬编码 false）。该模式是
+//     Codex→OpenAI 后端的内部传输优化：启用后 Codex 把工具从顶层 tools 挪进 input 的
+//     additional_tools item、清空 instructions、注入 responses-lite header，且不支持
+//     namespace 工具。第三方上游非 OpenAI 后端启用有害无益，codexModelInfo 硬编码显式
+//     false 压制 lite（防 Codex hardcode/默认开启），不开放 per-slug 覆盖。
+//
+// 不注入（保持零值）：
+//   - base_instructions 非空（避免覆盖 Codex 内置指令）
+//   - model_messages（personality 模板，与 system_suffix 冲突）
+//   - default_reasoning_level / service_tiers / default_service_tier 等（用 Codex 默认）
+//
+// used_fallback_model_metadata 是 Codex 内部标记（#[skip_deserializing]），
+// 网关设值也会被忽略，故不暴露。
 type CodexModelInfo struct {
 	// —— 必填字段（无 serde(default)）——
 	Slug                       string                `json:"slug"`
 	DisplayName                string                `json:"display_name"`
 	Description                *string               `json:"description"`
-	SupportedReasoningLevels   []any                 `json:"supported_reasoning_levels"`
+	SupportedReasoningLevels   []CodexReasoningLevel `json:"supported_reasoning_levels"`
 	ShellType                  string                `json:"shell_type"`
 	Visibility                 string                `json:"visibility"`
 	SupportedInAPI             bool                  `json:"supported_in_api"`
@@ -90,14 +94,17 @@ type CodexModelInfo struct {
 	EffectiveContextWindowPercent  int64    `json:"effective_context_window_percent,omitempty"`
 	InputModalities                []string `json:"input_modalities,omitempty"`
 	SupportsSearchTool             bool     `json:"supports_search_tool,omitempty"`
-	UseResponsesLite               bool     `json:"use_responses_lite,omitempty"`
+	UseResponsesLite               *bool    `json:"use_responses_lite,omitempty"`
 	AutoReviewModelOverride        *string  `json:"auto_review_model_override,omitempty"`
 	ToolMode                       *string  `json:"tool_mode,omitempty"`
 	MultiAgentVersion              *string  `json:"multi_agent_version,omitempty"`
+}
 
-	// —— 兼容 main 分支：main 把必填字段重命名为 supports_reasoning_summary_parameter ——
-	// 0.144.5 serde 不带 deny_unknown_fields，多余 key 会被静默忽略。
-	SupportsReasoningSummaryParameter bool `json:"supports_reasoning_summary_parameter,omitempty"`
+// CodexReasoningLevel 对应 supported_reasoning_levels 数组元素。
+// effort 取值 none/low/medium/high/xhigh；description 为可选展示文案。
+type CodexReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description,omitempty"`
 }
 
 // CodexTruncationPolicy 对应 Codex ModelInfo.truncation_policy。

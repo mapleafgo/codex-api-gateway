@@ -26,7 +26,6 @@ var (
 	ItemTypeCustomToolCallOut    = string(oaconstant.ValueOf[oaconstant.CustomToolCallOutput]())
 	ItemTypeToolSearchCall       = string(oaconstant.ValueOf[oaconstant.ToolSearchCall]())
 	ItemTypeToolSearchOutput     = string(oaconstant.ValueOf[oaconstant.ToolSearchOutput]())
-	ItemTypeAdditionalTools      = string(oaconstant.ValueOf[oaconstant.AdditionalTools]())
 	ItemTypeCompaction           = string(oaconstant.ValueOf[oaconstant.Compaction]())
 	ItemTypeCompactionTrigger    = string(oaconstant.ValueOf[oaconstant.CompactionTrigger]())
 	ItemTypeReasoning            = string(oaconstant.ValueOf[oaconstant.Reasoning]())

@@ -50,7 +50,7 @@ func TestTextRequestConverts(t *testing.T) {
 
 func TestReasoningEffortMapsToThinking(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +142,10 @@ func TestAssistantPhaseNotInjectedIntoAnthropicText(t *testing.T) {
 	}
 }
 
-func TestAdditionalToolsAndToolSearchItemsConvert(t *testing.T) {
+func TestToolSearchItemsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"tool_search_call","call_id":"ts1","arguments":{"q":"crm"}},
 		{"type":"tool_search_output","call_id":"ts1","tools":[{"type":"function","name":"lookup","description":"lookup contact","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}]},
-		{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"raw_edit","description":"raw edit"}]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"use the loaded tools"}]}
 	],"tools":[{"type":"tool_search","execution":"client","description":"search deferred tools","parameters":{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}}],"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
@@ -159,10 +158,6 @@ func TestAdditionalToolsAndToolSearchItemsConvert(t *testing.T) {
 	if findTool(out.Tools, "lookup") == nil {
 		t.Fatalf("tool_search_output tools not exposed: %+v", out.Tools)
 	}
-	raw := findTool(out.Tools, "raw_edit")
-	if raw == nil || raw.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("additional custom tool not exposed as custom: %+v", out.Tools)
-	}
 	if len(out.Messages) < 2 || out.Messages[0].Content[0].OfToolUse == nil {
 		t.Fatalf("tool_search_call not converted to tool_use: %+v", out.Messages)
 	}
@@ -171,9 +166,6 @@ func TestAdditionalToolsAndToolSearchItemsConvert(t *testing.T) {
 	}
 	if out.Messages[1].Content[0].OfToolResult == nil {
 		t.Fatalf("tool_search_output not converted to tool_result: %+v", out.Messages)
-	}
-	if len(out.System) == 0 || !strings.Contains(out.System[0].Text, "<developer_tools>") {
-		t.Fatalf("additional_tools context marker missing: %+v", out.System)
 	}
 }
 
@@ -678,7 +670,7 @@ func TestDefaultMaxTokens(t *testing.T) {
 
 func TestThinkingBudgetRaisesMaxTokens(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"high": 32000}}})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +684,7 @@ func TestThinkingBudgetRaisesMaxTokens(t *testing.T) {
 
 func TestReasoningSummaryConciseSetsDisplay(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium","summary":"concise"},"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{Thinking: config.ThinkingCfg{EffortBudget: map[string]int{"medium": 16000}}})
+	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1766,55 +1758,5 @@ func TestMetadataAbsentLeavesEmpty(t *testing.T) {
 	}
 	if out.Metadata.UserID.Valid() {
 		t.Fatalf("unexpected metadata.user_id: %q", out.Metadata.UserID.Value)
-	}
-}
-
-// TestServiceTierPassthroughDisabledByDefault 验证默认不透传 service_tier。
-func TestServiceTierPassthroughDisabledByDefault(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"auto","stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.ServiceTier != "" {
-		t.Fatalf("service_tier should not be set when passthrough disabled: %q", out.ServiceTier)
-	}
-}
-
-// TestServiceTierPassthroughAuto 验证开启透传后 auto 被映射。
-func TestServiceTierPassthroughAuto(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"auto","stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.ServiceTier != anthropic.MessageNewParamsServiceTierAuto {
-		t.Fatalf("service_tier auto not mapped: %q", out.ServiceTier)
-	}
-}
-
-// TestServiceTierPassthroughDefaultMapsToStandardOnly 验证 default 映射到 standard_only。
-func TestServiceTierPassthroughDefaultMapsToStandardOnly(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"default","stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.ServiceTier != anthropic.MessageNewParamsServiceTierStandardOnly {
-		t.Fatalf("service_tier default not mapped to standard_only: %q", out.ServiceTier)
-	}
-}
-
-// TestServiceTierPassthroughUnsupportedDrops 验证 flex/scale/priority 被丢弃（无等价能力）。
-func TestServiceTierPassthroughUnsupportedDrops(t *testing.T) {
-	for _, tier := range []string{"flex", "scale", "priority"} {
-		req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"`+tier+`","stream":true}`)
-		out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
-		if err != nil {
-			t.Fatalf("service_tier=%s must not fail: %v", tier, err)
-		}
-		if out.ServiceTier != "" {
-			t.Fatalf("service_tier=%s should be dropped, got %q", tier, out.ServiceTier)
-		}
 	}
 }

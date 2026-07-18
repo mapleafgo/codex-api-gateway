@@ -57,44 +57,6 @@ func messagesURL(endpoint string) string {
 	return endpoint + "/v1/messages"
 }
 
-// modelsURL 补全 Anthropic 模型列表路径 /v1/models，逻辑同 messagesURL。
-func modelsURL(endpoint string) string {
-	endpoint = strings.TrimRight(endpoint, "/")
-	if strings.HasSuffix(endpoint, "/v1/models") {
-		return endpoint
-	}
-	return endpoint + "/v1/models"
-}
-
-// ListModels 向上游发起 GET /v1/models 请求，返回响应体。
-func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) (io.ReadCloser, error) {
-	url := modelsURL(endpoint)
-	slog.Info("发起上游模型列表请求", "url", url)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		slog.Warn("构造模型列表请求失败", "url", url, "error", err)
-		return nil, err
-	}
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := c.HTTP.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		slog.Warn("上游模型列表请求失败",
-			"status", resp.StatusCode,
-			"url", url,
-			"response", truncForLog(b, 1000))
-		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, string(b))
-	}
-	slog.Info("上游模型列表请求成功", "status", resp.StatusCode, "url", url)
-	return resp.Body, nil
-}
-
 // truncForLog returns b as a string truncated to n bytes with a tail marker,
 // for embedding large request/response bodies in log lines.
 func truncForLog(b []byte, n int) string {

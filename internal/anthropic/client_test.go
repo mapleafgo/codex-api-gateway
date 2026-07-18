@@ -3,7 +3,6 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,46 +169,5 @@ func TestMessagesURL(t *testing.T) {
 		if got := messagesURL(c.in); got != c.want {
 			t.Errorf("messagesURL(%q) = %q, want %q", c.in, got, c.want)
 		}
-	}
-}
-
-// TestModelsURL 验证 /v1/models 路径补全逻辑与 messagesURL 一致。
-func TestModelsURL(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"https://api.anthropic.com", "https://api.anthropic.com/v1/models"},
-		{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/anthropic/v1/models"},
-		{"https://api.anthropic.com/", "https://api.anthropic.com/v1/models"},
-		{"https://api.anthropic.com/v1/models", "https://api.anthropic.com/v1/models"},
-	}
-	for _, c := range cases {
-		if got := modelsURL(c.in); got != c.want {
-			t.Errorf("modelsURL(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// TestListModelsAuthHeaders 验证 GET /v1/models 也发送双重认证头。
-func TestListModelsAuthHeaders(t *testing.T) {
-	var gotAPIKey, gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAPIKey = r.Header.Get("x-api-key")
-		gotAuth = r.Header.Get("Authorization")
-		w.Header().Set("content-type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, `{"data":[]}`)
-	}))
-	defer srv.Close()
-
-	rc, err := New().ListModels(context.Background(), srv.URL, "test-key-123")
-	if err != nil {
-		t.Fatalf("list models: %v", err)
-	}
-	rc.Close()
-
-	if gotAPIKey != "test-key-123" {
-		t.Errorf("x-api-key = %q, want test-key-123", gotAPIKey)
-	}
-	if gotAuth != "Bearer test-key-123" {
-		t.Errorf("Authorization = %q, want \"Bearer test-key-123\"", gotAuth)
 	}
 }

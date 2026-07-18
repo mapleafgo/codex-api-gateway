@@ -81,40 +81,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 收集所有模型 ID（上游 + 本地 model_map 别名），去重。
-	seen := make(map[string]bool)
-
+	// 仅返回 config.yaml 中 models.<slug> 显式配置的模型。
 	// Codex 期望 /v1/models 返回 { "models": [ModelInfo] }（不是 OpenAI {data:[]}）。
 	// Codex 用 serde_json::from_slice::<ModelsResponse> 直接解析，若返回 OpenAI 格式，
 	// 解析失败/拿到空 ModelInfo → supports_search_tool 默认 false → MCP deferred 不工作。
 	// 故返回 CodexModelsResponse，补全 ModelInfo 能力字段（关键是 supports_search_tool=true）。
-	var infos []model.CodexModelInfo
-
-	// 1) 上游模型列表
-	if body, err := s.sch.ListModels(r.Context()); err != nil {
-		slog.Warn("获取上游模型列表失败", "error", err)
-	} else {
-		defer body.Close()
-		var am model.AnthropicModelsResponse
-		if err := json.NewDecoder(body).Decode(&am); err != nil {
-			slog.Warn("解析上游模型列表失败", "error", err)
-		} else {
-			for _, m := range am.Data {
-				if seen[m.ID] {
-					continue
-				}
-				seen[m.ID] = true
-				infos = append(infos, s.codexModelInfo(m.ID))
-			}
-		}
-	}
-
-	// 2) 本地 model_map 别名
-	for _, name := range s.cfg.Models() {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
+	names := s.cfg.ConfiguredModelSlugs()
+	infos := make([]model.CodexModelInfo, 0, len(names))
+	for _, name := range names {
 		infos = append(infos, s.codexModelInfo(name))
 	}
 
@@ -127,49 +101,93 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补齐全部能力字段。
-// 字段对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo（0.144.5，37 个外部字段）。
-// 必填字段（无 serde(default)）显式给值。
-// 可选字段（有 serde(default)）只在网关必须告知时才给值，其余交给 Codex 自行
-// 用默认值补齐，避免硬塞与默认相同的噪音或擅自覆盖默认值。具体：
-//   - SupportsSearchTool=true（网关核心：启用 tool_search + MCP tools deferred；
-//     Codex 默认 false，必须显式给 true）
-//   - ContextWindow/MaxContextWindow（上游窗口大小，Codex 默认 None，必须告知）
-//   - SupportsReasoningSummaryParameter=true（双写兼容 main 分支改名）
-//   - 其余 optional（effective_context_window_percent、web_search_tool_type、
-//     default_reasoning_summary、input_modalities 等）全部省略，让 Codex 用内置默认。
+// codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补齐网关所需的全部字段。
+// 字段对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo（0.144.5），
+// 字段语义与 serde 约束详见 internal/model/modellist.go 的注释。
 //
-// 若 cfg.models.<slug> 配了对应字段，用配置覆盖默认值。
+// 网关默认值策略（逐项确认后的结论）：
+//
+//	必填字段：
+//	  - base_instructions=""：**非空会整体替换 Codex 内置 BASE_INSTRUCTIONS**，
+//	    命令补丁通过 system_suffix 追加到 Anthropic system 末尾，不在本字段注入。
+//	  - apply_patch_tool_type="freeform"：启用 apply_patch 工具，否则只能靠 shell 改文件。
+//	  - supports_reasoning_summaries=true：接受 reasoning.summary 参数。
+//	必填字段默认值：
+//	  - display_name 大写（UI 展示更醒目，如 GPT-5.5）
+//	  - truncation_policy.limit = 10000（对齐官方固定值，单次工具输出截断阈值，
+//	    与 context_window 是独立维度，不随窗口缩放）
+//	可选字段（仅在网关必须告知时给值，其余交给 Codex 默认）：
+//	  - supports_search_tool=true（启用 tool_search + MCP deferred，网关核心）
+//	  - context_window（Codex 默认 None，必须告知；同步到 max_context_window）
+//	  - include_skills_usage_instructions=true（注入 skills 使用说明块，引导 skill 发现）
+//	  - web_search_tool_type="text_and_image"（声明支持文本+图片 web 搜索）
+//	  - input_modalities=["text","image"]（默认按多模态声明）
+//	  - tool_mode="direct"：强制标准工具模式（function 工具独立发送、模型直接调用），
+//	    覆盖 Codex features.code_mode* 配置。第三方上游（GLM 等）无 code_mode DSL
+//	    训练，显式 direct 比依赖客户端默认更稳，避免误走 code_mode 造成降级。
+//	  - multi_agent_version="v2"：对齐 gpt-5.6 catalog。启用多 agent 协作工具
+//	    （spawn_csv/agent_jobs 等），V2 不受 spawn depth 限制。
+//	  - comp_hash="3000"：对齐 gpt-5.6 catalog 压缩兼容哈希。连续两 turn 不同会
+//	    触发 Codex 前置压缩；网关统一注入，避免客户端切模型时误触发。
+//	不注入（保持零值）：
+//	  - model_messages
+//	  - default_reasoning_level / service_tiers / default_service_tier 等
+//
+// config.yaml models.<slug> 仅可覆盖 context_window / supports_image；
+// 其余字段硬编码统一注入，不开放 per-slug 覆盖。
 func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	emptyStr := ""
+	freeformApplyPatch := "freeform"
 	ctxWindow := int64(200000)
+	toolMode := "direct"
+	multiAgentV2 := "v2"
+	compHash := "3000"
+	responsesLiteOff := false
 	info := model.CodexModelInfo{
+		// —— 必填字段 ——
 		Slug:                       slug,
-		DisplayName:                slug,
+		DisplayName:                strings.ToUpper(slug),
 		Description:                &emptyStr,
-		SupportedReasoningLevels:   []any{},
+		SupportedReasoningLevels:   defaultReasoningLevels(),
 		ShellType:                  "shell_command",
 		Visibility:                 "list",
 		SupportedInAPI:             true,
 		Priority:                   0,
 		AvailabilityNux:            nil,
 		Upgrade:                    nil,
-		BaseInstructions:           "",
+		BaseInstructions:           s.cfg.BaseInstructions,
 		SupportsReasoningSummaries: true,
 		SupportVerbosity:           false,
 		DefaultVerbosity:           nil,
-		ApplyPatchToolType:         nil,
+		ApplyPatchToolType:         &freeformApplyPatch,
 		TruncationPolicy: model.CodexTruncationPolicy{
-			Mode: "tokens", Limit: 100000,
+			// limit 对齐官方模型 catalog 固定值 10000：这是 shell/exec/mcp resource 等
+			// 单次工具调用输出回传模型时的截断阈值，与模型 context_window 独立，不随窗口缩放。
+			Mode: "tokens", Limit: 10000,
 		},
 		SupportsParallelToolCalls:  true,
 		ExperimentalSupportedTools: []string{},
 
-		// 仅保留网关必须告知的可选字段，其余交给 Codex 默认值。
-		SupportsSearchTool:                true,
-		ContextWindow:                     &ctxWindow,
-		MaxContextWindow:                  &ctxWindow,
-		SupportsReasoningSummaryParameter: true,
+		// —— 可选字段（网关必须告知的） ——
+		SupportsSearchTool:             true,
+		ContextWindow:                  &ctxWindow,
+		MaxContextWindow:               &ctxWindow,
+		IncludeSkillsUsageInstructions: true,
+		WebSearchToolType:              "text_and_image",
+		InputModalities:                []string{"text", "image"},
+		// tool_mode="direct"：强制标准工具调用模式（function 工具独立发送、模型直接
+		// 调用），覆盖 Codex features.code_mode* 配置。第三方上游无 code_mode DSL 训练，
+		// 显式 direct 避免客户端默认走 code_mode 造成降级。
+		ToolMode:          &toolMode,
+		MultiAgentVersion: &multiAgentV2,
+		// comp_hash="3000"：对齐官方 gpt-5.6 catalog 的压缩兼容性哈希。
+		// 连续两 turn 的 comp_hash 不同时，Codex 会触发 previous-model inline compact；
+		// 网关所有模型注入同一值，避免客户端在模型间切换时误触发压缩。
+		CompHash: &compHash,
+		// use_responses_lite=false：显式压制 Responses Lite（Codex→OpenAI 后端内部传输
+		// 优化，第三方上游有害无益）。显式 false 而非省略，防止 Codex hardcode/默认开启
+		// lite（如 gpt-5.6 catalog 硬编码 true）。不开放 per-slug 覆盖。
+		UseResponsesLite: &responsesLiteOff,
 	}
 
 	// 应用 config.yaml models.<slug> 覆盖（仅覆盖显式配置的字段）
@@ -177,6 +195,17 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		applyModelOverride(&info, &ov)
 	}
 	return info
+}
+
+// defaultReasoningLevels 返回网关默认注入的 reasoning effort 预设列表。
+// 空 [] 合法但表示模型不支持 reasoning；这里给出常规档位，不开放 per-slug 覆盖。
+func defaultReasoningLevels() []model.CodexReasoningLevel {
+	return []model.CodexReasoningLevel{
+		{Effort: "low", Description: "快速响应，轻量推理"},
+		{Effort: "medium", Description: "平衡模式，常规推理"},
+		{Effort: "high", Description: "深入推理，适合复杂任务"},
+		{Effort: "xhigh", Description: "超高强度推理"},
+	}
 }
 
 // resolveModelOverride 解析 slug 的 ModelOverride。
@@ -193,8 +222,9 @@ func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) 
 		return ov, true
 	}
 	for _, src := range s.cfg.Sources {
-		if real, ok := src.ModelMap[slug]; ok {
-			if ov, ok2 := s.cfg.ModelOverrides[real]; ok2 {
+		// mapped 是 model_map 别名指向的真实上游模型 slug。
+		if mapped, ok := src.ModelMap[slug]; ok {
+			if ov, ok2 := s.cfg.ModelOverrides[mapped]; ok2 {
 				return ov, true
 			}
 		}
@@ -203,41 +233,17 @@ func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) 
 }
 
 // applyModelOverride 把 ModelOverride 覆盖到 CodexModelInfo（仅覆盖非 nil 字段）。
+// ModelOverride 只暴露 per-model 真实差异（context_window / supports_image），
+// 其余能力由 codexModelInfo 硬编码统一注入。
 func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
-	if ov.DisplayName != nil {
-		info.DisplayName = *ov.DisplayName
-	}
-	if ov.Description != nil {
-		info.Description = ov.Description
-	}
-	// 上下文窗口归一化：网关场景 context_window（当前生效）与 max_context_window
-	// （config 覆盖上限）应相等。只配其一则另一个自动同步为同值，避免重复配置。
-	if ov.ContextWindow != nil && ov.MaxContextWindow == nil {
-		ov.MaxContextWindow = ov.ContextWindow
-	} else if ov.ContextWindow == nil && ov.MaxContextWindow != nil {
-		ov.ContextWindow = ov.MaxContextWindow
-	}
+	// context_window 同时应用到 ContextWindow 与 MaxContextWindow：Codex ModelInfo 协议
+	// 要求两个字段，网关场景二者相等，config 只暴露一个 context_window 输入。
 	if ov.ContextWindow != nil {
 		info.ContextWindow = ov.ContextWindow
+		info.MaxContextWindow = ov.ContextWindow
 	}
-	if ov.MaxContextWindow != nil {
-		info.MaxContextWindow = ov.MaxContextWindow
-	}
-	if ov.AutoCompactTokenLimit != nil {
-		info.AutoCompactTokenLimit = ov.AutoCompactTokenLimit
-	}
-	if ov.SupportsSearchTool != nil {
-		info.SupportsSearchTool = *ov.SupportsSearchTool
-	}
-	if ov.SupportsParallelToolCalls != nil {
-		info.SupportsParallelToolCalls = *ov.SupportsParallelToolCalls
-	}
-	if ov.SupportsReasoningSummaries != nil {
-		info.SupportsReasoningSummaries = *ov.SupportsReasoningSummaries
-		info.SupportsReasoningSummaryParameter = *ov.SupportsReasoningSummaries
-	}
-	if ov.SupportVerbosity != nil {
-		info.SupportVerbosity = *ov.SupportVerbosity
+	if ov.SupportsImageDetailOriginal != nil {
+		info.SupportsImageDetailOriginal = *ov.SupportsImageDetailOriginal
 	}
 }
 
@@ -323,9 +329,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	conv.SetClientModel(string(req.Model))
 	conv.SetCustomToolNames(convert.FreeformToolNames(req))
 	conv.SetDeclaredServerTools(convert.DeclaredServerTools(req))
-	// Codex TUI 只渲染 reasoning_summary_* 事件，reasoning_text.* 事件不会被显示。
-	// 模型 catalog 的 default_reasoning_summary 常为 "none"，导致 effort 已开启时
-	// 用户仍看不到思考。只要 effort 已开启（非 none），就强制使用 summary 事件格式。
+	// 仅当上游会返回 summarized thinking block（applyReasoning 在
+	// reasoning.summary==concise 时设置 display=summarized）时，才使用
+	// reasoning_summary_* 事件格式。reasoning.summary 默认 none，不因 effort≠none
+	// 强改，否则上游返回 plaintext thinking 而流被当作 summary 事件输出，语义错配。
 	if shouldSummarizeReasoning(req) {
 		conv.SetSummarized(true)
 	}
@@ -497,18 +504,9 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// 网关级指令补强：对所有后端源生效，在转换后的 Anthropic system 末尾追加一段
-	// 文本（独立 TextBlockParam），例如强制先调 tool_search 发现 skill。
-	// 独立块不加 cache_control，前一个 system block 的 cache 断点仍命中。
-	// DEBUG：预转换与实际调度各调用一次 buildAnthropicRequest，INFO 会重复，
-	// 降至 DEBUG；注入是否生效看「请求转换完成」的 system_blocks。
-	if s.cfg.SystemSuffix != "" {
-		anthReq.System = append(anthReq.System, anthropic.TextBlockParam{Text: s.cfg.SystemSuffix})
-		slog.Debug("注入 system_suffix", "source", src.Name, "suffix_bytes", len(s.cfg.SystemSuffix), "system_blocks", len(anthReq.System))
-	}
-	// DEBUG 记录最终发往上游的完整 system（含网关 suffix），便于排查 prompt 注入 / 指令丢失。
-	// 与 convert 层「转换生成 system（未含网关 suffix）」互补：convert 记录转换产物，
-	// 这里记录注入后真正发出的内容。
+	// 网关级指令补强（base_instructions）经 /v1/models 由 Codex 客户端注入到 system，
+	// 不再在转换层追加 system block。旧 system_suffix 机制已废弃。
+	// DEBUG 记录最终发往上游的完整 system，便于排查 prompt 注入 / 指令丢失。
 	if len(anthReq.System) > 0 {
 		var totalBytes int
 		var blocksText []string
@@ -516,7 +514,7 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 			totalBytes += len(b.Text)
 			blocksText = append(blocksText, b.Text)
 		}
-		slog.Debug("发送到上游的完整 system（含网关 suffix）",
+		slog.Debug("发送到上游的完整 system",
 			"source", src.Name,
 			"system_blocks", len(anthReq.System),
 			"system_total_bytes", totalBytes,
@@ -532,10 +530,11 @@ func writeSSE(w io.Writer, e model.SSEEvent) {
 }
 
 func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
-	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
-		return true
-	}
-	return req.Reasoning.Effort != "" && string(req.Reasoning.Effort) != model.ReasoningEffortNone
+	// reasoning.summary 默认 none，不再因 effort≠none 强改。必须与 applyReasoning
+	// 严格对齐：只有 summary==concise 时上游才会返回 summarized thinking block，
+	// 此时才用 reasoning_summary_* 事件格式。其它情况上游返回 plaintext thinking，
+	// 走 reasoning_text.* 事件。
+	return string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
 }
 
 func shouldStoreResponse(req *oairesponses.ResponseNewParams) bool {
@@ -771,9 +770,6 @@ func itemType(it *oairesponses.ResponseInputItemUnionParam) string {
 	if it.OfToolSearchOutput != nil {
 		return model.ItemTypeToolSearchOutput
 	}
-	if it.OfAdditionalTools != nil {
-		return model.ItemTypeAdditionalTools
-	}
 	if it.OfCompaction != nil {
 		return model.ItemTypeCompaction
 	}
@@ -800,7 +796,6 @@ func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) [
 		model.ItemTypeCustomToolCallOut,
 		model.ItemTypeToolSearchCall,
 		model.ItemTypeToolSearchOutput,
-		model.ItemTypeAdditionalTools,
 		model.ItemTypeCompaction,
 		model.ItemTypeCompactionTrigger,
 		"unknown",

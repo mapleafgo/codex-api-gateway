@@ -881,10 +881,10 @@ func TestIntegrationReasoningPlaintext(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	body := `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"reasoning":{"effort":"medium"},"stream":true}`
+	body := `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"reasoning":{"effort":"medium","summary":"concise"},"stream":true}`
 	events := postResponses(t, ts, body)
 
-	// effort=medium triggers summarized mode: reasoning_summary_* events are emitted.
+	// summary=concise triggers summarized mode: reasoning_summary_* events are emitted.
 	requireEvent(t, events, "response.reasoning_summary_text.delta")
 	requireEvent(t, events, "response.reasoning_summary_text.done")
 	requireNotEvent(t, events, "response.reasoning_text.delta")

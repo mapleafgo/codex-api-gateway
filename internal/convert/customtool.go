@@ -20,9 +20,6 @@ func FreeformToolNames(req *oairesponses.ResponseNewParams) []string {
 	appendFromTools(req.Tools)
 	for i := range req.Input.OfInputItemList {
 		item := req.Input.OfInputItemList[i]
-		if item.OfAdditionalTools != nil {
-			appendFromTools(item.OfAdditionalTools.Tools)
-		}
 		if item.OfToolSearchOutput != nil {
 			appendFromTools(item.OfToolSearchOutput.Tools)
 		}
@@ -47,7 +44,7 @@ func appendFreeformToolName(names []string, tool oairesponses.ToolUnionParam) []
 // 回程 server_tool_use 在上游 name 失配（兼容端方言，如 GLM 的
 // web_search_prime）时，用此集合做身份回退：若唯一可确定，则忽略上游 name
 // 按该身份 dispatch。扫描范围与 FreeformToolNames 一致（含历史 input item
-// 里携带的 OfAdditionalTools / OfToolSearchOutput）。
+// 里携带的 OfToolSearchOutput）。
 func DeclaredServerTools(req *oairesponses.ResponseNewParams) []toolcatalog.Identity {
 	var ids []toolcatalog.Identity
 	appendFromTools := func(tools []oairesponses.ToolUnionParam) {
@@ -66,9 +63,6 @@ func DeclaredServerTools(req *oairesponses.ResponseNewParams) []toolcatalog.Iden
 	appendFromTools(req.Tools)
 	for i := range req.Input.OfInputItemList {
 		item := req.Input.OfInputItemList[i]
-		if item.OfAdditionalTools != nil {
-			appendFromTools(item.OfAdditionalTools.Tools)
-		}
 		if item.OfToolSearchOutput != nil {
 			appendFromTools(item.OfToolSearchOutput.Tools)
 		}

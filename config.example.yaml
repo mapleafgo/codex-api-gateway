@@ -45,70 +45,31 @@ breaker:
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
   max_retries: 0            # 失败重试次数；仅全局生效，不被单源 breaker 覆盖
 
-# thinking 预算映射：reasoning.effort → Anthropic thinking.budget_tokens
-# - effort 为空：不开启 thinking
-# - effort=none：显式禁用 thinking（不查此表）
-# - 其他 effort：查此表取 budget，未命中则取默认值 8000
-thinking:
-  effort_budget: {minimal: 1024, low: 8000, medium: 16000, high: 32000, xhigh: 48000}
-
 # prompt cache（system / tools / messages 历史的缓存时效，降低多轮重复计费）
 # ttl: 5m（默认，适合连续多轮）| 1h（适合两轮间隔 >5m 的长任务）
 cache:
   ttl: 5m
 
-# 是否把 OpenAI 请求里的 service_tier 透传到 Anthropic（仅 auto/default 映射到
-# Anthropic 支持的 service_tier；flex/scale/priority 无等价能力，会输出 WARN 并忽略）
-service_tier_passthrough: false
-
-# 网关级指令补强：在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam），
-# 对所有后端源生效。补强模型的指令遵循：例如强制先调用 tool_search 发现 skill，
-# 再处理用户请求。独立块不加 cache_control，前面 system 块的缓存断点不受影响。
-# 部分兼容后端（如 GLM）指令遵循弱，看到 Skills 列表不会主动 sed 读取 SKILL.md
-# 全文，导致 skill 机制失效。skill 的发现靠 system prompt 里的 skills_instructions
-# 触发，加载靠模型主动 sed/cat，与 tool_search（发现 deferred MCP 工具）是两套机制。
-# 解开下面注释即可启用 skill 加载引导：
-# system_suffix: |
-#   <gateway_guidance>
-#   Skills are referenced by NAME in the Skills list above, but their bodies
-#   live on disk and are NOT in your context yet. A skill name + its one-line
-#   description is NOT enough to use the skill correctly — you MUST read the
-#   full SKILL.md before following it.
 #
-#   Skill loading discipline (follow strictly, before ANY task action):
-#   1. Read `using-superpowers/SKILL.md` first on every task — it defines how
-#      to discover and invoke skills. Then read its `references/codex-tools.md`.
-#   2. Scan the Skills list above. For ANY skill whose description could match
-#      this task (even 1% chance), run `sed -n '1,260p' <skill_path>/SKILL.md`
-#      and read it COMPLETELY before continuing. Do not skim. If truncated,
-#      read the next 260-line slice until EOF.
-#   3. Multiple skills often apply together: a process skill (brainstorming /
-#   systematic-debugging / test-driven-development) PLUS one or more domain
-#   skills (docx, vue, coding-principles, ...). Load ALL that apply, not just
-#   the first.
-#   4. Only after reading each relevant SKILL.md may you proceed. Announce
-#      "Using <skill> to <purpose>" and follow its workflow exactly.
-#   5. NEVER proceed to implementation while a relevant skill is still unread.
-#   Missing a skill is a failure.
-#
-#   `tool_search` is a DIFFERENT mechanism — it discovers deferred MCP tools
-#   (Adobe, Sites, browser, ...), NOT skills. Do not conflate the two.
-#   </gateway_guidance>
+# 网关级指令补强：内容来自一个文本文件（base_instructions_file），作为 Codex
+# ModelInfo 的 base_instructions 返回。非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，
+# 由 Codex 客户端注入到 system 前缀（prompt cache 友好，无需每个上游请求重传）。
+# 文件内容通常 = 官方 base_instructions + 网关 gateway_guidance 段（如 skill 加载纪律）。
+# 取代已废弃的 system_suffix（转换层追加 system block，每请求重传，cache 不友好）。
+# 解开下面注释即可启用：
+# base_instructions_file: base_instructions.md
 
-# per-slug 模型能力覆盖表（key 是模型 slug，对应 /v1/models 返回的条目）。
-# 上游 Anthropic 兼容后端 /v1/models 只返回 id/display_name/created_at，
-# 不提供 context_window 等能力字段，需在此显式补充。
-# 未列出的字段保持 codexModelInfo 内置默认（见 internal/server/server.go）。
-# 仅覆盖显式给出的字段，其余字段保留默认值。
+# /v1/models 暴露的模型表。key 是模型 slug（即客户端可用的模型名），value 是
+# per-slug 能力覆盖；只返回在此显式列出的模型，不合并上游 /v1/models 列表，
+# 也不暴露 sources.model_map 的别名。
+# 网关不向上游拉取模型列表，context_window 等能力字段必须在此显式补充。
+# 仅 context_window / supports_image 可 per-slug 覆盖；其余能力
+# （search_tool / parallel_tool_calls / reasoning_summaries / web_search_tool_type /
+# input_modalities / use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
 # models:
-#   gpt-5.5:                   # slug，来自 model_map 的 key 或上游模型 ID
-#     context_window: 200000   # 最大上下文 token 数（自动同步到 max_context_window）
-# #     effective_context_window_percent: 90   # 输入 token 占上下文窗口百分比（可选）
-#     # auto_compact_token_limit: 180000     # 自动压缩阈值，默认取 context_window*0.9
-#     # display_name: "GPT-5.5"              # 显示名
-#     # supports_search_tool: true           # 启用 tool_search + MCP deferred
-#     # supports_parallel_tool_calls: true
-#     # supports_reasoning_summaries: true
+#   gpt-5.5:                        # slug，客户端请求时使用的模型名
+#     context_window: 200000        # 最大上下文 token 数（同步到 max_context_window）
+#     # supports_image: false       # 是否支持图片识别（原尺寸 detail，默认 false）
 #   glm-5.2:
 #     context_window: 131072
 

@@ -182,10 +182,9 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 			"system_text", systemText)
 	}
 
-	applyReasoning(out, req, cfg)
+	applyReasoning(out, req)
 
 	applyMetadata(out, req)
-	applyServiceTier(out, req, cfg)
 
 	if err := convertTools(out, req); err != nil {
 		return nil, nil, err
@@ -356,16 +355,6 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 			output = item.OfApplyPatchCallOutput.Output.Value
 		}
 		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, output)
-	}
-	if item.OfAdditionalTools != nil {
-		if err := appendToolList(out, item.OfAdditionalTools.Tools); err != nil {
-			return err
-		}
-		*sysParts = append(*sysParts, instructionPart{
-			role: model.RoleDeveloper,
-			text: formatToolNames("developer_tools", item.OfAdditionalTools.Tools),
-		})
-		return nil
 	}
 	if item.OfCompaction != nil {
 		*sysParts = append(*sysParts, instructionPart{
@@ -827,7 +816,25 @@ func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 	}
 }
 
-func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {
+// effortBudgetTokens 把 Responses reasoning effort 映射到 Anthropic thinking.budget_tokens。
+// 固定预算表（原 config.yaml thinking.effort_budget 的值固化为编译期常量）：
+var effortBudgetTokens = map[string]int64{
+	"low":    8000,
+	"medium": 16000,
+	"high":   32000,
+	"xhigh":  48000,
+}
+
+// effortBudgetFor 返回指定 effort 的 thinking 预算 token 数。
+// 未知档位（含空串）回落到 medium（与 Codex 默认 ReasoningEffort::Medium 一致）。
+func effortBudgetFor(effort string) int64 {
+	if b, ok := effortBudgetTokens[effort]; ok {
+		return b
+	}
+	return effortBudgetTokens["medium"]
+}
+
+func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" {
 		return
@@ -839,7 +846,7 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 		return
 	}
 
-	budget := int64(cfg.EffortBudget(effort))
+	budget := effortBudgetFor(effort)
 	out.Thinking = anthropic.ThinkingConfigParamUnion{
 		OfEnabled: &anthropic.ThinkingConfigEnabledParam{BudgetTokens: budget},
 	}
@@ -1174,32 +1181,6 @@ func applyMetadata(out *anthropic.MessageNewParams, req *oairesponses.ResponseNe
 		out.Metadata = anthropic.MetadataParam{
 			UserID: aparam.NewOpt(uid),
 		}
-	}
-}
-
-// applyServiceTier 在配置显式允许 service_tier 透传时映射到 Anthropic service_tier。
-// 仅映射到 Anthropic 支持的 auto / standard_only，其它取值（default/flex/scale/priority）
-// 无等价语义，降级为不设置（由上游决定）。
-func applyServiceTier(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {
-	if cfg == nil || !cfg.ServiceTierPassthrough {
-		return
-	}
-	// 客户端未设置 service_tier（空串）时，不映射也不 WARN。
-	if req.ServiceTier == "" {
-		return
-	}
-	switch req.ServiceTier {
-	case oairesponses.ResponseNewParamsServiceTierAuto:
-		out.ServiceTier = anthropic.MessageNewParamsServiceTierAuto
-	case oairesponses.ResponseNewParamsServiceTierDefault:
-		// OpenAI default 与 Anthropic standard_only 近似（使用标准容量）。
-		out.ServiceTier = anthropic.MessageNewParamsServiceTierStandardOnly
-	default:
-		// flex / scale / priority 在 Anthropic 无等价能力，降级为不设置 + WARN。
-		slog.Warn("service_tier 在 Anthropic 无等价能力，降级为不设置（由上游决定）",
-			"field", "service_tier",
-			"value", string(req.ServiceTier),
-			"impact", "service_tier 不生效")
 	}
 }
 

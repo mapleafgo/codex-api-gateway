@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,9 +27,11 @@ func TestShouldSummarizeReasoning(t *testing.T) {
 		want bool
 	}{
 		{name: "empty", body: `{"model":"gpt-5","input":"hi"}`, want: false},
-		{name: "effort", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium"}}`, want: true},
 		{name: "none", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none"}}`, want: false},
 		{name: "concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"summary":"concise"}}`, want: true},
+		{name: "effort_without_summary", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium"}}`, want: false},
+		{name: "effort_plus_concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium","summary":"concise"}}`, want: true},
+		{name: "effort_none_concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none","summary":"concise"}}`, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,57 +329,62 @@ func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	}
 }
 
-// TestResponsesAppendsGlobalSystemSuffix 锁定全局 system_suffix 注入：
-// 转换后的 Anthropic system 末尾应追加该文本（独立 block），对所有后端源生效，
-// 用于补强模型的指令遵循（如强制先调 tool_search 发现 skill）。
-func TestResponsesAppendsGlobalSystemSuffix(t *testing.T) {
-	requests := make(chan string, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requests <- string(body)
-		w.Header().Set("content-type", "text/event-stream")
-		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_suffix\",\"model\":\"claude\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer upstream.Close()
-
+// TestModelsEndpointBaseInstructionsFromConfig 锁定 base_instructions_file 加载链路：
+// config.yaml 配置 base_instructions_file 后，Load 读取文件内容写入 cfg.BaseInstructions，
+// /v1/models 返回的每个 ModelInfo.base_instructions 应等于文件内容。
+// 取代旧 TestResponsesAppendsGlobalSystemSuffix：base_instructions 经客户端注入，
+// 不再在转换层追加 system block。
+func TestModelsEndpointBaseInstructionsFromConfig(t *testing.T) {
+	const content = "You are a gateway-test agent. <gateway_guidance>read SKILL.md first</gateway_guidance>"
+	dir := t.TempDir()
+	biPath := filepath.Join(dir, "base_instructions.md")
+	if err := os.WriteFile(biPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write base_instructions file: %v", err)
+	}
+	ctxWindow := int64(200000)
 	cfg := &config.Config{
-		SystemSuffix: "<gateway_guidance>You MUST call tool_search first.</gateway_guidance>",
-		Breaker:      config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources:      []config.Source{{Name: "up", BaseURL: upstream.URL}},
+		BaseInstructions: content,
+		Breaker:          config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources:          []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:0"}},
+		ModelOverrides: map[string]config.ModelOverride{
+			"gpt-5": {ContextWindow: &ctxWindow},
+		},
 	}
 	srv := New(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	resp, err := http.Get(ts.URL + "/v1/models")
 	if err != nil {
-		t.Fatalf("post: %v", err)
+		t.Fatalf("get: %v", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	select {
-	case upstreamBody := <-requests:
-		if !strings.Contains(upstreamBody, "be brief") {
-			t.Fatalf("upstream body missing original instructions: %s", upstreamBody)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body: %s", resp.StatusCode, body)
+	}
+	var raw struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v. body: %s", err, body)
+	}
+	if len(raw.Models) == 0 {
+		t.Fatalf("no models returned. body: %s", body)
+	}
+	for i, m := range raw.Models {
+		bi, ok := m["base_instructions"]
+		if !ok {
+			t.Fatalf("model[%d] 缺少 base_instructions 字段", i)
 		}
-		if !strings.Contains(upstreamBody, "tool_search first") {
-			t.Fatalf("upstream body missing injected system_suffix: %s", upstreamBody)
+		var got string
+		if err := json.Unmarshal(bi, &got); err != nil {
+			t.Fatalf("model[%d] base_instructions 反序列化失败: %v. raw=%s", i, err, string(bi))
 		}
-		// system 是 []TextBlockParam，原指令与 suffix 必须分属不同 block（JSON 数组）。
-		// 用 "text":" 开头计数确认至少 2 个独立文本块（原始 system + suffix）。
-		if got := strings.Count(upstreamBody, `"text":"`); got < 2 {
-			t.Fatalf("expected at least 2 text blocks (original + suffix), got %d. body:\n%s", got, upstreamBody)
+		if got != content {
+			t.Errorf("model[%d] base_instructions 不匹配 config 加载内容. got len=%d want len=%d", i, len(got), len(content))
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("upstream did not receive request")
 	}
 }
 
@@ -522,30 +531,21 @@ func TestResponsesServerFailureIsNotPersisted(t *testing.T) {
 	}
 }
 
-func TestModelsEndpointMergesUpstreamAndLocal(t *testing.T) {
-	// 模拟上游 GET /v1/models 返回 Anthropic 格式的模型列表
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Fatalf("upstream got method %s, want GET", r.Method)
-		}
-		w.Header().Set("content-type", "application/json")
-		io.WriteString(w, `{
-			"data": [
-				{"type":"model","id":"claude-sonnet-4-20250514","display_name":"Claude Sonnet 4","created_at":"2025-05-14T00:00:00Z"},
-				{"type":"model","id":"claude-opus-4-20250514","display_name":"Claude Opus 4","created_at":"2025-05-14T00:00:00Z"}
-			],
-			"has_more": false
-		}`)
-	}))
-	defer upstream.Close()
-
+func TestModelsEndpointReturnsOnlyConfigured(t *testing.T) {
+	// /v1/models 只应返回 config.yaml models.<slug> 显式配置的模型，
+	// 既不拉取上游列表，也不暴露 model_map 中的别名。
+	ctxWindow := int64(200000)
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{
-			{Name: "up", BaseURL: upstream.URL, ModelMap: map[string]string{
-				"gpt-5":   "claude-sonnet-4-20250514", // 本地别名，与上游 claude-sonnet-4 重名不冲突
+			{Name: "up", BaseURL: "http://127.0.0.1:0", ModelMap: map[string]string{
+				"gpt-5":   "claude-sonnet-4-20250514", // model_map 别名，不应出现在 /v1/models
 				"gpt-5.5": "claude-opus-4-20250514",
 			}},
+		},
+		ModelOverrides: map[string]config.ModelOverride{
+			"gpt-5":   {ContextWindow: &ctxWindow},
+			"gpt-5.5": {ContextWindow: &ctxWindow},
 		},
 	}
 	srv := New(cfg)
@@ -566,7 +566,7 @@ func TestModelsEndpointMergesUpstreamAndLocal(t *testing.T) {
 	if err := json.Unmarshal(body, &ml); err != nil {
 		t.Fatalf("unmarshal: %v. body: %s", err, body)
 	}
-	// 应包含 4 个模型：2 个上游 + 2 个本地别名
+	// 仅返回 ModelOverrides 配置的 2 个 slug，不含 model_map 映射的真实模型
 	ids := make(map[string]bool)
 	for _, m := range ml.Models {
 		ids[m.Slug] = true
@@ -574,18 +574,23 @@ func TestModelsEndpointMergesUpstreamAndLocal(t *testing.T) {
 			t.Fatalf("model %q supports_search_tool = false, want true", m.Slug)
 		}
 	}
-	for _, want := range []string{"claude-sonnet-4-20250514", "claude-opus-4-20250514", "gpt-5", "gpt-5.5"} {
+	for _, want := range []string{"gpt-5", "gpt-5.5"} {
 		if !ids[want] {
 			t.Fatalf("missing model %q in response: %+v", want, ml.Models)
 		}
 	}
-	if len(ml.Models) != 4 {
-		t.Fatalf("expected 4 models (2 upstream + 2 local), got %d: %+v", len(ml.Models), ml.Models)
+	for _, forbidden := range []string{"claude-sonnet-4-20250514", "claude-opus-4-20250514"} {
+		if ids[forbidden] {
+			t.Fatalf("model_map 真实模型 %q 不应出现在 /v1/models: %+v", forbidden, ml.Models)
+		}
+	}
+	if len(ml.Models) != 2 {
+		t.Fatalf("expected 2 configured models, got %d: %+v", len(ml.Models), ml.Models)
 	}
 }
 
-func TestModelsEndpointFallbackLocalOnly(t *testing.T) {
-	// 上游不可达时，仅返回本地 model_map 别名
+func TestModelsEndpointEmptyWhenNoConfigured(t *testing.T) {
+	// 未配置 models.<slug> 时，/v1/models 返回空列表（不拉上游、不暴露 model_map 别名）
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(100 * time.Millisecond)},
 		Sources: []config.Source{
@@ -610,11 +615,8 @@ func TestModelsEndpointFallbackLocalOnly(t *testing.T) {
 	if err := json.Unmarshal(body, &ml); err != nil {
 		t.Fatalf("unmarshal: %v. body: %s", err, body)
 	}
-	if len(ml.Models) != 1 || ml.Models[0].Slug != "gpt-5" {
-		t.Fatalf("expected only gpt-5, got %+v", ml.Models)
-	}
-	if !ml.Models[0].SupportsSearchTool {
-		t.Fatalf("supports_search_tool = false, want true (enables MCP deferred + tool_search)")
+	if len(ml.Models) != 0 {
+		t.Fatalf("expected empty models list, got %+v", ml.Models)
 	}
 }
 
@@ -658,27 +660,20 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 		"supports_reasoning_summaries",
 		"support_verbosity",
 		"default_verbosity",
-		"apply_patch_tool_type",
 		"truncation_policy",
 		"supports_parallel_tool_calls",
 		"experimental_supported_tools",
 	}
 
-	// 验证 per-slug 覆盖：gpt-5 应命中 ModelOverrides，context_window 被覆盖
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		io.WriteString(w, `{"data":[{"type":"model","id":"claude-sonnet-4-20250514"}]}`)
-	}))
-	defer upstream.Close()
-
+	// 只为 gpt-5 配置 ModelOverrides，/v1/models 仅返回 gpt-5 一条
 	ctxWindow := int64(131072)
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{
-			{Name: "up", BaseURL: upstream.URL, ModelMap: map[string]string{"gpt-5": "claude"}},
+			{Name: "up", BaseURL: "http://127.0.0.1:0", ModelMap: map[string]string{"gpt-5": "claude"}},
 		},
 		ModelOverrides: map[string]config.ModelOverride{
-			"claude": {ContextWindow: &ctxWindow}, // 只配真实模型 claude，别名 gpt-5 应继承
+			"gpt-5": {ContextWindow: &ctxWindow},
 		},
 	}
 	srv := New(cfg)
@@ -728,5 +723,61 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 				t.Errorf("gpt-5 max_context_window = %s, want 131072（归一化）", strings.TrimSpace(string(maxCWBytes)))
 			}
 		}
+	}
+
+	// 网关默认值策略（非 ModelOverrides 字段，应被 codexModelInfo 默认填充）
+	m0 := raw.Models[0]
+	// apply_patch_tool_type=freeform 启用 apply_patch 工具
+	if apt, ok := m0["apply_patch_tool_type"]; !ok || strings.TrimSpace(string(apt)) != `"freeform"` {
+		t.Fatalf(`apply_patch_tool_type 应为 "freeform", got: %v (present=%v)`, string(m0["apply_patch_tool_type"]), ok)
+	}
+	// supports_search_tool=true
+	if sst, ok := m0["supports_search_tool"]; !ok || strings.TrimSpace(string(sst)) != "true" {
+		t.Fatalf("supports_search_tool 应为 true, got: %v (present=%v)", string(m0["supports_search_tool"]), ok)
+	}
+	// include_skills_usage_instructions=true
+	if isui, ok := m0["include_skills_usage_instructions"]; !ok || strings.TrimSpace(string(isui)) != "true" {
+		t.Fatalf("include_skills_usage_instructions 应为 true, got: %v (present=%v)", string(m0["include_skills_usage_instructions"]), ok)
+	}
+	// web_search_tool_type=text_and_image
+	if wst, ok := m0["web_search_tool_type"]; !ok || strings.TrimSpace(string(wst)) != `"text_and_image"` {
+		t.Fatalf(`web_search_tool_type 应为 "text_and_image", got: %v (present=%v)`, string(m0["web_search_tool_type"]), ok)
+	}
+	// input_modalities 包含 text+image
+	if im, ok := m0["input_modalities"]; !ok || !strings.Contains(string(im), "image") {
+		t.Fatalf("input_modalities 应含 image, got: %v (present=%v)", string(m0["input_modalities"]), ok)
+	}
+	// supported_reasoning_levels 非空，含 medium
+	if srl, ok := m0["supported_reasoning_levels"]; !ok || !strings.Contains(string(srl), "medium") {
+		t.Fatalf("supported_reasoning_levels 应含 medium, got: %v (present=%v)", string(m0["supported_reasoning_levels"]), ok)
+	}
+	// truncation_policy.limit 对齐官方固定 10000（工具输出截断阈值，不随 context_window 变化）
+	if tp, ok := m0["truncation_policy"]; !ok || !strings.Contains(string(tp), "10000") {
+		t.Fatalf("truncation_policy.limit 应为 10000, got: %v (present=%v)", string(m0["truncation_policy"]), ok)
+	}
+	// display_name 应为 slug 的大写形式
+	if dn, ok := m0["display_name"]; !ok || strings.TrimSpace(string(dn)) != `"GPT-5"` {
+		t.Fatalf(`display_name 应为 "GPT-5", got: %v (present=%v)`, string(m0["display_name"]), ok)
+	}
+	// base_instructions 默认为空（未配置 base_instructions_file 时，沿用 Codex 内置指令）
+	if bi, ok := m0["base_instructions"]; !ok || strings.TrimSpace(string(bi)) != `""` {
+		t.Fatalf("base_instructions 应为空串, got: %v (present=%v)", string(m0["base_instructions"]), ok)
+	}
+	// tool_mode 默认注入 "direct"（强制标准工具模式，覆盖 features.code_mode*，避免上游降级）
+	if tm, ok := m0["tool_mode"]; !ok || strings.TrimSpace(string(tm)) != `"direct"` {
+		t.Fatalf(`tool_mode 应为 "direct", got: %v (present=%v)`, string(m0["tool_mode"]), ok)
+	}
+	// multi_agent_version 默认注入 "v2"（对齐官方 gpt-5.6 catalog）
+	if mav, ok := m0["multi_agent_version"]; !ok || strings.TrimSpace(string(mav)) != `"v2"` {
+		t.Fatalf(`multi_agent_version 应为 "v2", got: %v (present=%v)`, string(m0["multi_agent_version"]), ok)
+	}
+	// comp_hash 默认注入 "3000"（对齐官方 gpt-5.6 catalog 压缩兼容哈希）
+	if ch, ok := m0["comp_hash"]; !ok || strings.TrimSpace(string(ch)) != `"3000"` {
+		t.Fatalf(`comp_hash 应为 "3000", got: %v (present=%v)`, string(m0["comp_hash"]), ok)
+	}
+	// use_responses_lite 显式注入 false：压制 Responses Lite（Codex→OpenAI 后端内部
+	// 传输优化，第三方上游有害无益）。显式 false 而非省略，防 Codex hardcode/默认开启。
+	if url, ok := m0["use_responses_lite"]; !ok || strings.TrimSpace(string(url)) != "false" {
+		t.Fatalf("use_responses_lite 应显式为 false, got: %v (present=%v)", string(m0["use_responses_lite"]), ok)
 	}
 }

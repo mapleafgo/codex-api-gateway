@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,29 +32,30 @@ const envPrefix = "CODEX_API_GATEWAY_"
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Config is the top-level YAML configuration.
-//
-// ServiceTierPassthrough 为 true 时把 OpenAI 请求里的 service_tier 透传到
-// Anthropic service_tier（仅映射到 Anthropic 支持的取值）。默认 false 以保持
-// 与现有行为一致：不透传 service_tier，由上游默认处理。
 type Config struct {
-	Server                 ServerCfg   `koanf:"server" yaml:"server"`
-	Logging                LoggingCfg  `koanf:"logging" yaml:"logging"`
-	Session                SessionCfg  `koanf:"session" yaml:"session"`
-	Breaker                BreakerCfg  `koanf:"breaker" yaml:"breaker"`
-	Thinking               ThinkingCfg `koanf:"thinking" yaml:"thinking"`
-	Cache                  CacheCfg    `koanf:"cache" yaml:"cache"`
-	ServiceTierPassthrough bool        `koanf:"service_tier_passthrough" yaml:"service_tier_passthrough"`
-	// SystemSuffix 在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam），
-	// 对所有后端源生效。用于补强模型的指令遵循：例如强制先调用 tool_search
-	// 发现 skill，再处理用户请求。追加块不加 cache_control，前面的 cache 断点仍命中。
-	SystemSuffix string   `koanf:"system_suffix" yaml:"system_suffix"`
-	Sources      []Source `koanf:"sources" yaml:"sources"`
+	Server  ServerCfg  `koanf:"server" yaml:"server"`
+	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
+	Session SessionCfg `koanf:"session" yaml:"session"`
+	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker"`
+	Cache   CacheCfg   `koanf:"cache" yaml:"cache"`
+	// BaseInstructionsFile 指向一个文本文件，其内容作为 Codex ModelInfo 的
+	// base_instructions 返回给客户端（非空时整体替换 Codex 内置 BASE_INSTRUCTIONS）。
+	// 用于注入网关级指令补强（如 skill 加载纪律）。相对路径基于 config 文件所在目录解析。
+	// 为空则 base_instructions 返回空串，沿用 Codex 内置指令。
+	// 取代已废弃的 system_suffix：后者在转换层追加 system block，需要每个上游请求都
+	// 重传指令；base_instructions 由 Codex 客户端缓存并在 system 中复用，prompt cache 更友好。
+	BaseInstructionsFile string   `koanf:"base_instructions_file" yaml:"base_instructions_file"`
+	Sources              []Source `koanf:"sources" yaml:"sources"`
 
 	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
 	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
 	// 其余保持 codexModelInfo 的内置默认。上游 /v1/models 不提供 context_window
 	// 等能力字段，故用此处补充。
 	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models"`
+
+	// BaseInstructions 是 BaseInstructionsFile 加载后的内容，不参与 YAML 序列化。
+	// 由 Load 一次性读入；为空则 /v1/models 返回空 base_instructions。
+	BaseInstructions string `koanf:"-" yaml:"-"`
 }
 
 // ServerCfg configures the HTTP listener.
@@ -93,11 +95,6 @@ type BreakerCfg struct {
 	Recovery         string   `koanf:"recovery" yaml:"recovery"`
 }
 
-// ThinkingCfg maps Responses reasoning effort values to Anthropic thinking budgets.
-type ThinkingCfg struct {
-	EffortBudget map[string]int `koanf:"effort_budget" yaml:"effort_budget"`
-}
-
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
 	Name          string            `koanf:"name" yaml:"name"`
@@ -110,18 +107,20 @@ type Source struct {
 }
 
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
-// 上游 /v1/models 只返回 id/display_name/created_at，无 context_window 等能力，
-// 需在 config.yaml 的 models.<slug> 下显式补充。所有字段均为指针（nil = 不覆盖）。
+// 仅保留真正存在 per-model 差异的字段（context_window / supports_image）；其余能力
+// （search_tool / parallel_tool_calls / reasoning_summaries / web_search_tool_type /
+// input_modalities / use_responses_lite 等）由 codexModelInfo 硬编码统一注入，不开放
+// per-slug 覆盖。上游 /v1/models 无 context_window 等能力，需在 models.<slug> 下显式补充。
+// 所有字段均为指针（nil = 不覆盖）。
 type ModelOverride struct {
-	DisplayName                *string `koanf:"display_name" yaml:"display_name"`
-	Description                *string `koanf:"description" yaml:"description"`
-	ContextWindow              *int64  `koanf:"context_window" yaml:"context_window"`
-	MaxContextWindow           *int64  `koanf:"max_context_window" yaml:"max_context_window"`
-	AutoCompactTokenLimit      *int64  `koanf:"auto_compact_token_limit" yaml:"auto_compact_token_limit"`
-	SupportsSearchTool         *bool   `koanf:"supports_search_tool" yaml:"supports_search_tool"`
-	SupportsParallelToolCalls  *bool   `koanf:"supports_parallel_tool_calls" yaml:"supports_parallel_tool_calls"`
-	SupportsReasoningSummaries *bool   `koanf:"supports_reasoning_summaries" yaml:"supports_reasoning_summaries"`
-	SupportVerbosity           *bool   `koanf:"support_verbosity" yaml:"support_verbosity"`
+	// ContextWindow 最大上下文 token 数。同时应用到 CodexModelInfo 的 ContextWindow 与
+	// MaxContextWindow（Codex ModelInfo 协议要求两个字段，网关场景二者相等，故 config
+	// 只暴露一个 context_window 输入）。
+	ContextWindow *int64 `koanf:"context_window" yaml:"context_window"`
+	// SupportsImageDetailOriginal 是否支持图片识别（原尺寸 detail）。默认 false。
+	// 配置 yaml key 用 supports_image（更简洁），输出给 Codex 的 JSON 仍为
+	// supports_image_detail_original（对齐 codex ModelInfo 字段名）。
+	SupportsImageDetailOriginal *bool `koanf:"supports_image" yaml:"supports_image"`
 }
 
 // Duration wraps time.Duration for YAML parsing.
@@ -179,9 +178,26 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if cfg.BaseInstructionsFile != "" {
+		p := cfg.BaseInstructionsFile
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(filepath.Dir(path), p)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			// 降级策略：base_instructions_file 读取失败不阻断启动，
+			// BaseInstructions 保持空串（沿用 Codex 内置指令）。
+			slog.Info("base_instructions_file 读取失败，降级为空串（沿用 Codex 内置指令）",
+				"path", p,
+				"base_instructions_file", cfg.BaseInstructionsFile,
+				"error", err)
+		} else {
+			cfg.BaseInstructions = string(b)
+			slog.Info("加载 base_instructions 文件", "path", p, "bytes", len(cfg.BaseInstructions))
+		}
+	}
 	slog.Info("配置加载完成",
 		"sources", cfg.sourceNames(),
-		"service_tier_passthrough", cfg.ServiceTierPassthrough,
 		"session_path", cfg.Session.Path,
 		"session_max_bytes", cfg.Session.MaxBytes,
 		"session_ttl", time.Duration(cfg.Session.TTL).String(),
@@ -217,7 +233,6 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"breaker.half_open_probes", &cfg.Breaker.HalfOpenProbes},
 		{"breaker.max_retries", &cfg.Breaker.MaxRetries},
 		{"breaker.recovery", &cfg.Breaker.Recovery},
-		{"service_tier_passthrough", &cfg.ServiceTierPassthrough},
 	}
 	for _, override := range overrides {
 		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
@@ -411,14 +426,6 @@ func (c *Config) sourceNames() []string {
 	return out
 }
 
-// EffortBudget returns budget_tokens for an effort level (default 8000).
-func (c *Config) EffortBudget(effort string) int {
-	if v, ok := c.Thinking.EffortBudget[effort]; ok {
-		return v
-	}
-	return 8000
-}
-
 // BreakerFor merges global breaker with per-source override. Per-source
 // zero-valued fields inherit from global. MaxRetries is never overridden
 // from per-source (global only).
@@ -469,6 +476,8 @@ func scanDeprecated(m map[string]any) {
 			slog.Warn("忽略已废弃配置字段", "field", "failure_threshold", "replacement", "degrade_threshold")
 		case "max_entries":
 			slog.Warn("忽略已废弃配置字段", "field", "max_entries", "replacement", "session.max_bytes")
+		case "system_suffix":
+			slog.Warn("忽略已废弃配置字段", "field", "system_suffix", "replacement", "base_instructions_file")
 		}
 		switch sub := v.(type) {
 		case map[string]any:
@@ -483,19 +492,13 @@ func scanDeprecated(m map[string]any) {
 	}
 }
 
-// Models 收集所有源 model_map 中的 OpenAI 侧模型名称（去重并按字母序排序）。
-// 这些是网关向客户端暴露的本地别名，与上游返回的模型列表合并后供 /v1/models 接口返回。
-func (c *Config) Models() []string {
-	seen := make(map[string]bool)
-	var models []string
-	for _, s := range c.Sources {
-		for name := range s.ModelMap {
-			if !seen[name] {
-				seen[name] = true
-				models = append(models, name)
-			}
-		}
+// ConfiguredModelSlugs 返回 config.yaml 中 models.<slug> 显式配置的模型 slug，
+// 按字母序排序。/v1/models 接口只返回这些模型，不再合并上游 model_map 或上游列表。
+func (c *Config) ConfiguredModelSlugs() []string {
+	names := make([]string, 0, len(c.ModelOverrides))
+	for name := range c.ModelOverrides {
+		names = append(names, name)
 	}
-	sort.Strings(models)
-	return models
+	sort.Strings(names)
+	return names
 }

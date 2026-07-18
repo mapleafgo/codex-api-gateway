@@ -12,7 +12,7 @@ CodexApiGateway 是一个本地 OpenAI Responses API 兼容网关，用于让 Co
 - 断路器保护：失败降级、熔断、冷却、半开探测和恢复。
 - `previous_response_id` 会话缓存，用于无状态后端的多轮对话和工具调用衔接。
 - 尊重请求里的 `store: false`，此时不写入本地会话缓存，也不回填本地 `previous_response_id` 历史。
-- `/v1/models` 合并上游模型和本地 `model_map` 别名。
+- `/v1/models` 只返回配置文件 `models` 段显式声明的模型。
 - 结构化日志，支持等级过滤和 text/json 输出。
 - 配置文件支持 `${ENV}` 展开，也支持 `CODEX_API_GATEWAY_` 环境变量覆盖。
 
@@ -187,10 +187,9 @@ sources:
 
 ### `GET /v1/models`
 
-返回 Codex `ModelsResponse` 格式（`{ "models": [ModelInfo] }`），而非 OpenAI 的 `{ data: [] }`。Codex 用该格式直接解析 `ModelInfo` 能力字段（如 `supports_search_tool`）。结果由两部分合并：
+返回 Codex `ModelsResponse` 格式（`{ "models": [ModelInfo] }`），而非 OpenAI 的 `{ data: [] }`。Codex 用该格式直接解析 `ModelInfo` 能力字段（如 `supports_search_tool`）。
 
-- 第一个健康上游源的 `/v1/models` 返回值。
-- 本地配置中所有 `model_map` 的 OpenAI 侧别名。
+只返回配置文件 `models` 段显式声明的模型（`models.<slug>`），不拉取上游 `/v1/models`，也不暴露 `sources.model_map` 的别名。未列出的字段保持 `ModelInfo` 内置默认。
 
 ## 工作流程
 

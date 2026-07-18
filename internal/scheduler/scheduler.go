@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -304,34 +303,6 @@ func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
 		s.restoreOriginal(name)
 		slog.Info("上游源运行优先级恢复", "source", name, "old_state", oldState, "new_state", newState)
 	}
-}
-
-// ListModels 从第一个可用的上游源获取模型列表，返回原始 JSON 响应体。
-// 按优先级遍历源，首次成功即返回；全部失败时返回 ErrAllSourcesFailed。
-func (s *Scheduler) ListModels(ctx context.Context) (io.ReadCloser, error) {
-	start := time.Now()
-	var lastErr error
-	for _, src := range s.runtimeSeq() {
-		bk := s.breakerFor(&src)
-		if !bk.Allow() {
-			slog.Warn("模型列表跳过上游源", "source", src.Name, "reason", "breaker_open")
-			continue
-		}
-		body, err := s.client.ListModels(ctx, src.BaseURL, src.APIKey)
-		if err != nil {
-			lastErr = err
-			slog.Warn("模型列表上游源失败", "source", src.Name, "error", err)
-			continue
-		}
-		slog.Info("模型列表上游源成功", "source", src.Name, "elapsed", time.Since(start).String())
-		return body, nil
-	}
-	if lastErr != nil {
-		slog.Error("模型列表全部上游源失败", "elapsed", time.Since(start).String(), "last_error", lastErr)
-		return nil, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
-	}
-	slog.Error("模型列表全部上游源失败（无可尝试源）", "elapsed", time.Since(start).String())
-	return nil, ErrAllSourcesFailed
 }
 
 // ResolveModel maps a Response model name to the source's actual model.
