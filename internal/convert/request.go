@@ -484,11 +484,12 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 		}
 		return nil
 	}
-	// 无 encrypted_content：Codex HTTP Responses 下不应出现。signature 不可恢复，
-	// 若强行 attach 空 signature 会被上游拒绝，这里跳过并 WARN（静默跳过约定）。
-	slog.Warn("reasoning item 缺少 encrypted_content，无法恢复 thinking signature，对应数据被丢弃",
-		"reasoning_id", r.ID,
-		"impact", "该 reasoning item 不转递给上游")
+	// 无 encrypted_content：signature 不可恢复，但 summary 文本仍是有效的思考上下文。
+	// 历史代码（session 模式）此处用空 signature attach thinking block，Anthropic 兼容
+	// 后端（智谱/方舟等）接受空 signature。保留这一行为以维持思考上下文连续性，
+	// 避免丢弃 reasoning 导致工具循环里模型"失忆"。空 signature 不违反静默跳过约定
+	// （数据未被丢弃，只是 signature 字段为空）。
+	attachThinking(out, text, "")
 	return nil
 }
 
