@@ -284,8 +284,13 @@ func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEven
 func (c *Converter) handleMessageStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	c.respID = ev.Message.ID
 	c.model = ev.Message.Model
+	upstreamModel := ev.Message.Model
 	if c.clientModel != "" {
 		c.model = c.clientModel
+	}
+	if c.clientModel != "" && upstreamModel != "" && c.clientModel != upstreamModel {
+		slog.Debug("上游模型与客户端请求模型不一致（使用客户端别名）",
+			"response_id", c.respID, "client_model", c.clientModel, "upstream_model", upstreamModel)
 	}
 	c.createdAt = time.Now().Unix()
 
@@ -723,10 +728,17 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
 	if c.stopReason == string(anthropic.StopReasonRefusal) {
 		c.resetOutputForRefusal()
+		slog.Info("上游响应被拒绝（refusal）", "response_id", c.respID, "stop_reason", c.stopReason)
 		out = append(out, c.emitRefusalEvents()...)
 	}
 
 	status, incompleteReason := statusFor(c.stopReason)
+	slog.Info("上游流终态",
+		"response_id", c.respID,
+		"status", status,
+		"stop_reason", c.stopReason,
+		"output_items", len(c.outputItems),
+		"incomplete_reason", incompleteReason)
 
 	resp := model.NewResponseObject(c.respID, status, c.model, c.createdAt, c.echo)
 	resp.Output = c.outputItems

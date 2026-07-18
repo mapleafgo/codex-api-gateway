@@ -94,6 +94,7 @@ func Open(path string, maxBytes, maxEntryBytes int64, ttl time.Duration) (*Sessi
 	s.mu.Lock()
 	s.enforceMaxBytesLocked()
 	s.mu.Unlock()
+	slog.Info("会话存储已打开", "path", path, "entries", s.lru.Len(), "bytes", s.bytes)
 	return s, nil
 }
 
@@ -147,6 +148,12 @@ func (s *SessionStore) SaveContext(responseID, sourceName string, input []oaires
 	}
 	size := int64(len(responseID) + len(data))
 	if (s.maxEntryBytes > 0 && size > s.maxEntryBytes) || (s.maxBytes > 0 && size > s.maxBytes) {
+		slog.Warn("会话上下文超限，丢弃保存",
+			"response_id", responseID,
+			"size", size,
+			"max_entry_bytes", s.maxEntryBytes,
+			"max_bytes", s.maxBytes,
+			"context_items", len(entry.Context))
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.deleteLocked(responseID)
@@ -166,6 +173,7 @@ func (s *SessionStore) SaveContext(responseID, sourceName string, input []oaires
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.putIndexLocked(responseID, size)
+	slog.Debug("会话上下文已写入", "response_id", responseID, "size", size, "context_items", len(entry.Context))
 	s.enforceMaxBytesLocked()
 }
 
@@ -204,8 +212,15 @@ func (s *SessionStore) Enrich(req *oairesponses.ResponseNewParams, targetSource 
 	}
 	e, ok := s.Get(req.PreviousResponseID.Value)
 	if !ok {
+		slog.Info("会话历史未命中", "previous_response_id", req.PreviousResponseID.Value, "target_source", targetSource)
 		return nil
 	}
+	slog.Info("会话历史命中",
+		"previous_response_id", req.PreviousResponseID.Value,
+		"target_source", targetSource,
+		"source_of_record", e.SourceName,
+		"context_items", len(e.Context),
+		"items", len(e.Items))
 	sameSource := e.SourceName == targetSource
 	prefix := contextForSource(e.Context, sameSource)
 	if len(prefix) == 0 && len(e.Items) > 0 {
@@ -279,6 +294,7 @@ func (s *SessionStore) enforceMaxBytesLocked() {
 			return
 		}
 		key, _ := elem.Value.(string)
+		slog.Info("会话存储 LRU 淘汰", "response_id", key, "total_bytes", s.bytes, "max_bytes", s.maxBytes)
 		s.deleteLocked(key)
 	}
 }

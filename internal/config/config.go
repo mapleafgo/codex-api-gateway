@@ -154,6 +154,14 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	slog.Info("配置加载完成",
+		"sources", cfg.sourceNames(),
+		"service_tier_passthrough", cfg.ServiceTierPassthrough,
+		"session_path", cfg.Session.Path,
+		"session_max_bytes", cfg.Session.MaxBytes,
+		"session_ttl", time.Duration(cfg.Session.TTL).String(),
+		"breaker_max_retries", cfg.Breaker.MaxRetries,
+		"cache_ttl", cfg.Cache.TTL)
 	return &cfg, nil
 }
 
@@ -365,6 +373,15 @@ func (c *Config) OrderedSources() []Source {
 	copy(out, c.Sources)
 	for i := range out {
 		out[i].OriginalIndex = i
+	}
+	return out
+}
+
+// sourceNames 返回所有源名称，按配置顺序，仅用于日志展示。
+func (c *Config) sourceNames() []string {
+	out := make([]string, len(c.Sources))
+	for i, s := range c.Sources {
+		out[i] = s.Name
 	}
 	return out
 }

@@ -48,6 +48,11 @@ func New(cfg *config.Config) *Server {
 			panic(fmt.Sprintf("open session store: %v", err))
 		}
 	}
+	slog.Info("初始化服务组件",
+		"session_path", cfg.Session.Path,
+		"session_max_bytes", cfg.Session.MaxBytes,
+		"session_max_entry_bytes", cfg.Session.MaxEntryBytes,
+		"sources", len(cfg.Sources))
 	return &Server{
 		cfg:       cfg,
 		sess:      sess,
@@ -117,6 +122,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("写出模型列表响应失败", "error", err)
+	} else {
+		slog.Info("模型列表响应完成", "models", len(infos))
 	}
 }
 
@@ -158,6 +165,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	reqStart := time.Now()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.Warn("读取响应请求体失败", "error", err)
@@ -316,7 +324,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			cacheRead = u.CacheReadInputTokens
 			cacheCreate = u.CacheCreationInputTokens
 		}
-		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate)
+		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate, "elapsed", time.Since(reqStart).String())
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)
@@ -326,9 +334,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("上游流终态后读取失败",
 			"response_id", id,
 			"source", sourceName,
+			"elapsed", time.Since(reqStart).String(),
 			"error", execErr)
 	} else {
-		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "error", execErr)
+		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "elapsed", time.Since(reqStart).String(), "error", execErr)
 		if !conv.Done() {
 			// I1: only emit a server-side response.failed if the converter hasn't
 			// already emitted one (e.g. via a mid-stream error event). Without this
@@ -410,7 +419,9 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 }
 
 func writeSSE(w io.Writer, e model.SSEEvent) {
-	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, e.Data)
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, e.Data); err != nil {
+		slog.Warn("写出 SSE 事件失败", "event_type", e.Type, "error", err)
+	}
 }
 
 func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {

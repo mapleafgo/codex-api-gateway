@@ -52,6 +52,9 @@ func New(cfg *config.Config) *Scheduler {
 	for i, s := range srcs {
 		order[i] = orderEntry{name: s.Name, originalIndex: s.OriginalIndex}
 	}
+	slog.Info("调度器初始化", "sources", len(order),
+		"max_retries", cfg.Breaker.MaxRetries,
+		"first_byte_timeout", time.Duration(cfg.Breaker.FirstByteTimeout).String())
 	return &Scheduler{
 		cfg:      cfg,
 		client:   anthropicclient.New(),
@@ -136,6 +139,7 @@ func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
 		attempt = len(bk) - 1
 	}
 	d := bk[attempt]
+	slog.Info("开始退避等待", "attempt", attempt, "wait", d.String())
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -161,10 +165,12 @@ func (s *Scheduler) Execute(ctx context.Context, req *anthropic.MessageNewParams
 // source that locked the stream after the first upstream event.
 func (s *Scheduler) ExecutePrepared(ctx context.Context, build RequestBuilder, onEvent func(*anthropic.MessageStreamEventUnion) error) (string, error) {
 	mr := s.cfg.Breaker.MaxRetries
+	start := time.Now()
 	var lastErr error
 	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
 		sourceName, success, err := s.tryRoundPrepared(ctx, build, onEvent)
 		if success {
+			slog.Info("上游请求完成", "source", sourceName, "attempts", attempt+1, "elapsed", time.Since(start).String())
 			return sourceName, err // nil for clean success; non-nil for mid-stream error on locked source
 		}
 		if err != nil {
@@ -178,12 +184,15 @@ func (s *Scheduler) ExecutePrepared(ctx context.Context, build RequestBuilder, o
 		}
 		slog.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
 		if werr := s.waitBackoff(ctx, attempt); werr != nil {
+			slog.Warn("退避等待被取消", "attempt", attempt, "error", werr)
 			return "", werr
 		}
 	}
 	if lastErr != nil {
+		slog.Error("全部上游源均失败，无可用源", "attempts", 0, "elapsed", time.Since(start).String(), "last_error", lastErr)
 		return "", fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
 	}
+	slog.Error("全部上游源均失败，无可用源", "attempts", 0, "elapsed", time.Since(start).String())
 	return "", ErrAllSourcesFailed
 }
 
@@ -225,6 +234,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	// Resolve the model per the selected source's ModelMap before sending upstream.
 	resolvedReq := *req
 	resolvedReq.Model = anthropic.Model(ResolveModel(src, string(req.Model)))
+	sourceStart := time.Now()
 	slog.Info("尝试上游源",
 		"source", src.Name,
 		"endpoint", src.BaseURL,
@@ -232,6 +242,8 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		"resolved_model", string(resolvedReq.Model))
 	body, err := s.client.Stream(fbCtx, src.BaseURL, src.APIKey, &resolvedReq, mcp)
 	if err != nil {
+		slog.Warn("上游源建连失败",
+			"source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", err)
 		if ctx.Err() == nil {
 			oldState := bk.State()
 			newState := bk.RecordFailure()
@@ -247,6 +259,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		if !locked {
 			locked = true
 			timer.Stop()
+			slog.Info("上游首字节到达", "source", src.Name, "ttfb", time.Since(sourceStart).String())
 			oldState := bk.State()
 			newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
@@ -268,6 +281,9 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			return false, scanErr
 		}
 		return false, errors.New("upstream returned no events")
+	}
+	if scanErr != nil {
+		slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
 	}
 	return true, scanErr
 }
@@ -293,6 +309,7 @@ func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
 // ListModels 从第一个可用的上游源获取模型列表，返回原始 JSON 响应体。
 // 按优先级遍历源，首次成功即返回；全部失败时返回 ErrAllSourcesFailed。
 func (s *Scheduler) ListModels(ctx context.Context) (io.ReadCloser, error) {
+	start := time.Now()
 	var lastErr error
 	for _, src := range s.runtimeSeq() {
 		bk := s.breakerFor(&src)
@@ -306,12 +323,14 @@ func (s *Scheduler) ListModels(ctx context.Context) (io.ReadCloser, error) {
 			slog.Warn("模型列表上游源失败", "source", src.Name, "error", err)
 			continue
 		}
-		slog.Info("模型列表上游源成功", "source", src.Name)
+		slog.Info("模型列表上游源成功", "source", src.Name, "elapsed", time.Since(start).String())
 		return body, nil
 	}
 	if lastErr != nil {
+		slog.Error("模型列表全部上游源失败", "elapsed", time.Since(start).String(), "last_error", lastErr)
 		return nil, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
 	}
+	slog.Error("模型列表全部上游源失败（无可尝试源）", "elapsed", time.Since(start).String())
 	return nil, ErrAllSourcesFailed
 }
 
