@@ -207,6 +207,13 @@ func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 	if ov.Description != nil {
 		info.Description = ov.Description
 	}
+	// 上下文窗口归一化：网关场景 context_window（当前生效）与 max_context_window
+	// （config 覆盖上限）应相等。只配其一则另一个自动同步为同值，避免重复配置。
+	if ov.ContextWindow != nil && ov.MaxContextWindow == nil {
+		ov.MaxContextWindow = ov.ContextWindow
+	} else if ov.ContextWindow == nil && ov.MaxContextWindow != nil {
+		ov.ContextWindow = ov.MaxContextWindow
+	}
 	if ov.ContextWindow != nil {
 		info.ContextWindow = ov.ContextWindow
 	}

@@ -102,8 +102,7 @@ service_tier_passthrough: false
 # 仅覆盖显式给出的字段，其余字段保留默认值。
 # models:
 #   gpt-5.5:                   # slug，来自 model_map 的 key 或上游模型 ID
-#     context_window: 200000   # 最大上下文 token 数
-#     max_context_window: 200000
+#     context_window: 200000   # 最大上下文 token 数（自动同步到 max_context_window）
 #     effective_context_window_percent: 90   # 输入 token 占上下文窗口的百分比
 #     # auto_compact_token_limit: 180000     # 自动压缩阈值，默认取 context_window*0.9
 #     # display_name: "GPT-5.5"              # 显示名
@@ -112,7 +111,6 @@ service_tier_passthrough: false
 #     # supports_reasoning_summaries: true
 #   glm-5.2:
 #     context_window: 131072
-#     max_context_window: 131072
 
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。

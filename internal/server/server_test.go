@@ -719,6 +719,14 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 			if strings.TrimSpace(string(cwBytes)) != "131072" {
 				t.Errorf("gpt-5 context_window = %s, want 131072（来自 ModelOverrides）", strings.TrimSpace(string(cwBytes)))
 			}
+			// context_window 与 max_context_window 应自动归一为同值
+			maxCWBytes, hasMaxCW := m["max_context_window"]
+			if !hasMaxCW {
+				t.Fatalf("gpt-5 缺少 max_context_window（应由 context_window 归一补齐）")
+			}
+			if strings.TrimSpace(string(maxCWBytes)) != "131072" {
+				t.Errorf("gpt-5 max_context_window = %s, want 131072（归一化）", strings.TrimSpace(string(maxCWBytes)))
+			}
 		}
 	}
 }
