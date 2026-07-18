@@ -504,21 +504,6 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// 网关级指令补强（base_instructions）经 /v1/models 由 Codex 客户端注入到 system，
-	// DEBUG 记录最终发往上游的完整 system，便于排查 prompt 注入 / 指令丢失。
-	if len(anthReq.System) > 0 {
-		var totalBytes int
-		var blocksText []string
-		for _, b := range anthReq.System {
-			totalBytes += len(b.Text)
-			blocksText = append(blocksText, b.Text)
-		}
-		slog.Debug("发送到上游的完整 system",
-			"source", src.Name,
-			"system_blocks", len(anthReq.System),
-			"system_total_bytes", totalBytes,
-			"system_full_text", strings.Join(blocksText, "\n\n---SYSTEM-BLOCK-BOUNDARY---\n\n"))
-	}
 	return req, anthReq, mcp, nil
 }
 

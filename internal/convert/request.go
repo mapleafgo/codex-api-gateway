@@ -174,12 +174,6 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	}
 	if systemText := formatInstructionParts(sysParts); systemText != "" {
 		out.System = []anthropic.TextBlockParam{{Text: systemText}}
-		// DEBUG 记录转换阶段生成的 system。网关级指令经 /v1/models 的
-		// base_instructions 由 Codex 客户端注入，不在转换层追加 system block。
-		slog.Debug("转换生成 system",
-			"system_bytes", len(systemText),
-			"system_parts", len(sysParts),
-			"system_text", systemText)
 	}
 
 	applyReasoning(out, req)
