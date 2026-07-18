@@ -48,6 +48,12 @@ type Config struct {
 	// 发现 skill，再处理用户请求。追加块不加 cache_control，前面的 cache 断点仍命中。
 	SystemSuffix string   `koanf:"system_suffix" yaml:"system_suffix"`
 	Sources      []Source `koanf:"sources" yaml:"sources"`
+
+	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
+	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
+	// 其余保持 codexModelInfo 的内置默认。上游 /v1/models 不提供 context_window
+	// 等能力字段，故用此处补充。
+	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models"`
 }
 
 // ServerCfg configures the HTTP listener.
@@ -101,6 +107,22 @@ type Source struct {
 	DefaultModel  string            `koanf:"default_model" yaml:"default_model"`
 	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker"`
 	OriginalIndex int               `koanf:"-" yaml:"-"`
+}
+
+// ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
+// 上游 /v1/models 只返回 id/display_name/created_at，无 context_window 等能力，
+// 需在 config.yaml 的 models.<slug> 下显式补充。所有字段均为指针（nil = 不覆盖）。
+type ModelOverride struct {
+	DisplayName                *string `koanf:"display_name" yaml:"display_name"`
+	Description                *string `koanf:"description" yaml:"description"`
+	ContextWindow              *int64  `koanf:"context_window" yaml:"context_window"`
+	MaxContextWindow           *int64  `koanf:"max_context_window" yaml:"max_context_window"`
+	AutoCompactTokenLimit      *int64  `koanf:"auto_compact_token_limit" yaml:"auto_compact_token_limit"`
+	EffectiveContextWindowPct  *int64  `koanf:"effective_context_window_percent" yaml:"effective_context_window_percent"`
+	SupportsSearchTool         *bool   `koanf:"supports_search_tool" yaml:"supports_search_tool"`
+	SupportsParallelToolCalls  *bool   `koanf:"supports_parallel_tool_calls" yaml:"supports_parallel_tool_calls"`
+	SupportsReasoningSummaries *bool   `koanf:"supports_reasoning_summaries" yaml:"supports_reasoning_summaries"`
+	SupportVerbosity           *bool   `koanf:"support_verbosity" yaml:"support_verbosity"`
 }
 
 // Duration wraps time.Duration for YAML parsing.

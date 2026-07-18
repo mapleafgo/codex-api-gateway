@@ -655,6 +655,7 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 		"availability_nux",
 		"upgrade",
 		"base_instructions",
+		"supports_reasoning_summaries",
 		"support_verbosity",
 		"default_verbosity",
 		"apply_patch_tool_type",
@@ -663,22 +664,26 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 		"experimental_supported_tools",
 	}
 
+	// 验证 per-slug 覆盖：gpt-5 应命中 ModelOverrides，context_window 被覆盖
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
 		io.WriteString(w, `{"data":[{"type":"model","id":"claude-sonnet-4-20250514"}]}`)
 	}))
 	defer upstream.Close()
 
+	ctxWindow := int64(131072)
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{
 			{Name: "up", BaseURL: upstream.URL, ModelMap: map[string]string{"gpt-5": "claude"}},
 		},
+		ModelOverrides: map[string]config.ModelOverride{
+			"gpt-5": {ContextWindow: &ctxWindow},
+		},
 	}
 	srv := New(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-
 	resp, err := http.Get(ts.URL + "/v1/models")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -703,6 +708,16 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 			if _, ok := m[key]; !ok {
 				var slug json.RawMessage = m["slug"]
 				t.Errorf("model[%d] slug=%s 缺少 Codex serde required key %q", i, slug, key)
+			}
+		}
+		// gpt-5 的 context_window 应被 ModelOverrides 覆盖为 131072
+		if slugBytes, ok := m["slug"]; ok && strings.Contains(string(slugBytes), "gpt-5") {
+			cwBytes, hasCW := m["context_window"]
+			if !hasCW {
+				t.Fatalf("gpt-5 缺少 context_window（应由 ModelOverrides 补齐）")
+			}
+			if strings.TrimSpace(string(cwBytes)) != "131072" {
+				t.Errorf("gpt-5 context_window = %s, want 131072（来自 ModelOverrides）", strings.TrimSpace(string(cwBytes)))
 			}
 		}
 	}

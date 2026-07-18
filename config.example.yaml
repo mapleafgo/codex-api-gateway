@@ -95,6 +95,25 @@ service_tier_passthrough: false
 #   (Adobe, Sites, browser, ...), NOT skills. Do not conflate the two.
 #   </gateway_guidance>
 
+# per-slug 模型能力覆盖表（key 是模型 slug，对应 /v1/models 返回的条目）。
+# 上游 Anthropic 兼容后端 /v1/models 只返回 id/display_name/created_at，
+# 不提供 context_window 等能力字段，需在此显式补充。
+# 未列出的字段保持 codexModelInfo 内置默认（见 internal/server/server.go）。
+# 仅覆盖显式给出的字段，其余字段保留默认值。
+# models:
+#   gpt-5.5:                   # slug，来自 model_map 的 key 或上游模型 ID
+#     context_window: 200000   # 最大上下文 token 数
+#     max_context_window: 200000
+#     effective_context_window_percent: 90   # 输入 token 占上下文窗口的百分比
+#     # auto_compact_token_limit: 180000     # 自动压缩阈值，默认取 context_window*0.9
+#     # display_name: "GPT-5.5"              # 显示名
+#     # supports_search_tool: true           # 启用 tool_search + MCP deferred
+#     # supports_parallel_tool_calls: true
+#     # supports_reasoning_summaries: true
+#   glm-5.2:
+#     context_window: 131072
+#     max_context_window: 131072
+
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
 # 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，

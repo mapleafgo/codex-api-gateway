@@ -104,7 +104,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				seen[m.ID] = true
-				infos = append(infos, codexModelInfo(m.ID))
+				infos = append(infos, s.codexModelInfo(m.ID))
 			}
 		}
 	}
@@ -115,7 +115,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[name] = true
-		infos = append(infos, codexModelInfo(name))
+		infos = append(infos, s.codexModelInfo(name))
 	}
 
 	resp := model.CodexModelsResponse{Models: infos}
@@ -132,10 +132,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // 关键：SupportsSearchTool=true 让 Codex 启用 tool_search + MCP tools deferred。
 // 必填字段（无 serde(default)）显式给值；可选字段补合理默认值以提高兼容性。
 // supports_reasoning_summary_parameter 双写兼容 main 分支的改名。
-func codexModelInfo(slug string) model.CodexModelInfo {
+// 若 cfg.models.<slug> 配了对应字段，用配置覆盖默认值。
+func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	emptyStr := ""
 	ctxWindow := int64(200000)
-	return model.CodexModelInfo{
+	info := model.CodexModelInfo{
 		Slug:                       slug,
 		DisplayName:                slug,
 		Description:                &emptyStr,
@@ -167,6 +168,42 @@ func codexModelInfo(slug string) model.CodexModelInfo {
 		MaxContextWindow:                  &ctxWindow,
 		SupportsReasoningSummaryParameter: true,
 	}
+
+	// 应用 config.yaml models.<slug> 覆盖（仅覆盖显式配置的字段）
+	if ov, ok := s.cfg.ModelOverrides[slug]; ok {
+		if ov.DisplayName != nil {
+			info.DisplayName = *ov.DisplayName
+		}
+		if ov.Description != nil {
+			info.Description = ov.Description
+		}
+		if ov.ContextWindow != nil {
+			info.ContextWindow = ov.ContextWindow
+		}
+		if ov.MaxContextWindow != nil {
+			info.MaxContextWindow = ov.MaxContextWindow
+		}
+		if ov.AutoCompactTokenLimit != nil {
+			info.AutoCompactTokenLimit = ov.AutoCompactTokenLimit
+		}
+		if ov.EffectiveContextWindowPct != nil {
+			info.EffectiveContextWindowPercent = *ov.EffectiveContextWindowPct
+		}
+		if ov.SupportsSearchTool != nil {
+			info.SupportsSearchTool = *ov.SupportsSearchTool
+		}
+		if ov.SupportsParallelToolCalls != nil {
+			info.SupportsParallelToolCalls = *ov.SupportsParallelToolCalls
+		}
+		if ov.SupportsReasoningSummaries != nil {
+			info.SupportsReasoningSummaries = *ov.SupportsReasoningSummaries
+			info.SupportsReasoningSummaryParameter = *ov.SupportsReasoningSummaries
+		}
+		if ov.SupportVerbosity != nil {
+			info.SupportVerbosity = *ov.SupportVerbosity
+		}
+	}
+	return info
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
