@@ -31,14 +31,19 @@ const envPrefix = "CODEX_API_GATEWAY_"
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Config is the top-level YAML configuration.
+//
+// ServiceTierPassthrough 为 true 时把 OpenAI 请求里的 service_tier 透传到
+// Anthropic service_tier（仅映射到 Anthropic 支持的取值）。默认 false 以保持
+// 与现有行为一致：不透传 service_tier，由上游默认处理。
 type Config struct {
-	Server   ServerCfg   `koanf:"server" yaml:"server"`
-	Logging  LoggingCfg  `koanf:"logging" yaml:"logging"`
-	Session  SessionCfg  `koanf:"session" yaml:"session"`
-	Breaker  BreakerCfg  `koanf:"breaker" yaml:"breaker"`
-	Thinking ThinkingCfg `koanf:"thinking" yaml:"thinking"`
-	Cache    CacheCfg    `koanf:"cache" yaml:"cache"`
-	Sources  []Source    `koanf:"sources" yaml:"sources"`
+	Server                 ServerCfg   `koanf:"server" yaml:"server"`
+	Logging                LoggingCfg  `koanf:"logging" yaml:"logging"`
+	Session                SessionCfg  `koanf:"session" yaml:"session"`
+	Breaker                BreakerCfg  `koanf:"breaker" yaml:"breaker"`
+	Thinking               ThinkingCfg `koanf:"thinking" yaml:"thinking"`
+	Cache                  CacheCfg    `koanf:"cache" yaml:"cache"`
+	ServiceTierPassthrough bool        `koanf:"service_tier_passthrough" yaml:"service_tier_passthrough"`
+	Sources                []Source    `koanf:"sources" yaml:"sources"`
 }
 
 // ServerCfg configures the HTTP listener.
@@ -179,6 +184,7 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"breaker.half_open_probes", &cfg.Breaker.HalfOpenProbes},
 		{"breaker.max_retries", &cfg.Breaker.MaxRetries},
 		{"breaker.recovery", &cfg.Breaker.Recovery},
+		{"service_tier_passthrough", &cfg.ServiceTierPassthrough},
 	}
 	for _, override := range overrides {
 		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {

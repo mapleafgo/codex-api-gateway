@@ -1,8 +1,10 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -12,6 +14,16 @@ import (
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
+
+// captureWarnLogger 把 slog 默认 logger 替换为写入 buf 的 JSON handler（含 WARN 级别），
+// 返回还原函数。用于验证静默跳过路径是否按约定输出 WARN。
+func captureWarnLogger(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return &buf, func() { slog.SetDefault(old) }
+}
 
 func mustReq(t *testing.T, body string) *oairesponses.ResponseNewParams {
 	t.Helper()
@@ -1279,6 +1291,62 @@ func TestInputFileURLConvertsToAnthropicDocument(t *testing.T) {
 	}
 }
 
+// TestInputImageFileIDEmitsWarn 验证 input_image.file_id（无 OpenAI Files 凭据）
+// 被静默跳过时按 AGENTS.md 约定输出 WARN。
+func TestInputImageFileIDEmitsWarn(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+
+	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_image","file_id":"file-abc123"}]}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// file_id 被丢弃后该 message 只有一个空 text 占位 block。
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected one message: %+v", out.Messages)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "input_image.file_id") || !strings.Contains(logs, "file-abc123") {
+		t.Fatalf("expected WARN for input_image.file_id, got: %s", logs)
+	}
+}
+
+// TestInputFileFileIDEmitsWarn 验证 input_file.file_id 被静默跳过时输出 WARN。
+func TestInputFileFileIDEmitsWarn(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+
+	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"file-xyz789"}]}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected one message: %+v", out.Messages)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "input_file.file_id") || !strings.Contains(logs, "file-xyz789") {
+		t.Fatalf("expected WARN for input_file.file_id, got: %s", logs)
+	}
+}
+
+// TestSystemRoleImageDroppedEmitsWarn 验证 system/developer message 中的 image
+// 被 Anthropic system（仅文本）丢弃时输出 WARN。
+func TestSystemRoleImageDroppedEmitsWarn(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+
+	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"be brief"},{"type":"input_image","image_url":"https://example.com/img.png"}]}],"stream":true}`)
+	if _, _, err := ToAnthropic(req, &config.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "image block") || !strings.Contains(logs, "developer") {
+		t.Fatalf("expected WARN for system/developer image drop, got: %s", logs)
+	}
+}
+
 func TestSystemGetsAnthropicCacheControl(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","instructions":"be brief","input":"hi","stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
@@ -1622,5 +1690,79 @@ func TestMcpAuthorizationCollisionWarns(t *testing.T) {
 	}
 	if mcp.Servers[0].AuthorizationToken != "tok-field" {
 		t.Fatalf("authorization field must win over header, got: %q", mcp.Servers[0].AuthorizationToken)
+	}
+}
+
+// TestMetadataUserIDPassthrough 验证 metadata.user_id 被透传到 Anthropic metadata.user_id。
+func TestMetadataUserIDPassthrough(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","metadata":{"user_id":"user-123","other":"ignored"},"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Metadata.UserID.Valid() || out.Metadata.UserID.Value != "user-123" {
+		t.Fatalf("metadata.user_id not passed through: %+v", out.Metadata)
+	}
+}
+
+// TestMetadataAbsentLeavesEmpty 验证无 metadata 时不设置 Anthropic metadata。
+func TestMetadataAbsentLeavesEmpty(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Metadata.UserID.Valid() {
+		t.Fatalf("unexpected metadata.user_id: %q", out.Metadata.UserID.Value)
+	}
+}
+
+// TestServiceTierPassthroughDisabledByDefault 验证默认不透传 service_tier。
+func TestServiceTierPassthroughDisabledByDefault(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"auto","stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ServiceTier != "" {
+		t.Fatalf("service_tier should not be set when passthrough disabled: %q", out.ServiceTier)
+	}
+}
+
+// TestServiceTierPassthroughAuto 验证开启透传后 auto 被映射。
+func TestServiceTierPassthroughAuto(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"auto","stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ServiceTier != anthropic.MessageNewParamsServiceTierAuto {
+		t.Fatalf("service_tier auto not mapped: %q", out.ServiceTier)
+	}
+}
+
+// TestServiceTierPassthroughDefaultMapsToStandardOnly 验证 default 映射到 standard_only。
+func TestServiceTierPassthroughDefaultMapsToStandardOnly(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"default","stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ServiceTier != anthropic.MessageNewParamsServiceTierStandardOnly {
+		t.Fatalf("service_tier default not mapped to standard_only: %q", out.ServiceTier)
+	}
+}
+
+// TestServiceTierPassthroughUnsupportedDrops 验证 flex/scale/priority 被丢弃（无等价能力）。
+func TestServiceTierPassthroughUnsupportedDrops(t *testing.T) {
+	for _, tier := range []string{"flex", "scale", "priority"} {
+		req := mustReq(t, `{"model":"gpt-5","input":"hi","service_tier":"`+tier+`","stream":true}`)
+		out, _, err := ToAnthropic(req, &config.Config{ServiceTierPassthrough: true})
+		if err != nil {
+			t.Fatalf("service_tier=%s must not fail: %v", tier, err)
+		}
+		if out.ServiceTier != "" {
+			t.Fatalf("service_tier=%s should be dropped, got %q", tier, out.ServiceTier)
+		}
 	}
 }

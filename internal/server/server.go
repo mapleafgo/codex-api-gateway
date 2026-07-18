@@ -207,6 +207,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
 	}
 
+	warnDroppedOrIgnoredParams(req)
+
 	ordered := s.cfg.OrderedSources()
 	if len(ordered) > 0 {
 		if _, _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
@@ -422,6 +424,160 @@ func shouldStoreResponse(req *oairesponses.ResponseNewParams) bool {
 	return !req.Store.Valid() || req.Store.Value
 }
 
+// warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
+// 或 deprecated 的请求字段统一输出 WARN 级别结构化日志，避免静默丢弃。
+// 约定见 AGENTS.md「静默跳过与降级处理约定」。
+func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
+	// deprecated reasoning.generate_summary：被 reasoning.summary 取代。
+	//nolint:staticcheck // 字段被 OpenAI 标记 deprecated，但我们正是要检测它以输出 WARN
+	if req.Reasoning.GenerateSummary != "" {
+		slog.Warn("忽略 deprecated 字段 reasoning.generate_summary（已由 reasoning.summary 取代），对应数据被丢弃",
+			"field", "reasoning.generate_summary",
+			"value", string(req.Reasoning.GenerateSummary),
+			"reasoning_summary", string(req.Reasoning.Summary),
+			"impact", "generate_summary 不生效，请改用 reasoning.summary")
+	}
+	// text.verbosity：Anthropic 无原生 verbosity 参数。
+	if req.Text.Verbosity != "" {
+		slog.Warn("忽略 text.verbosity（Anthropic 无原生等价参数），对应数据被丢弃",
+			"field", "text.verbosity",
+			"value", string(req.Text.Verbosity),
+			"impact", "verbosity 不生效")
+	}
+	// truncation：Anthropic 无直接等价策略，仅在响应中 echo。
+	// truncation 状态为 raw_preserved：值在响应对象中 echo 回显，未被丢弃，
+	// 不触发 WARN（AGENTS.md 的静默跳过约定针对丢弃场景，不针对 echo）。
+
+	// include：仅部分子项可处理，整体只记录不展开。
+	if len(req.Include) > 0 {
+		// 只对非 encrypted_content 的 include 项 WARN（encrypted_content 已通过
+		// disable_response_storage 路径处理，不是丢弃）。
+		vals := make([]string, 0, len(req.Include))
+		for _, inc := range req.Include {
+			if string(inc) == "reasoning.encrypted_content" {
+				continue
+			}
+			vals = append(vals, string(inc))
+		}
+		if len(vals) > 0 {
+			slog.Warn("忽略 include 中除 reasoning.encrypted_content 之外的所有 include 项，对应数据被丢弃",
+				"field", "include",
+				"values", strings.Join(vals, ","),
+				"impact", "除 reasoning.encrypted_content 已通过 disable_response_storage 路径处理外，其余 include 不生效")
+		}
+	}
+	// metadata：Anthropic metadata 仅支持 user_id，整体 echo + 取 user_id 透传。
+	if len(req.Metadata) > 0 {
+		// 只有存在非 user_id 键值对时才 WARN（user_id 被透传，不是丢弃）。
+		nonUserID := 0
+		for k := range req.Metadata {
+			if k != "user_id" {
+				nonUserID++
+			}
+		}
+		if nonUserID > 0 {
+			slog.Warn("metadata 整体仅在响应中 echo，Anthropic metadata 只透传 user_id（取自 metadata.user_id）",
+				"field", "metadata",
+				"entries", len(req.Metadata),
+				"impact", "非 user_id 的键值对不会传递给上游")
+		}
+	}
+	// prompt_cache_*：网关自主管理 cache_control。
+	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
+		slog.Warn("忽略 prompt_cache_key（网关自主管理 cache_control），对应数据被丢弃",
+			"field", "prompt_cache_key",
+			"impact", "Anthropic 使用内容哈希缓存，不认客户端 key")
+	}
+	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
+		slog.Warn("忽略 prompt_cache_options（网关自主管理 cache_control），对应数据被丢弃",
+			"field", "prompt_cache_options",
+			"mode", req.PromptCacheOptions.Mode,
+			"ttl", req.PromptCacheOptions.Ttl,
+			"impact", "OpenAI options 结构对 Anthropic 无意义")
+	}
+	// deprecated prompt_cache_retention。
+	if req.PromptCacheRetention != "" {
+		slog.Warn("忽略 deprecated 字段 prompt_cache_retention（与 Anthropic cache_control 语义不同），对应数据被丢弃",
+			"field", "prompt_cache_retention",
+			"value", string(req.PromptCacheRetention),
+			"impact", "retention 策略不生效")
+	}
+	// prompt：引用 OpenAI prompt template，网关无服务端模板存储。
+	if req.Prompt.ID != "" {
+		slog.Warn("忽略 prompt（网关无 OpenAI prompt 模板存储能力），对应数据被丢弃",
+			"field", "prompt",
+			"prompt_id", req.Prompt.ID,
+			"impact", "模板与变量不会被解析，input 以实际内容为准")
+	}
+	// background：当前网关只支持同步 SSE。
+	if req.Background.Valid() && req.Background.Value {
+		slog.Warn("忽略 background=true（网关仅支持同步 SSE），请求将按同步处理",
+			"field", "background",
+			"impact", "请求不会被转为后台执行")
+	}
+	// conversation：本地 store 不是 OpenAI Conversation API。
+	if req.Conversation.OfString.Valid() || req.Conversation.OfConversationObject != nil {
+		slog.Warn("忽略 conversation（网关非 OpenAI Conversation API），对应数据被丢弃",
+			"field", "conversation",
+			"impact", "不会使用 conversation 拉取历史")
+	}
+	// context_management：OpenAI 服务端自动压缩，Anthropic 无等价请求参数。
+	if len(req.ContextManagement) > 0 {
+		types := make([]string, 0, len(req.ContextManagement))
+		for _, cm := range req.ContextManagement {
+			types = append(types, cm.Type)
+		}
+		slog.Warn("忽略 context_management（Anthropic 无等价请求参数，网关未实现 compaction），对应数据被丢弃",
+			"field", "context_management",
+			"types", strings.Join(types, ","),
+			"impact", "上下文管理策略不生效")
+	}
+	// max_tool_calls：Anthropic 无直接请求参数。
+	if req.MaxToolCalls.Valid() {
+		slog.Warn("忽略 max_tool_calls（Anthropic 无等价请求参数，网关不做计数截断），对应数据被丢弃",
+			"field", "max_tool_calls",
+			"value", req.MaxToolCalls.Value,
+			"impact", "工具调用次数不会在网关层被截断")
+	}
+	// safety_identifier：后端无等价字段。
+	if req.SafetyIdentifier.Valid() && req.SafetyIdentifier.Value != "" {
+		slog.Warn("忽略 safety_identifier（Anthropic 后端无等价字段），对应数据被丢弃",
+			"field", "safety_identifier",
+			"impact", "不会传递给上游")
+	}
+	// moderation：OpenAI 输入/输出 moderation 配置。
+	if req.Moderation.Model != "" ||
+		req.Moderation.Policy.Input.Mode != "" ||
+		req.Moderation.Policy.Output.Mode != "" {
+		slog.Warn("忽略 moderation（Anthropic Messages 无等价参数），对应数据被丢弃",
+			"field", "moderation",
+			"moderation_model", req.Moderation.Model,
+			"input_mode", req.Moderation.Policy.Input.Mode,
+			"output_mode", req.Moderation.Policy.Output.Mode,
+			"impact", "不会对输入/输出做 OpenAI moderation")
+	}
+	// stream_options.include_obfuscation：Anthropic streaming 无等价 obfuscation。
+	if req.StreamOptions.IncludeObfuscation.Valid() {
+		slog.Warn("忽略 stream_options.include_obfuscation（Anthropic streaming 无等价机制），对应数据被丢弃",
+			"field", "stream_options.include_obfuscation",
+			"value", req.StreamOptions.IncludeObfuscation.Value,
+			"impact", "obfuscation 字段不生效")
+	}
+	// top_logprobs：Anthropic Messages 无 OpenAI output logprobs 等价。
+	if req.TopLogprobs.Valid() {
+		slog.Warn("忽略 top_logprobs（Anthropic Messages 无 OpenAI output logprobs 等价能力），对应数据被丢弃",
+			"field", "top_logprobs",
+			"value", req.TopLogprobs.Value,
+			"impact", "logprobs 不会返回")
+	}
+	// deprecated user：OpenAI 已废弃，需决定忽略或映射 metadata。
+	if req.User.Valid() && req.User.Value != "" {
+		slog.Warn("忽略 deprecated 字段 user（OpenAI 已废弃，建议改用 safety_identifier / prompt_cache_key），对应数据被丢弃",
+			"field", "user",
+			"impact", "不会传递给上游（可改用 metadata.user_id）")
+	}
+}
+
 // echoFromRequest extracts P2 echo fields from the request for response object.
 func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectParams {
 	p := model.ResponseObjectParams{
@@ -471,8 +627,6 @@ func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectPa
 	return p
 }
 
-// collectOutput collects function_call/reasoning items from the request's input
-// for session storage fallback.
 // itemType 返回 input item 的人类可读类型名称，用于日志。
 func itemType(it *oairesponses.ResponseInputItemUnionParam) string {
 	if it.OfMessage != nil {
@@ -548,7 +702,9 @@ func inputItemTypeCountAttrs(items []oairesponses.ResponseInputItemUnionParam) [
 // MCP 链路定位的关键观测点（请求入口）。
 func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 	counts := map[string]int{}
-	var mcpServers []string
+	// toolDetails 收集非 function/custom（即结构化、有明细可打印的）tool 的诊断串：
+	// mcp server、tool_search 的 execution、namespace 的子工具列表。
+	var toolDetails []string
 	var clientToolNames []string
 	for _, t := range tools {
 		switch {
@@ -559,7 +715,7 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			if m.ServerURL.Valid() {
 				serverURL = m.ServerURL.Value
 			}
-			mcpServers = append(mcpServers, fmt.Sprintf("label=%s url=%s connector=%s", m.ServerLabel, serverURL, m.ConnectorID))
+			toolDetails = append(toolDetails, fmt.Sprintf("mcp label=%s url=%s connector=%s", m.ServerLabel, serverURL, m.ConnectorID))
 		case t.OfFunction != nil:
 			counts["function"]++
 			clientToolNames = append(clientToolNames, t.OfFunction.Name)
@@ -580,7 +736,7 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			counts["local_shell"]++
 		case t.OfToolSearch != nil:
 			counts["tool_search"]++
-			mcpServers = append(mcpServers, fmt.Sprintf("tool_search execution=%s", t.OfToolSearch.Execution))
+			toolDetails = append(toolDetails, fmt.Sprintf("tool_search execution=%s", t.OfToolSearch.Execution))
 		case t.OfNamespace != nil:
 			counts["namespace"]++
 			ns := t.OfNamespace
@@ -592,7 +748,7 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 					nsChildren = append(nsChildren, nt.OfCustom.Name)
 				}
 			}
-			mcpServers = append(mcpServers, fmt.Sprintf("namespace=%s children=[%s]", ns.Name, strings.Join(nsChildren, ",")))
+			toolDetails = append(toolDetails, fmt.Sprintf("namespace=%s children=[%s]", ns.Name, strings.Join(nsChildren, ",")))
 		default:
 			counts["other"]++
 		}
@@ -604,8 +760,8 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			attrs = append(attrs, slog.Int(k, counts[k]))
 		}
 	}
-	if len(mcpServers) > 0 {
-		attrs = append(attrs, slog.String("mcp_servers_detail", strings.Join(mcpServers, " | ")))
+	if len(toolDetails) > 0 {
+		attrs = append(attrs, slog.String("structured_tools_detail", strings.Join(toolDetails, " | ")))
 	}
 	if len(clientToolNames) > 0 {
 		attrs = append(attrs, slog.String("client_tool_names", strings.Join(clientToolNames, ",")))
@@ -644,6 +800,8 @@ func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks,
 	return
 }
 
+// collectOutput collects function_call/reasoning items from the request's input
+// for session storage fallback.
 func collectOutput(req *oairesponses.ResponseNewParams) []model.OutputItem {
 	var out []model.OutputItem
 	for _, it := range req.Input.OfInputItemList {

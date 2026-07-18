@@ -178,6 +178,9 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 
 	applyReasoning(out, req, cfg)
 
+	applyMetadata(out, req)
+	applyServiceTier(out, req, cfg)
+
 	if err := convertTools(out, req); err != nil {
 		return nil, nil, err
 	}
@@ -420,10 +423,20 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 			// fetch the file. See README "Known limitations".
 			if cp.OfInputImage.ImageURL.Valid() {
 				blocks = append(blocks, imageBlock(cp.OfInputImage.ImageURL.Value))
+			} else if cp.OfInputImage.FileID.Valid() && cp.OfInputImage.FileID.Value != "" {
+				slog.Warn("丢弃 input_image.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
+					"role", string(m.Role),
+					"file_id", cp.OfInputImage.FileID.Value,
+					"impact", "图片不会传递给上游")
 			}
 		} else if cp.OfInputFile != nil {
 			if block := documentBlock(cp.OfInputFile); block != nil {
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{OfDocument: block})
+			} else if cp.OfInputFile.FileID.Valid() && cp.OfInputFile.FileID.Value != "" {
+				slog.Warn("丢弃 input_file.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
+					"role", string(m.Role),
+					"file_id", cp.OfInputFile.FileID.Value,
+					"impact", "文件不会传递给上游")
 			}
 		}
 	}
@@ -434,6 +447,13 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 	// NOTE: image blocks in system/developer messages are silently dropped here.
 	// Anthropic's system parameter is []TextBlockParam (text-only), so images
 	// cannot be represented in the system role. This is a protocol limitation.
+	for _, b := range blocks {
+		if b.OfImage != nil {
+			slog.Warn("丢弃 system/developer message 中的 image block（Anthropic system 仅支持文本），对应数据被丢弃",
+				"role", role,
+				"impact", "图片不会传递给上游")
+		}
+	}
 	if role == model.RoleSystem || role == model.RoleDeveloper {
 		*sysParts = append(*sysParts, instructionPart{
 			role: role,
@@ -1063,6 +1083,45 @@ func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Con
 		out.System[len(out.System)-1].CacheControl = cacheControl
 	}
 	setLastToolCacheControl(out.Tools, cacheControl)
+}
+
+// applyMetadata 把 OpenAI metadata 中的 user_id 透传到 Anthropic metadata.user_id。
+// Anthropic metadata 仅支持 user_id，其余键值对无等价能力，仅由响应 echo 回显。
+func applyMetadata(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
+	if len(req.Metadata) == 0 {
+		return
+	}
+	if uid, ok := req.Metadata["user_id"]; ok && uid != "" {
+		out.Metadata = anthropic.MetadataParam{
+			UserID: aparam.NewOpt(uid),
+		}
+	}
+}
+
+// applyServiceTier 在配置显式允许 service_tier 透传时映射到 Anthropic service_tier。
+// 仅映射到 Anthropic 支持的 auto / standard_only，其它取值（default/flex/scale/priority）
+// 无等价语义，降级为不设置（由上游决定）。
+func applyServiceTier(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {
+	if cfg == nil || !cfg.ServiceTierPassthrough {
+		return
+	}
+	// 客户端未设置 service_tier（空串）时，不映射也不 WARN。
+	if req.ServiceTier == "" {
+		return
+	}
+	switch req.ServiceTier {
+	case oairesponses.ResponseNewParamsServiceTierAuto:
+		out.ServiceTier = anthropic.MessageNewParamsServiceTierAuto
+	case oairesponses.ResponseNewParamsServiceTierDefault:
+		// OpenAI default 与 Anthropic standard_only 近似（使用标准容量）。
+		out.ServiceTier = anthropic.MessageNewParamsServiceTierStandardOnly
+	default:
+		// flex / scale / priority 在 Anthropic 无等价能力，降级为不设置 + WARN。
+		slog.Warn("service_tier 在 Anthropic 无等价能力，降级为不设置（由上游决定）",
+			"field", "service_tier",
+			"value", string(req.ServiceTier),
+			"impact", "service_tier 不生效")
+	}
 }
 
 // setLastToolCacheControl 给 tools 列表的最后一个 tool 加 cache_control，

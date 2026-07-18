@@ -22,7 +22,9 @@ var (
 	evResponseCompleted          = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
 	evResponseIncomplete         = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
 	evResponseFailed             = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
+	evError                      = string(oaconstant.ValueOf[oaconstant.Error]())
 	evOutputItemAdded            = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
+	evOutputTextAnnotationAdded  = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextAnnotationAdded]())
 	evOutputItemDone             = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemDone]())
 	evContentPartAdded           = string(oaconstant.ValueOf[oaconstant.ResponseContentPartAdded]())
 	evContentPartDone            = string(oaconstant.ValueOf[oaconstant.ResponseContentPartDone]())
@@ -95,11 +97,16 @@ var (
 	// ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
 	anBlockMcpToolUse    = "mcp_tool_use"
 	anBlockMcpToolResult = "mcp_tool_result"
+	// mid_conversation_system: Anthropic 中途插入的 system 指令块。
+	// OpenAI Responses 没有原生等价的「中途 system 消息」输出项，
+	// 当前选择 WARN + 跳过（不中断流），后续可考虑转为 developer marker。
+	anBlockMidConvSystem = "mid_conv_system"
 
 	anDeltaText      = string(aconstant.ValueOf[aconstant.TextDelta]())
 	anDeltaThinking  = string(aconstant.ValueOf[aconstant.ThinkingDelta]())
 	anDeltaSignature = string(aconstant.ValueOf[aconstant.SignatureDelta]())
 	anDeltaInputJSON = string(aconstant.ValueOf[aconstant.InputJSONDelta]())
+	anDeltaCitations = string(aconstant.ValueOf[aconstant.CitationsDelta]())
 )
 
 const refusalFallback = "I can't help with that."
@@ -115,9 +122,10 @@ type Converter struct {
 	itemOrder int // next output item index
 
 	// Text block state
-	openText       bool
-	textItemIdx    int
-	textContentIdx int
+	openText        bool
+	textItemIdx     int
+	textContentIdx  int
+	annotationIndex int
 
 	// Thinking block state
 	openThinking    bool
@@ -268,7 +276,7 @@ func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEven
 			c.completed = true
 		}
 	case anError:
-		out = append(out, c.handleError(ev))
+		out = append(out, c.handleError(ev)...)
 	}
 	return out, nil
 }
@@ -334,6 +342,14 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		anBlockToolSearchToolResult,
 		anBlockToolSearchToolResultError:
 		return c.handleSkippedBlockStart(ev)
+	case anBlockMidConvSystem:
+		// Anthropic 中途插入的 system 指令块，OpenAI Responses 无原生等价输出项。
+		// WARN + 跳过（保留后续 delta/stop 的 index 跟踪），不中断流。
+		blkIdx := int(ev.Index)
+		c.skippedBlocks[blkIdx] = true
+		slog.Warn("跳过 Anthropic mid_conversation_system 块（OpenAI Responses 无原生等价输出），对应数据被丢弃",
+			"response_id", c.respID, "block_index", blkIdx)
+		return nil
 	case anBlockMcpToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockMcpToolResult:
@@ -367,6 +383,8 @@ func (c *Converter) handleTextStart() []model.SSEEvent {
 	c.openText = true
 	c.textItemIdx = idx
 	c.textContentIdx = 0
+	// annotation_index 是 per content part 的计数器，新 text block 开始时重置。
+	c.annotationIndex = 0
 	c.textBuilder.Reset()
 
 	itemID := fmt.Sprintf("msg_%d", idx)
@@ -487,8 +505,78 @@ func (c *Converter) handleBlockDelta(ev *anthropic.MessageStreamEventUnion) []mo
 		if evs, handled := c.handleCallDelta(ev); handled {
 			return evs
 		}
+	case anDeltaCitations:
+		return c.handleCitationsDelta(ev)
 	}
 	return nil
+}
+
+// handleCitationsDelta 把 Anthropic citations_delta 映射为 OpenAI
+// response.output_text.annotation.added 事件。Anthropic citation 变体被
+// 折叠为 OpenAI 注解对象：web_search_result_location → url_citation，
+// 其余 char/page/content_block/search_result_location → file_citation
+// （file_id/title/start/end 等次级字段在 OpenAI 端无原生对应，按 url_citation
+// 或 file_citation 的最小字段集填充，缺失字段以零值/空串占位）。
+// 无法识别的 citation type 走 WARN + 静默跳过（保证流继续）。
+func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
+	if !c.openText {
+		return nil
+	}
+	cit := ev.Delta.Citation
+	switch cit.Type {
+	case "char_location", "page_location", "content_block_location", "search_result_location":
+		// 这些 citation 在 OpenAI 端无原生 url/file 等价物（除非有 file_id），
+		// 折叠为 file_citation 占位以保留引用范围信息。Anthropic 的 char/page/block
+		// 位置是相对于被引用文档的，不是相对于 output_text 的，所以不映射到
+		// OpenAI start_index/end_index（OpenAI file_citation 也无此字段）。
+		annotation := map[string]any{
+			"type":     "file_citation",
+			"file_id":  cit.FileID,
+			"filename": cit.DocumentTitle, // Anthropic document_title 近似为 filename
+			"index":    c.annotationIndex,
+		}
+		out := c.buildAnnotationEvent(annotation)
+		c.annotationIndex++
+		return out
+	case "web_search_result_location":
+		// 折叠为 OpenAI url_citation。title/url 直接映射。
+		// start_index/end_index 是 OpenAI required 字段，但 Anthropic 的
+		// web_search_result_location 没有文本范围信息（只有 encrypted_index），
+		// 以当前 output_text 长度作为 end_index、0 作为 start_index 占位。
+		textLen := int64(c.textBuilder.Len())
+		annotation := map[string]any{
+			"type":        "url_citation",
+			"title":       cit.Title,
+			"url":         cit.URL,
+			"start_index": 0,
+			"end_index":   textLen,
+		}
+		out := c.buildAnnotationEvent(annotation)
+		c.annotationIndex++
+		return out
+	default:
+		slog.Warn("收到未知 Anthropic citation type，对应数据被丢弃",
+			"response_id", c.respID,
+			"citation_type", cit.Type,
+			"impact", "该 citation 不会作为 annotation 发出")
+		return nil
+	}
+}
+
+// buildAnnotationEvent 构造单个 response.output_text.annotation.added 事件。
+func (c *Converter) buildAnnotationEvent(annotation any) []model.SSEEvent {
+	itemID := fmt.Sprintf("msg_%d", c.textItemIdx)
+	return []model.SSEEvent{model.MarshalEvent(evOutputTextAnnotationAdded, model.OutputTextAnnotationAddedEvent{
+		Type:           evOutputTextAnnotationAdded,
+		SequenceNumber: c.nextSeq(),
+		OutputIndex:    c.textItemIdx,
+		ContentIndex:   c.textContentIdx,
+		ItemID:         itemID,
+		// annotationIndex 是 per content part 的计数器，在事件发出前尚未递增，
+		// 取当前值即为该 content part 内的第 N 条 annotation。
+		AnnotationIndex: int64(c.annotationIndex),
+		Annotation:      annotation,
+	})}
 }
 
 func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
@@ -671,6 +759,7 @@ func (c *Converter) resetOutputForRefusal() {
 	c.openText = false
 	c.textItemIdx = 0
 	c.textContentIdx = 0
+	c.annotationIndex = 0
 	c.textBuilder.Reset()
 	c.openThinking = false
 	c.thinkItemIdx = 0
@@ -734,7 +823,10 @@ func (c *Converter) emitRefusalEvents() []model.SSEEvent {
 	}
 }
 
-func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) model.SSEEvent {
+// handleError 把 Anthropic 上游 error 事件转为 OpenAI Responses 协议：
+// 先发出一个 error 事件（携带 code/message/param），再发出 response.failed 终态。
+// 两个事件同时发出，避免只看到 failed 时丢失原始 error code。
+func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	c.completed = true
 	c.failed = true
 	msg := "upstream stream error"
@@ -746,7 +838,13 @@ func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) model.SSE
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Output = []model.OutputItem{}
 	resp.Error = &model.ResponseError{Message: msg}
-	return model.MarshalEvent(evResponseFailed, model.TerminalResponseEvent{
+	failed := model.MarshalEvent(evResponseFailed, model.TerminalResponseEvent{
 		Type: evResponseFailed, SequenceNumber: c.nextSeq(), Response: resp,
 	})
+	// 同时发出 OpenAI error 事件，携带上游错误文本与 code 占位。
+	errEv := model.MarshalEvent(evError, model.ErrorEvent{
+		Type: evError, SequenceNumber: c.nextSeq(),
+		Code: "upstream_error", Message: msg,
+	})
+	return []model.SSEEvent{errEv, failed}
 }

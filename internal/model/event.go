@@ -309,3 +309,26 @@ func MarshalEvent(eventType string, v any) SSEEvent {
 	b, _ := json.Marshal(v)
 	return SSEEvent{Type: eventType, Data: b}
 }
+
+// ErrorEvent 对应 OpenAI Responses 协议的顶层 error 事件。
+// 上游 Anthropic error 触发时，与 response.failed 同时发出。
+type ErrorEvent struct {
+	Type           string `json:"type"`
+	SequenceNumber int64  `json:"sequence_number,omitempty"`
+	Code           string `json:"code"`
+	Message        string `json:"message"`
+	Param          string `json:"param,omitempty"`
+}
+
+// OutputTextAnnotationAddedEvent 对应 response.output_text.annotation.added 事件，
+// 把 Anthropic citations_delta 映射而来的 OpenAI 注解推给客户端。
+// Annotation 为 any 以承载 url_citation / file_citation 等不同变体。
+type OutputTextAnnotationAddedEvent struct {
+	Type            string `json:"type"`
+	SequenceNumber  int64  `json:"sequence_number,omitempty"`
+	OutputIndex     int    `json:"output_index"`
+	ContentIndex    int    `json:"content_index"`
+	ItemID          string `json:"item_id"`
+	AnnotationIndex int64  `json:"annotation_index"`
+	Annotation      any    `json:"annotation"`
+}

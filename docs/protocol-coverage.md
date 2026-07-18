@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-16
+日期: 2026-07-18
 
 本文是 OpenAI Responses API 到 Anthropic Messages API 的覆盖矩阵。它记录协议项是否被语义级翻译、损耗翻译、raw 保真、后端无等价能力或延期专项设计。后续任何协议补齐都必须同步更新本文。
 
@@ -13,6 +13,17 @@
 | `raw_preserved` | 暂无语义转换，但原始 JSON 被保存或注入上下文，避免静默丢弃 | 不得对客户端宣称语义支持 |
 | `unsupported_by_backend` | Anthropic Messages 无等价能力，不能安全模拟 | 应返回明确错误或在文档中登记不支持 |
 | `deferred` | 需要专项设计才能决定语义 | 必须说明后续分析点 |
+| `dropped` | 在请求侧无 Anthropic 等价能力，回灌时静默丢弃 + WARN | 必须记录被丢弃内容的类型/标识/影响 |
+
+## 2026-07-18 更新
+
+- 为所有「静默忽略」的请求参数（deprecated / 无等价能力）补 WARN 结构化日志，见 AGENTS.md「静默跳过与降级处理约定」。
+- `metadata.user_id` 现透传到 Anthropic `metadata.user_id`；其余键值对仅 echo。
+- 新增配置开关 `service_tier_passthrough`，为 true 时把 OpenAI `service_tier` 映射到 Anthropic（`auto`/`default`），其余取值 WARN + 丢弃。
+- 流式 `citations_delta` 现映射为 `response.output_text.annotation.added`（`web_search_result_location`→`url_citation`，其余→`file_citation`）。
+- 流式上游 `error` 事件现在同时发出 OpenAI `error` 事件与 `response.failed` 终态。
+- 流式 `mid_conversation_system` 块按 WARN + 跳过处理，不中断流。
+- `local_shell_call`/`shell_call`/`apply_patch_call` 作为专用 Output Item、`tool_search_output`/`additional_tools` 作为 output、`item_reference` 与 `cancelled` status 仍为 `deferred`，原因见对应行说明。
 
 第一批只覆盖枚举/refusal、shell/apply_patch 输入项、`allowed_tools`、不支持工具的显式错误和未处理 Anthropic block 的显式失败；本文其余 `deferred` 项均不属于第一批，具体后续专项原因见各行说明。
 
@@ -39,6 +50,7 @@
 | `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
 | `reasoning.generate_summary` | thinking display | `deferred` | deprecated，被 `reasoning.summary` 取代；值 auto/concise/detailed，当前静默忽略，是否复用 `summary` 路径需专项确认 |
+| `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
 | `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.verbosity` | none | `deferred` | Anthropic 无原生输出 verbosity 参数；可注入 system 提示模拟但非语义等价，当前静默忽略 |
@@ -48,7 +60,6 @@
 | `store` | local session storage switch | `supported` | `false` 跳过存储与回填 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial behavior | `deferred` | `reasoning.encrypted_content` 与 logprobs/source include 需逐项分析 |
-| `metadata` | response echo / Anthropic metadata | `deferred` | 需确认是否转 Anthropic `metadata` 或仅 echo |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control，此字段忽略 |
 | `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义，忽略 |
 | `prompt_cache_retention` | none | `deferred` | deprecated 缓存保留策略（in_memory/24h），与 `prompt_cache_options` 独立；与 Anthropic cache_control 语义不同，当前静默忽略 |
@@ -57,12 +68,12 @@
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
 | `context_management` | none | `deferred` | 请求级上下文管理开关（当前仅 compaction）；OpenAI 服务端自动压缩，Anthropic 无等价请求参数，网关未实现 compaction，当前静默忽略 |
 | `max_tool_calls` | none | `deferred` | Anthropic 无直接请求参数，可能需网关计数截断 |
-| `service_tier` | Anthropic `service_tier` | `deferred` | 需配置源是否允许透传 |
+| `service_tier` | Anthropic `service_tier` | `lossy_supported` | 新增配置 `service_tier_passthrough=true` 时：`auto`→`auto`、`default`→`standard_only` 直接映射；`flex`/`scale`/`priority` 无等价能力，WARN + 丢弃（不设置）。默认 false 保持原行为（不透传） |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
 | `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数，当前静默忽略 |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |
 | `top_logprobs` | none | `unsupported_by_backend` | Anthropic Messages 无 OpenAI output logprobs 等价 |
-| `user` | deprecated | `deferred` | OpenAI 已废弃，需决定忽略或映射 metadata |
+| `user` | deprecated | `unsupported_by_backend` | OpenAI 已废弃字段，建议改用 `safety_identifier`/`prompt_cache_key`/`metadata.user_id`；当前 WARN + 丢弃（不透传给上游） |
 
 ## Input Content Union
 
@@ -194,6 +205,7 @@
 | `response.incomplete` | `message_stop` + stop reason | `lossy_supported` | `max_tokens` 与 refusal 使用合法 incomplete reason；`pause_turn` 不写非法 reason |
 | `response.failed` | upstream error | `supported` | 已输出 |
 | `error` | Anthropic error event | `deferred` | 当前多映射为 failed，需决定是否同时发 error |
+| `error` | Anthropic error event | `supported` | 上游 error 事件现在同时发出 OpenAI `error` 事件（code=upstream_error + message）与 `response.failed` 终态 |
 | `response.queued` | none | `unsupported_by_backend` | 后端无队列状态 |
 | `response.output_item.added` | content block start | `supported` | text/reasoning/tool use 支持 |
 | `response.output_item.done` | content block stop | `supported` | text/reasoning/tool use 支持 |
@@ -202,6 +214,7 @@
 | `response.output_text.delta` | `text_delta` | `supported` | 已输出 |
 | `response.output_text.done` | text block stop | `supported` | 已输出 |
 | `response.output_text.annotation.added` | `citations_delta` | `deferred` | 需映射 Anthropic citation |
+| `response.output_text.annotation.added` | `citations_delta` | `lossy_supported` | `web_search_result_location`→`url_citation`（title/url），`char`/`page`/`content_block`/`search_result`_location→`file_citation`（file_id 占位）；start/end_index 以 0 占位（Anthropic citation 无 OpenAI 文本范围语义），未知 type WARN + 丢弃 |
 | `response.refusal.delta` | Anthropic refusal | `supported` | 已输出 |
 | `response.refusal.done` | Anthropic refusal | `supported` | 已输出 |
 | `response.reasoning_text.delta` | `thinking_delta` | `supported` | 已输出 |
@@ -265,7 +278,7 @@
 | stream `text_editor_code_execution_tool_result` | none | `unsupported_by_backend` | Anthropic 托管 text editor 执行结果，OpenAI Responses 无等价；对应 server_tool_use start 阶段已 skip，result 同步 skip + WARN |
 | stream `tool_search_tool_result` | none | `unsupported_by_backend` | Anthropic 服务端 tool_search 结果，网关的 tool_search 走客户端工具语义（非 server tool），此 server-side result 无等价；start 阶段已 skip，result 同步 skip + WARN |
 | stream `container_upload` | none | `unsupported_by_backend` | 无 OpenAI Responses 等价输出 |
-| stream `mid_conversation_system` | none | `deferred` | 需决定是否转 developer/system marker |
+| stream `mid_conversation_system` | none | `unsupported_by_backend` | OpenAI Responses 无原生「中途 system 消息」输出项；当前 WARN + 跳过（不中断流），后续可考虑转为 developer marker |
 | event `ping` | no-op | `supported` | 忽略是正确行为 |
 | event `message_start` | `response.created/in_progress` | `supported` | 已处理 |
 | event `content_block_start` | item/content start | `lossy_supported` | 已支持类型映射；未知类型会输出诊断性 failed |

@@ -566,11 +566,17 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	ev := &anthropic.MessageStreamEventUnion{Type: "error"}
 	ev.Delta.Text = "Overloaded"
 	evs, _ := c.Feed(ev)
-	if len(evs) != 1 || evs[0].Type != "response.failed" {
+	// 上游 error 现在会同时产生 OpenAI error 事件 + response.failed 终态。
+	if len(evs) != 2 || evs[0].Type != "error" || evs[1].Type != "response.failed" {
 		t.Fatalf("expected one response.failed, got %+v", evs)
 	}
+	// error 事件本身也应携带 message。
+	errPayload := decodePayload(t, evs[0].Data)
+	if errPayload["message"] != "Overloaded" || errPayload["code"] != "upstream_error" {
+		t.Fatalf("expected error event with code/message, got %v", errPayload)
+	}
 	// Verify error message is present in the response object.
-	m := decodePayload(t, evs[0].Data)
+	m := decodePayload(t, evs[1].Data)
 	r, _ := m["response"].(map[string]any)
 	if r == nil {
 		t.Fatalf("expected response object in payload: %v", m)
@@ -578,6 +584,141 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	errObj, _ := r["error"].(map[string]any)
 	if errObj == nil || errObj["message"] != "Overloaded" {
 		t.Fatalf("expected error.message=Overloaded, got %v", r["error"])
+	}
+}
+
+// TestCitationsDeltaMapsToAnnotationAdded 验证 Anthropic citations_delta
+// 被映射为 OpenAI response.output_text.annotation.added 事件。
+func TestCitationsDeltaMapsToAnnotationAdded(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	// 打开 text block
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	// web_search_result_location citation → url_citation
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			Type: "citations_delta",
+			Citation: anthropic.CitationsDeltaCitationUnion{
+				Type:  "web_search_result_location",
+				Title: "Go Docs",
+				URL:   "https://go.dev",
+			},
+		},
+	})
+	if len(evs) != 1 || evs[0].Type != "response.output_text.annotation.added" {
+		t.Fatalf("expected annotation.added event, got %+v", evs)
+	}
+	payload := decodePayload(t, evs[0].Data)
+	ann, _ := payload["annotation"].(map[string]any)
+	if ann == nil || ann["type"] != "url_citation" || ann["url"] != "https://go.dev" {
+		t.Fatalf("expected url_citation annotation, got %v", ann)
+	}
+	// 验证 annotation_index 从 0 开始。
+	if payload["annotation_index"] != float64(0) {
+		t.Fatalf("expected annotation_index=0 for first annotation, got %v", payload["annotation_index"])
+	}
+}
+
+// TestCitationsDeltaCharLocationMapsToFileCitation 验证 char_location citation
+// 被映射为 file_citation（document_title → filename）。
+func TestCitationsDeltaCharLocationMapsToFileCitation(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			Type: "citations_delta",
+			Citation: anthropic.CitationsDeltaCitationUnion{
+				Type:           "char_location",
+				CitedText:      "hello",
+				DocumentIndex:  0,
+				DocumentTitle:  "doc.pdf",
+				StartCharIndex: 0,
+				EndCharIndex:   5,
+			},
+		},
+	})
+	if len(evs) != 1 || evs[0].Type != "response.output_text.annotation.added" {
+		t.Fatalf("expected annotation.added event, got %+v", evs)
+	}
+	payload := decodePayload(t, evs[0].Data)
+	ann, _ := payload["annotation"].(map[string]any)
+	if ann == nil || ann["type"] != "file_citation" || ann["filename"] != "doc.pdf" {
+		t.Fatalf("expected file_citation with filename=doc.pdf, got %v", ann)
+	}
+	// file_citation 不应包含 start_index/end_index（OpenAI file_citation schema 无此字段）。
+	if _, ok := ann["start_index"]; ok {
+		t.Fatalf("file_citation should not have start_index, got %v", ann)
+	}
+}
+
+// TestCitationsDeltaUnknownTypeSkipped 验证未知 citation type 被跳过。
+func TestCitationsDeltaUnknownTypeSkipped(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			Type: "citations_delta",
+			Citation: anthropic.CitationsDeltaCitationUnion{
+				Type: "totally_unknown_citation_type",
+			},
+		},
+	})
+	if len(evs) != 0 {
+		t.Fatalf("expected no events for unknown citation type, got %+v", evs)
+	}
+}
+
+// TestCitationsDeltaOutsideTextBlock 验证 text block 未打开时 citation delta 被忽略。
+func TestCitationsDeltaOutsideTextBlock(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	// 不打开 text block，直接发 citations_delta
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{
+			Type: "citations_delta",
+			Citation: anthropic.CitationsDeltaCitationUnion{
+				Type:  "web_search_result_location",
+				Title: "Go Docs",
+				URL:   "https://go.dev",
+			},
+		},
+	})
+	if len(evs) != 0 {
+		t.Fatalf("expected no events when text block not open, got %+v", evs)
 	}
 }
 
