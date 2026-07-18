@@ -18,15 +18,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// DefaultSessionMaxBytes is used when session.max_bytes is omitted or 0.
-const DefaultSessionMaxBytes int64 = 64 * 1024 * 1024
-
-// DefaultSessionMaxEntryBytes is used when session.max_entry_bytes is omitted or 0.
-const DefaultSessionMaxEntryBytes int64 = 2 * 1024 * 1024
-
-// DefaultSessionPath is the on-disk Badger path for session state.
-const DefaultSessionPath = "data/session"
-
 const envPrefix = "CODEX_API_GATEWAY_"
 
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -35,7 +26,6 @@ var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 type Config struct {
 	Server  ServerCfg  `koanf:"server" yaml:"server"`
 	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
-	Session SessionCfg `koanf:"session" yaml:"session"`
 	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker"`
 	Cache   CacheCfg   `koanf:"cache" yaml:"cache"`
 	// BaseInstructionsFile 指向一个文本文件，其内容作为 Codex ModelInfo 的
@@ -69,14 +59,6 @@ type LoggingCfg struct {
 	Format string `koanf:"format" yaml:"format"`
 	// File 非空时日志写入该文件（追加，进程生命周期常开）；为空则写 stderr。
 	File string `koanf:"file" yaml:"file"`
-}
-
-// SessionCfg configures previous_response_id session storage.
-type SessionCfg struct {
-	Path          string   `koanf:"path" yaml:"path"`
-	TTL           Duration `koanf:"ttl" yaml:"ttl"`
-	MaxBytes      int64    `koanf:"max_bytes" yaml:"max_bytes"`
-	MaxEntryBytes int64    `koanf:"max_entry_bytes" yaml:"max_entry_bytes"`
 }
 
 // CacheCfg 配置 Anthropic prompt cache 的 TTL。
@@ -199,10 +181,6 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	slog.Info("配置加载完成",
-		"sources", cfg.sourceNames(),
-		"session_path", cfg.Session.Path,
-		"session_max_bytes", cfg.Session.MaxBytes,
-		"session_ttl", time.Duration(cfg.Session.TTL).String(),
 		"breaker_max_retries", cfg.Breaker.MaxRetries,
 		"cache_ttl", cfg.Cache.TTL)
 	return &cfg, nil
@@ -268,10 +246,6 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.level", &cfg.Logging.Level},
 		{"logging.format", &cfg.Logging.Format},
 		{"logging.file", &cfg.Logging.File},
-		{"session.path", &cfg.Session.Path},
-		{"session.ttl", &cfg.Session.TTL},
-		{"session.max_bytes", &cfg.Session.MaxBytes},
-		{"session.max_entry_bytes", &cfg.Session.MaxEntryBytes},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
 		{"breaker.cooldown", &cfg.Breaker.Cooldown},
 		{"breaker.degrade_threshold", &cfg.Breaker.DegradeThreshold},
@@ -369,24 +343,6 @@ func (c *Config) validate() error {
 	case "text", "json":
 	default:
 		return fmt.Errorf("config: logging.format must be text or json, got %q", c.Logging.Format)
-	}
-	if c.Session.MaxBytes < 0 {
-		return fmt.Errorf("config: session.max_bytes must be 0 (default) or positive, got %d", c.Session.MaxBytes)
-	}
-	if c.Session.MaxEntryBytes < 0 {
-		return fmt.Errorf("config: session.max_entry_bytes must be 0 (default) or positive, got %d", c.Session.MaxEntryBytes)
-	}
-	if c.Session.MaxBytes == 0 {
-		c.Session.MaxBytes = DefaultSessionMaxBytes
-	}
-	if c.Session.MaxEntryBytes == 0 {
-		c.Session.MaxEntryBytes = DefaultSessionMaxEntryBytes
-	}
-	if c.Session.Path == "" {
-		c.Session.Path = DefaultSessionPath
-	}
-	if c.Session.TTL == 0 {
-		c.Session.TTL = Duration(time.Hour)
 	}
 	if c.Cache.TTL == "" {
 		c.Cache.TTL = "5m"
@@ -515,8 +471,6 @@ func scanDeprecated(m map[string]any) {
 			slog.Warn("忽略已废弃配置字段", "field", "priority", "replacement", "sources list order")
 		case "failure_threshold":
 			slog.Warn("忽略已废弃配置字段", "field", "failure_threshold", "replacement", "degrade_threshold")
-		case "max_entries":
-			slog.Warn("忽略已废弃配置字段", "field", "max_entries", "replacement", "session.max_bytes")
 		case "system_suffix":
 			slog.Warn("忽略已废弃配置字段", "field", "system_suffix", "replacement", "base_instructions_file")
 		}

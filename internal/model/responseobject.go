@@ -23,7 +23,6 @@ type ResponseObject struct {
 	ToolChoice         any                `json:"tool_choice,omitempty"`
 	ParallelToolCalls  *bool              `json:"parallel_tool_calls,omitempty"`
 	Reasoning          *ReasoningEcho     `json:"reasoning,omitempty"`
-	PreviousResponseID string             `json:"previous_response_id,omitempty"`
 	Truncation         string             `json:"truncation,omitempty"`
 	Store              *bool              `json:"store,omitempty"`
 }
@@ -73,7 +72,6 @@ type ResponseObjectParams struct {
 	ToolChoice         any
 	ParallelToolCalls  *bool
 	Reasoning          *ReasoningEcho
-	PreviousResponseID string
 	Truncation         string
 	Store              *bool
 }
@@ -97,7 +95,6 @@ func NewResponseObject(id, status, modelName string, createdAt int64, p Response
 		ToolChoice:         p.ToolChoice,
 		ParallelToolCalls:  p.ParallelToolCalls,
 		Reasoning:          p.Reasoning,
-		PreviousResponseID: p.PreviousResponseID,
 		Truncation:         p.Truncation,
 		Store:              p.Store,
 	}

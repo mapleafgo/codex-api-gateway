@@ -283,14 +283,12 @@ func (c *Converter) Feed(ev *anthropic.MessageStreamEventUnion) ([]model.SSEEven
 
 func (c *Converter) handleMessageStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	c.respID = ev.Message.ID
-	c.model = ev.Message.Model
-	upstreamModel := ev.Message.Model
+	// 网关常配 model_map 别名（如 gpt-5.5 → glm-5.2），上游返回的是真实模型，
+	// 但回给 Codex 的事件必须用客户端请求时的别名。clientModel 由 server 注入。
 	if c.clientModel != "" {
 		c.model = c.clientModel
-	}
-	if c.clientModel != "" && upstreamModel != "" && c.clientModel != upstreamModel {
-		slog.Debug("上游模型与客户端请求模型不一致（使用客户端别名）",
-			"response_id", c.respID, "client_model", c.clientModel, "upstream_model", upstreamModel)
+	} else {
+		c.model = ev.Message.Model
 	}
 	c.createdAt = time.Now().Unix()
 

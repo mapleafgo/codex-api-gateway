@@ -10,8 +10,6 @@ CodexApiGateway 是一个本地 OpenAI Responses API 兼容网关，用于让 Co
 - 支持多个 Anthropic 兼容后端源，按配置顺序作为优先级。
 - 首字节前故障转移：上游未开始流式输出前可切换到下一个源。
 - 断路器保护：失败降级、熔断、冷却、半开探测和恢复。
-- `previous_response_id` 会话缓存，用于无状态后端的多轮对话和工具调用衔接。
-- 尊重请求里的 `store: false`，此时不写入本地会话缓存，也不回填本地 `previous_response_id` 历史。
 - `/v1/models` 只返回配置文件 `models` 段显式声明的模型。
 - 结构化日志，支持等级过滤和 text/json 输出。
 - 配置文件支持 `${ENV}` 展开，也支持 `CODEX_API_GATEWAY_` 环境变量覆盖。
@@ -99,24 +97,6 @@ export CODEX_API_GATEWAY_BREAKER__MAX_RETRIES=2
 
 加载顺序是：先展开 `${ENV}` 并加载 YAML，再应用 `CODEX_API_GATEWAY_` 覆盖。因此覆盖变量优先级更高。
 
-### 会话缓存
-
-```yaml
-session:
-  path: data/session
-  ttl: 1h
-  max_bytes: 67108864
-  max_entry_bytes: 2097152
-```
-
-说明：
-
-- `path`：Badger 存储目录，默认 `data/session`。服务重启后仍可通过未过期的 `previous_response_id` 回填上下文。
-- `ttl`：单条响应上下文的 Badger entry TTL，默认 1h。过期后不可读取，并由 Badger 后续 GC 清理。
-- `max_bytes`：整个 `SessionStore` 的字节预算，默认 64 MiB。超过预算时按内存 LRU 索引淘汰最久未使用的记录，并同步删除 Badger key。
-- `max_entry_bytes`：单条响应上下文的最大可缓存字节数，默认 2 MiB。超过后直接跳过保存，避免大响应长期占用上下文缓存。
-- `max_entries` 已移除，不再按条目数限制。
-
 ### 后端源
 
 ```yaml
@@ -196,18 +176,16 @@ sources:
 ```text
 Codex
   -> POST /v1/responses
-  -> 按 store 策略决定是否回填 previous_response_id 会话上下文
   -> Responses 请求转换为 Anthropic Messages 请求
   -> 按运行时优先级选择健康上游源
   -> 接收 Anthropic SSE
   -> 转换为 Responses SSE
-  -> 保存本轮有效 input + output 供下一轮 previous_response_id 使用
   -> 返回给 Codex
 ```
 
 故障转移只发生在上游首个事件到达之前。一旦某个源开始输出流，当前请求就锁定该源；后续中断会作为本次响应失败返回，不再切换源。
 
-当请求未设置 `store` 或设置为 `true` 时，网关会把本轮有效 input 和本轮 output 一起保存到本地 `SessionStore`，供下一轮 `previous_response_id` 回填使用；这模拟 OpenAI Responses 的链式上下文语义。当请求设置 `store: false` 时，网关不会保存本轮上下文，也不会使用请求里的 `previous_response_id` 做本地历史回填；这种模式要求客户端在后续请求中自行携带完整历史，例如带有 `reasoning.encrypted_content` 的 stateless/ZDR transcript。
+网关无状态：不缓存 `previous_response_id` 上下文，也不保存本轮 input/output。Codex CLI 走 HTTP Responses 时本就不发送 `previous_response_id`，而是每轮携带完整对话历史（带 `reasoning.encrypted_content` 的 stateless/ZDR transcript），网关只做协议转换与转发。
 
 ## 开发
 

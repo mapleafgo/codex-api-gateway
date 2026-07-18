@@ -111,19 +111,9 @@ func validateNamespaceToolChildren(data []byte) error {
 }
 
 // ToAnthropic converts a Response request into an Anthropic Messages request.
-// prevItems carries stored output items from a previous turn; plaintext thinking
-// signatures are looked up by reasoning item ID and injected into ThinkingBlockParam.
 // 第二个返回值是 MCP beta 注入定义（mcp_servers + mcp_toolset），由 collectMCP 产出；
 // 非 nil 时由 client 层注入到 marshal 后的请求体（SDK 不支持这组字段）。
-func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevItems ...model.OutputItem) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
-	// Build a signature lookup from stored reasoning items.
-	sigByID := map[string]string{}
-	for _, it := range prevItems {
-		if it.Type == model.ItemTypeReasoning && it.Signature != "" {
-			sigByID[it.ID] = it.Signature
-		}
-	}
-
+func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 	out := &anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: 4096,
@@ -150,8 +140,9 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	// thinking best practice is to carry only the latest thinking block across
 	// turns — older ones add tokens and attention noise without helping the
 	// model, and a large accumulated thinking context pushes upstream models
-	// toward early end_turn. All reasoning signatures remain available via
-	// sigByID, so the preserved block still resolves its correct signature.
+	// toward early end_turn. Codex (HTTP Responses) carries the latest
+	// thinking block's signature in encrypted_content, so the preserved block
+	// still resolves its signature.
 	lastReasoning := -1
 	for i := range req.Input.OfInputItemList {
 		if req.Input.OfInputItemList[i].OfReasoning != nil {
@@ -163,7 +154,7 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 		if item.OfReasoning != nil && i != lastReasoning {
 			continue
 		}
-		if err := appendItem(out, &sysParts, item, sigByID); err != nil {
+		if err := appendItem(out, &sysParts, item); err != nil {
 			return nil, nil, fmt.Errorf("convert input item: %w", err)
 		}
 	}
@@ -291,12 +282,12 @@ type instructionPart struct {
 	text string
 }
 
-func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam, sigByID map[string]string) error {
+func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam) error {
 	if item.OfMessage != nil {
 		return appendMessage(out, sysParts, item.OfMessage)
 	}
 	if item.OfReasoning != nil {
-		return appendReasoning(out, item.OfReasoning, sigByID)
+		return appendReasoning(out, item.OfReasoning)
 	}
 	if item.OfFunctionCall != nil {
 		return appendFunctionCall(out, item.OfFunctionCall)
@@ -475,7 +466,7 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 	return nil
 }
 
-func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseReasoningItemParam, sigByID map[string]string) error {
+func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseReasoningItemParam) error {
 	text := ""
 	if len(r.Summary) > 0 {
 		text = r.Summary[0].Text
@@ -493,10 +484,11 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 		}
 		return nil
 	}
-	// 无 encrypted_content 时走 session enrich 路径（disable_response_storage=false），
-	// reasoning item 由 Enrich 从 session store 回填，signature 在 sigByID 中查找。
-	sig := sigByID[r.ID]
-	attachThinking(out, text, sig)
+	// 无 encrypted_content：Codex HTTP Responses 下不应出现。signature 不可恢复，
+	// 若强行 attach 空 signature 会被上游拒绝，这里跳过并 WARN（静默跳过约定）。
+	slog.Warn("reasoning item 缺少 encrypted_content，无法恢复 thinking signature，对应数据被丢弃",
+		"reasoning_id", r.ID,
+		"impact", "该 reasoning item 不转递给上游")
 	return nil
 }
 

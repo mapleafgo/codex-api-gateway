@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,7 +84,7 @@ func TestResponsesEndpointStreamsSSE(t *testing.T) {
 	}
 }
 
-func TestResponsesRequestLogIncludesStorageDiagnostics(t *testing.T) {
+func TestResponsesRequestLogIncludesInputDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -118,9 +117,6 @@ func TestResponsesRequestLogIncludesStorageDiagnostics(t *testing.T) {
 
 	got := logs.String()
 	for _, want := range []string{
-		`"previous_response_id_present":false`,
-		`"store_explicit":false`,
-		`"store_effective":true`,
 		`"input_item_type_counts"`,
 		`"message":1`,
 		`"reasoning":1`,
@@ -130,154 +126,6 @@ func TestResponsesRequestLogIncludesStorageDiagnostics(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("request log missing %s. logs:\n%s", want, got)
 		}
-	}
-}
-
-func TestResponsesStoreFalseSkipsSessionSave(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "text/event-stream")
-		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_store_false\",\"model\":\"claude\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
-	}
-	srv := New(cfg)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "event: response.completed\n") {
-		t.Fatalf("missing response.completed: %s", body)
-	}
-	if !strings.Contains(string(body), `"store":false`) {
-		t.Fatalf("response should echo store=false. body:\n%s", body)
-	}
-	if _, ok := srv.sess.Get("m_store_false"); ok {
-		t.Fatalf("store=false must not save response output in session store. body:\n%s", body)
-	}
-}
-
-func TestResponsesStoreFalseSkipsPreviousResponseEnrich(t *testing.T) {
-	requests := make(chan string, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requests <- string(body)
-		w.Header().Set("content-type", "text/event-stream")
-		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_no_enrich\",\"model\":\"claude\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"fresh\"}}\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
-	}
-	srv := New(cfg)
-	srv.sess.Save("resp_cached", "up", []model.OutputItem{
-		{
-			Type:    "message",
-			Role:    "assistant",
-			Content: []model.OutputText{{Type: "output_text", Text: "cached-answer"}},
-		},
-	})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","store":false,"previous_response_id":"resp_cached","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"new question"}]}],"stream":true}`))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "event: response.completed\n") {
-		t.Fatalf("missing response.completed: %s", body)
-	}
-
-	select {
-	case upstreamBody := <-requests:
-		if strings.Contains(upstreamBody, "cached-answer") {
-			t.Fatalf("store=false must not enrich previous_response_id into upstream request: %s", upstreamBody)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("upstream did not receive request")
-	}
-}
-
-func TestResponsesPreviousResponseIDReplaysInputAndOutputContext(t *testing.T) {
-	requests := make(chan string, 2)
-	var calls atomic.Int64
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		requests <- string(body)
-		id := "m_context1"
-		text := "Paris"
-		if calls.Add(1) == 2 {
-			id = "m_context2"
-			text = "About 2.1 million"
-		}
-		w.Header().Set("content-type", "text/event-stream")
-		io.WriteString(w, `data: {"type":"message_start","message":{"id":"`+id+`","model":"claude"}}`+"\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
-		io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+text+`"}}`+"\n\n")
-		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
-		w.(http.Flusher).Flush()
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
-	}
-	srv := New(cfg)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp1, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"What is the capital of France?"}]}],"stream":true}`))
-	if err != nil {
-		t.Fatalf("round1 post: %v", err)
-	}
-	io.Copy(io.Discard, resp1.Body)
-	resp1.Body.Close()
-	<-requests
-
-	resp2, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","previous_response_id":"m_context1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"And its population?"}]}],"stream":true}`))
-	if err != nil {
-		t.Fatalf("round2 post: %v", err)
-	}
-	io.Copy(io.Discard, resp2.Body)
-	resp2.Body.Close()
-
-	select {
-	case upstreamBody := <-requests:
-		for _, want := range []string{"What is the capital of France?", "Paris", "And its population?"} {
-			if !strings.Contains(upstreamBody, want) {
-				t.Fatalf("round2 upstream request missing %q: %s", want, upstreamBody)
-			}
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("upstream did not receive round2 request")
 	}
 }
 
@@ -476,58 +324,6 @@ func TestResponsesMidStreamErrorNoDoubleFailed(t *testing.T) {
 	count := strings.Count(string(body), "event: response.failed\n")
 	if count != 1 {
 		t.Fatalf("expected exactly 1 response.failed (I1: double-failed guard), got %d. body:\n%s", count, body)
-	}
-}
-
-// TestResponsesServerFailureIsNotPersisted 验证服务端失败响应不能通过 previous_response_id 回放。
-func TestResponsesServerFailureIsNotPersisted(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
-	}
-	srv := New(cfg)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	// Extract response.id from the response.failed event.
-	var failedID string
-	for _, line := range strings.Split(string(body), "\n") {
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		payload := strings.TrimPrefix(line, "data: ")
-		var m map[string]any
-		if json.Unmarshal([]byte(payload), &m) != nil {
-			continue
-		}
-		if m["type"] != "response.failed" {
-			continue
-		}
-		if r, ok := m["response"].(map[string]any); ok {
-			if id, ok := r["id"].(string); ok {
-				failedID = id
-			}
-		}
-	}
-	if failedID == "" {
-		t.Fatalf("could not extract response.id from response.failed event. body:\n%s", body)
-	}
-
-	if _, ok := srv.sess.Get(failedID); ok {
-		t.Fatalf("server-side failed response %q must not be persisted. body:\n%s", failedID, body)
 	}
 }
 

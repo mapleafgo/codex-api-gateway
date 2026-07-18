@@ -7,7 +7,7 @@
 - `cmd/server/`：服务入口、HTTP 路由和启动逻辑。
 - `internal/convert/`：Responses 请求到 Anthropic 请求的转换。
 - `internal/streamconv/`：Anthropic SSE 到 Responses SSE 的流式转换。
-- `internal/server/`、`internal/scheduler/`、`internal/breaker/`、`internal/store/`：服务编排、源选择、熔断与会话状态。
+- `internal/server/`、`internal/scheduler/`、`internal/breaker/`：服务编排、源选择与熔断。
 - `internal/model/`：协议模型与事件类型。
 - `internal/config/`：YAML 配置加载与校验。
 - `docs/`：协议说明、设计文档和实施计划。

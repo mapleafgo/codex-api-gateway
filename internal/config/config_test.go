@@ -15,7 +15,6 @@ func TestLoadOverridesWithEnvProvider(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
 server: {listen: ":9090"}
-session: {ttl: 30m, path: /tmp/codex-session-test, max_bytes: 1048576, max_entry_bytes: 262144}
 breaker: {first_byte_timeout: 8s, degrade_threshold: 3, recover_threshold: 1, cooldown: 20s, half_open_probes: 1, recovery: normal}
 sources:
   - name: official
@@ -39,15 +38,6 @@ sources:
 	}
 	if cfg.Breaker.DegradeThreshold != 3 {
 		t.Fatalf("bad degrade_threshold: %d", cfg.Breaker.DegradeThreshold)
-	}
-	if cfg.Session.MaxBytes != 1048576 {
-		t.Fatalf("bad max_bytes: %d", cfg.Session.MaxBytes)
-	}
-	if cfg.Session.MaxEntryBytes != 262144 {
-		t.Fatalf("bad max_entry_bytes: %d", cfg.Session.MaxEntryBytes)
-	}
-	if cfg.Session.Path != "/tmp/codex-session-test" {
-		t.Fatalf("bad session path: %q", cfg.Session.Path)
 	}
 }
 
@@ -113,18 +103,6 @@ sources:
 	}
 	if cfg.Breaker.Recovery != "normal" {
 		t.Fatalf("default recovery: got %q, want normal", cfg.Breaker.Recovery)
-	}
-	if cfg.Session.MaxBytes != DefaultSessionMaxBytes {
-		t.Fatalf("default max_bytes: got %d, want %d", cfg.Session.MaxBytes, DefaultSessionMaxBytes)
-	}
-	if cfg.Session.MaxEntryBytes != DefaultSessionMaxEntryBytes {
-		t.Fatalf("default max_entry_bytes: got %d, want %d", cfg.Session.MaxEntryBytes, DefaultSessionMaxEntryBytes)
-	}
-	if cfg.Session.Path != DefaultSessionPath {
-		t.Fatalf("default session path: got %q, want %q", cfg.Session.Path, DefaultSessionPath)
-	}
-	if cfg.Session.TTL != Duration(time.Hour) {
-		t.Fatalf("default ttl: got %v, want 1h", cfg.Session.TTL)
 	}
 	if cfg.Logging.Level != "info" {
 		t.Fatalf("default logging.level: got %q, want info", cfg.Logging.Level)
@@ -266,47 +244,6 @@ sources:
 	}
 	if lc.Format != "text" {
 		t.Fatalf("default format: got %q, want text", lc.Format)
-	}
-}
-
-func TestLoadOverridesSessionByteBudgetFromEnv(t *testing.T) {
-	t.Setenv("CODEX_API_GATEWAY_SESSION__MAX_BYTES", "2097152")
-	t.Setenv("CODEX_API_GATEWAY_SESSION__MAX_ENTRY_BYTES", "524288")
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	_ = os.WriteFile(path, []byte(`
-session:
-  max_bytes: 1048576
-  max_entry_bytes: 262144
-sources:
-  - name: s1
-    base_url: http://upstream
-`), 0644)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Session.MaxBytes != 2097152 {
-		t.Fatalf("env max_bytes override: got %d, want 2097152", cfg.Session.MaxBytes)
-	}
-	if cfg.Session.MaxEntryBytes != 524288 {
-		t.Fatalf("env max_entry_bytes override: got %d, want 524288", cfg.Session.MaxEntryBytes)
-	}
-}
-
-func TestSessionRejectsNegativeByteBudget(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	_ = os.WriteFile(path, []byte(`
-session:
-  max_bytes: -1
-sources:
-  - name: s1
-    base_url: http://upstream
-`), 0644)
-	if _, err := Load(path); err == nil {
-		t.Fatalf("expected error for negative max_bytes")
 	}
 }
 

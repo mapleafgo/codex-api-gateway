@@ -10,7 +10,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
@@ -283,9 +282,9 @@ func TestSetLastToolCacheControlUnknownVariantNoPanic(t *testing.T) {
 func TestOnlyLatestReasoningPreservedAsThinking(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
-		{"type":"reasoning","id":"rs_old","summary":[{"type":"summary_text","text":"old thinking"}]},
+		{"type":"reasoning","id":"rs_old","summary":[{"type":"summary_text","text":"old thinking"}],"encrypted_content":"sigOld"},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
-		{"type":"reasoning","id":"rs_new","summary":[{"type":"summary_text","text":"new thinking"}]},
+		{"type":"reasoning","id":"rs_new","summary":[{"type":"summary_text","text":"new thinking"}],"encrypted_content":"sigNew"},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a2"}]}
 	],"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
@@ -1433,30 +1432,6 @@ func TestStringInput(t *testing.T) {
 	}
 	if out.Messages[0].Role != anthropic.MessageParamRoleUser {
 		t.Fatalf("expected user role")
-	}
-}
-
-func TestPlaintextThinkingSignatureRoundTrip(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"reasoning","id":"rs_0","summary":[{"type":"summary_text","text":"think"}]}],"stream":true}`)
-	prevItems := []model.OutputItem{
-		{Type: "reasoning", ID: "rs_0", Signature: "EqQBCg..."},
-	}
-	out, _, err := ToAnthropic(req, &config.Config{}, prevItems...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Find the thinking block in the assistant message.
-	found := false
-	for _, msg := range out.Messages {
-		for _, blk := range msg.Content {
-			if blk.OfThinking != nil && blk.OfThinking.Signature == "EqQBCg..." {
-				found = true
-			}
-		}
-	}
-	if !found {
-		b, _ := json.Marshal(out)
-		t.Fatalf("thinking block with signature not found: %s", b)
 	}
 }
 

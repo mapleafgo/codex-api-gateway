@@ -17,20 +17,11 @@ server:
 # level: debug | info | warn | error
 # format: text | json
 # file: 非空时日志写入该文件（追加），为空写 stderr。排查时配合 level: debug。
-# debug 会输出输入项、流式事件、SSE 转换、会话保存等细粒度诊断日志。
+# debug 会输出输入项、流式事件、SSE 转换等细粒度诊断日志。
 logging:
   level: info
   format: text
   # file: gateway.log
-
-# 会话状态存储
-# enrich 机制：按 previous_response_id 缓存本轮有效 input + output，
-# 下一轮回填完整上下文，使无状态后端也能正确完成多轮对话和工具调用。
-session:
-  path: data/session             # Badger 存储目录；留空 = 默认 data/session
-  ttl: 1h                        # Badger entry TTL，过期后不可读取并等待 GC
-  max_bytes: 67108864            # 会话缓存总字节预算；0/留空 = 默认 64 MiB
-  max_entry_bytes: 2097152       # 单条响应可缓存的最大字节数；0/留空 = 默认 2 MiB
 
 # 全局断路器（所有后端源共享，可被单源 breaker 覆盖）
 # 状态机：

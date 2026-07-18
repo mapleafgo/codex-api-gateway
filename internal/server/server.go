@@ -1,4 +1,4 @@
-// Package server wires config, session store, scheduler, and HTTP handlers
+// Package server wires config, scheduler, and HTTP handlers
 // into a single /v1/responses endpoint that translates OpenAI Responses API
 // requests to Anthropic Messages streams and back.
 package server
@@ -19,7 +19,6 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/scheduler"
-	"github.com/mapleafgo/codex-api-gateway/internal/store"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
@@ -30,41 +29,27 @@ var (
 	anMessageStop       = string(aconstant.ValueOf[aconstant.MessageStop]())
 )
 
-// Server wires config, session store, scheduler, and HTTP handlers.
+// Server wires config, scheduler, and HTTP handlers.
 type Server struct {
 	cfg       *config.Config
-	sess      *store.SessionStore
 	sch       *scheduler.Scheduler
 	startedAt int64
 }
 
 // New builds a Server.
 func New(cfg *config.Config) *Server {
-	sess := store.New(cfg.Session.MaxBytes, cfg.Session.MaxEntryBytes, time.Duration(cfg.Session.TTL))
-	if cfg.Session.Path != "" {
-		var err error
-		sess, err = store.Open(cfg.Session.Path, cfg.Session.MaxBytes, cfg.Session.MaxEntryBytes, time.Duration(cfg.Session.TTL))
-		if err != nil {
-			panic(fmt.Sprintf("open session store: %v", err))
-		}
-	}
 	slog.Info("初始化服务组件",
-		"session_path", cfg.Session.Path,
-		"session_max_bytes", cfg.Session.MaxBytes,
-		"session_max_entry_bytes", cfg.Session.MaxEntryBytes,
 		"sources", len(cfg.Sources))
 	return &Server{
 		cfg:       cfg,
-		sess:      sess,
 		sch:       scheduler.New(cfg),
 		startedAt: time.Now().Unix(),
 	}
 }
 
-// Close releases server resources.
-func (s *Server) Close() error {
-	return s.sess.Close()
-}
+// Close releases server resources. Currently a no-op; retained as the
+// shutdown hook for future resources.
+func (s *Server) Close() error { return nil }
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
@@ -266,17 +251,6 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	prevID := ""
-	prevIDPresent := req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != ""
-	if req.PreviousResponseID.Valid() {
-		prevID = req.PreviousResponseID.Value
-	}
-	storeExplicit := req.Store.Valid()
-	storeValue := false
-	if storeExplicit {
-		storeValue = req.Store.Value
-	}
-	storeEffective := shouldStoreResponse(req)
 	slog.Info("收到响应请求",
 		"method", r.Method,
 		"path", r.URL.Path,
@@ -286,11 +260,6 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		"instructions_len", len(req.Instructions.Value),
 		"reasoning_effort", string(req.Reasoning.Effort),
 		"reasoning_summary", string(req.Reasoning.Summary),
-		"previous_response_id", prevID,
-		"previous_response_id_present", prevIDPresent,
-		"store_explicit", storeExplicit,
-		"store_value", storeValue,
-		"store_effective", storeEffective,
 		slog.Group("input_item_type_counts", inputItemTypeCountAttrs(req.Input.OfInputItemList)...),
 		slog.Group("tools", toolSummaryAttrs(req.Tools)...))
 	// 逐条打印 input item 类型，用于诊断 Codex 发来的对话历史结构
@@ -338,13 +307,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var evCount int
-	var executedReq *oairesponses.ResponseNewParams
 	sourceName, execErr := s.sch.ExecutePrepared(r.Context(), func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 		reqForSource, anthReq, mcp, err := s.buildAnthropicRequest(body, src)
 		if err != nil {
 			return nil, nil, err
 		}
-		executedReq = reqForSource
 		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
 		conv.SetDeclaredServerTools(convert.DeclaredServerTools(reqForSource))
 		sysLen := 0
@@ -390,8 +357,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	// Compute the response ID once so the error event and session save share
-	// the same value (I2: previously two newResponseID() calls produced
+	// Compute the response ID once so the error event and the completed
+	// event share the same value (I2: previously two newResponseID() calls produced
 	// different IDs when conv.RespID() == "").
 	id := conv.RespID()
 	if id == "" {
@@ -443,38 +410,6 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if shouldStoreResponse(req) && !conv.Failed() && (execErr == nil || conv.Done()) {
-		items := conv.OutputItems()
-		if !conv.Done() && len(items) == 0 {
-			if executedReq != nil {
-				items = collectOutput(executedReq)
-			} else {
-				items = collectOutput(req)
-			}
-		}
-		reqToStore := executedReq
-		if reqToStore == nil {
-			reqToStore = req
-		}
-		if conv.Done() && len(items) == 0 {
-			reqToStore = nil
-		}
-		s.sess.SaveResponse(id, sourceName, reqToStore, items)
-		slog.Debug("保存会话上下文",
-			"response_id", id,
-			"source", sourceName,
-			"items", len(items),
-			"previous_response_id", req.PreviousResponseID.Value,
-			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
-			"store_effective", true)
-	} else {
-		slog.Debug("跳过会话上下文保存",
-			"response_id", id,
-			"source", sourceName,
-			"previous_response_id", req.PreviousResponseID.Value,
-			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
-			"store", shouldStoreResponse(req))
-	}
 }
 
 func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
@@ -482,25 +417,7 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	var prevItems []model.OutputItem
-	if shouldStoreResponse(req) {
-		prevItems = s.sess.Enrich(req, src.Name)
-		slog.Debug("会话历史回填完成",
-			"source", src.Name,
-			"previous_response_id", req.PreviousResponseID.Value,
-			"previous_response_id_present", req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "",
-			"previous_items", len(prevItems),
-			"input_items_after_enrich", len(req.Input.OfInputItemList),
-			"input_string_len_after_enrich", len(req.Input.OfString.Value),
-			"store_effective", true,
-			slog.Group("input_item_type_counts_after_enrich", inputItemTypeCountAttrs(req.Input.OfInputItemList)...))
-	} else if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
-		slog.Warn("跳过 previous_response_id 会话回填",
-			"source", src.Name,
-			"previous_response_id", req.PreviousResponseID.Value,
-			"store", false)
-	}
-	anthReq, mcp, err := convert.ToAnthropic(req, s.cfg, prevItems...)
+	anthReq, mcp, err := convert.ToAnthropic(req, s.cfg)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -519,10 +436,6 @@ func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
 	// 此时才用 reasoning_summary_* 事件格式。其它情况上游返回 plaintext thinking，
 	// 走 reasoning_text.* 事件。
 	return string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
-}
-
-func shouldStoreResponse(req *oairesponses.ResponseNewParams) bool {
-	return !req.Store.Valid() || req.Store.Value
 }
 
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
@@ -583,26 +496,6 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 				"impact", "非 user_id 的键值对不会传递给上游")
 		}
 	}
-	// prompt_cache_*：网关自主管理 cache_control。
-	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
-		slog.Warn("忽略 prompt_cache_key（网关自主管理 cache_control），对应数据被丢弃",
-			"field", "prompt_cache_key",
-			"impact", "Anthropic 使用内容哈希缓存，不认客户端 key")
-	}
-	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
-		slog.Warn("忽略 prompt_cache_options（网关自主管理 cache_control），对应数据被丢弃",
-			"field", "prompt_cache_options",
-			"mode", req.PromptCacheOptions.Mode,
-			"ttl", req.PromptCacheOptions.Ttl,
-			"impact", "OpenAI options 结构对 Anthropic 无意义")
-	}
-	// deprecated prompt_cache_retention。
-	if req.PromptCacheRetention != "" {
-		slog.Warn("忽略 deprecated 字段 prompt_cache_retention（与 Anthropic cache_control 语义不同），对应数据被丢弃",
-			"field", "prompt_cache_retention",
-			"value", string(req.PromptCacheRetention),
-			"impact", "retention 策略不生效")
-	}
 	// prompt：引用 OpenAI prompt template，网关无服务端模板存储。
 	if req.Prompt.ID != "" {
 		slog.Warn("忽略 prompt（网关无 OpenAI prompt 模板存储能力），对应数据被丢弃",
@@ -616,7 +509,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"field", "background",
 			"impact", "请求不会被转为后台执行")
 	}
-	// conversation：本地 store 不是 OpenAI Conversation API。
+	// conversation：网关无状态，不是 OpenAI Conversation API。
 	if req.Conversation.OfString.Valid() || req.Conversation.OfConversationObject != nil {
 		slog.Warn("忽略 conversation（网关非 OpenAI Conversation API），对应数据被丢弃",
 			"field", "conversation",
@@ -673,7 +566,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 	}
 	// deprecated user：OpenAI 已废弃，需决定忽略或映射 metadata。
 	if req.User.Valid() && req.User.Value != "" {
-		slog.Warn("忽略 deprecated 字段 user（OpenAI 已废弃，建议改用 safety_identifier / prompt_cache_key），对应数据被丢弃",
+		slog.Warn("忽略 deprecated 字段 user（OpenAI 已废弃，建议改用 safety_identifier / metadata.user_id），对应数据被丢弃",
 			"field", "user",
 			"impact", "不会传递给上游（可改用 metadata.user_id）")
 	}
@@ -696,9 +589,6 @@ func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectPa
 	if req.MaxOutputTokens.Valid() {
 		v := req.MaxOutputTokens.Value
 		p.MaxOutputTokens = &v
-	}
-	if req.PreviousResponseID.Valid() {
-		p.PreviousResponseID = req.PreviousResponseID.Value
 	}
 	if req.ParallelToolCalls.Valid() {
 		v := req.ParallelToolCalls.Value
@@ -895,52 +785,6 @@ func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks,
 		}
 	}
 	return
-}
-
-// collectOutput collects function_call/reasoning items from the request's input
-// for session storage fallback.
-func collectOutput(req *oairesponses.ResponseNewParams) []model.OutputItem {
-	var out []model.OutputItem
-	for _, it := range req.Input.OfInputItemList {
-		if it.OfFunctionCall != nil {
-			fc := it.OfFunctionCall
-			out = append(out, model.OutputItem{
-				Type: model.ItemTypeFunctionCall, CallID: fc.CallID, Name: fc.Name,
-				Arguments: fc.Arguments,
-			})
-		} else if it.OfCustomToolCall != nil {
-			call := it.OfCustomToolCall
-			out = append(out, model.OutputItem{
-				Type:      model.ItemTypeCustomToolCall,
-				ID:        call.ID.Value,
-				CallID:    call.CallID,
-				Name:      call.Name,
-				Input:     call.Input,
-				Namespace: call.Namespace.Value,
-			})
-		} else if it.OfCustomToolCallOutput != nil {
-			output := it.OfCustomToolCallOutput
-			out = append(out, model.OutputItem{
-				Type:   model.ItemTypeCustomToolCallOut,
-				ID:     output.ID.Value,
-				CallID: output.CallID,
-				Output: output.Output.OfString.Value,
-			})
-		} else if it.OfReasoning != nil {
-			r := it.OfReasoning
-			item := model.OutputItem{Type: model.ItemTypeReasoning, ID: r.ID}
-			for _, s := range r.Summary {
-				item.Summary = append(item.Summary, model.OutputText{
-					Type: model.ContentTypeSummaryText, Text: s.Text,
-				})
-			}
-			if r.EncryptedContent.Valid() {
-				item.EncryptedContent = r.EncryptedContent.Value
-			}
-			out = append(out, item)
-		}
-	}
-	return out
 }
 
 func newResponseID() string {
