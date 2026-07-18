@@ -678,7 +678,7 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 			{Name: "up", BaseURL: upstream.URL, ModelMap: map[string]string{"gpt-5": "claude"}},
 		},
 		ModelOverrides: map[string]config.ModelOverride{
-			"gpt-5": {ContextWindow: &ctxWindow},
+			"claude": {ContextWindow: &ctxWindow}, // 只配真实模型 claude，别名 gpt-5 应继承
 		},
 	}
 	srv := New(cfg)

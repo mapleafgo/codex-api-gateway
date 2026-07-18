@@ -170,40 +170,68 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	}
 
 	// 应用 config.yaml models.<slug> 覆盖（仅覆盖显式配置的字段）
-	if ov, ok := s.cfg.ModelOverrides[slug]; ok {
-		if ov.DisplayName != nil {
-			info.DisplayName = *ov.DisplayName
-		}
-		if ov.Description != nil {
-			info.Description = ov.Description
-		}
-		if ov.ContextWindow != nil {
-			info.ContextWindow = ov.ContextWindow
-		}
-		if ov.MaxContextWindow != nil {
-			info.MaxContextWindow = ov.MaxContextWindow
-		}
-		if ov.AutoCompactTokenLimit != nil {
-			info.AutoCompactTokenLimit = ov.AutoCompactTokenLimit
-		}
-		if ov.EffectiveContextWindowPct != nil {
-			info.EffectiveContextWindowPercent = *ov.EffectiveContextWindowPct
-		}
-		if ov.SupportsSearchTool != nil {
-			info.SupportsSearchTool = *ov.SupportsSearchTool
-		}
-		if ov.SupportsParallelToolCalls != nil {
-			info.SupportsParallelToolCalls = *ov.SupportsParallelToolCalls
-		}
-		if ov.SupportsReasoningSummaries != nil {
-			info.SupportsReasoningSummaries = *ov.SupportsReasoningSummaries
-			info.SupportsReasoningSummaryParameter = *ov.SupportsReasoningSummaries
-		}
-		if ov.SupportVerbosity != nil {
-			info.SupportVerbosity = *ov.SupportVerbosity
-		}
+	if ov, ok := s.resolveModelOverride(slug); ok {
+		applyModelOverride(&info, &ov)
 	}
 	return info
+}
+
+// resolveModelOverride 解析 slug 的 ModelOverride。
+// 查找优先级：
+//  1. models.<slug> 直接命中（精确覆盖，优先级最高）
+//  2. 若 slug 是某 source.model_map 的别名（key），取其映射到的真实上游模型，
+//     再查 models.<真实模型>（别名继承真实模型配置）
+//  3. 都没命中返回 false。
+//
+// 别名继承机制让用户只需为真实上游模型（如 glm-5.2）配置一次能力字段，
+// model_map 里的别名（如 gpt-5.5→glm-5.2）自动继承，无需重复配置。
+func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) {
+	if ov, ok := s.cfg.ModelOverrides[slug]; ok {
+		return ov, true
+	}
+	for _, src := range s.cfg.Sources {
+		if real, ok := src.ModelMap[slug]; ok {
+			if ov, ok2 := s.cfg.ModelOverrides[real]; ok2 {
+				return ov, true
+			}
+		}
+	}
+	return config.ModelOverride{}, false
+}
+
+// applyModelOverride 把 ModelOverride 覆盖到 CodexModelInfo（仅覆盖非 nil 字段）。
+func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
+	if ov.DisplayName != nil {
+		info.DisplayName = *ov.DisplayName
+	}
+	if ov.Description != nil {
+		info.Description = ov.Description
+	}
+	if ov.ContextWindow != nil {
+		info.ContextWindow = ov.ContextWindow
+	}
+	if ov.MaxContextWindow != nil {
+		info.MaxContextWindow = ov.MaxContextWindow
+	}
+	if ov.AutoCompactTokenLimit != nil {
+		info.AutoCompactTokenLimit = ov.AutoCompactTokenLimit
+	}
+	if ov.EffectiveContextWindowPct != nil {
+		info.EffectiveContextWindowPercent = *ov.EffectiveContextWindowPct
+	}
+	if ov.SupportsSearchTool != nil {
+		info.SupportsSearchTool = *ov.SupportsSearchTool
+	}
+	if ov.SupportsParallelToolCalls != nil {
+		info.SupportsParallelToolCalls = *ov.SupportsParallelToolCalls
+	}
+	if ov.SupportsReasoningSummaries != nil {
+		info.SupportsReasoningSummaries = *ov.SupportsReasoningSummaries
+		info.SupportsReasoningSummaryParameter = *ov.SupportsReasoningSummaries
+	}
+	if ov.SupportVerbosity != nil {
+		info.SupportVerbosity = *ov.SupportVerbosity
+	}
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
