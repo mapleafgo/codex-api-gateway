@@ -191,6 +191,84 @@ sources:
 	}
 }
 
+// TestLoadLoggingParsesConfig 验证 LoadLogging 能从配置文件读出 logging 段。
+func TestLoadLoggingParsesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+logging:
+  level: debug
+  format: json
+  file: /tmp/gateway.log
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	lc := LoadLogging(path)
+	if lc.Level != "debug" {
+		t.Fatalf("level: got %q, want debug", lc.Level)
+	}
+	if lc.Format != "json" {
+		t.Fatalf("format: got %q, want json", lc.Format)
+	}
+	if lc.File != "/tmp/gateway.log" {
+		t.Fatalf("file: got %q, want /tmp/gateway.log", lc.File)
+	}
+}
+
+// TestLoadLoggingEnvOverride 验证 LoadLogging 也应用 CODEX_API_GATEWAY_LOGGING__* 环境变量。
+func TestLoadLoggingEnvOverride(t *testing.T) {
+	t.Setenv("CODEX_API_GATEWAY_LOGGING__LEVEL", "warn")
+	t.Setenv("CODEX_API_GATEWAY_LOGGING__FORMAT", "json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+logging:
+  level: info
+  format: text
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	lc := LoadLogging(path)
+	if lc.Level != "warn" {
+		t.Fatalf("level: got %q, want warn (env override)", lc.Level)
+	}
+	if lc.Format != "json" {
+		t.Fatalf("format: got %q, want json (env override)", lc.Format)
+	}
+}
+
+// TestLoadLoggingMissingFileDefaults 验证配置文件缺失时返回默认 LoggingCfg 而非报错，
+// 让调用方能继续走默认日志初始化（真实错误留给后续 Load 暴露）。
+func TestLoadLoggingMissingFileDefaults(t *testing.T) {
+	lc := LoadLogging("/nonexistent/config.yaml")
+	if lc.Level != "info" {
+		t.Fatalf("default level: got %q, want info", lc.Level)
+	}
+	if lc.Format != "text" {
+		t.Fatalf("default format: got %q, want text", lc.Format)
+	}
+}
+
+// TestLoadLoggingEmptyConfigDefaults 验证 logging 段缺失时补默认值。
+func TestLoadLoggingEmptyConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	lc := LoadLogging(path)
+	if lc.Level != "info" {
+		t.Fatalf("default level: got %q, want info", lc.Level)
+	}
+	if lc.Format != "text" {
+		t.Fatalf("default format: got %q, want text", lc.Format)
+	}
+}
+
 func TestLoadOverridesSessionByteBudgetFromEnv(t *testing.T) {
 	t.Setenv("CODEX_API_GATEWAY_SESSION__MAX_BYTES", "2097152")
 	t.Setenv("CODEX_API_GATEWAY_SESSION__MAX_ENTRY_BYTES", "524288")

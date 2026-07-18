@@ -178,6 +178,8 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	// 以下日志应在调用方完成 logging.Configure 后输出，否则会走 Go 默认
+	// handler 直接打到终端（见 cmd/server/main.go 的两阶段初始化）。
 	if cfg.BaseInstructionsFile != "" {
 		p := cfg.BaseInstructionsFile
 		if !filepath.IsAbs(p) {
@@ -204,6 +206,50 @@ func Load(path string) (*Config, error) {
 		"breaker_max_retries", cfg.Breaker.MaxRetries,
 		"cache_ttl", cfg.Cache.TTL)
 	return &cfg, nil
+}
+
+// LoadLogging 仅解析 logging 段（含环境变量覆盖与默认值），供进程启动早期
+// 先初始化日志系统。与 Load 使用同一套解析/展开/覆盖规则，保证两阶段一致。
+// 文件不存在或解析失败时返回默认 LoggingCfg（level=info, format=text），不报错，
+// 让调用方能继续走默认日志；后续 Load 会以同样的规则再次校验并暴露真实错误。
+func LoadLogging(path string) LoggingCfg {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return defaultLoggingCfg()
+	}
+	data = []byte(expandEnv(string(data)))
+	k := koanf.New(".")
+	if err := k.Load(rawbytes.Provider(data), yaml.Parser()); err != nil {
+		return defaultLoggingCfg()
+	}
+	var cfg Config
+	if err := k.Unmarshal("", &cfg); err != nil {
+		return defaultLoggingCfg()
+	}
+	envCfg := koanf.New(".")
+	if err := envCfg.Load(env.ProviderWithValue(envPrefix, ".", transformEnv), nil); err != nil {
+		return cfg.Logging
+	}
+	_ = applyEnvOverrides(&cfg, envCfg)
+	applyLoggingDefaults(&cfg.Logging)
+	return cfg.Logging
+}
+
+// defaultLoggingCfg 返回 logging 的内置默认值，与 validate 保持一致。
+func defaultLoggingCfg() LoggingCfg {
+	cfg := LoggingCfg{}
+	applyLoggingDefaults(&cfg)
+	return cfg
+}
+
+// applyLoggingDefaults 补齐 logging 段的默认值（与 validate 共用，避免分叉）。
+func applyLoggingDefaults(l *LoggingCfg) {
+	if l.Level == "" {
+		l.Level = "info"
+	}
+	if l.Format == "" {
+		l.Format = "text"
+	}
 }
 
 func transformEnv(key, value string) (string, interface{}) {
@@ -313,12 +359,7 @@ func (c *Config) validate() error {
 	if len(c.Sources) == 0 {
 		return fmt.Errorf("config: at least one source required")
 	}
-	if c.Logging.Level == "" {
-		c.Logging.Level = "info"
-	}
-	if c.Logging.Format == "" {
-		c.Logging.Format = "text"
-	}
+	applyLoggingDefaults(&c.Logging)
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
 	default:
