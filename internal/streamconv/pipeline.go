@@ -2,6 +2,7 @@ package streamconv
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -99,6 +100,14 @@ func (c *Converter) handleCallStop(ev *anthropic.MessageStreamEventUnion) (event
 	}
 	args := st.argBuilder.String()
 	item, evts := st.kind.finish(c, st, args)
+	// DEBUG 记录上游发起的每个工具调用（name + 完整 arguments），
+	// 便于排查 skill 切片读取、tool_search 误用等模型行为差异。
+	slog.Debug("上游工具调用完成",
+		"response_id", c.respID,
+		"block_index", ev.Index,
+		"call_id", st.callID,
+		"tool_name", st.name,
+		"arguments", args)
 	if st.itemIdx < len(c.outputItems) {
 		c.outputItems[st.itemIdx] = item
 	}

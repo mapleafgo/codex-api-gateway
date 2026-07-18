@@ -174,8 +174,9 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	}
 	if systemText := formatInstructionParts(sysParts); systemText != "" {
 		out.System = []anthropic.TextBlockParam{{Text: systemText}}
-		// DEBUG 记录实际发给上游的完整 system 文本，便于排查 prompt 注入 / 指令丢失异常。
-		slog.Debug("发送到上游的 system 消息",
+		// DEBUG 记录转换阶段生成的 system（尚未追加网关 system_suffix）。
+		// 最终发往上游的完整 system（含 suffix）由 server 层在注入后统一记录。
+		slog.Debug("转换生成 system（未含网关 suffix）",
 			"system_bytes", len(systemText),
 			"system_parts", len(sysParts),
 			"system_text", systemText)

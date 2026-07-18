@@ -142,7 +142,7 @@ func codexModelInfo(slug string) model.CodexModelInfo {
 		AvailabilityNux:                   nil,
 		Upgrade:                           nil,
 		BaseInstructions:                  "",
-		SupportsReasoningSummaryParameter: true,
+		SupportsReasoningSummaries: true,
 		DefaultReasoningSummary:           "auto",
 		SupportVerbosity:                  false,
 		DefaultVerbosity:                  nil,
@@ -423,6 +423,22 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if s.cfg.SystemSuffix != "" {
 		anthReq.System = append(anthReq.System, anthropic.TextBlockParam{Text: s.cfg.SystemSuffix})
 		slog.Debug("注入 system_suffix", "source", src.Name, "suffix_bytes", len(s.cfg.SystemSuffix), "system_blocks", len(anthReq.System))
+	}
+	// DEBUG 记录最终发往上游的完整 system（含网关 suffix），便于排查 prompt 注入 / 指令丢失。
+	// 与 convert 层「转换生成 system（未含网关 suffix）」互补：convert 记录转换产物，
+	// 这里记录注入后真正发出的内容。
+	if len(anthReq.System) > 0 {
+		var totalBytes int
+		var blocksText []string
+		for _, b := range anthReq.System {
+			totalBytes += len(b.Text)
+			blocksText = append(blocksText, b.Text)
+		}
+		slog.Debug("发送到上游的完整 system（含网关 suffix）",
+			"source", src.Name,
+			"system_blocks", len(anthReq.System),
+			"system_total_bytes", totalBytes,
+			"system_full_text", strings.Join(blocksText, "\n\n---SYSTEM-BLOCK-BOUNDARY---\n\n"))
 	}
 	return req, anthReq, mcp, nil
 }

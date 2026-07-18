@@ -61,7 +61,7 @@ type CodexModelInfo struct {
 	AvailabilityNux                   *any                  `json:"availability_nux"`
 	Upgrade                           *any                  `json:"upgrade"`
 	BaseInstructions                  string                `json:"base_instructions"`
-	SupportsReasoningSummaryParameter bool                  `json:"supports_reasoning_summary_parameter"`
+	SupportsReasoningSummaries bool                  `json:"supports_reasoning_summaries"`
 	DefaultReasoningSummary           string                `json:"default_reasoning_summary"`
 	SupportVerbosity                  bool                  `json:"support_verbosity"`
 	DefaultVerbosity                  *string               `json:"default_verbosity"`
