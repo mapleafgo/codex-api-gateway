@@ -20,7 +20,7 @@ func (toolSearchCallKind) itemType() string      { return model.ItemTypeToolSear
 func (toolSearchCallKind) idPrefix() string      { return "tsc" }
 func (toolSearchCallKind) tracksToolUseID() bool { return false }
 
-func (toolSearchCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
+func (toolSearchCallKind) buildItem(_ int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
 	return model.OutputItem{
 		Type:      model.ItemTypeToolSearchCall,
 		ID:        itemID,
@@ -30,11 +30,11 @@ func (toolSearchCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.Me
 	}
 }
 
-func (toolSearchCallKind) startEvents(c *Converter, itemIdx int, itemID string) []model.SSEEvent {
+func (toolSearchCallKind) startEvents(_ *Converter, _ int, _ string) []model.SSEEvent {
 	return nil
 }
 
-func (toolSearchCallKind) consumeDelta(c *Converter, st *callState, partial string) []model.SSEEvent {
+func (toolSearchCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model.SSEEvent {
 	return nil // 无专门 delta 事件，arguments 只随 output_item.added/done 携带
 }
 
@@ -51,6 +51,6 @@ func (toolSearchCallKind) finish(c *Converter, st *callState, args string) (mode
 	return item, evts
 }
 
-func (toolSearchCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (toolSearchCallKind) handleResult(_ *Converter, _ *anthropic.MessageStreamEventUnion, _ int) []model.SSEEvent {
 	return nil
 }

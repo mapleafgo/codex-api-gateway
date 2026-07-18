@@ -16,7 +16,7 @@ func (customCallKind) itemType() string      { return model.ItemTypeCustomToolCa
 func (customCallKind) idPrefix() string      { return "ctc" }
 func (customCallKind) tracksToolUseID() bool { return false }
 
-func (customCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
+func (customCallKind) buildItem(_ int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
 	return model.OutputItem{
 		Type:   model.ItemTypeCustomToolCall,
 		ID:     itemID,
@@ -26,11 +26,11 @@ func (customCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.Messag
 	}
 }
 
-func (customCallKind) startEvents(c *Converter, itemIdx int, itemID string) []model.SSEEvent {
+func (customCallKind) startEvents(_ *Converter, _ int, _ string) []model.SSEEvent {
 	return nil
 }
 
-func (customCallKind) consumeDelta(c *Converter, st *callState, partial string) []model.SSEEvent {
+func (customCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model.SSEEvent {
 	return nil // input 在 stop 一次性给（与旧 handleBlockStop custom 分支一致）
 }
 
@@ -56,7 +56,7 @@ func (customCallKind) finish(c *Converter, st *callState, args string) (model.Ou
 	return item, evts
 }
 
-func (customCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (customCallKind) handleResult(_ *Converter, _ *anthropic.MessageStreamEventUnion, _ int) []model.SSEEvent {
 	return nil
 }
 

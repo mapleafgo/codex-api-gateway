@@ -18,7 +18,7 @@ func (functionCallKind) itemType() string      { return model.ItemTypeFunctionCa
 func (functionCallKind) idPrefix() string      { return "fc" }
 func (functionCallKind) tracksToolUseID() bool { return false }
 
-func (functionCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
+func (functionCallKind) buildItem(_ int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
 	// Codex 的 ToolName 用 namespace + name 两字段（ToolName::new(namespace, name)）。
 	// tool_search 发现的 MCP 工具名是 flat "mcp__server__tool"（declare 的 ToolName 拼接）。
 	// 若整个塞 name（namespace 空），Codex 构造 ToolName{None, "mcp__server__tool"}，
@@ -47,7 +47,7 @@ func splitToolNameNamespace(flat string) (namespace, name string) {
 	return flat[:idx], flat[idx+2:]
 }
 
-func (functionCallKind) startEvents(c *Converter, itemIdx int, itemID string) []model.SSEEvent {
+func (functionCallKind) startEvents(_ *Converter, _ int, _ string) []model.SSEEvent {
 	return nil
 }
 
@@ -75,6 +75,6 @@ func (functionCallKind) finish(c *Converter, st *callState, args string) (model.
 	return item, evts
 }
 
-func (functionCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (functionCallKind) handleResult(_ *Converter, _ *anthropic.MessageStreamEventUnion, _ int) []model.SSEEvent {
 	return nil
 }

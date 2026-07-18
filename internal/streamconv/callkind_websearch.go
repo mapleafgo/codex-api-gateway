@@ -19,7 +19,7 @@ func (webSearchCallKind) itemType() string      { return model.ItemTypeWebSearch
 func (webSearchCallKind) idPrefix() string      { return "ws" }
 func (webSearchCallKind) tracksToolUseID() bool { return true }
 
-func (webSearchCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
+func (webSearchCallKind) buildItem(_ int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
 	return model.OutputItem{
 		Type:   model.ItemTypeWebSearchCall,
 		ID:     itemID,
@@ -41,11 +41,11 @@ func (webSearchCallKind) startEvents(c *Converter, itemIdx int, itemID string) [
 	}
 }
 
-func (webSearchCallKind) consumeDelta(c *Converter, st *callState, partial string) []model.SSEEvent {
+func (webSearchCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model.SSEEvent {
 	return nil
 }
 
-func (webSearchCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
+func (webSearchCallKind) finish(c *Converter, st *callState, _ string) (model.OutputItem, []model.SSEEvent) {
 	// web_search 在 result block（web_search_tool_result）完成，不在 server_tool_use
 	// 的 content_block_stop 完成。故 block stop 返回 item 不变 + 空事件。
 	return c.outputItems[st.itemIdx], nil

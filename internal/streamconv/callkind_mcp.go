@@ -20,7 +20,7 @@ func (mcpCallKind) itemType() string      { return model.ItemTypeMcpCall }
 func (mcpCallKind) idPrefix() string      { return "mcp" }
 func (mcpCallKind) tracksToolUseID() bool { return true }
 
-func (mcpCallKind) buildItem(itemIdx int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
+func (mcpCallKind) buildItem(_ int, itemID string, ev *anthropic.MessageStreamEventUnion) model.OutputItem {
 	serverLabel, toolName, args := decodeMcpUseInput(ev.ContentBlock.Input)
 	return model.OutputItem{
 		Type:        model.ItemTypeMcpCall,
@@ -54,11 +54,11 @@ func (mcpCallKind) startEvents(c *Converter, itemIdx int, itemID string) []model
 	return out
 }
 
-func (mcpCallKind) consumeDelta(c *Converter, st *callState, partial string) []model.SSEEvent {
+func (mcpCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model.SSEEvent {
 	return nil // args 在 start 一次性给（probe 合成 Input），不流式 delta
 }
 
-func (mcpCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
+func (mcpCallKind) finish(c *Converter, st *callState, _ string) (model.OutputItem, []model.SSEEvent) {
 	// mcp_call 的 arguments.delta/done 已在 startEvents 产出，block stop 无事件。
 	return c.outputItems[st.itemIdx], nil
 }

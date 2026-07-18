@@ -61,11 +61,11 @@ func (codeInterpreterCallKind) startEvents(c *Converter, itemIdx int, itemID str
 	return out
 }
 
-func (codeInterpreterCallKind) consumeDelta(c *Converter, st *callState, partial string) []model.SSEEvent {
+func (codeInterpreterCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model.SSEEvent {
 	return nil
 }
 
-func (codeInterpreterCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
+func (codeInterpreterCallKind) finish(c *Converter, st *callState, _ string) (model.OutputItem, []model.SSEEvent) {
 	// code_interpreter 在 result block（code_execution_tool_result）完成。
 	return c.outputItems[st.itemIdx], nil
 }
