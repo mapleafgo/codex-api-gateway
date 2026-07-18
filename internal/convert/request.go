@@ -190,6 +190,10 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config, prevIt
 	if err := convertToolChoice(out, req); err != nil {
 		return nil, nil, err
 	}
+	// Codex 回灌历史时若带 tool call 却漏了对应 output（中断后 resume / failover 丢历史 /
+	// 客户端 bug），会产出无配对的 tool_use，Anthropic 以 "tool_use without tool_result"
+	// 400 拒绝整请求。在 messages 定稿后、设 cache 断点前补占位 result 降级。
+	ensureToolUsePaired(out)
 	applyAnthropicCacheControl(out, cfg)
 
 	mcp, err := collectMCP(req)
@@ -746,6 +750,75 @@ func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string
 		},
 	})
 	return nil
+}
+
+// placeholderToolResultText 标注某 tool_use 在 input 历史中缺少 output，已由网关降级补占位。
+// 文本是 wire 内容（发给上游模型），用英文以对模型友好。
+const placeholderToolResultText = "[no tool output available — this call's result was missing from the request history]"
+
+// placeholderToolResults 构造一组 is_error 占位 tool_result，按 ids 顺序排列。
+func placeholderToolResults(ids []string) []anthropic.ContentBlockParamUnion {
+	out := make([]anthropic.ContentBlockParamUnion, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, anthropic.ContentBlockParamUnion{
+			OfToolResult: &anthropic.ToolResultBlockParam{
+				ToolUseID: id,
+				IsError:   anthropic.Bool(true),
+				Content: []anthropic.ToolResultBlockParamContentUnion{{
+					OfText: &anthropic.TextBlockParam{Text: placeholderToolResultText},
+				}},
+			},
+		})
+	}
+	return out
+}
+
+// ensureToolUsePaired 扫描产出 messages，为没有配对 tool_result 的 tool_use 补一个
+// is_error 占位 tool_result。占位 result 插在该 tool_use 之后的第一个 user message 前部；
+// 若其后没有 user message（assistant 是最后一条），则新建一个 user message 承载。
+// server_tool_use（code_interpreter 等）自带配对 result，不受影响。
+func ensureToolUsePaired(out *anthropic.MessageNewParams) {
+	// 第一遍：收集所有已被 tool_result 引用的 tool_use id。
+	resolved := map[string]struct{}{}
+	for i := range out.Messages {
+		for _, b := range out.Messages[i].Content {
+			if b.OfToolResult != nil {
+				resolved[b.OfToolResult.ToolUseID] = struct{}{}
+			}
+		}
+	}
+	// 第二遍：assistant 里的孤儿 tool_use 入 pending，遇到 user message 时把 pending
+	// 补成占位 result prepend 到该 message 前部。
+	var pending []string
+	flushed := 0
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		switch m.Role {
+		case anthropic.MessageParamRoleAssistant:
+			for _, b := range m.Content {
+				if b.OfToolUse != nil {
+					if _, ok := resolved[b.OfToolUse.ID]; !ok {
+						pending = append(pending, b.OfToolUse.ID)
+					}
+				}
+			}
+		case anthropic.MessageParamRoleUser:
+			if len(pending) > 0 {
+				m.Content = append(placeholderToolResults(pending), m.Content...)
+				flushed += len(pending)
+				pending = pending[:0]
+			}
+		}
+	}
+	// 末尾仍有孤儿（assistant 是最后一条）→ 新建 user message 承载占位 result。
+	if len(pending) > 0 {
+		out.Messages = append(out.Messages, anthropic.NewUserMessage(placeholderToolResults(pending)...))
+		flushed += len(pending)
+	}
+	if flushed > 0 {
+		slog.Warn("补占位 tool_result：input 历史存在未配对的 tool call（缺少对应 output），已降级为 is_error 占位 result 以避免上游 400",
+			"placeholder_count", flushed)
+	}
 }
 
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams, cfg *config.Config) {

@@ -124,6 +124,12 @@
 | `program` | none | `unsupported_by_backend` | OpenAI program item 无 Anthropic 等价 |
 | `program_output` | none | `unsupported_by_backend` | 同上 |
 
+## 转换后完整性保证
+
+| 保证项 | 触发条件 | 处理 | 说明 |
+|---|---|---|---|
+| orphan `tool_use` 兜底 | input 历史含 `function_call`/`custom_tool_call`/`shell`/`apply_patch`/`tool_search_call` 但缺对应 `*_output`（中断后 resume / failover 丢历史 / 客户端 bug） | 补 `is_error=true` 占位 `tool_result` | 避免上游 Anthropic 以 `tool_use without tool_result` 400 拒绝整请求。占位补在该 tool_use 后的首个 user message 前部；无后续 user message 则新建。`server_tool_use`（`code_interpreter`，item 内自合成 result）不受影响。实现见 `internal/convert/request.go` `ensureToolUsePaired`；WARN 暴露该客户端异常 |
+
 ## Tool Union
 
 | OpenAI tool | Anthropic 映射 | 当前状态 | 说明 |
