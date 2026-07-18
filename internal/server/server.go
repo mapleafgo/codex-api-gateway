@@ -127,35 +127,45 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补全能力字段。
+// codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补齐全部能力字段。
+// 字段对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo（0.144.5，37 个外部字段）。
 // 关键：SupportsSearchTool=true 让 Codex 启用 tool_search + MCP tools deferred。
+// 必填字段（无 serde(default)）显式给值；可选字段补合理默认值以提高兼容性。
+// supports_reasoning_summary_parameter 双写兼容 main 分支的改名。
 func codexModelInfo(slug string) model.CodexModelInfo {
+	emptyStr := ""
+	ctxWindow := int64(200000)
 	return model.CodexModelInfo{
-		Slug:                              slug,
-		DisplayName:                       slug,
-		Description:                       "",
-		SupportedReasoningLevels:          []any{},
-		ShellType:                         "shell_command",
-		Visibility:                        "list",
-		SupportedInAPI:                    true,
-		Priority:                          0,
-		AvailabilityNux:                   nil,
-		Upgrade:                           nil,
-		BaseInstructions:                  "",
+		Slug:                       slug,
+		DisplayName:                slug,
+		Description:                &emptyStr,
+		SupportedReasoningLevels:   []any{},
+		ShellType:                  "shell_command",
+		Visibility:                 "list",
+		SupportedInAPI:             true,
+		Priority:                   0,
+		AvailabilityNux:            nil,
+		Upgrade:                    nil,
+		BaseInstructions:           "",
 		SupportsReasoningSummaries: true,
-		DefaultReasoningSummary:           "auto",
-		SupportVerbosity:                  false,
-		DefaultVerbosity:                  nil,
-		ApplyPatchToolType:                nil,
-		WebSearchToolType:                 "text",
+		SupportVerbosity:           false,
+		DefaultVerbosity:           nil,
+		ApplyPatchToolType:         nil,
 		TruncationPolicy: model.CodexTruncationPolicy{
 			Mode: "tokens", Limit: 100000,
 		},
 		SupportsParallelToolCalls:  true,
 		ExperimentalSupportedTools: []string{},
-		InputModalities:            []string{"text", "image"},
-		SupportsSearchTool:         true,
-		UseResponsesLite:           false,
+
+		// 可选字段补默认值
+		DefaultReasoningSummary:           "auto",
+		WebSearchToolType:                 "text",
+		EffectiveContextWindowPercent:     90,
+		InputModalities:                   []string{"text", "image"},
+		SupportsSearchTool:                true,
+		ContextWindow:                     &ctxWindow,
+		MaxContextWindow:                  &ctxWindow,
+		SupportsReasoningSummaryParameter: true,
 	}
 }
 
