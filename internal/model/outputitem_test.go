@@ -192,3 +192,42 @@ func TestToolSearchCallItemEmptyFieldsStillEmitRequiredKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestReasoningItemMarshalsRequiredSummary 锁定 reasoning item 的 summary 字段
+// 必须始终输出（即使空/nil）—— OpenAI wire api:"required"，且 Codex 的
+// ResponseItem Reasoning 变体 summary 是无 #[serde(default)] 的 required Vec，
+// 缺失会导致 serde 解析失败、output_item.added 被丢弃、active_item 不被设置，
+// 表现为 Codex 日志 "ReasoningSummaryPartAdded without active item" ERROR。
+func TestReasoningItemMarshalsRequiredSummary(t *testing.T) {
+	cases := []struct {
+		name    string
+		summary []OutputText
+	}{
+		{"empty slice", []OutputText{}},
+		{"nil", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := OutputItem{
+				Type: ItemTypeReasoning, ID: "rs_0", Status: ResponseStatusInProgress,
+				Summary: tc.summary,
+			}
+			raw, err := json.Marshal(item)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got map[string]any
+			_ = json.Unmarshal(raw, &got)
+			arr, ok := got["summary"].([]any)
+			if !ok {
+				t.Fatalf("summary must be a JSON array (got %T): %s", got["summary"], raw)
+			}
+			if len(arr) != 0 {
+				t.Fatalf("summary want empty [], got %v: %s", arr, raw)
+			}
+			if bytes.Contains(raw, []byte(`"summary":null`)) {
+				t.Fatalf("summary marshalled as null: %s", raw)
+			}
+		})
+	}
+}

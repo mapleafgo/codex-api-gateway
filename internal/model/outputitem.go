@@ -115,6 +115,29 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 			Arguments: json.RawMessage(args), Execution: i.Execution, Status: i.Status,
 		})
 	}
+	if i.Type == ItemTypeReasoning {
+		// reasoning 的 summary 是 OpenAI wire api:"required"，且 Codex 的
+		// ResponseItem Reasoning 变体把 summary 定义为无 #[serde(default)] 的
+		// required Vec —— 缺失该字段会让 Codex serde 解析失败，导致
+		// output_item.added 被丢弃、active_item 不被设置，表现为
+		// "ReasoningSummaryPartAdded without active item"。故即使空也必须输出 "summary":[]。
+		summary := i.Summary
+		if summary == nil {
+			summary = []OutputText{}
+		}
+		return json.Marshal(struct {
+			Type             string       `json:"type"`
+			ID               string       `json:"id"`
+			Summary          []OutputText `json:"summary"`
+			EncryptedContent string       `json:"encrypted_content,omitempty"`
+			Signature        string       `json:"signature,omitempty"`
+			Status           string       `json:"status,omitempty"`
+		}{
+			Type: i.Type, ID: i.ID, Summary: summary,
+			EncryptedContent: i.EncryptedContent, Signature: i.Signature,
+			Status: i.Status,
+		})
+	}
 	if i.Type != ItemTypeMessage {
 		type outputItem OutputItem
 		return json.Marshal(outputItem(i))
