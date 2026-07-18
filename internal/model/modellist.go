@@ -24,7 +24,7 @@ type CodexModelsResponse struct {
 //   - priority: 排序优先级（数字越小越靠前）
 //   - availability_nux / upgrade: Option，null 即可
 //   - base_instructions: 基础 system prompt（**非空时会整体替换 Codex 内置 BASE_INSTRUCTIONS**，
-//     网关保持空串，命令补丁走 system_suffix 追加而非替换）
+//     网关经 base_instructions_file 配置注入；为空则沿用 Codex 内置指令）
 //   - supports_reasoning_summaries: 是否接受 Responses API reasoning.summary 参数
 //   - support_verbosity / default_verbosity: verbosity 开关与默认值
 //   - apply_patch_tool_type: Option<ApplyPatchToolType>，"freeform" 启用 apply_patch 工具，
@@ -50,8 +50,7 @@ type CodexModelsResponse struct {
 //     false 压制 lite（防 Codex hardcode/默认开启），不开放 per-slug 覆盖。
 //
 // 不注入（保持零值）：
-//   - base_instructions 非空（避免覆盖 Codex 内置指令）
-//   - model_messages（personality 模板，与 system_suffix 冲突）
+//   - model_messages（personality 模板，网关不注入）
 //   - default_reasoning_level / service_tiers / default_service_tier 等（用 Codex 默认）
 //
 // used_fallback_model_metadata 是 Codex 内部标记（#[skip_deserializing]），

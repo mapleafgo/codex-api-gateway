@@ -19,11 +19,13 @@
 
 - 为所有「静默忽略」的请求参数（deprecated / 无等价能力）补 WARN 结构化日志，见 AGENTS.md「静默跳过与降级处理约定」。
 - `metadata.user_id` 现透传到 Anthropic `metadata.user_id`；其余键值对仅 echo。
-- 新增配置开关 `service_tier_passthrough`，为 true 时把 OpenAI `service_tier` 映射到 Anthropic（`auto`/`default`），其余取值 WARN + 丢弃。
 - 流式 `citations_delta` 现映射为 `response.output_text.annotation.added`（`web_search_result_location`→`url_citation`，其余→`file_citation`）。
 - 流式上游 `error` 事件现在同时发出 OpenAI `error` 事件与 `response.failed` 终态。
 - 流式 `mid_conversation_system` 块按 WARN + 跳过处理，不中断流。
 - `local_shell_call`/`shell_call`/`apply_patch_call` 作为专用 Output Item、`tool_search_output`/`additional_tools` 作为 output、`item_reference` 与 `cancelled` status 仍为 `deferred`，原因见对应行说明。
+- 移除 `service_tier_passthrough` 配置与 `applyServiceTier` 逻辑：`service_tier` 不再透传，由上游默认处理。
+- 移除 `additional_tools` input item 处理分支：网关统一 `use_responses_lite=false`，该 item 不会出现。
+- 网关级指令注入从 `system_suffix`（转换层追加 system block）改为 `base_instructions_file`（经 /v1/models 由 Codex 客户端注入，prompt cache 更友好）。
 
 第一批只覆盖枚举/refusal、shell/apply_patch 输入项、`allowed_tools`、不支持工具的显式错误和未处理 Anthropic block 的显式失败；本文其余 `deferred` 项均不属于第一批，具体后续专项原因见各行说明。
 
@@ -68,7 +70,7 @@
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
 | `context_management` | none | `deferred` | 请求级上下文管理开关（当前仅 compaction）；OpenAI 服务端自动压缩，Anthropic 无等价请求参数，网关未实现 compaction，当前静默忽略 |
 | `max_tool_calls` | none | `deferred` | Anthropic 无直接请求参数，可能需网关计数截断 |
-| `service_tier` | Anthropic `service_tier` | `lossy_supported` | 新增配置 `service_tier_passthrough=true` 时：`auto`→`auto`、`default`→`standard_only` 直接映射；`flex`/`scale`/`priority` 无等价能力，WARN + 丢弃（不设置）。默认 false 保持原行为（不透传） |
+| `service_tier` | none | `dropped` | 网关不透传 `service_tier`（`applyServiceTier` 与 `service_tier_passthrough` 配置已移除），由上游按默认处理 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
 | `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数，当前静默忽略 |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |
@@ -102,7 +104,7 @@
 | `function_call_output` | user `tool_result` | `supported` | output 转 text tool result |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
 | `tool_search_output` | dynamic tools + tool_result | `supported` | 工具注入并记录 developer marker |
-| `additional_tools` | dynamic tools | `supported` | 工具注入并记录 developer marker |
+| `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现，移除转换分支 |
 | `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 与 encrypted/signature 处理已有 |
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image output item |
@@ -180,7 +182,7 @@
 | `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放 |
 | `tool_search_call` | `tool_use` name=`tool_search` | `supported` | `toolSearchCallKind` 产出 `tool_search_call` item（execution=client，arguments 随 done 一次性给出，不流式 delta） |
 | `tool_search_output` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
-| `additional_tools` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
+| `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现 |
 | `compaction` | response compact API | `raw_preserved` | 非模型 stream output |
 | `file_search_call` | none | `unsupported_by_backend` | 无等价 |
 | `web_search_call` | Anthropic server web search | `supported` | server_tool_use + web_search_tool_result 映射，结果 URL 回显为 sources |

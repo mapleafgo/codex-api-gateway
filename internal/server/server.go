@@ -108,8 +108,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // 网关默认值策略（逐项确认后的结论）：
 //
 //	必填字段：
-//	  - base_instructions=""：**非空会整体替换 Codex 内置 BASE_INSTRUCTIONS**，
-//	    命令补丁通过 system_suffix 追加到 Anthropic system 末尾，不在本字段注入。
+//	  - base_instructions：来自 config base_instructions_file（非空时整体替换 Codex
+//	    内置 BASE_INSTRUCTIONS，用于注入网关级指令补强）；为空则沿用 Codex 内置指令。
 //	  - apply_patch_tool_type="freeform"：启用 apply_patch 工具，否则只能靠 shell 改文件。
 //	  - supports_reasoning_summaries=true：接受 reasoning.summary 参数。
 //	必填字段默认值：
@@ -505,7 +505,6 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 		return nil, nil, nil, err
 	}
 	// 网关级指令补强（base_instructions）经 /v1/models 由 Codex 客户端注入到 system，
-	// 不再在转换层追加 system block。旧 system_suffix 机制已废弃。
 	// DEBUG 记录最终发往上游的完整 system，便于排查 prompt 注入 / 指令丢失。
 	if len(anthReq.System) > 0 {
 		var totalBytes int
