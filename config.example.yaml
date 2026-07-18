@@ -64,15 +64,32 @@ service_tier_passthrough: false
 # 网关级指令补强：在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam），
 # 对所有后端源生效。补强模型的指令遵循：例如强制先调用 tool_search 发现 skill，
 # 再处理用户请求。独立块不加 cache_control，前面 system 块的缓存断点不受影响。
-# 部分兼容后端（如 GLM）对 tool_search 的主动调用倾向弱，会直接回答而不先发现
-# skill/deferred 工具。解开下面的注释即可启用推荐引导文本：
+# 部分兼容后端（如 GLM）对 tool_search 的主动调用倾向弱，会直接回答或只搜一次
+# 就停，不会像官方 Claude 那样多角度穷尽搜索。解开下面注释即可启用强化引导：
 # system_suffix: |
 #   <gateway_guidance>
 #   You have access to a `tool_search` tool. Skills and deferred tools listed
-#   elsewhere in this context are NOT loaded yet. Before answering, evaluate
-#   whether any available skill or tool could help. If a relevant capability
-#   might exist, you MUST call `tool_search` first to discover it, then proceed.
-#   Do not assume a capability is unavailable without searching first.
+#   elsewhere in this context are NOT loaded yet. Before answering, you MUST
+#   perform an EXHAUSTIVE, multi-angle search to discover ALL relevant skills.
+#
+#   Search discipline (follow strictly):
+#   1. Call `tool_search` at least 2-3 times with DIFFERENT query angles before
+#      answering. One search is never enough. Cover: the core task, adjacent
+#      capabilities, and cross-cutting concerns (formatting, theming, testing,
+#      packaging, docs, deployment, review, commit, etc.).
+#   2. For a task involving any artifact (doc, site, slide, code, config),
+#      search for: the primary capability, plus styling/theme/formatting tools,
+#      plus review/verification/commit tools that complete the workflow.
+#   3. After each search, if results reveal more candidate capabilities, search
+#      again with the newly discovered terms. Do not stop at the first hit.
+#   4. Only after you have searched multiple angles and loaded all relevant
+#      tools may you proceed to implement. Missing a relevant skill is a failure.
+#
+#   Example: for "create a Word doc", search at least: "docx generation",
+#   "document styling/theme/formatting", "review/verify document". Then use the
+#   discovered skills together — do not just grab the first one.
+#
+#   Do not assume a capability is unavailable without searching for it first.
 #   </gateway_guidance>
 
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
