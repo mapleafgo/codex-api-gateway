@@ -43,7 +43,11 @@ type Config struct {
 	Thinking               ThinkingCfg `koanf:"thinking" yaml:"thinking"`
 	Cache                  CacheCfg    `koanf:"cache" yaml:"cache"`
 	ServiceTierPassthrough bool        `koanf:"service_tier_passthrough" yaml:"service_tier_passthrough"`
-	Sources                []Source    `koanf:"sources" yaml:"sources"`
+	// SystemSuffix 在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam），
+	// 对所有后端源生效。用于补强模型的指令遵循：例如强制先调用 tool_search
+	// 发现 skill，再处理用户请求。追加块不加 cache_control，前面的 cache 断点仍命中。
+	SystemSuffix string   `koanf:"system_suffix" yaml:"system_suffix"`
+	Sources      []Source `koanf:"sources" yaml:"sources"`
 }
 
 // ServerCfg configures the HTTP listener.
@@ -90,17 +94,13 @@ type ThinkingCfg struct {
 
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
-	Name         string            `koanf:"name" yaml:"name"`
-	BaseURL      string            `koanf:"base_url" yaml:"base_url"`
-	APIKey       string            `koanf:"api_key" yaml:"api_key"`
-	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map"`
-	DefaultModel string            `koanf:"default_model" yaml:"default_model"`
-	// SystemSuffix 在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam）。
-	// 用于对模型遵循能力弱的后端（如 GLM）补强指令遵循：例如强制先调用 tool_search
-	// 发现 skill，再处理用户请求。追加块不加 cache_control，前面的 cache 断点仍命中。
-	SystemSuffix  string      `koanf:"system_suffix" yaml:"system_suffix"`
-	Breaker       *BreakerCfg `koanf:"breaker" yaml:"breaker"`
-	OriginalIndex int         `koanf:"-" yaml:"-"`
+	Name          string            `koanf:"name" yaml:"name"`
+	BaseURL       string            `koanf:"base_url" yaml:"base_url"`
+	APIKey        string            `koanf:"api_key" yaml:"api_key"`
+	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map"`
+	DefaultModel  string            `koanf:"default_model" yaml:"default_model"`
+	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker"`
+	OriginalIndex int               `koanf:"-" yaml:"-"`
 }
 
 // Duration wraps time.Duration for YAML parsing.

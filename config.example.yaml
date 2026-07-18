@@ -61,6 +61,20 @@ cache:
 # Anthropic 支持的 service_tier；flex/scale/priority 无等价能力，会输出 WARN 并忽略）
 service_tier_passthrough: false
 
+# 网关级指令补强：在转换后的 Anthropic system 末尾追加一段文本（独立 TextBlockParam），
+# 对所有后端源生效。补强模型的指令遵循：例如强制先调用 tool_search 发现 skill，
+# 再处理用户请求。独立块不加 cache_control，前面 system 块的缓存断点不受影响。
+# 部分兼容后端（如 GLM）对 tool_search 的主动调用倾向弱，会直接回答而不先发现
+# skill/deferred 工具。解开下面的注释即可启用推荐引导文本：
+# system_suffix: |
+#   <gateway_guidance>
+#   You have access to a `tool_search` tool. Skills and deferred tools listed
+#   elsewhere in this context are NOT loaded yet. Before answering, evaluate
+#   whether any available skill or tool could help. If a relevant capability
+#   might exist, you MUST call `tool_search` first to discover it, then proceed.
+#   Do not assume a capability is unavailable without searching first.
+#   </gateway_guidance>
+
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
 # 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，
@@ -82,15 +96,3 @@ sources:
     breaker:
       first_byte_timeout: 8s    # 该源更快判定首字节超时，其余字段继承全局
       cooldown: 10s
-    # 指令遵循补强：GLM 等 Anthropic 兼容后端对 tool_search 的主动调用倾向弱于
-    # 官方 Claude，常表现为直接回答而不先发现 skill/deferred 工具。在 system
-    # 末尾追加一段强制引导，抬高其先调用 tool_search 的概率。独立块、不加
-    # cache_control，前面 system 块的缓存断点不受影响。推荐引导文本：
-    # system_suffix: |
-    #   <gateway_guidance>
-    #   You have access to a `tool_search` tool. Skills and deferred tools listed
-    #   elsewhere in this context are NOT loaded yet. Before answering, evaluate
-    #   whether any available skill or tool could help. If a relevant capability
-    #   might exist, you MUST call `tool_search` first to discover it, then proceed.
-    #   Do not assume a capability is unavailable without searching first.
-    #   </gateway_guidance>

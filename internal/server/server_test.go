@@ -325,10 +325,10 @@ func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	}
 }
 
-// TestResponsesAppendsSourceSystemSuffix 锁定 source.system_suffix 注入：
-// 转换后的 Anthropic system 末尾应追加该文本（独立 block），用于对指令遵循弱
-// 的后端补强（如强制先调 tool_search 发现 skill）。
-func TestResponsesAppendsSourceSystemSuffix(t *testing.T) {
+// TestResponsesAppendsGlobalSystemSuffix 锁定全局 system_suffix 注入：
+// 转换后的 Anthropic system 末尾应追加该文本（独立 block），对所有后端源生效，
+// 用于补强模型的指令遵循（如强制先调 tool_search 发现 skill）。
+func TestResponsesAppendsGlobalSystemSuffix(t *testing.T) {
 	requests := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -344,12 +344,9 @@ func TestResponsesAppendsSourceSystemSuffix(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{
-			Name:         "up",
-			BaseURL:      upstream.URL,
-			SystemSuffix: "<gateway_guidance>You MUST call tool_search first.</gateway_guidance>",
-		}},
+		SystemSuffix: "<gateway_guidance>You MUST call tool_search first.</gateway_guidance>",
+		Breaker:      config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources:      []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
 	srv := New(cfg)
 	defer srv.Close()
