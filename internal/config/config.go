@@ -118,7 +118,6 @@ type ModelOverride struct {
 	ContextWindow              *int64  `koanf:"context_window" yaml:"context_window"`
 	MaxContextWindow           *int64  `koanf:"max_context_window" yaml:"max_context_window"`
 	AutoCompactTokenLimit      *int64  `koanf:"auto_compact_token_limit" yaml:"auto_compact_token_limit"`
-	EffectiveContextWindowPct  *int64  `koanf:"effective_context_window_percent" yaml:"effective_context_window_percent"`
 	SupportsSearchTool         *bool   `koanf:"supports_search_tool" yaml:"supports_search_tool"`
 	SupportsParallelToolCalls  *bool   `koanf:"supports_parallel_tool_calls" yaml:"supports_parallel_tool_calls"`
 	SupportsReasoningSummaries *bool   `koanf:"supports_reasoning_summaries" yaml:"supports_reasoning_summaries"`

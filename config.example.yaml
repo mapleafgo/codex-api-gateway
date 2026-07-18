@@ -103,7 +103,7 @@ service_tier_passthrough: false
 # models:
 #   gpt-5.5:                   # slug，来自 model_map 的 key 或上游模型 ID
 #     context_window: 200000   # 最大上下文 token 数（自动同步到 max_context_window）
-#     effective_context_window_percent: 90   # 输入 token 占上下文窗口的百分比
+# #     effective_context_window_percent: 90   # 输入 token 占上下文窗口百分比（可选）
 #     # auto_compact_token_limit: 180000     # 自动压缩阈值，默认取 context_window*0.9
 #     # display_name: "GPT-5.5"              # 显示名
 #     # supports_search_tool: true           # 启用 tool_search + MCP deferred

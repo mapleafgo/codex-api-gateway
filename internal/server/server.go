@@ -129,9 +129,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 // codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补齐全部能力字段。
 // 字段对齐 codex-rs/protocol/src/openai_models.rs 的 ModelInfo（0.144.5，37 个外部字段）。
-// 关键：SupportsSearchTool=true 让 Codex 启用 tool_search + MCP tools deferred。
-// 必填字段（无 serde(default)）显式给值；可选字段补合理默认值以提高兼容性。
-// supports_reasoning_summary_parameter 双写兼容 main 分支的改名。
+// 必填字段（无 serde(default)）显式给值。
+// 可选字段（有 serde(default)）只在网关必须告知时才给值，其余交给 Codex 自行
+// 用默认值补齐，避免硬塞与默认相同的噪音或擅自覆盖默认值。具体：
+//   - SupportsSearchTool=true（网关核心：启用 tool_search + MCP tools deferred；
+//     Codex 默认 false，必须显式给 true）
+//   - ContextWindow/MaxContextWindow（上游窗口大小，Codex 默认 None，必须告知）
+//   - SupportsReasoningSummaryParameter=true（双写兼容 main 分支改名）
+//   - 其余 optional（effective_context_window_percent、web_search_tool_type、
+//     default_reasoning_summary、input_modalities 等）全部省略，让 Codex 用内置默认。
+//
 // 若 cfg.models.<slug> 配了对应字段，用配置覆盖默认值。
 func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	emptyStr := ""
@@ -158,11 +165,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		SupportsParallelToolCalls:  true,
 		ExperimentalSupportedTools: []string{},
 
-		// 可选字段补默认值
-		DefaultReasoningSummary:           "auto",
-		WebSearchToolType:                 "text",
-		EffectiveContextWindowPercent:     90,
-		InputModalities:                   []string{"text", "image"},
+		// 仅保留网关必须告知的可选字段，其余交给 Codex 默认值。
 		SupportsSearchTool:                true,
 		ContextWindow:                     &ctxWindow,
 		MaxContextWindow:                  &ctxWindow,
@@ -222,9 +225,6 @@ func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 	}
 	if ov.AutoCompactTokenLimit != nil {
 		info.AutoCompactTokenLimit = ov.AutoCompactTokenLimit
-	}
-	if ov.EffectiveContextWindowPct != nil {
-		info.EffectiveContextWindowPercent = *ov.EffectiveContextWindowPct
 	}
 	if ov.SupportsSearchTool != nil {
 		info.SupportsSearchTool = *ov.SupportsSearchTool
