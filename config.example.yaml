@@ -82,3 +82,15 @@ sources:
     breaker:
       first_byte_timeout: 8s    # 该源更快判定首字节超时，其余字段继承全局
       cooldown: 10s
+    # 指令遵循补强：GLM 等 Anthropic 兼容后端对 tool_search 的主动调用倾向弱于
+    # 官方 Claude，常表现为直接回答而不先发现 skill/deferred 工具。在 system
+    # 末尾追加一段强制引导，抬高其先调用 tool_search 的概率。独立块、不加
+    # cache_control，前面 system 块的缓存断点不受影响。推荐引导文本：
+    # system_suffix: |
+    #   <gateway_guidance>
+    #   You have access to a `tool_search` tool. Skills and deferred tools listed
+    #   elsewhere in this context are NOT loaded yet. Before answering, evaluate
+    #   whether any available skill or tool could help. If a relevant capability
+    #   might exist, you MUST call `tool_search` first to discover it, then proceed.
+    #   Do not assume a capability is unavailable without searching first.
+    #   </gateway_guidance>

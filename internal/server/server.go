@@ -415,6 +415,15 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// 模型遵循能力补强：为指令遵循弱的后端（如 GLM）追加 system 尾部提示，
+	// 例如强制先调 tool_search 发现 skill。独立 TextBlockParam，不破坏 convert
+	// 在前一个 system block 上设置的 cache_control，前缀缓存仍命中。
+	if src.SystemSuffix != "" {
+		anthReq.System = append(anthReq.System, anthropic.TextBlockParam{Text: src.SystemSuffix})
+		// DEBUG：预转换与实际调度各调用一次 buildAnthropicRequest，
+		// INFO 会重复，降至 DEBUG；注入是否生效看「请求转换完成」的 system_blocks。
+		slog.Debug("注入 system_suffix", "source", src.Name, "suffix_bytes", len(src.SystemSuffix), "system_blocks", len(anthReq.System))
+	}
 	return req, anthReq, mcp, nil
 }
 

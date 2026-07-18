@@ -325,6 +325,63 @@ func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	}
 }
 
+// TestResponsesAppendsSourceSystemSuffix 锁定 source.system_suffix 注入：
+// 转换后的 Anthropic system 末尾应追加该文本（独立 block），用于对指令遵循弱
+// 的后端补强（如强制先调 tool_search 发现 skill）。
+func TestResponsesAppendsSourceSystemSuffix(t *testing.T) {
+	requests := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- string(body)
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_suffix\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{
+			Name:         "up",
+			BaseURL:      upstream.URL,
+			SystemSuffix: "<gateway_guidance>You MUST call tool_search first.</gateway_guidance>",
+		}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5","instructions":"be brief","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	select {
+	case upstreamBody := <-requests:
+		if !strings.Contains(upstreamBody, "be brief") {
+			t.Fatalf("upstream body missing original instructions: %s", upstreamBody)
+		}
+		if !strings.Contains(upstreamBody, "tool_search first") {
+			t.Fatalf("upstream body missing injected system_suffix: %s", upstreamBody)
+		}
+		// system 是 []TextBlockParam，原指令与 suffix 必须分属不同 block（JSON 数组）。
+		// 用 "text":" 开头计数确认至少 2 个独立文本块（原始 system + suffix）。
+		if got := strings.Count(upstreamBody, `"text":"`); got < 2 {
+			t.Fatalf("expected at least 2 text blocks (original + suffix), got %d. body:\n%s", got, upstreamBody)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("upstream did not receive request")
+	}
+}
+
 // TestResponsesErrorPathEmitsFailedNotCompleted proves I1+I2: when every
 // upstream errors (here: the only source points at a server that returns
 // 500), the handler emits a response.failed event with a non-empty SSE event
