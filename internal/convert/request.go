@@ -484,12 +484,16 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 		}
 		return nil
 	}
-	// 无 encrypted_content：signature 不可恢复，但 summary 文本仍是有效的思考上下文。
-	// 历史代码（session 模式）此处用空 signature attach thinking block，Anthropic 兼容
-	// 后端（智谱/方舟等）接受空 signature。保留这一行为以维持思考上下文连续性，
-	// 避免丢弃 reasoning 导致工具循环里模型"失忆"。空 signature 不违反静默跳过约定
-	// （数据未被丢弃，只是 signature 字段为空）。
-	attachThinking(out, text, "")
+	// 无 encrypted_content：signature 不可恢复。Anthropic Messages API 要求
+	// ThinkingBlockParam.Signature 非空（required），空 signature 会被官方
+	// 后端 400 拒绝。智谱/方舟等兼容后端虽接受空 signature，但回灌空 signature
+	// thinking block 违反 round-trip 规范。按 Anthropic 官方建议，无 signature
+	// 的 thinking block 应丢弃（不回传），而非用空值 attach。这不会导致模型
+	// "失忆"：extended thinking 只需保留最近的 thinking block，且此处已有
+	// lastReasoning 裁剪逻辑，非最新 reasoning 本就会被跳过。
+	slog.Debug("reasoning item 缺少 encrypted_content，跳过 thinking block 回灌",
+		"reasoning_id", r.ID,
+		"impact", "该 reasoning item 不转递给上游（signature 为空，不符合 round-trip 要求）")
 	return nil
 }
 
