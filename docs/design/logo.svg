@@ -1,0 +1,13 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="codex-api-gateway logo">
+  <!-- 圆角方块底：近黑带暖度 (#0F1419)，非纯黑 -->
+  <rect x="20" y="20" width="216" height="216" rx="48" ry="48" fill="#0F1419"/>
+
+  <!-- 唯一字形：向右的 ">" 提示符 —— Codex 血统，指令起点的阈值符号 -->
+  <!-- 光学居中：几何中心 x≈127 右移 12 → 约 139，抵消斜笔左偏，落在方块中心 (128,128) -->
+  <path d="M 108 78 L 170 128 L 108 178"
+        fill="none"
+        stroke="#F4F4F5"
+        stroke-width="22"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

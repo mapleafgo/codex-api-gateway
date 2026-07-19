@@ -2710,7 +2710,7 @@ func httpListenAndServe(addr string, h http.Handler) error {
 `config.example.yaml`:
 ```yaml
 server:
-  listen: ":8080"
+  listen: ":8383"
 
 session:
   ttl: 1h
@@ -2743,12 +2743,12 @@ Run:
 cp config.example.yaml /tmp/o2r.yaml
 ANTHROPIC_KEY=dummy go run ./cmd/server -config /tmp/o2r.yaml &
 sleep 1
-curl -s -X POST http://127.0.0.1:8080/v1/responses \
+curl -s -X POST http://127.0.0.1:8383/v1/responses \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}'
 kill %1
 ```
-Expected: logs show `listening on :8080`; curl returns SSE starting with `event: response.created` (or a `response.failed` if the dummy key is rejected by the upstream — either proves the pipeline runs end-to-end).
+Expected: logs show `listening on :8383`; curl returns SSE starting with `event: response.created` (or a `response.failed` if the dummy key is rejected by the upstream — either proves the pipeline runs end-to-end).
 
 - [ ] **Step 4: Commit**
 
@@ -2784,7 +2784,7 @@ cp config.example.yaml config.yaml  # fill api_key via ${ENV}
 go run ./cmd/server -config config.yaml
 ```
 
-Point Codex at `http://127.0.0.1:8080/v1/responses`.
+Point Codex at `http://127.0.0.1:8383/v1/responses`.
 
 ## How it works
 

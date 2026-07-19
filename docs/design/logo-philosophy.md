@@ -1,6 +1,4 @@
-# Glyph Reverence
-
-A design philosophy for the codex-api-gateway system tray icon.
+# Glyph Reverence — codex-api-gateway Logo
 
 ## The Movement: "Glyph Reverence"
 
@@ -12,53 +10,53 @@ unit of computational dialogue.
 The movement treats the terminal prompt (`>`), the code bracket (`</>`), and
 the cursor underscore (`_`) not as punctuation but as **sacred glyphs**. Each
 is a threshold between intent and execution, a doorway between human thought
-and machine action. The philosophy insists these symbols — which programmers
-stare at for thousands of hours — deserve the same reverent treatment a
-calligrapher gives a single brushstroke.
+and machine action.
 
 ## Visual Expression
 
 **Form.** A single rounded square, obsessively proportioned. Inside, one
-glyph rendered with master-level precision: no decorative flourishes, no
-gradients, no noise. The glyph is constructed from geometric primitives —
-two strokes meeting at an exact angle — rather than typeset from a font. The
-result should look like the product of painstaking attention, as though
-someone at the top of their field spent countless hours refining the weight,
-the kerning of negative space, the radius of every corner. Meticulously
-crafted down to the subpixel.
+glyph — the terminal prompt `>` — rendered with master-level precision: no
+decorative flourishes, no gradients, no noise. The glyph is constructed from
+geometric primitives (two strokes meeting at a clean angle), not typeset from
+a font.
 
 **Space and Silence.** Negative space is the loudest element. The glyph
 floats within the square, breathing, never touching the edges. This silence
-around the symbol is deliberate — it is the visual equivalent of a terminal
-waiting for input. The composition communicates reverence through restraint.
+is the visual equivalent of a terminal waiting for input.
 
 **Color.** A two-tone discipline. A deep charcoal near-black (never pure
-`#000000` — a whisper of warmth, `#0F1419`, signals human craftsmanship)
-holds the ground. The glyph itself is rendered in luminous off-white
-(`#F4F4F5`), the color of freshly printed paper, of a clean terminal on a
-dark theme. No third color is permitted. The restraint is the luxury.
+`#000000` — a whisper of warmth, `#0F1419`) holds the ground. The glyph is
+rendered in luminous off-white (`#F4F4F5`), the color of freshly printed
+paper, of a clean terminal on a dark theme. No third color is permitted.
 
-**Scale and Rhythm.** The glyph is sized so that its visual weight occupies
-roughly 55–60% of the square's inner area, centered on the optical center
-(slightly above geometric center). The stroke weight is calibrated so the
-glyph remains legible at 16x16 pixels — the smallest canvas the tray will
-ever demand. Every proportion has been labored over with the care of a
-master engraver.
+**Scale and Rhythm.** The glyph occupies roughly 55–60% of the square's
+inner area, optically centered on the square's center (slightly right-shifted to
+counter the leftward visual bias of the diagonal). The stroke weight is
+calibrated so the glyph stays legible at 16×16 — the smallest canvas the tray
+will ever demand.
 
-**Composition.** The prompt glyph `>` meets the cursor `_`, forming the
-classic `>_` of a waiting terminal — the universal symbol of "ready for your
-command." The underscore sits low, grounding the composition. The `>` points
-right, toward the future, toward the next instruction. Together they form a
-shape that, in negative space, suggests a gateway — an arch, a passage —
-echoing the gateway's role as the threshold between Codex and its upstream
-backends.
+## The Glyph: ">" — The Codex Signature
+
+The mark is a single `>` prompt — and that is the whole point. **Codex**,
+OpenAI's coding agent, is built on the terminal prompt: the `>` is the
+threshold where a command begins, the universal symbol of "ready for your
+instruction." By reducing the identity to this one irreducible gesture, the
+gateway reads, at a glance, as part of the Codex lineage — a local bridge
+that lets Codex speak to Anthropic backends without losing its own face.
+
+Nothing else. No channel line, no cursor, no arch. Restraint *is* the design.
 
 ## Craftsmanship
 
-Every element of this icon must appear as though it took countless hours to
-create. The corners are not arbitrary; the stroke weight is not default; the
-color is not pure. This is the product of deep expertise, of someone who
-understands that an icon lives at 16 pixels and at 256 pixels and must
-command attention and convey meaning at both. Painstaking attention to
-detail is non-negotiable. The final artifact should look like it belongs in
-a museum of digital craft, not in a folder of hastily generated assets.
+Every element must appear as though it took countless hours to create. The
+corners are not arbitrary; the stroke weight is not default; the color is not
+pure. This is the product of deep expertise — an icon that lives at 16 pixels
+and at 256 pixels and must command attention and convey meaning at both.
+
+## Source & Build
+
+- `docs/design/logo.svg` — editable vector source (256×256 viewBox).
+- `assets/logo.png` — rasterized 256×256 RGBA (transparent), embedded via
+  `go:embed` and shared by the system tray and the admin favicon.
+- Rebuild the PNG from the SVG (preserves alpha):
+  `rsvg-convert -w 256 -h 256 -b none docs/design/logo.svg -o assets/logo.png`

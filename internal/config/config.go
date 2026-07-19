@@ -524,9 +524,9 @@ func (c *Config) ConfiguredModelSlugs() []string {
 // 用户配置好 source）。
 const defaultConfigYAML = `# codex-api-gateway 自动生成的默认配置
 # 首次运行（未找到 config.yaml）时写入。请通过管理页添加上游源。
-# 管理页地址：http://localhost:8080/  （listen 改动后同步）
+# 管理页地址：http://localhost:8383/  （listen 改动后同步）
 server:
-  listen: ":8080"
+  listen: ":8383"
 
 logging:
   level: info

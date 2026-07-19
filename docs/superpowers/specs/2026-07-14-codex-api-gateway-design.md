@@ -190,7 +190,7 @@ Codex ──POST /v1/responses (stream:true)──► ① 入口层
 
 ```yaml
 server:
-  listen: ":8080"
+  listen: ":8383"
 
 session:
   path: data/session

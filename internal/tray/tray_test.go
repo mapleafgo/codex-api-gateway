@@ -90,7 +90,7 @@ func TestOpenBrowserRejectsNonHTTP(t *testing.T) {
 // 仅覆盖 URL 校验分支；exec.Command 在测试环境可能失败，属预期。
 func TestOpenBrowserAcceptsHTTP(t *testing.T) {
 	t.Parallel()
-	for _, raw := range []string{"http://localhost:8080/", "https://example.com/"} {
+	for _, raw := range []string{"http://localhost:8383/", "https://example.com/"} {
 		// 调用后只要 URL 校验通过即可；exec 失败也算通过校验分支。
 		_ = openBrowser(raw) // 不断言 err，因为 exec 可能因环境失败
 	}

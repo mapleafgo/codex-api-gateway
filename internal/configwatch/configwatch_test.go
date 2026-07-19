@@ -22,7 +22,8 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 	holder := config.NewHolder(cfg)
 
 	var reloads atomic.Int32
-	w, err := New(path, holder, func() { reloads.Add(1) })
+	var logCalls atomic.Int32
+	w, err := New(path, holder, func() { reloads.Add(1) }, func(config.LoggingCfg) { logCalls.Add(1) })
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -46,6 +47,10 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 	if len(holder.Current().Sources) != 1 || holder.Current().Sources[0].Name != "src2" {
 		t.Errorf("Sources = %+v", holder.Current().Sources)
 	}
+	// 日志回调应随 reload 触发（管理页改日志配置需即时生效）。
+	if logCalls.Load() == 0 {
+		t.Errorf("日志回调未被调用")
+	}
 }
 
 func TestWatcherKeepsOldConfigOnBadYAML(t *testing.T) {
@@ -56,7 +61,7 @@ func TestWatcherKeepsOldConfigOnBadYAML(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil)
+	w, err := New(path, holder, nil, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -85,7 +90,7 @@ func TestWatcherManualReload(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, _ := New(path, holder, nil)
+	w, _ := New(path, holder, nil, nil)
 	t.Cleanup(func() { _ = w.Close() })
 
 	writeFile(t, path, minimalYAML(":7777", "src2"))
@@ -123,7 +128,7 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil)
+	w, err := New(path, holder, nil, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -143,4 +148,30 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 	// 第三次同样安全。
 	_ = w.Close()
+}
+
+// TestWatcherLoggingCallbackGetsNewConfig 验证 reload 后日志回调收到最新 logging 配置。
+func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+
+	var gotLevel atomic.Value
+	w, _ := New(path, holder, nil, func(lc config.LoggingCfg) {
+		gotLevel.Store(lc.Level)
+	})
+	t.Cleanup(func() { _ = w.Close() })
+
+	// 把日志等级改成 debug 并写回
+	writeFile(t, path, []byte("server:\n  listen: :9999\nlogging:\n  level: debug\nsources:\n  - name: src1\n    base_url: https://example.com\n    api_key: k\n    default_model: m\n"))
+	w.Reload()
+
+	// reload 同步，稍等确保回调执行
+	time.Sleep(100 * time.Millisecond)
+	if gotLevel.Load() != "debug" {
+		t.Fatalf("日志回调收到的 level = %v, want debug", gotLevel.Load())
+	}
 }

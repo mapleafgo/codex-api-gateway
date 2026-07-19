@@ -91,9 +91,11 @@ func main() {
 	defer srv.Close()
 
 	// 配置热重载：fsnotify 监听 config.yaml 变化，自动 Load 并替换 holder；
-	// scheduler.Reload 由 srv.ReloadScheduler 触发，重建运行时优先级。
+	// scheduler.Reload 由 srv.ReloadScheduler 触发，重建运行时优先级；
+	// 日志系统（logging.level/format/file）通过 applyLogging 同步重配置，
+	// 使管理页修改日志配置即时生效。
 	// watcher 不可用不阻断启动，管理页保存改为退化为手动 Load+Replace。
-	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), srv.ReloadScheduler)
+	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), srv.ReloadScheduler, applyLogging)
 	if werr != nil {
 		slog.Warn("配置热重载不可用（fsnotify 初始化失败），管理页保存需重启生效", "error", werr)
 	} else {
@@ -102,7 +104,7 @@ func main() {
 	}
 
 	mux := srv.Mux()
-	adminMount(mux, srv, absConfigPath, watcher)
+	adminMount(mux, srv, absConfigPath, watcher, applyLogging)
 
 	// HTTP server 用 *http.Server 以支持 Shutdown；由 tray/shutdown 协调关闭。
 	// appCtx 在退出时 cancel，通过 BaseContext 注入每个请求：管理页 SSE、
@@ -194,8 +196,9 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 }
 
 // adminMount 挂载管理页到 mux，reload 回调统一从磁盘重载。
-// watcher 为 nil 时退化为手动 Load+Replace+Reload。
-func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher) {
+// watcher 为 nil 时退化为手动 Load+Replace+Reload+重配置日志。
+// applyLogging 在每次成功重载后把新的 logging 配置应用到运行中的日志系统。
+func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg)) {
 	reload := func() {
 		if w != nil {
 			w.Reload()
@@ -205,6 +208,7 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 		if newCfg, err := config.Load(cfgPath); err == nil {
 			srv.Holder().Replace(newCfg)
 			srv.ReloadScheduler()
+			applyLogging(newCfg.Logging)
 		}
 	}
 	admin.Mount(mux, admin.Deps{
@@ -214,4 +218,13 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 		ReloadFromDisk: reload,
 		ModelsFetcher:  srv.Scheduler().ListUpstreamModels,
 	})
+}
+
+// applyLogging 把 logging 配置应用到运行中的进程日志系统（重配置 slog handler）。
+// 供热重载（configwatch 与 admin 手动保存两条路径）复用，确保管理页修改日志配置即时生效。
+// 异常不向上抛出，避免影响调用方（configwatch goroutine / 管理接口）。
+func applyLogging(cfg config.LoggingCfg) {
+	if err := logging.Configure(cfg); err != nil {
+		slog.Error("热重载应用日志配置失败，沿用旧日志配置", "log_file", cfg.File, "error", err)
+	}
 }

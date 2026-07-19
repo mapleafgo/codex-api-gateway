@@ -19,6 +19,8 @@ import (
 
 // Configure 将配置指定的 slog handler 安装为进程默认 logger。
 // File 非空时日志写入该文件（追加模式，进程生命周期常开）；为空则写 stderr。
+// 重复调用（热重载场景）会先关闭上一次打开的日志文件句柄，避免 fd 泄漏，
+// 但 stderr 模式（File 为空）不持有文件句柄，无需关闭。
 func Configure(cfg config.LoggingCfg) error {
 	out := io.Writer(os.Stderr)
 	if cfg.File != "" {
@@ -26,12 +28,39 @@ func Configure(cfg config.LoggingCfg) error {
 		if err != nil {
 			return fmt.Errorf("logging: 无法打开日志文件 %s: %w", cfg.File, err)
 		}
+		// 先关闭旧文件句柄（若存在且不同于新文件），再切换，避免 fd 泄漏。
+		closeCurrentLogFile(f)
 		out = f
+	} else {
+		// 退回 stderr：关闭已打开的日志文件。
+		closeCurrentLogFile(nil)
 	}
 	handler := NewHandler(out, cfg)
 	slog.SetDefault(slog.New(handler))
 	log.SetOutput(io.Discard)
 	return nil
+}
+
+// currentLogFile 保存当前打开的日志文件句柄，供热重载时关闭旧的，避免 fd 泄漏。
+// 仅由 Configure 在持有锁时读写。
+var (
+	currentLogFileMu sync.Mutex
+	currentLogFile   *os.File
+)
+
+// closeCurrentLogFile 关闭当前日志文件句柄（若 next 为 nil 或指向不同文件）。
+// next 非空且等于当前文件时保留，不重复关闭。
+func closeCurrentLogFile(next *os.File) {
+	currentLogFileMu.Lock()
+	defer currentLogFileMu.Unlock()
+	if currentLogFile != nil && (next == nil || next != currentLogFile) {
+		_ = currentLogFile.Close()
+	}
+	if next != nil {
+		currentLogFile = next
+	} else {
+		currentLogFile = nil
+	}
 }
 
 // NewHandler 根据日志等级和格式返回 slog handler。

@@ -19,7 +19,8 @@ import (
 type Watcher struct {
 	path     string
 	holder   *config.Holder
-	onReload func() // 热重载成功后回调（scheduler.Reload）
+	onReload func()                  // 热重载成功后回调（scheduler.Reload）
+	onLog    func(config.LoggingCfg) // 热重载成功后回调（重新配置日志系统，可空）
 
 	fsw      *fsnotify.Watcher
 	stop     chan struct{}
@@ -29,8 +30,10 @@ type Watcher struct {
 	lastLoadErr atomic.Pointer[string]
 }
 
-// New 构造 Watcher。onReload 在每次成功重载后调用（可空）。
-func New(path string, holder *config.Holder, onReload func()) (*Watcher, error) {
+// New 构造 Watcher。onReload 在每次成功重载后调用（可空）；
+// onLog 在每次成功重载后调用，用于把新的 logging 配置应用到运行中的日志系统
+// （否则管理页修改日志等级/格式/文件不会即时生效），可空。
+func New(path string, holder *config.Holder, onReload func(), onLog func(config.LoggingCfg)) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -45,6 +48,7 @@ func New(path string, holder *config.Holder, onReload func()) (*Watcher, error) 
 		path:     path,
 		holder:   holder,
 		onReload: onReload,
+		onLog:    onLog,
 		fsw:      fsw,
 		stop:     make(chan struct{}),
 	}
@@ -101,6 +105,14 @@ func (w *Watcher) reload() {
 		func() {
 			defer func() { _ = recover() }()
 			w.onReload()
+		}()
+	}
+	if w.onLog != nil {
+		// 重新配置日志系统：管理页修改 logging.level/format/file 需即时生效。
+		// 隔离 panic：日志重配置异常不能影响 watcher goroutine 与转发路径。
+		func() {
+			defer func() { _ = recover() }()
+			w.onLog(cfg.Logging)
 		}()
 	}
 	slog.Info("配置热重载完成", "path", w.path, "sources", len(cfg.Sources))

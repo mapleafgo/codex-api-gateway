@@ -545,8 +545,8 @@ func TestWriteDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load 生成的默认配置: %v", err)
 	}
-	if cfg.Server.Listen != ":8080" {
-		t.Errorf("listen = %q, want :8080", cfg.Server.Listen)
+	if cfg.Server.Listen != ":8383" {
+		t.Errorf("listen = %q, want :8383", cfg.Server.Listen)
 	}
 	if cfg.Logging.Level != "info" || cfg.Logging.Format != "text" {
 		t.Errorf("logging = %+v, want info/text", cfg.Logging)
