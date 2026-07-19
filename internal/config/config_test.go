@@ -61,12 +61,18 @@ sources:
 	}
 }
 
-func TestLoadRejectsNoSources(t *testing.T) {
+// TestLoadAcceptsNoSources 验证零源配置不再被拒绝（允许启动后通过管理页添加）。
+// 转发请求的处理由 server 层返回 503。
+func TestLoadAcceptsNoSources(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`sources: []`), 0644)
-	if _, err := Load(path); err == nil {
-		t.Fatalf("expected error for no sources")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("零源配置应允许加载，实际出错: %v", err)
+	}
+	if len(cfg.Sources) != 0 {
+		t.Fatalf("Sources 应为空，实际 %d", len(cfg.Sources))
 	}
 }
 
@@ -524,5 +530,28 @@ sources:
 	// SystemSuffix 已移除字段；只要 Load 不报错、不 panic 即可（WARN 在日志里）。
 	if cfg == nil {
 		t.Fatalf("cfg == nil")
+	}
+}
+
+// TestWriteDefault 验证 WriteDefault 生成最小配置文件，且可被 Load 正常加载。
+func TestWriteDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "config.yaml") // 测试目录自动创建
+	if err := WriteDefault(path); err != nil {
+		t.Fatalf("WriteDefault: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 生成的默认配置: %v", err)
+	}
+	if cfg.Server.Listen != ":8080" {
+		t.Errorf("listen = %q, want :8080", cfg.Server.Listen)
+	}
+	if cfg.Logging.Level != "info" || cfg.Logging.Format != "text" {
+		t.Errorf("logging = %+v, want info/text", cfg.Logging)
+	}
+	if len(cfg.Sources) != 0 {
+		t.Errorf("默认配置应零源，实际 %d", len(cfg.Sources))
 	}
 }

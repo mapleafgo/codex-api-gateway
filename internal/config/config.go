@@ -26,22 +26,22 @@ var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 type Config struct {
 	Server  ServerCfg  `koanf:"server" yaml:"server"`
 	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
-	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker"`
-	Cache   CacheCfg   `koanf:"cache" yaml:"cache"`
+	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker,omitempty"`
+	Cache   CacheCfg   `koanf:"cache" yaml:"cache,omitempty"`
 	// BaseInstructionsFile 指向一个文本文件，其内容作为 Codex ModelInfo 的
 	// base_instructions 返回给客户端（非空时整体替换 Codex 内置 BASE_INSTRUCTIONS）。
 	// 用于注入网关级指令补强（如 skill 加载纪律）。相对路径基于 config 文件所在目录解析。
 	// 为空则 base_instructions 返回空串，沿用 Codex 内置指令。
 	// 取代已废弃的 system_suffix：后者在转换层追加 system block，需要每个上游请求都
 	// 重传指令；base_instructions 由 Codex 客户端缓存并在 system 中复用，prompt cache 更友好。
-	BaseInstructionsFile string   `koanf:"base_instructions_file" yaml:"base_instructions_file"`
-	Sources              []Source `koanf:"sources" yaml:"sources"`
+	BaseInstructionsFile string   `koanf:"base_instructions_file" yaml:"base_instructions_file,omitempty"`
+	Sources              []Source `koanf:"sources" yaml:"sources,omitempty"`
 
 	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
 	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
 	// 其余保持 codexModelInfo 的内置默认。上游 /v1/models 不提供 context_window
 	// 等能力字段，故用此处补充。
-	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models"`
+	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models,omitempty"`
 
 	// BaseInstructions 是 BaseInstructionsFile 加载后的内容，不参与 YAML 序列化。
 	// 由 Load 一次性读入；为空则 /v1/models 返回空 base_instructions。
@@ -56,35 +56,35 @@ type ServerCfg struct {
 // LoggingCfg 配置进程级结构化日志。
 type LoggingCfg struct {
 	Level  string `koanf:"level" yaml:"level"`
-	Format string `koanf:"format" yaml:"format"`
+	Format string `koanf:"format" yaml:"format,omitempty"`
 	// File 非空时日志写入该文件（追加，进程生命周期常开）；为空则写 stderr。
-	File string `koanf:"file" yaml:"file"`
+	File string `koanf:"file" yaml:"file,omitempty"`
 }
 
 // CacheCfg 配置 Anthropic prompt cache 的 TTL。
 type CacheCfg struct {
-	TTL string `koanf:"ttl" yaml:"ttl"` // "5m"(默认)或 "1h"
+	TTL string `koanf:"ttl" yaml:"ttl,omitempty"` // "5m"(默认)或 "1h"
 }
 
 // BreakerCfg configures upstream failover and circuit breaking.
 type BreakerCfg struct {
-	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout"`
-	Cooldown         Duration `koanf:"cooldown" yaml:"cooldown"`
-	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold"`
-	RecoverThreshold int      `koanf:"recover_threshold" yaml:"recover_threshold"`
-	HalfOpenProbes   int      `koanf:"half_open_probes" yaml:"half_open_probes"`
-	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries"`
-	Recovery         string   `koanf:"recovery" yaml:"recovery"`
+	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout,omitempty"`
+	Cooldown         Duration `koanf:"cooldown" yaml:"cooldown,omitempty"`
+	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold,omitempty"`
+	RecoverThreshold int      `koanf:"recover_threshold" yaml:"recover_threshold,omitempty"`
+	HalfOpenProbes   int      `koanf:"half_open_probes" yaml:"half_open_probes,omitempty"`
+	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries,omitempty"`
+	Recovery         string   `koanf:"recovery" yaml:"recovery,omitempty"`
 }
 
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
 	Name          string            `koanf:"name" yaml:"name"`
 	BaseURL       string            `koanf:"base_url" yaml:"base_url"`
-	APIKey        string            `koanf:"api_key" yaml:"api_key"`
-	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map"`
-	DefaultModel  string            `koanf:"default_model" yaml:"default_model"`
-	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker"`
+	APIKey        string            `koanf:"api_key" yaml:"api_key,omitempty"`
+	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
+	DefaultModel  string            `koanf:"default_model" yaml:"default_model,omitempty"`
+	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
 	OriginalIndex int               `koanf:"-" yaml:"-"`
 }
 
@@ -103,6 +103,13 @@ type ModelOverride struct {
 	// 配置 yaml key 用 supports_image（更简洁），输出给 Codex 的 JSON 仍为
 	// supports_image_detail_original（对齐 codex ModelInfo 字段名）。
 	SupportsImageDetailOriginal *bool `koanf:"supports_image" yaml:"supports_image"`
+}
+
+// MarshalYAML 序列化为 YAML。BaseInstructions 是运行时字段（koanf:"-"），
+// 不参与序列化，写回时只保留 BaseInstructionsFile。
+func (c Config) MarshalYAML() (any, error) {
+	type plain Config // alias 防止递归
+	return plain(c), nil
 }
 
 // Duration wraps time.Duration for YAML parsing.
@@ -125,6 +132,12 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	}
 	*d = Duration(parsed)
 	return nil
+}
+
+// MarshalYAML 序列化为 Go duration 字符串（如 "12s"、"30s"），
+// 避免默认输出纳秒数字导致下次 Load 时 ParseDuration 失败。
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
 }
 
 func expandEnv(s string) string {
@@ -329,9 +342,14 @@ func unmarshalEnvPath(k *koanf.Koanf, path string, target any) error {
 	return nil
 }
 
+// Validate 暴露给 admin 包做配置校验（与启动时的 validate 相同）。
+func (c *Config) Validate() error {
+	return c.validate()
+}
+
 func (c *Config) validate() error {
 	if len(c.Sources) == 0 {
-		return fmt.Errorf("config: at least one source required")
+		slog.Warn("配置未配置任何上游源，转发请求将返回 503；请在管理页添加 source")
 	}
 	applyLoggingDefaults(&c.Logging)
 	switch c.Logging.Level {
@@ -415,6 +433,8 @@ func (c *Config) OrderedSources() []Source {
 }
 
 // sourceNames 返回所有源名称，按配置顺序，仅用于日志展示。
+//
+//nolint:unused // 保留供日志/调试场景调用
 func (c *Config) sourceNames() []string {
 	out := make([]string, len(c.Sources))
 	for i, s := range c.Sources {
@@ -496,4 +516,33 @@ func (c *Config) ConfiguredModelSlugs() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// defaultConfigYAML 是自动生成的最小配置文件内容。零上游源，仅含必要默认值
+// 与引导注释，让用户知道去管理页添加服务商。打包为单文件后，首次运行若
+// 找不到 config.yaml 即写入此内容，保证进程可启动（转发请求返回 503 直到
+// 用户配置好 source）。
+const defaultConfigYAML = `# codex-api-gateway 自动生成的默认配置
+# 首次运行（未找到 config.yaml）时写入。请通过管理页添加上游源。
+# 管理页地址：http://localhost:8080/  （listen 改动后同步）
+server:
+  listen: ":8080"
+
+logging:
+  level: info
+  format: text
+  # file: gateway.log
+`
+
+// WriteDefault 写入最小默认配置到 path。目录不存在时创建。
+// 已存在 path 不会覆盖（调用方负责只在文件缺失时调用）。
+func WriteDefault(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); err != nil {
+		return fmt.Errorf("write default config: %w", err)
+	}
+	return nil
 }
