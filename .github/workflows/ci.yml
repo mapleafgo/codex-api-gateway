@@ -5,6 +5,11 @@ on:
   release:
     types: [published]
 
+# release 附件上传（shogo82148/actions-upload-release-asset）与 gh 调用
+# 需要 contents: write；默认 tag/release 触发下 token 为只读会 403。
+permissions:
+  contents: write
+
 env:
   GO_VERSION: "~1.26"
   MODULE: github.com/mapleafgo/codex-api-gateway
