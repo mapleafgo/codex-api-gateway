@@ -1,0 +1,1839 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex API Gateway · Console</title>
+<meta name="description" content="Codex API Gateway 运维控制台：实时观测请求量与缓存命中，管理上游源、模型与全局参数。">
+<meta name="theme-color" content="#F4F7FB">
+<link rel="icon" type="image/png" href="/favicon.ico">
+<script defer src="https://unpkg.com/alpinejs"></script>
+<style>
+/* =========================================================
+   Phosphor Console — 自建组件系统（无 UI 库）
+   主题：冷调石板 + 信号青绿心跳，运维网关气质
+   ========================================================= */
+:root {
+  --ink: #0b1220;
+  --ink-soft: #44516a;
+  --ink-faint: #7a879c;
+  --paper: #f1f5fb;
+  --surface: #ffffff;
+  --surface-2: #e8eef8;
+  --line: #d5deec;
+  --line-soft: #e7edf7;
+  --signal: #0f9f8a;
+  --signal-soft: #d7f5ef;
+  --focus: #2f6fed;
+  --focus-soft: #e7efff;
+  --good: #0f9f63;
+  --good-soft: #d9f6e8;
+  --warn: #c98414;
+  --warn-soft: #fff0d4;
+  --bad: #d64545;
+  --bad-soft: #ffe3e3;
+  --info: #2b7fd4;
+  --info-soft: #e3f1ff;
+  --shadow: 0 1px 0 rgba(11,18,32,.04), 0 8px 24px rgba(11,18,32,.05);
+  --shadow-lg: 0 12px 40px rgba(11,18,32,.12);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --font: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --topbar-h: 64px;
+}
+
+html[data-theme="dark"] {
+  --ink: #e8eef8;
+  --ink-soft: #a7b4c9;
+  --ink-faint: #6f7e96;
+  --paper: #0a0f18;
+  --surface: #121a27;
+  --surface-2: #1a2435;
+  --line: #273246;
+  --line-soft: #1d2839;
+  --signal: #2dd4bf;
+  --signal-soft: #12352f;
+  --focus: #60a5fa;
+  --focus-soft: #17253d;
+  --good: #34d399;
+  --good-soft: #123528;
+  --warn: #fbbf24;
+  --warn-soft: #3a2d12;
+  --bad: #f87171;
+  --bad-soft: #3a1717;
+  --info: #7dd3fc;
+  --info-soft: #14283a;
+  --shadow: 0 1px 0 rgba(0,0,0,.25), 0 10px 28px rgba(0,0,0,.28);
+  --shadow-lg: 0 16px 48px rgba(0,0,0,.45);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font);
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, color-mix(in srgb, var(--signal) 10%, transparent), transparent 60%),
+    radial-gradient(900px 400px at 100% 0%, color-mix(in srgb, var(--focus) 8%, transparent), transparent 55%),
+    var(--paper);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: inherit; }
+[x-cloak] { display: none !important; }
+.mono { font-family: var(--mono); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* ---------- Shell ---------- */
+.ui-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.ui-main { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; max-width: 1400px; width: 100%; margin: 0 auto; }
+
+.ui-topbar {
+  height: var(--topbar-h);
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--signal) 18%, transparent);
+  position: sticky; top: 0; z-index: 40;
+}
+.ui-topbar-inner {
+  width: 100%; max-width: 1400px;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 20px;
+}
+.ui-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ui-brand h1 {
+  margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
+.ui-brand .svc {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint);
+}
+.ui-brand .sep { color: var(--line); }
+.ui-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+/* signature: live pulse */
+.ui-pulse {
+  position: relative; width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0;
+  background: var(--bad);
+}
+.ui-pulse.is-on { background: var(--signal); }
+.ui-pulse::after {
+  content: ""; position: absolute; inset: -4px; border-radius: inherit;
+  background: inherit; opacity: .35;
+  animation: pulse 2.1s cubic-bezier(.2,0,0,1) infinite;
+}
+@keyframes pulse {
+  0% { transform: scale(.55); opacity: .55; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-pulse::after { display: none; }
+}
+
+/* ---------- Tabs ---------- */
+.ui-tabs {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.ui-tab {
+  appearance: none; border: 0; background: transparent;
+  padding: 6px 14px; border-radius: 999px;
+  font-size: 13px; font-weight: 500; color: var(--ink-soft);
+  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.ui-tab:hover { color: var(--ink); }
+.ui-tab.is-active {
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(11,18,32,.08);
+}
+
+/* ---------- Buttons ---------- */
+.ui-btn {
+  appearance: none; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink); border-radius: var(--r-sm);
+  padding: 7px 12px; font-size: 13px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .1s ease;
+}
+.ui-btn:hover { background: var(--surface-2); }
+.ui-btn:active { transform: translateY(1px); }
+.ui-btn:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+.ui-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ui-btn-primary {
+  background: var(--ink); border-color: var(--ink); color: var(--surface);
+}
+html[data-theme="dark"] .ui-btn-primary { background: var(--signal); border-color: var(--signal); color: #06241f; }
+.ui-btn-primary:hover { filter: brightness(1.05); background: var(--ink); }
+.ui-btn-ghost { border-color: transparent; background: transparent; color: var(--ink-soft); }
+.ui-btn-ghost:hover { background: var(--surface-2); color: var(--ink); }
+.ui-btn-danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
+.ui-btn-danger:hover { background: var(--bad-soft); }
+.ui-btn-sm { padding: 5px 10px; font-size: 12px; }
+.ui-btn-xs { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+.ui-btn-icon { width: 34px; height: 34px; padding: 0; justify-content: center; }
+.ui-join { display: inline-flex; align-items: center; }
+.ui-join .ui-btn { border-radius: 0; }
+.ui-join .ui-btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.ui-join .ui-btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.ui-join .ui-btn + .ui-btn { margin-left: -1px; }
+.ui-src-actions {
+  display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap;
+}
+.ui-text-action {
+  appearance: none; border: 0; background: transparent;
+  padding: 6px 8px; border-radius: 8px;
+  font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
+  display: inline-flex; align-items: center; gap: 4px;
+  transition: background .15s ease, color .15s ease;
+}
+.ui-text-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+  color: var(--focus);
+}
+.ui-text-action:disabled {
+  opacity: .35; cursor: not-allowed;
+}
+.ui-text-action.is-danger { color: var(--bad); }
+.ui-text-action.is-danger:hover:not(:disabled) {
+  background: var(--bad-soft); color: var(--bad);
+}
+.ui-filters {
+  margin-left: auto;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+  min-width: 0;
+}
+.ui-filters .ui-input,
+.ui-filters .ui-select {
+  width: 132px; min-width: 0; flex: 0 1 auto;
+}
+.ui-filters .ui-select.ui-code-filter { width: 96px; }
+@media (max-width: 1100px) {
+  .ui-filters { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+  .ui-filters .ui-input,
+  .ui-filters .ui-select { width: 120px; }
+}
+.ui-tip { position: relative; display: inline-flex; }
+.gw-tooltip {
+  position: fixed; z-index: 9999;
+  min-width: 280px; max-width: 480px;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--ink); color: var(--surface);
+  font-size: 11px; font-weight: 500; line-height: 1.4;
+  white-space: pre-wrap; word-break: break-word; box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+html[data-theme="dark"] .gw-tooltip {
+  background: #e8eef8; color: #0b1220;
+}
+
+/* ---------- Autocomplete ---------- */
+.ui-ac { position: relative; width: 100%; }
+.ui-ac input {
+  width: 100%; border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); padding: 6px 9px; font-size: 12.5px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ui-ac input:focus {
+  outline: none; border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+.ui-ac-list {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin-top: 2px; z-index: 50;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-sm); box-shadow: var(--shadow-lg);
+  max-height: 200px; overflow-y: auto; padding: 2px 0;
+  display: none;
+}
+.ui-ac-list.is-open { display: block; }
+.ui-ac-item {
+  padding: 5px 10px; font-size: 12.5px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ui-ac-item:hover, .ui-ac-item.is-active {
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+}
+html[data-theme="dark"] .ui-ac-list {
+  background: #1a1f2e; border-color: #2a3040;
+}
+
+/* ---------- Custom Select ---------- */
+.ui-sel { position: relative; width: 100%; }
+.ui-sel-btn {
+  width: 100%; border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); padding: 6px 24px 6px 9px; font-size: 12.5px;
+  text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; position: relative; color: var(--ink);
+  font-family: inherit; line-height: 1.4;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ui-sel-btn::after {
+  content: ''; position: absolute; right: 8px; top: 50%; width: 0; height: 0;
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 5px solid var(--ink-faint); transform: translateY(-50%);
+  pointer-events: none;
+}
+.ui-sel-btn:focus, .ui-sel-btn:hover {
+  outline: none; border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+.ui-sel-list {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin-top: 2px; z-index: 50;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-sm); box-shadow: var(--shadow-lg);
+  max-height: 200px; overflow-y: auto; padding: 2px 0;
+  display: none;
+}
+.ui-sel-list.is-open { display: block; }
+.ui-sel-item {
+  padding: 5px 10px; font-size: 12.5px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ui-sel-item:hover, .ui-sel-item.is-active {
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+}
+html[data-theme="dark"] .ui-sel-list {
+  background: #1a1f2e; border-color: #2a3040;
+}
+
+/* ---------- Fields ---------- */
+.ui-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-field .ui-hint { font-size: 11px; color: var(--ink-faint); margin-top: -2px; }
+.ui-label { font-size: 12px; font-weight: 500; color: var(--ink-soft); }
+.ui-input, .ui-select, .ui-textarea {
+  width: 100%; border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ui-input:focus, .ui-select:focus, .ui-textarea:focus {
+  outline: none; border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+.ui-input-sm, .ui-select-sm { padding: 6px 9px; font-size: 12.5px; }
+.ui-textarea {
+  resize: none; min-height: 0; line-height: 1.55;
+  font-family: var(--mono); font-size: 13px;
+}
+.ui-grid-2 {
+  display: grid; grid-template-columns: 1fr; gap: 14px;
+}
+@media (min-width: 768px) {
+  .ui-grid-2 { grid-template-columns: 1fr 1fr; }
+  .ui-span-2 { grid-column: span 2; }
+}
+
+/* ---------- Card / Panel ---------- */
+.ui-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.ui-card-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.ui-card-title {
+  margin: 0; font-size: 12px; font-weight: 650;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft);
+}
+.ui-card-body { padding: 16px; min-height: 0; }
+.ui-card-body.flush { padding: 0; }
+
+/* ---------- KPI ---------- */
+.ui-kpi-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px;
+}
+@media (min-width: 640px) { .ui-kpi-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (min-width: 1280px) { .ui-kpi-grid { grid-template-columns: repeat(6, minmax(0,1fr)); } }
+.ui-kpi {
+  position: relative; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: 14px 14px 12px;
+  box-shadow: var(--shadow);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.ui-kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.ui-kpi::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  background: var(--kpi, var(--focus));
+}
+.ui-kpi-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.ui-kpi-value {
+  margin-top: 8px; font-family: var(--mono); font-size: 28px; font-weight: 700;
+  letter-spacing: -.04em; line-height: 1.05;
+}
+.ui-kpi-raw { margin-top: 4px; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.ui-kpi.tone-info .ui-kpi-value { color: var(--info); }
+.ui-kpi.tone-good .ui-kpi-value { color: var(--good); }
+
+/* ---------- Badge / Status ---------- */
+.ui-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.6em; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; border: 1px solid transparent;
+  background: var(--surface-2); color: var(--ink-soft);
+}
+.ui-badge-soft-good { background: var(--good-soft); color: var(--good); }
+.ui-badge-soft-warn { background: var(--warn-soft); color: var(--warn); }
+.ui-badge-soft-bad { background: var(--bad-soft); color: var(--bad); }
+.ui-badge-soft-info { background: var(--info-soft); color: var(--info); }
+.ui-badge-soft-neutral { background: var(--surface-2); color: var(--ink-soft); }
+.ui-status {
+  display: inline-block; width: 8px; height: 8px; border-radius: 999px;
+  background: var(--ink-faint);
+}
+.ui-status-good { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 18%, transparent); }
+.ui-status-bad { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent); }
+.ui-status-warn { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent); }
+
+/* ---------- Table / Log ---------- */
+.ui-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ui-table th {
+  text-align: left; font-size: 11px; font-weight: 650; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ink-faint);
+  padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+  position: sticky; top: 0; z-index: 1;
+}
+.ui-table td { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
+.ui-table tbody tr:hover { background: color-mix(in srgb, var(--focus) 5%, transparent); }
+.ui-table .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
+.ui-table .empty { text-align: center; color: var(--ink-faint); padding: 36px 12px; }
+
+.ui-log {
+  position: relative; flex: 1; min-height: 0; overflow: auto;
+}
+.ui-log-head, .ui-log-row {
+  display: grid;
+  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 72px 56px 40px;
+  gap: 10px; align-items: center; padding: 0 16px;
+}
+.ui-log-head {
+  position: sticky; top: 0; z-index: 2;
+  height: 34px; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px; font-weight: 650; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.ui-log-head .num, .ui-log-row .num { text-align: right; }
+.ui-log-head .center, .ui-log-row .center { text-align: center; }
+.ui-log-body { position: relative; }
+.ui-log-row {
+  position: absolute; left: 0; right: 0; height: 36px;
+  border-bottom: 1px solid var(--line-soft);
+  transition: background .12s ease;
+  font-size: 13px;
+}
+.ui-log-row:hover { background: color-mix(in srgb, var(--focus) 6%, transparent); }
+.ui-log-empty {
+  text-align: center; color: var(--ink-faint); padding: 64px 16px;
+}
+.ui-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 8l3-3.5' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 8px center;
+  background-repeat: no-repeat;
+  background-size: 14px 14px;
+  padding-right: 28px;
+  cursor: pointer;
+  border-radius: var(--r-md);
+}
+.ui-select:hover { border-color: color-mix(in srgb, var(--focus) 35%, var(--line)); }
+.ui-select option {
+  background: var(--surface); color: var(--ink);
+}
+html[data-theme="dark"] .ui-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 8l3-3.5' fill='none' stroke='%23a7b4c9' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.ui-group-table-wrap { overflow: auto; max-height: 260px; }
+.ui-group-table .num { min-width: 64px; }
+
+/* ---------- Observe layout ---------- */
+.ui-observe {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px;
+  padding: 16px 20px; overflow: hidden;
+}
+.ui-observe .ui-history {
+  flex: 1 1 auto; min-height: 420px; display: flex; flex-direction: column;
+}
+
+/* ---------- Config layout ---------- */
+.ui-config {
+  flex: 1; min-height: 0; display: flex; overflow: hidden;
+}
+.ui-side {
+  display: none; width: 208px; flex-shrink: 0;
+  border-right: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 90%, transparent);
+  padding: 18px 12px; overflow: auto; align-self: flex-start;
+  border-radius: 12px; margin: 8px 0;
+}
+@media (min-width: 768px) { .ui-side { display: block; width: 220px; } }
+@media (min-width: 1280px) { .ui-side { width: 240px; } }
+.ui-side-label {
+  margin: 0 10px 10px; font-size: 11px; font-weight: 650;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint);
+}
+.ui-menu { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ui-menu button {
+  width: 100%; text-align: left; border: 0; background: transparent;
+  border-radius: 10px; padding: 10px 12px; color: var(--ink-soft);
+  font-size: 13.5px; font-weight: 500; position: relative;
+  transition: background .15s ease, color .15s ease;
+}
+.ui-menu button:hover { background: var(--surface-2); color: var(--ink); }
+.ui-menu button.is-active {
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
+  color: var(--focus); font-weight: 650;
+}
+.ui-menu button.is-active::before {
+  content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--focus);
+}
+.ui-config-body { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.ui-config-mobile {
+  display: block; padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+@media (min-width: 768px) { .ui-config-mobile { display: none; } }
+.ui-config-scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; }
+.ui-config-scroll.full { display: flex; flex-direction: column; gap: 10px; }
+.ui-stack { display: flex; flex-direction: column; gap: 14px; }
+.ui-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ui-hint { margin: 0; font-size: 13px; color: var(--ink-soft); }
+.ui-path { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.ui-fieldset {
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface); padding: 16px; margin: 0;
+}
+.ui-fieldset legend {
+  padding: 0 6px; font-size: 12px; font-weight: 650;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft);
+}
+.ui-map-row {
+  display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 6px; align-items: center;
+}
+.ui-savebar {
+  flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(12px) saturate(1.3);
+}
+.ui-savebar .msg { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); }
+.ui-savebar .msg.is-dirty { color: var(--warn); }
+.ui-savebar .actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* ---------- Toast / Modal ---------- */
+.ui-toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 100;
+  min-width: 220px; max-width: 360px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+  padding: 12px 14px; font-size: 13px;
+}
+.ui-toast.is-success { border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+.ui-toast.is-error { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.ui-toast.is-info { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
+
+.ui-modal { border: 0; padding: 0; background: transparent; max-width: 440px; width: calc(100% - 32px); }
+.ui-modal::backdrop { background: rgba(8,12,20,.45); backdrop-filter: blur(4px); }
+.ui-modal-box {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 18px;
+}
+.ui-modal-box h3 { margin: 0; font-size: 16px; font-weight: 650; }
+.ui-modal-box p { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); }
+.ui-modal-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- Spinner / skip ---------- */
+.ui-spin {
+  width: 12px; height: 12px; border-radius: 999px;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor; animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.ui-skip {
+  position: absolute; left: 8px; top: -40px; z-index: 200;
+  transition: top .15s ease;
+}
+.ui-skip:focus { top: 8px; }
+
+/* tiny utility */
+.t-good { color: var(--good); }
+.t-bad { color: var(--bad); }
+.t-info { color: var(--info); }
+.t-faint { color: var(--ink-faint); }
+.t-soft { color: var(--ink-soft); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.min0 { min-width: 0; }
+.grow { flex: 1; min-height: 0; }
+.w-full { width: 100%; }
+.hidden-sm { display: none; }
+@media (min-width: 640px) { .hidden-sm { display: inline; } }
+</style>
+</head>
+<body class="ui-shell" x-data="app()" x-init="init()">
+
+<a href="#main" class="ui-skip ui-btn ui-btn-sm" x-text="t('skipToMain')"></a>
+
+<header class="ui-topbar">
+  <div class="ui-topbar-inner">
+  <div class="ui-brand">
+    <span class="ui-pulse" :class="connected && 'is-on'"
+          :title="connected ? t('sseConnected') : t('sseOffline')" aria-hidden="true"></span>
+    <h1>
+      <span class="svc">codex-api-gateway</span>
+    </h1>
+  </div>
+  <div class="ui-topbar-actions">
+    <div class="ui-tabs" role="tablist" :aria-label="t('navPages')">
+      <button class="ui-tab" role="tab" :class="tab==='observe' && 'is-active'"
+              :aria-selected="tab==='observe'" @click="tab='observe'" x-text="t('observe')"></button>
+      <button class="ui-tab" role="tab" :class="tab==='config' && 'is-active'"
+              :aria-selected="tab==='config'" @click="tab='config'" x-text="t('config')"></button>
+    </div>
+    <label>
+      <span class="sr-only" x-text="t('language')"></span>
+      <div class="ui-sel" style="width:72px" x-data="uiSel()" data-field="locale" x-init="model=locale; opts=[{v:'zh',l:'中文'},{v:'en',l:'EN'}]">
+        <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+        <div class="ui-sel-list" :class="open && 'is-open'">
+          <template x-for="(o,i) in opts" :key="o.v">
+            <div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div>
+          </template>
+        </div>
+      </div>
+    </label>
+    <button class="ui-btn ui-btn-icon ui-btn-ghost" type="button" @click="toggleTheme()" :aria-label="t('switchTheme')">
+      <span x-text="theme==='dark' ? '☾' : '☀'"></span>
+    </button>
+  </div>
+  </div>
+</header>
+
+<main id="main" class="ui-main" x-cloak>
+
+  <!-- Observe -->
+  <section class="ui-observe" x-show="tab==='observe'" role="tabpanel" aria-label="observe">
+    <div class="ui-kpi-grid">
+      <template x-for="card in metricCards" :key="card.key">
+        <div class="ui-kpi" :class="card.tone" :style="'--kpi:' + card.color">
+          <div class="ui-kpi-label" x-text="card.label"></div>
+          <div class="ui-kpi-value" x-text="card.display"></div>
+          <div class="ui-kpi-raw" x-text="card.raw"></div>
+        </div>
+      </template>
+    </div>
+
+    <div class="ui-card" style="flex:0 0 auto; max-height: 280px;">
+      <div class="ui-card-head">
+        <h2 class="ui-card-title" x-text="t('byGroup')"></h2>
+        <span class="ui-badge" x-text="(snap.by_group||[]).length + ' ' + t('groups')"></span>
+      </div>
+      <div class="ui-card-body flush" style="overflow:auto; max-height: 220px;">
+        <div class="ui-group-table-wrap">
+        <table class="ui-table ui-group-table">
+          <caption class="sr-only" x-text="t('byGroup')"></caption>
+          <thead>
+            <tr>
+              <th x-text="t('source')"></th>
+              <th x-text="t('model')"></th>
+              <th class="num" x-text="t('requests')"></th>
+              <th class="num" x-text="t('okCount')"></th>
+              <th class="num" x-text="t('failCount')"></th>
+              <th class="num" x-text="t('inputTok')"></th>
+              <th class="num" x-text="t('outputTok')"></th>
+              <th class="num" x-text="t('cacheCreate')"></th>
+              <th class="num" x-text="t('cacheHit')"></th>
+              <th class="num" x-text="t('avgMs')"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="g in (snap.by_group || [])" :key="g.source + '/' + g.model">
+              <tr>
+                <td x-text="g.source"></td>
+                <td class="mono" style="font-size:12px" x-text="g.model"></td>
+                <td class="num" x-text="fmtTokens(g.requests)"></td>
+                <td class="num t-good" x-text="fmtTokens(g.completed)"></td>
+                <td class="num" :class="(g.failed||0) > 0 ? 't-bad' : ''" x-text="fmtTokens(g.failed)"></td>
+                <td class="num" x-text="fmtTokens(g.input_tokens)"></td>
+                <td class="num" x-text="fmtTokens(g.output_tokens)"></td>
+                <td class="num t-info" x-text="fmtTokens(g.cache_create)"></td>
+                <td class="num t-good" x-text="fmtTokens(g.cache_read)"></td>
+                <td class="num" x-text="fmtDuration(g.requests > 0 ? Math.round(g.total_duration_ms / g.requests) : 0)"></td>
+              </tr>
+            </template>
+            <tr x-show="(snap.by_group||[]).length === 0">
+              <td colspan="10" class="empty" x-text="t('noData')"></td>
+            </tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="ui-card ui-history">
+      <div class="ui-card-head">
+        <h2 class="ui-card-title" x-text="t('history')"></h2>
+        <span class="ui-badge" x-text="(snap.recent||[]).length + ' / 1000'"></span>
+        <div class="ui-filters">
+          <div class="ui-sel" x-data="uiSel()" data-field="filterModel" x-init="model=filterModel" x-effect="opts=[{v:'',l:t('allModels')}].concat(modelOptions.map(m=>({v:m,l:m})))">
+            <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+            <div class="ui-sel-list" :class="open && 'is-open'">
+              <template x-for="(o,i) in opts" :key="o.v||o.l"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+            </div>
+          </div>
+          <div class="ui-sel" x-data="uiSel()" data-field="filterSource" x-init="model=filterSource" x-effect="opts=[{v:'',l:t('allSources')}].concat(sourceOptions.map(s=>({v:s,l:s})))">
+            <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+            <div class="ui-sel-list" :class="open && 'is-open'">
+              <template x-for="(o,i) in opts" :key="o.v||o.l"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+            </div>
+          </div>
+          <div class="ui-sel" x-data="uiSel()" data-field="filterKind" x-init="model=filterKind" x-effect="opts=[{v:'upstream',l:t('kindUpstream')},{v:'client',l:t('kindClient')},{v:'',l:t('allKinds')}]">
+            <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+            <div class="ui-sel-list" :class="open && 'is-open'">
+              <template x-for="(o,i) in opts" :key="o.v||o.l"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+            </div>
+          </div>
+          <div class="ui-sel" x-data="uiSel()" data-field="filterStatus" x-init="model=filterStatus" x-effect="opts=[{v:'',l:t('allStatus')}].concat(statusCodeOptions.map(c=>({v:String(c),l:String(c)})))">
+            <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+            <div class="ui-sel-list" :class="open && 'is-open'">
+              <template x-for="(o,i) in opts" :key="o.v||o.l"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ui-log" x-ref="listScroll" @scroll="onListScroll()">
+        <div class="ui-log-head">
+          <span x-text="t('colTime')"></span>
+          <span class="center" x-text="t('colKind')"></span>
+          <span x-text="t('source')"></span>
+          <span x-text="t('model')"></span>
+          <span class="num" x-text="t('inputTok')"></span>
+          <span class="num" x-text="t('outputTok')"></span>
+          <span class="num" x-text="t('cacheCreate')"></span>
+          <span class="num" x-text="t('cacheHit')"></span>
+          <span class="num" x-text="t('colDur')"></span>
+          <span class="num" x-text="t('colCode')"></span>
+          <span class="center" x-text="t('colOk')"></span>
+        </div>
+        <div class="ui-log-body" :style="{ height: (filteredRecent.length * ROW_H) + 'px' }">
+          <template x-for="row in visibleRows" :key="row._idx">
+            <div class="ui-log-row" :style="{ transform: 'translateY(' + (row._idx * ROW_H) + 'px)' }">
+              <span class="t-faint mono" style="font-size:11px" x-text="fmtShortTime(row.time)" :title="row.time"></span>
+              <span class="center">
+                <span class="ui-badge" :class="row.kind === 'upstream' ? 'ui-badge-soft-info' : 'ui-badge-soft-good'"
+                      x-text="row.kind === 'upstream' ? ('#' + row.attempt) : '√'"
+                      :title="row.kind === 'upstream' ? (t('kindUpstream') + ' #' + row.attempt) : t('kindClient')"></span>
+              </span>
+              <span class="truncate" x-text="row.source" :title="row.source"></span>
+              <span class="min0 mono truncate" style="font-size:12px" :title="modelCellTitle(row)">
+                <template x-if="row.resolved_model && row.resolved_model !== row.model">
+                  <span style="display:flex; gap:4px; min-width:0; align-items:center">
+                    <span class="t-faint truncate" x-text="row.model"></span>
+                    <span class="t-faint" aria-hidden="true">→</span>
+                    <span class="t-info truncate" x-text="row.resolved_model"></span>
+                  </span>
+                </template>
+                <template x-if="!(row.resolved_model && row.resolved_model !== row.model)">
+                  <span class="truncate" x-text="row.model"></span>
+                </template>
+              </span>
+              <span class="num" x-text="fmtTokens(row.input_tokens) || '-'"></span>
+              <span class="num" x-text="fmtTokens(row.output_tokens) || '-'"></span>
+              <span class="num t-info" x-text="fmtTokens(row.cache_create) || '-'"></span>
+              <span class="num t-good" x-text="fmtTokens(row.cache_read) || '-'"></span>
+              <span class="num t-soft" x-text="fmtDuration(row.duration_ms)"></span>
+              <span class="num">
+                <span class="ui-tip"
+                      @mouseenter="showTip($event, codeTip(row))"
+                      @mouseleave="hideTip()">
+                  <span class="ui-badge" :class="codeBadge(row)" x-text="row.code || '-'"></span>
+                </span>
+              </span>
+              <span class="center">
+                <span class="ui-status" :class="statusDotClass(row)"
+                      :title="statusTip(row)" role="img"
+                      :aria-label="statusTip(row)"></span>
+              </span>
+            </div>
+          </template>
+        </div>
+        <div class="ui-log-empty" x-show="filteredRecent.length === 0" x-text="t('noRequests')"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config -->
+  <section class="ui-config" x-show="tab==='config'" role="tabpanel" aria-label="config">
+    <aside class="ui-side">
+      <p class="ui-side-label" x-text="t('config')"></p>
+      <ul class="ui-menu">
+        <li><button type="button" :class="cfgTab==='sources' && 'is-active'" @click="switchCfgTab('sources')" x-text="t('sources')"></button></li>
+        <li><button type="button" :class="cfgTab==='models' && 'is-active'" @click="switchCfgTab('models')" x-text="t('models')"></button></li>
+        <li><button type="button" :class="cfgTab==='global' && 'is-active'" @click="switchCfgTab('global')" x-text="t('global')"></button></li>
+        <li><button type="button" :class="cfgTab==='guidance' && 'is-active'" @click="switchCfgTab('guidance')" x-text="t('guidance')"></button></li>
+      </ul>
+    </aside>
+
+    <div class="ui-config-body">
+      <div class="ui-config-mobile">
+        <div class="ui-tabs" role="tablist">
+          <template x-for="item in ['sources','models','global','guidance']" :key="item">
+            <button class="ui-tab" role="tab" :class="cfgTab===item && 'is-active'" @click="switchCfgTab(item)" x-text="t(item)"></button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Sources -->
+      <div class="ui-config-scroll" x-show="cfgTab==='sources'" x-ref="srcScroll">
+        <div class="ui-row" style="margin-bottom:14px">
+          <p class="ui-hint" x-text="t('srcOrderHint')"></p>
+          <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="addSource()">
+            <span aria-hidden="true">＋</span><span x-text="t('addSrc')"></span>
+          </button>
+        </div>
+        <div class="ui-stack">
+          <template x-for="(src, idx) in cfg.sources" :key="idx">
+            <div class="ui-card">
+              <div class="ui-card-body ui-stack">
+                <div class="ui-row">
+                  <div style="display:flex; align-items:center; gap:8px">
+                    <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
+                    <strong x-text="src.name || t('newSource')"></strong>
+                  </div>
+                  <div class="ui-src-actions" role="group" :aria-label="t('actions')">
+                    <button class="ui-text-action" type="button" @click="moveSource(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
+                    <button class="ui-text-action" type="button" @click="moveSource(idx, 1)" :disabled="idx===cfg.sources.length-1">↓ <span x-text="t('down')"></span></button>
+                    <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
+                  </div>
+                </div>
+                <div class="ui-grid-2">
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('srcName')"></span>
+                    <input class="ui-input ui-input-sm" x-model="src.name" autocomplete="off" spellcheck="false">
+                  </label>
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('srcURL')"></span>
+                    <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
+                  </label>
+                  <div class="ui-field ui-span-2">
+                    <div style="display:flex; align-items:center; gap:8px">
+                      <span class="ui-label" x-text="t('apiKey')"></span>
+                      <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
+                              @click="toggleKeyVisibility(idx)"
+                              :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
+                              x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
+                    </div>
+                    <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
+                           x-model="src.api_key" autocomplete="off" spellcheck="false">
+                  </div>
+                  <label class="ui-field ui-span-2">
+                    <span class="ui-label" x-text="t('defaultModel')"></span>
+                    <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
+                      opts() { const s = this.q.toLowerCase(); return (upstreamModels[src.name]||[]).map(m=>m.id).filter(o => !s || o.toLowerCase().includes(s)); },
+                      pick(v) { this.q = v; src.default_model = v; this.open = false; this.ai = -1; },
+                      kd(e) { if(!this.open) { if(e.key==='ArrowDown'||e.key==='ArrowUp'){this.open=true;e.preventDefault();}return;}
+                        const o = this.opts();
+                        if(e.key==='ArrowDown'){e.preventDefault();this.ai=Math.min(this.ai+1,o.length-1);}
+                        else if(e.key==='ArrowUp'){e.preventDefault();this.ai=Math.max(this.ai-1,0);}
+                        else if(e.key==='Enter'&&this.ai>=0){e.preventDefault();this.pick(o[this.ai]);}
+                        else if(e.key==='Escape'){this.open=false;} }
+                    }">
+                      <input type="text" x-model="q"
+                             @input="src.default_model = q; open = true; ai = -1; fetchUpstreamModels(src)"
+                             @focus="fetchUpstreamModels(src); open = true"
+                             @keydown="kd($event)"
+                             @blur="setTimeout(() => open = false, 150)"
+                             :placeholder="t('realModel') + '…'">
+                      <div class="ui-ac-list" :class="open && opts().length && 'is-open'">
+                        <template x-for="(opt, i) in opts()" :key="opt">
+                          <div class="ui-ac-item" :class="i === ai && 'is-active'"
+                               @mousedown.prevent="pick(opt)" x-text="opt"></div>
+                        </template>
+                      </div>
+                    </div>
+                  </label>
+                </div>
+                <fieldset class="ui-fieldset">
+                  <legend x-text="t('modelMap')"></legend>
+                  <div class="ui-stack" style="gap:8px">
+                    <template x-for="(pair, pi) in modelMapPairs(src)" :key="pi">
+                      <div class="ui-map-row">
+                        <div class="ui-ac" x-data="{ q: pair.key || '', open: false, ai: -1,
+                          opts() { const s = this.q.toLowerCase(); return modelOptions.filter(o => !s || o.toLowerCase().includes(s)); },
+                          pick(v) { this.q = v; updateModelMapPair(src, pi, 'key', v); this.open = false; this.ai = -1; },
+                          kd(e) { if(!this.open) { if(e.key==='ArrowDown'||e.key==='ArrowUp'){this.open=true;e.preventDefault();}return;}
+                            const o = this.opts();
+                            if(e.key==='ArrowDown'){e.preventDefault();this.ai=Math.min(this.ai+1,o.length-1);}
+                            else if(e.key==='ArrowUp'){e.preventDefault();this.ai=Math.max(this.ai-1,0);}
+                            else if(e.key==='Enter'&&this.ai>=0){e.preventDefault();this.pick(o[this.ai]);}
+                            else if(e.key==='Escape'){this.open=false;} }
+                        }">
+                          <input type="text" x-model="q" class="ui-input ui-input-sm mono"
+                                 @input="updateModelMapPair(src, pi, 'key', q); open = true; ai = -1"
+                                 @focus="open = true"
+                                 @keydown="kd($event)"
+                                 @blur="setTimeout(() => open = false, 150)"
+                                 :placeholder="t('alias')">
+                          <div class="ui-ac-list" :class="open && opts().length && 'is-open'">
+                            <template x-for="(opt, i) in opts()" :key="opt">
+                              <div class="ui-ac-item" :class="i === ai && 'is-active'"
+                                   @mousedown.prevent="pick(opt)" x-text="opt"></div>
+                            </template>
+                          </div>
+                        </div>
+                        <span class="t-faint" aria-hidden="true">→</span>
+                        <div class="ui-ac" x-data="{ q: pair.val || '', open: false, ai: -1,
+                          opts() { const s = this.q.toLowerCase(); return (upstreamModels[src.name]||[]).map(m=>m.id).filter(o => !s || o.toLowerCase().includes(s)); },
+                          pick(v) { this.q = v; updateModelMapPair(src, pi, 'val', v); this.open = false; this.ai = -1; },
+                          kd(e) { if(!this.open) { if(e.key==='ArrowDown'||e.key==='ArrowUp'){this.open=true;e.preventDefault();}return;}
+                            const o = this.opts();
+                            if(e.key==='ArrowDown'){e.preventDefault();this.ai=Math.min(this.ai+1,o.length-1);}
+                            else if(e.key==='ArrowUp'){e.preventDefault();this.ai=Math.max(this.ai-1,0);}
+                            else if(e.key==='Enter'&&this.ai>=0){e.preventDefault();this.pick(o[this.ai]);}
+                            else if(e.key==='Escape'){this.open=false;} }
+                        }">
+                          <input type="text" x-model="q" class="ui-input ui-input-sm mono"
+                                 @input="updateModelMapPair(src, pi, 'val', q); open = true; ai = -1; fetchUpstreamModels(src)"
+                                 @focus="fetchUpstreamModels(src); open = true"
+                                 @keydown="kd($event)"
+                                 @blur="setTimeout(() => open = false, 150)"
+                                 :placeholder="t('realModel')">
+                          <div class="ui-ac-list" :class="open && opts().length && 'is-open'">
+                            <template x-for="(opt, i) in opts()" :key="opt">
+                              <div class="ui-ac-item" :class="i === ai && 'is-active'"
+                                   @mousedown.prevent="pick(opt)" x-text="opt"></div>
+                            </template>
+                          </div>
+                        </div>
+                        <button type="button" class="ui-btn ui-btn-xs ui-btn-danger"
+                                @click="removeModelMapPair(src, pi)" :aria-label="t('removeMap')">✕</button>
+                      </div>
+                    </template>
+                    <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost" style="align-self:flex-start"
+                            @click="addModelMapPair(src)">
+                      <span aria-hidden="true">＋</span><span x-text="t('addMap')"></span>
+                    </button>
+                  </div>
+                </fieldset>
+              </div>
+            </div>
+          </template>
+          <div class="ui-card" x-show="cfg.sources.length === 0">
+            <div class="ui-card-body ui-stack">
+              <span class="t-soft" x-text="t('noSources')"></span>
+              <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" style="align-self:flex-start" @click="addSource()" x-text="t('addSrc')"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Models -->
+      <div class="ui-config-scroll" x-show="cfgTab==='models'">
+        <div class="ui-row" style="margin-bottom:14px">
+          <p class="ui-hint" x-text="t('modelHint')"></p>
+          <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="addModel()">
+            <span aria-hidden="true">＋</span><span x-text="t('addModel')"></span>
+          </button>
+        </div>
+        <div class="ui-stack">
+          <template x-for="(m, slug) in cfg.models" :key="slug">
+            <div class="ui-card">
+              <div class="ui-card-body ui-stack">
+                <div class="ui-row">
+                  <div style="display:flex; align-items:center; gap:8px; min-width:0">
+                    <span class="ui-badge ui-badge-soft-neutral">model</span>
+                    <strong class="mono truncate" x-text="m._slug || slug"></strong>
+                  </div>
+                  <button class="ui-text-action is-danger" type="button" @click="removeModel(slug)" x-text="t('delete')"></button>
+                </div>
+                <div class="ui-grid-2">
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('slug')"></span>
+                    <input class="ui-input ui-input-sm mono" x-model="m._slug" @change="renameModel(slug, m._slug)" autocomplete="off" spellcheck="false">
+                  </label>
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('contextWindow')"></span>
+                    <input type="number" class="ui-input ui-input-sm mono" x-model.number="m.context_window" autocomplete="off" inputmode="numeric">
+                  </label>
+                  <label class="ui-field ui-span-2" style="flex-direction:row; align-items:center; gap:10px">
+                    <input type="checkbox" x-model="m.supports_image">
+                    <span class="ui-label" style="margin:0" x-text="t('supportsImage')"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div class="ui-card" x-show="Object.keys(cfg.models || {}).length === 0">
+            <div class="ui-card-body ui-stack">
+              <span class="t-soft" x-text="t('noData')"></span>
+              <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" style="align-self:flex-start" @click="addModel()" x-text="t('addModel')"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Global -->
+      <div class="ui-config-scroll" x-show="cfgTab==='global'">
+        <div class="ui-stack" style="gap:18px">
+          <fieldset class="ui-fieldset">
+            <legend x-text="t('globalParams')"></legend>
+            <div class="ui-grid-2">
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('listen')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.server.listen" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('cacheTtl')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.cache.ttl" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('logLevel')"></span>
+                <div class="ui-sel" x-data="uiSel()" data-field="cfg.logging.level" x-init="model=cfg.logging.level||'info'" x-effect="const v=cfg.logging.level||'info'; if(v!==model) model=v; opts=[{v:'debug',l:t('levelDebug')},{v:'info',l:t('levelInfo')},{v:'warn',l:t('levelWarn')},{v:'error',l:t('levelError')}]">
+                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+                  </div>
+                </div>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('logFormat')"></span>
+                <div class="ui-sel" x-data="uiSel()" data-field="cfg.logging.format" x-init="model=cfg.logging.format||'text'" x-effect="const v=cfg.logging.format||'text'; if(v!==model) model=v; opts=[{v:'text',l:t('fmtText')},{v:'json',l:t('fmtJson')}]">
+                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+                  </div>
+                </div>
+              </label>
+              <label class="ui-field ui-span-2">
+                <span class="ui-label" x-text="t('logFile')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.logging.file" autocomplete="off" spellcheck="false">
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="ui-fieldset">
+            <legend x-text="t('breaker')"></legend>
+            <div class="ui-grid-2">
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('fbt')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.first_byte_timeout" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('fbtHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('cooldown')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.cooldown" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('cooldownHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('degradeThreshold')"></span>
+                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.degrade_threshold" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('degradeThresholdHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('recoverThreshold')"></span>
+                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.recover_threshold" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('recoverThresholdHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('halfOpenProbes')"></span>
+                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.half_open_probes" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('halfOpenProbesHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('maxRetries')"></span>
+                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.max_retries" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('maxRetriesHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('recovery')"></span>
+                <div class="ui-sel" x-data="uiSel()" data-field="cfg.breaker.recovery" x-init="model=cfg.breaker.recovery||'normal'" x-effect="opts=[{v:'normal',l:t('recoveryNormal')},{v:'degraded',l:t('recoveryDegraded')}]">
+                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+
+      <!-- Guidance -->
+      <div class="ui-config-scroll full" x-show="cfgTab==='guidance'">
+        <div class="ui-row">
+          <p class="ui-hint" x-text="t('guidanceHint')"></p>
+          <button class="ui-btn ui-btn-sm" type="button" @click="loadGuidance()" x-text="t('reload')"></button>
+        </div>
+        <div class="ui-path" x-text="guidance.path"></div>
+        <label class="sr-only" x-text="t('guidance')"></label>
+        <textarea class="ui-textarea grow w-full"
+                  x-model="guidance.content" :placeholder="t('guidancePlaceholder')"
+                  spellcheck="false" autocomplete="off"></textarea>
+        <div style="display:flex; justify-content:flex-end">
+          <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="saveGuidance()" :disabled="guidanceSaving">
+            <span x-show="guidanceSaving" class="ui-spin"></span>
+            <span x-text="guidanceSaving ? t('saving') : t('saveGuidance')"></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="ui-savebar" x-show="cfgTab !== 'guidance'">
+        <span class="msg" :class="dirty && 'is-dirty'">
+          <span class="ui-status" :class="dirty ? 'ui-status-warn' : 'ui-status-good'" aria-hidden="true"></span>
+          <span x-text="dirty ? t('cfgDirty') : t('cfgSynced')"></span>
+        </span>
+        <div class="actions">
+          <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button" @click="loadConfig()" x-text="t('discard')"></button>
+          <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="saveConfig()" :disabled="saving">
+            <span x-show="saving" class="ui-spin"></span>
+            <span x-text="saving ? t('saving') : t('saveReload')"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Toast -->
+<div class="ui-toast"
+     x-data="{show:false, msg:'', type:'info'}"
+     x-show="show" x-cloak x-transition
+     role="status" aria-live="polite"
+     :class="{
+       'is-error': type==='error',
+       'is-success': type==='success',
+       'is-info': type!=='error' && type!=='success'
+     }"
+     @notify.window="show=true; msg=$event.detail.msg; type=$event.detail.type || 'info'; setTimeout(()=>show=false, 3000)">
+  <span x-text="msg"></span>
+</div>
+
+<!-- Modal -->
+<dialog x-ref="gwModal" class="ui-modal" @close="onModalClose()">
+  <div class="ui-modal-box">
+    <h3 x-text="modal.title"></h3>
+    <p x-show="modal.msg" x-text="modal.msg"></p>
+
+    <template x-if="modal.open && modal.kind === 'prompt'">
+      <input class="ui-input" style="margin-top:12px" x-model="modal.value"
+             :placeholder="modal.placeholder" x-ref="modalInput"
+             autocomplete="off" spellcheck="false" @keydown.enter="confirmModal()">
+    </template>
+
+    <template x-if="modal.open && modal.kind === 'form'">
+      <div class="ui-stack" style="margin-top:12px; gap:10px">
+        <template x-for="f in modal.fields" :key="f.key">
+          <label class="ui-field" :style="f.type === 'checkbox' ? 'flex-direction:row; align-items:center; gap:8px' : ''">
+            <template x-if="f.type === 'checkbox'">
+              <span style="display:inline-flex; align-items:center; gap:8px">
+                <input type="checkbox" x-model="f.value">
+                <span class="ui-label" x-text="f.label"></span>
+              </span>
+            </template>
+            <template x-if="f.type !== 'checkbox'">
+              <span class="ui-field">
+                <span class="ui-label" x-text="f.label"></span>
+                <input class="ui-input ui-input-sm"
+                       :type="f.type === 'number' ? 'number' : 'text'"
+                       :value="f.value"
+                       @input="f.value = $event.target.value"
+                       @keydown.enter="confirmModal()"
+                       autocomplete="off" spellcheck="false"
+                       :inputmode="f.type === 'number' ? 'numeric' : 'text'"
+                       :placeholder="f.placeholder">
+              </span>
+            </template>
+          </label>
+        </template>
+      </div>
+    </template>
+
+    <div class="ui-modal-actions">
+      <button class="ui-btn ui-btn-ghost" type="button" @click="cancelModal()" x-text="modal.cancelText || t('cancel')" x-ref="modalCancelBtn"></button>
+      <button class="ui-btn" type="button"
+              :class="modal.danger ? 'ui-btn-danger' : 'ui-btn-primary'"
+              @click="confirmModal()"
+              x-text="modal.confirmText || t('confirm')"></button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('uiSel', () => ({
+    open: false, ai: -1, model: '', opts: [],
+    get label() { const o = this.opts.find(o => o.v === this.model); return o ? o.l : this.model || '—'; },
+    pick(v) { this.model = v; this.open = false; this.ai = -1; this.$dispatch('sel-change', v); },
+    kd(e) {
+      if (!this.open) { if (e.key==='ArrowDown'||e.key==='ArrowUp') { this.open=true; e.preventDefault(); } return; }
+      const o = this.opts;
+      if (e.key==='ArrowDown') { e.preventDefault(); this.ai=Math.min(this.ai+1,o.length-1); }
+      else if (e.key==='ArrowUp') { e.preventDefault(); this.ai=Math.max(this.ai-1,0); }
+      else if (e.key==='Enter'&&this.ai>=0) { e.preventDefault(); this.pick(o[this.ai].v); }
+      else if (e.key==='Escape') { this.open=false; }
+    },
+  }));
+});
+function app() {
+  const I18N = {
+    zh: {
+      console: '控制台', observe: '观测台', config: '配置',
+      byGroup: '供应商 × 模型', groups: '组', source: '供应商', model: '模型',
+      requests: '请求', cacheHit: '缓存命中', cacheCreate: '缓存创建', avgMs: '平均耗时', noData: '暂无数据',
+      inputTok: '输入', outputTok: '输出', okCount: '成功', failCount: '失败',
+      colTime: '时间', colKind: '类型', colDur: '耗时', colCode: '状态码', colOk: '结果',
+      history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
+      allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
+      allModels: '全部模型', allSources: '全部供应商',
+      sources: '供应商', models: '模型', global: '全局参数', guidance: '引导语',
+      addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
+      srcName: '源名称', srcURL: '上游地址',
+      apiKey: 'API 密钥', show: '显示', hide: '隐藏',
+      defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
+      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
+      up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
+      addModel: '新增模型', modelHint: '只列出 /v1/models 暴露的 slug',
+      slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', actions: '操作',
+      globalParams: '全局参数', breaker: '断路器',
+      listen: '监听地址', cacheTtl: '缓存时效（5m / 1h）',
+      logLevel: '日志级别', logFormat: '日志格式', logFile: '日志文件（空则写 stderr）',
+      levelDebug: '调试', levelInfo: '信息', levelWarn: '警告', levelError: '错误',
+      fmtText: '文本', fmtJson: 'JSON',
+      fbt: '首字节超时', cooldown: '冷却时间', degradeThreshold: '降级阈值',
+      recoverThreshold: '恢复阈值', halfOpenProbes: '半开探测数',
+      maxRetries: '最大重试', recovery: '恢复策略',
+      recoveryNormal: '正常（恢复全部能力）', recoveryDegraded: '降级（保持低流量）',
+      fbtHint: '上游响应首字节超时时间', cooldownHint: '熔断后冷却等待时间',
+      degradeThresholdHint: '连续失败次数触发熔断', recoverThresholdHint: '半开状态下允许通过的请求数',
+      halfOpenProbesHint: '半开状态探测请求数', maxRetriesHint: '失败后最大重试次数（0=不重试）',
+      guidanceHint: '非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，保存后自动热重载。',
+      guidancePlaceholder: '在此编辑引导语…',
+      reload: '重新载入', saving: '保存中…', saveGuidance: '保存引导语',
+      cfgSynced: '配置已同步', cfgDirty: '有未保存的修改', discard: '放弃修改', saveReload: '保存并热重载',
+      cancel: '取消', confirm: '确认',
+      cardReq: '请求量', cardIn: '总输入', cardOut: '总输出',
+      cardCC: '缓存创建量', cardCR: '缓存命中量', cardHR: '缓存命中率',
+      language: '语言', switchTheme: '切换主题', navPages: '页面切换',
+      sseConnected: 'SSE 已连接', sseOffline: 'SSE 已断开',
+      completed: '已完成', failed: '失败',
+      priority: '优先级序号', skipToMain: '跳到主内容',
+      noRequests: '暂无请求记录',
+    },
+    en: {
+      console: 'Console', observe: 'Observe', config: 'Config',
+      byGroup: 'Source × Model', groups: 'groups', source: 'Source', model: 'Model',
+      requests: 'Requests', cacheHit: 'Cache Hit', cacheCreate: 'Cache Create', avgMs: 'Avg Duration', noData: 'No data',
+      inputTok: 'Input', outputTok: 'Output', okCount: 'OK', failCount: 'Fail',
+      colTime: 'Time', colKind: 'Kind', colDur: 'Dur', colCode: 'Code', colOk: 'Result',
+      history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
+      allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
+      allModels: 'All models', allSources: 'All sources',
+      sources: 'Sources', models: 'Models', global: 'Global', guidance: 'Guidance',
+      addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
+      srcName: 'Source name', srcURL: 'Upstream URL',
+      apiKey: 'API key', show: 'show', hide: 'hide',
+      defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
+      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
+      up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
+      addModel: 'Add model', modelHint: 'Only slugs exposed via /v1/models',
+      slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', actions: 'Actions',
+      globalParams: 'Global Parameters', breaker: 'Breaker',
+      listen: 'Listen address', cacheTtl: 'Cache TTL (5m / 1h)',
+      logLevel: 'Log level', logFormat: 'Log format', logFile: 'Log file (empty = stderr)',
+      levelDebug: 'Debug', levelInfo: 'Info', levelWarn: 'Warn', levelError: 'Error',
+      fmtText: 'Text', fmtJson: 'JSON',
+      fbt: 'First byte timeout', cooldown: 'Cooldown', degradeThreshold: 'Degrade threshold',
+      recoverThreshold: 'Recover threshold', halfOpenProbes: 'Half-open probes',
+      maxRetries: 'Max retries', recovery: 'Recovery',
+      recoveryNormal: 'Normal (full recovery)', recoveryDegraded: 'Degraded (low traffic)',
+      fbtHint: 'Upstream first byte timeout', cooldownHint: 'Cooldown after breaker trips',
+      degradeThresholdHint: 'Consecutive failures to trigger breaker', recoverThresholdHint: 'Requests allowed in half-open state',
+      halfOpenProbesHint: 'Half-open probe count', maxRetriesHint: 'Max retries on failure (0=none)',
+      guidanceHint: 'Replaces Codex BASE_INSTRUCTIONS when non-empty. Auto-reloads on save.',
+      guidancePlaceholder: 'Edit guidance here…',
+      reload: 'Reload', saving: 'Saving…', saveGuidance: 'Save guidance',
+      cfgSynced: 'Config synced', cfgDirty: 'Unsaved changes', discard: 'Discard', saveReload: 'Save & reload',
+      cancel: 'Cancel', confirm: 'Confirm',
+      cardReq: 'Requests', cardIn: 'Total input', cardOut: 'Total output',
+      cardCC: 'Cache create', cardCR: 'Cache hit', cardHR: 'Cache hit rate',
+      language: 'Language', switchTheme: 'Switch theme', navPages: 'Page switch',
+      sseConnected: 'SSE connected', sseOffline: 'SSE offline',
+      completed: 'Completed', failed: 'Failed',
+      priority: 'Priority order', skipToMain: 'Skip to main content',
+      noRequests: 'No requests yet',
+    }
+  };
+
+  try {
+    const savedTheme = localStorage.getItem('gw_theme');
+    const savedLocale = localStorage.getItem('gw_locale');
+    if (savedTheme === 'dark' || savedTheme === 'console-dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+    document.documentElement.lang = (savedLocale || 'zh') === 'zh' ? 'zh-CN' : 'en';
+  } catch (e) {}
+
+  const themeRaw = localStorage.getItem('gw_theme');
+  const initTheme = (themeRaw === 'dark' || themeRaw === 'console-dark') ? 'dark' : 'light';
+
+  return {
+    tab: 'observe',
+    cfgTab: 'sources',
+    locale: localStorage.getItem('gw_locale') || 'zh',
+    theme: initTheme,
+    connected: false,
+    es: null,
+
+    snap: { by_group: [], recent: [] },
+    filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
+
+    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:{}, base_instructions_file:'' },
+    cfgSnapshot: '',
+    saving: false,
+    guidance: { path: '', content: '', exists: false },
+    guidanceSaving: false,
+    visibleKeys: {},
+    upstreamModels: {},
+    upstreamLoading: {},
+    upstreamErrors: {},
+    modal: { open: false, kind: 'confirm', title: '', msg: '', value: '', placeholder: '', confirmText: '', cancelText: '', danger: false, fields: [], _resolve: null },
+
+    ROW_H: 36,
+    viewStart: 0,
+    viewCount: 50,
+
+    init() {
+      this.applyTheme();
+      this.applyLocale();
+      this.startSSE();
+      this.loadConfig();
+      this.$nextTick(() => this.onListScroll());
+      window.addEventListener('sel-change', (e) => {
+        const field = e.target.closest('.ui-sel')?.dataset?.field;
+        if (!field) return;
+        const parts = field.split('.');
+        let obj = this;
+        for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+        if (obj) obj[parts[parts.length - 1]] = e.detail;
+      });
+    },
+
+    t(key) { return (I18N[this.locale] || I18N.zh)[key] || key; },
+
+    onLocaleChange() {
+      localStorage.setItem('gw_locale', this.locale);
+      this.applyLocale();
+    },
+    applyLocale() {
+      document.documentElement.lang = this.locale === 'zh' ? 'zh-CN' : 'en';
+    },
+
+    toggleTheme() {
+      this.theme = this.theme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('gw_theme', this.theme);
+      this.applyTheme();
+    },
+    applyTheme() {
+      document.documentElement.setAttribute('data-theme', this.theme);
+      document.documentElement.style.colorScheme = this.theme;
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', this.theme === 'dark' ? '#0a0f18' : '#F4F7FB');
+    },
+
+    startSSE() {
+      if (this.es) { try { this.es.close(); } catch(e){} }
+      try {
+        this.es = new EventSource('/admin/api/events');
+        this.es.addEventListener('snapshot', (e) => {
+          try {
+            this.snap = JSON.parse(e.data);
+            this.connected = true;
+            this.$nextTick(() => this.onListScroll());
+          } catch (err) {}
+        });
+        this.es.onopen = () => { this.connected = true; };
+        this.es.onerror = () => { this.connected = false; };
+      } catch (e) {
+        this.connected = false;
+      }
+    },
+
+    switchCfgTab(item) {
+      this.cfgTab = item;
+      if (item === 'guidance') this.loadGuidance();
+    },
+
+    get dirty() { return JSON.stringify(this.cfg) !== this.cfgSnapshot; },
+
+    get metricCards() {
+      const s = this.snap || {};
+      return [
+        { key:'req', label: this.t('cardReq'), display: this.fmtTokens(s.total_requests), raw: this.fmtRaw(s.total_requests), tone: '', color: 'var(--focus)' },
+        { key:'in', label: this.t('cardIn'), display: this.fmtTokens(s.total_input), raw: this.fmtRaw(s.total_input), tone: '', color: 'var(--ink-soft)' },
+        { key:'out', label: this.t('cardOut'), display: this.fmtTokens(s.total_output), raw: this.fmtRaw(s.total_output), tone: '', color: 'var(--ink-faint)' },
+        { key:'cc', label: this.t('cardCC'), display: this.fmtTokens(s.total_cache_create), raw: this.fmtRaw(s.total_cache_create), tone: 'tone-info', color: 'var(--info)' },
+        { key:'cr', label: this.t('cardCR'), display: this.fmtTokens(s.total_cache_read), raw: this.fmtRaw(s.total_cache_read), tone: 'tone-good', color: 'var(--good)' },
+        { key:'hr', label: this.t('cardHR'), display: (s.cache_hit_rate != null ? (s.cache_hit_rate * 100).toFixed(1) + '%' : '-'), raw: '', tone: 'tone-good', color: 'var(--signal)' },
+      ];
+    },
+
+    get filteredRecent() {
+      const arr = this.snap.recent || [];
+      return arr.filter(r =>
+        (this.filterKind === '' || r.kind === this.filterKind) &&
+        (!this.filterModel || (r.model||'').includes(this.filterModel)) &&
+        (!this.filterSource || (r.source||'').includes(this.filterSource)) &&
+        (!this.filterStatus || String(r.code) === this.filterStatus)
+      );
+    },
+    get visibleRows() {
+      const arr = this.filteredRecent;
+      const end = Math.min(this.viewStart + this.viewCount, arr.length);
+      const out = [];
+      for (let i = this.viewStart; i < end; i++) out.push(Object.assign({_idx: i}, arr[i]));
+      return out;
+    },
+    onListScroll() {
+      const el = this.$refs.listScroll;
+      if (!el) return;
+      const start = Math.max(0, Math.floor(el.scrollTop / this.ROW_H) - 6);
+      const visible = Math.ceil(el.clientHeight / this.ROW_H) + 12;
+      this.viewStart = start;
+      this.viewCount = visible;
+    },
+
+    isOk(row) {
+      if (!row) return false;
+      // 业务结果以 status 为准：completed/incomplete 为成功；failed 为失败。
+      // HTTP code 仅作展示（例如 200 但流中途失败时 status=failed）。
+      if (row.status === 'completed' || row.status === 'incomplete') return true;
+      if (row.status === 'failed') return false;
+      const code = Number(row.code) || 0;
+      return code > 0 && code < 400;
+    },
+    codeCls(row) {
+      if (!row) return '';
+      if (!this.isOk(row)) return 'err';
+      const code = Number(row.code) || 0;
+      if (code >= 400) return 'warn';
+      return 'ok';
+    },
+    codeBadge(row) {
+      const c = this.codeCls(row);
+      if (c === 'err') return 'ui-badge-soft-bad';
+      if (c === 'warn') return 'ui-badge-soft-warn';
+      return 'ui-badge-soft-good';
+    },
+    statusDotClass(row) {
+      return this.isOk(row) ? 'ui-status-good' : 'ui-status-bad';
+    },
+    statusTip(row) {
+      if (!row) return '';
+      if (row.error) return String(row.error);
+      if (this.isOk(row)) return this.t('completed') + (row.status ? ' · ' + row.status : '');
+      return row.status || this.t('failed');
+    },
+    codeTip(row) {
+      if (!row) return '';
+      const lines = [];
+      if (row.code) lines.push('HTTP ' + row.code);
+      if (row.status) lines.push('status: ' + row.status);
+      if (row.kind) lines.push('kind: ' + row.kind + (row.attempt ? ' #' + row.attempt : ''));
+      if (row.source) lines.push('source: ' + row.source);
+      if (row.model) {
+        let m = row.model;
+        if (row.resolved_model && row.resolved_model !== row.model) m += ' → ' + row.resolved_model;
+        lines.push('model: ' + m);
+      }
+      if (row.error) lines.push(String(row.error));
+      return lines.join('\n');
+    },
+    showTip(ev, text) {
+      this.hideTip();
+      if (!text) return;
+      const el = document.createElement('div');
+      el.className = 'gw-tooltip';
+      el.textContent = text;
+      document.body.appendChild(el);
+      const r = ev.currentTarget.getBoundingClientRect();
+      let left = r.right - el.offsetWidth;
+      if (left < 4) left = 4;
+      let top = r.bottom + 6;
+      if (top + el.offsetHeight > window.innerHeight - 4) {
+        top = r.top - el.offsetHeight - 6;
+      }
+      el.style.left = left + 'px';
+      el.style.top = top + 'px';
+      this._tipEl = el;
+    },
+    hideTip() {
+      if (this._tipEl) { this._tipEl.remove(); this._tipEl = null; }
+    },
+    get statusCodeOptions() {
+      const set = new Set();
+      (this.snap.recent || []).forEach(r => {
+        if (r && r.code != null && r.code !== '' && Number(r.code) > 0) set.add(Number(r.code));
+      });
+      return Array.from(set).sort((a, b) => a - b);
+    },
+    get modelOptions() {
+      return Object.keys(this.cfg.models || {}).sort();
+    },
+    get sourceOptions() {
+      return (this.cfg.sources || []).map(s => s.name).filter(Boolean).sort();
+    },
+
+    fmtDuration(ms) {
+      ms = Number(ms) || 0;
+      if (ms < 1000) return ms + 'ms';
+      return (ms / 1000).toFixed(2) + 's';
+    },
+    modelCellTitle(row) {
+      if (row.resolved_model && row.resolved_model !== row.model) {
+        return row.model + ' -> ' + row.resolved_model;
+      }
+      return row.model || '';
+    },
+    fmtTokens(n) {
+      n = Number(n) || 0;
+      if (n >= 1e12) return (n/1e12).toFixed(2) + 'T';
+      if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(1) + 'K';
+      if (n === 0) return '0';
+      return String(n);
+    },
+    fmtRaw(n) {
+      n = Number(n) || 0;
+      if (n === 0) return '';
+      return '= ' + n.toLocaleString();
+    },
+
+    async loadConfig() {
+      try {
+        const r = await fetch('/admin/api/config');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        Object.keys(data.models || {}).forEach(slug => { data.models[slug]._slug = slug; });
+        this.cfg = data;
+        this.cfgSnapshot = JSON.stringify(this.cfg);
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '加载配置失败：' + e.message : 'Load config failed: ' + e.message, 'error');
+      }
+    },
+    async saveConfig() {
+      this.saving = true;
+      try {
+        const payload = JSON.parse(JSON.stringify(this.cfg));
+        Object.keys(payload.models || {}).forEach(slug => {
+          delete payload.models[slug]._slug;
+          if (payload.models[slug].supports_image == null) delete payload.models[slug].supports_image;
+          if (payload.models[slug].context_window == null || payload.models[slug].context_window === '') delete payload.models[slug].context_window;
+        });
+        (payload.sources || []).forEach(s => {
+          if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
+        });
+        const r = await fetch('/admin/api/config', {
+          method: 'POST', headers: {'content-type':'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+        this.notify(this.locale === 'zh' ? '配置已保存并热重载' : 'Saved & reloaded', 'success');
+        await this.loadConfig();
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '保存失败：' + e.message : 'Save failed: ' + e.message, 'error');
+      } finally {
+        this.saving = false;
+      }
+    },
+    async loadGuidance() {
+      try {
+        const r = await fetch('/admin/api/guidance');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        this.guidance = await r.json();
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '加载引导语失败：' + e.message : 'Load failed: ' + e.message, 'error');
+      }
+    },
+    async saveGuidance() {
+      this.guidanceSaving = true;
+      try {
+        const r = await fetch('/admin/api/guidance', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ content: this.guidance.content }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+        this.notify(this.locale === 'zh' ? '引导语已保存' : 'Saved', 'success');
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '保存失败：' + e.message : 'Save failed: ' + e.message, 'error');
+      } finally {
+        this.guidanceSaving = false;
+      }
+    },
+
+    addSource() {
+      this.openForm({
+        title: this.t('addSrc'),
+        confirmText: this.t('addSrc'),
+        fields: [
+          { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
+          { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
+          { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
+          { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
+        ],
+      }).then((v) => {
+        if (!v) return;
+        const name = (v.name || '').trim();
+        const base_url = (v.base_url || '').trim();
+        if (!name || !base_url) {
+          this.notify(this.locale === 'zh' ? '源名称和上游地址不能为空' : 'Name and URL are required', 'error');
+          return;
+        }
+        this.cfg.sources = this.cfg.sources || [];
+        if (this.cfg.sources.some(s => (s.name || '') === name)) {
+          this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
+          return;
+        }
+        this.cfg.sources.push({
+          name,
+          base_url,
+          api_key: (v.api_key || '').trim(),
+          model_map: {},
+          default_model: (v.default_model || '').trim(),
+        });
+        this.$nextTick(() => {
+          const el = this.$refs.srcScroll;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      });
+    },
+    removeSource(idx) {
+      this.openConfirm({
+        title: this.t('delete'),
+        msg: this.locale === 'zh' ? '确认删除该供应商？此操作在保存前可放弃。' : 'Delete this source? You can discard before saving.',
+        danger: true,
+        confirmText: this.t('delete'),
+      }).then((ok) => { if (ok) this.cfg.sources.splice(idx, 1); });
+    },
+    moveSource(idx, delta) {
+      const j = idx + delta;
+      if (j < 0 || j >= this.cfg.sources.length) return;
+      const arr = this.cfg.sources;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    },
+    toggleKeyVisibility(idx) {
+      this.visibleKeys[idx] = !this.visibleKeys[idx];
+      this.visibleKeys = Object.assign({}, this.visibleKeys);
+    },
+
+    modelMapPairs(src) {
+      const m = src.model_map || {};
+      return Object.keys(m).map(k => ({ key: k, val: m[k] }));
+    },
+    addModelMapPair(src) {
+      src.model_map = src.model_map || {};
+      src.model_map[''] = '';
+      src.model_map = Object.assign({}, src.model_map);
+    },
+    updateModelMapPair(src, pi, field, value) {
+      const pairs = this.modelMapPairs(src);
+      const newMap = {};
+      pairs.forEach((p, i) => {
+        if (i === pi) {
+          if (field === 'key') newMap[value] = p.val;
+          else newMap[p.key] = value;
+        } else {
+          newMap[p.key] = p.val;
+        }
+      });
+      src.model_map = newMap;
+    },
+    removeModelMapPair(src, pi) {
+      const pairs = this.modelMapPairs(src);
+      const newMap = {};
+      pairs.forEach((p, i) => { if (i !== pi) newMap[p.key] = p.val; });
+      src.model_map = newMap;
+    },
+
+    addModel() {
+      this.openForm({
+        title: this.t('addModel'),
+        confirmText: this.t('addModel'),
+        fields: [
+          { key: 'slug', label: this.t('slug'), type: 'text', value: '', placeholder: 'glm-latest' },
+          { key: 'context_window', label: this.t('contextWindow'), type: 'number', value: 200000, placeholder: '200000' },
+          { key: 'supports_image', label: this.t('supportsImage'), type: 'checkbox', value: false },
+        ],
+      }).then((v) => {
+        if (!v || !v.slug) return;
+        const slug = v.slug.trim();
+        this.cfg.models = this.cfg.models || {};
+        if (this.cfg.models[slug]) { this.notify(slug + ' exists', 'error'); return; }
+        this.cfg.models[slug] = {
+          _slug: slug,
+          context_window: Number(v.context_window) || 0,
+          supports_image: !!v.supports_image,
+        };
+      });
+    },
+    renameModel(oldSlug, newSlug) {
+      newSlug = (newSlug || '').trim();
+      if (newSlug === oldSlug || !newSlug) return;
+      if (this.cfg.models[newSlug]) { this.notify(newSlug + ' exists', 'error'); return; }
+      const v = this.cfg.models[oldSlug];
+      delete this.cfg.models[oldSlug];
+      this.cfg.models[newSlug] = Object.assign({}, v, { _slug: newSlug });
+    },
+    removeModel(slug) {
+      this.openConfirm({
+        title: this.t('delete'),
+        msg: this.locale === 'zh' ? '删除模型 ' + slug + ' ？此操作在保存前可放弃。' : 'Delete model ' + slug + '? You can discard before saving.',
+        danger: true,
+        confirmText: this.t('delete'),
+      }).then((ok) => { if (ok) { delete this.cfg.models[slug]; } });
+    },
+
+    notify(msg, type) {
+      window.dispatchEvent(new CustomEvent('notify', { detail: { msg, type } }));
+    },
+
+    async fetchUpstreamModels(src) {
+      if (!src || !src.name) return;
+      const name = src.name;
+      if (this.upstreamModels[name] || this.upstreamLoading[name]) return;
+      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [name]: true });
+      try {
+        const r = await fetch('/admin/api/models?source=' + encodeURIComponent(name));
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { [name]: j.models || [] });
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { [name]: '' });
+      } catch (e) {
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { [name]: e.message });
+      } finally {
+        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [name]: false });
+      }
+    },
+
+    openConfirm(opts) {
+      return new Promise((resolve) => {
+        this.modal = Object.assign({}, this.modal, {
+          open: true, kind: 'confirm',
+          title: opts.title || '',
+          msg: opts.msg || '',
+          value: '', placeholder: '', fields: [],
+          confirmText: opts.confirmText || '',
+          cancelText: opts.cancelText || '',
+          danger: !!opts.danger,
+          _resolve: resolve,
+        });
+        this.$refs.gwModal.showModal();
+        if (opts.danger) {
+          this.$nextTick(() => { if (this.$refs.modalCancelBtn) this.$refs.modalCancelBtn.focus(); });
+        }
+      });
+    },
+    openPrompt(opts) {
+      return new Promise((resolve) => {
+        this.modal = Object.assign({}, this.modal, {
+          open: true, kind: 'prompt',
+          title: opts.title || '',
+          msg: opts.msg || '',
+          value: opts.defaultValue || '',
+          placeholder: opts.placeholder || '',
+          fields: [],
+          confirmText: opts.confirmText || '',
+          cancelText: opts.cancelText || '',
+          danger: false,
+          _resolve: resolve,
+        });
+        this.$refs.gwModal.showModal();
+        this.$nextTick(() => {
+          if (this.$refs.modalInput) { this.$refs.modalInput.focus(); this.$refs.modalInput.select(); }
+        });
+      });
+    },
+    openForm(opts) {
+      return new Promise((resolve) => {
+        const fields = (opts.fields || []).map(f => Object.assign({}, f));
+        this.modal = Object.assign({}, this.modal, {
+          open: true, kind: 'form',
+          title: opts.title || '',
+          msg: opts.msg || '',
+          value: '', placeholder: '',
+          fields,
+          confirmText: opts.confirmText || '',
+          cancelText: opts.cancelText || '',
+          danger: !!opts.danger,
+          _resolve: resolve,
+        });
+        this.$refs.gwModal.showModal();
+        this.$nextTick(() => {
+          const el = document.querySelector('.ui-modal-box input');
+          if (el) { el.focus(); if (el.select) el.select(); }
+        });
+      });
+    },
+    confirmModal() {
+      const r = this.modal;
+      const resolve = r._resolve;
+      this.modal._resolve = null;
+      this.modal = Object.assign({}, this.modal, { open: false });
+      this.$refs.gwModal.close();
+      if (!resolve) return;
+      if (r.kind === 'confirm') resolve(true);
+      else if (r.kind === 'prompt') resolve((r.value || '').trim());
+      else if (r.kind === 'form') {
+        const out = {};
+        (r.fields || []).forEach(f => {
+          if (f.type === 'number') out[f.key] = Number(f.value) || 0;
+          else out[f.key] = f.value;
+        });
+        resolve(out);
+      }
+    },
+    cancelModal() {
+      const r = this.modal;
+      const resolve = r._resolve;
+      this.modal._resolve = null;
+      this.modal = Object.assign({}, this.modal, { open: false });
+      this.$refs.gwModal.close();
+      if (resolve) resolve(r.kind === 'confirm' ? false : null);
+    },
+    onModalClose() {
+      const r = this.modal;
+      if (r._resolve) {
+        r._resolve(r.kind === 'confirm' ? false : null);
+        r._resolve = null;
+      }
+      this.modal = Object.assign({}, this.modal, { open: false });
+    },
+
+    fmtShortTime(iso) {
+      if (!iso) return '';
+      return new Date(iso).toLocaleTimeString(this.locale === 'zh' ? 'zh-CN' : 'en-US', { hour12: false });
+    },
+  };
+}
+</script>
+</body>
+</html>
