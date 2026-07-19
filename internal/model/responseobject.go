@@ -6,25 +6,25 @@ import "encoding/json"
 // completed/incomplete/failed events. Fields use omitempty so we emit exactly
 // the P2 fields we can populate, without SDK Response's 35+ zero fields.
 type ResponseObject struct {
-	ID                 string             `json:"id"`
-	Object             string             `json:"object"` // always "response"
-	Status             string             `json:"status"`
-	Model              string             `json:"model"`
-	CreatedAt          int64              `json:"created_at"`
-	CompletedAt        int64              `json:"completed_at,omitempty"`
-	Output             []OutputItem       `json:"output"`
-	Usage              *ResponseUsage     `json:"usage,omitempty"`
-	IncompleteDetails  *IncompleteDetails `json:"incomplete_details,omitempty"`
-	Error              *ResponseError     `json:"error,omitempty"`
-	Instructions       string             `json:"instructions,omitempty"`
-	Temperature        *float64           `json:"temperature,omitempty"`
-	TopP               *float64           `json:"top_p,omitempty"`
-	MaxOutputTokens    *int64             `json:"max_output_tokens,omitempty"`
-	ToolChoice         any                `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool              `json:"parallel_tool_calls,omitempty"`
-	Reasoning          *ReasoningEcho     `json:"reasoning,omitempty"`
-	Truncation         string             `json:"truncation,omitempty"`
-	Store              *bool              `json:"store,omitempty"`
+	ID                string             `json:"id"`
+	Object            string             `json:"object"` // always "response"
+	Status            string             `json:"status"`
+	Model             string             `json:"model"`
+	CreatedAt         int64              `json:"created_at"`
+	CompletedAt       int64              `json:"completed_at,omitempty"`
+	Output            []OutputItem       `json:"output"`
+	Usage             *ResponseUsage     `json:"usage,omitempty"`
+	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+	Error             *ResponseError     `json:"error,omitempty"`
+	Instructions      string             `json:"instructions,omitempty"`
+	Temperature       *float64           `json:"temperature,omitempty"`
+	TopP              *float64           `json:"top_p,omitempty"`
+	MaxOutputTokens   *int64             `json:"max_output_tokens,omitempty"`
+	ToolChoice        any                `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool              `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *ReasoningEcho     `json:"reasoning,omitempty"`
+	Truncation        string             `json:"truncation,omitempty"`
+	Store             *bool              `json:"store,omitempty"`
 }
 
 // MarshalJSON 保证 incomplete 响应始终包含 required 的 incomplete_details 字段。
@@ -65,15 +65,15 @@ type IncompleteDetails struct {
 
 // ResponseObjectParams carries request echo fields into NewResponseObject.
 type ResponseObjectParams struct {
-	Instructions       string
-	Temperature        *float64
-	TopP               *float64
-	MaxOutputTokens    *int64
-	ToolChoice         any
-	ParallelToolCalls  *bool
-	Reasoning          *ReasoningEcho
-	Truncation         string
-	Store              *bool
+	Instructions      string
+	Temperature       *float64
+	TopP              *float64
+	MaxOutputTokens   *int64
+	ToolChoice        any
+	ParallelToolCalls *bool
+	Reasoning         *ReasoningEcho
+	Truncation        string
+	Store             *bool
 }
 
 // ReasoningEcho echoes the request's reasoning configuration back in the
@@ -87,15 +87,15 @@ type ReasoningEcho struct {
 func NewResponseObject(id, status, modelName string, createdAt int64, p ResponseObjectParams) ResponseObject {
 	return ResponseObject{
 		ID: id, Object: ObjectResponse, Status: status, Model: modelName, CreatedAt: createdAt,
-		Output:             []OutputItem{},
-		Instructions:       p.Instructions,
-		Temperature:        p.Temperature,
-		TopP:               p.TopP,
-		MaxOutputTokens:    p.MaxOutputTokens,
-		ToolChoice:         p.ToolChoice,
-		ParallelToolCalls:  p.ParallelToolCalls,
-		Reasoning:          p.Reasoning,
-		Truncation:         p.Truncation,
-		Store:              p.Store,
+		Output:            []OutputItem{},
+		Instructions:      p.Instructions,
+		Temperature:       p.Temperature,
+		TopP:              p.TopP,
+		MaxOutputTokens:   p.MaxOutputTokens,
+		ToolChoice:        p.ToolChoice,
+		ParallelToolCalls: p.ParallelToolCalls,
+		Reasoning:         p.Reasoning,
+		Truncation:        p.Truncation,
+		Store:             p.Store,
 	}
 }

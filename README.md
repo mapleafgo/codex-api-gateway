@@ -171,6 +171,49 @@ sources:
 
 只返回配置文件 `models` 段显式声明的模型（`models.<slug>`），不拉取上游 `/v1/models`，也不暴露 `sources.model_map` 的别名。未列出的字段保持 `ModelInfo` 内置默认。
 
+## 管理页（H5 控制台）
+
+网关自带一个 H5 管理页，挂载在根路径 `/`，浏览器打开 `http://<host>:<listen>/` 即可访问。
+
+### 观测台
+
+- 顶部 6 张卡片：请求量 / 总输入 / 总输出 / 缓存创建量 / 缓存命中量 / 缓存命中率。
+- 「供应商 × 模型 用量」聚合表：按 `source × model` 维度展示请求/输入/输出/缓存命中/缓存创建/平均耗时。
+- 「请求历史」虚拟列表：最近 1000 条请求，支持按模型/供应商/Code 过滤。每条记录时间、模型、供应商、响应 Code、输入/输出/缓存命中/缓存创建、耗时（渐变色条可视化）、状态。
+
+指标采集走独立 goroutine + 带缓冲 channel：API 请求路径只做一次非阻塞投递，channel 满时丢弃，绝不拖慢或阻塞转发；管理端异常也不会影响 `/v1/*`。
+
+### 实时推送与个性化
+
+- 数据通过 SSE（`/admin/api/events`）每 3 秒推送一次，前端无需手动刷新。
+- 支持中英文切换（i18n），记忆在 localStorage。
+- 支持亮色 / 暗色主题切换，记忆在 localStorage。
+
+### 配置管理
+
+- 供应商：增删改、上移/下移排序（顺序 = 优先级）、**列表式编辑 `model_map`**（别名 → 真实模型）、`default_model`/单源断路器。`api_key` 用密码框默认隐藏，可一键切换显示。
+- 模型：编辑 `/v1/models` 暴露的 slug、`context_window`、`supports_image`。
+- 全局参数：`server.listen`、`logging.*`、`breaker.*`、`cache.ttl`、`base_instructions_file`。
+- 引导语：直接编辑 `base_instructions_file` 指向的文件内容（整体替换 Codex 内置 `BASE_INSTRUCTIONS`）。
+
+### 热重载
+
+保存配置（或外部 `vim config.yaml`）后，`fsnotify` 监听自动 `Load + Replace + scheduler.Reload`，无需重启。写回采用临时文件 + rename 原子替换，失败时保留旧配置。
+
+### JSON 接口
+
+前端调用的接口（也可独立集成）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin/api/metrics` | 当前指标快照 |
+| GET | `/admin/api/config` | 读取配置视图 |
+| POST | `/admin/api/config` | 全量覆盖写回并热重载 |
+| GET | `/admin/api/guidance` | 读取引导语文件内容 |
+| POST | `/admin/api/guidance` | 保存引导语文件 |
+| POST | `/admin/api/config/reload` | 手动触发从磁盘 reload |
+| GET | `/admin/api/events` | SSE 推送 metrics snapshot（每 3s 一次） |
+
 ## 工作流程
 
 ```text

@@ -15,6 +15,39 @@
 
 测试文件与被测包放在同一目录，命名为 `*_test.go`。
 
+## 技术架构
+
+本网关是一个分层、单向依赖的 Go 服务，依赖方向严格自上而下，禁止反向引用（例如 `convert` 不得 import `server`）。
+
+分层与职责（从下到上）：
+
+- L0 基础层：`internal/config`（YAML 加载与校验）、`internal/logging`（结构化日志 handler）、`internal/model`（OpenAI Responses 协议 wire 类型，常量对齐官方 SDK）、`internal/breaker`（单源健康状态与熔断）、`internal/toolcatalog`（OpenAI Tool → Anthropic tool 声明映射）。这一层不依赖本仓其它 internal 包。
+- L1 客户端层：`internal/anthropic`，Anthropic 兼容后端的低层 HTTP 客户端。
+- L2 转换层：`internal/convert`（Responses 请求 → Anthropic 请求）、`internal/streamconv`（Anthropic SSE → Responses SSE）。依赖 `model`、`anthropic`、`toolcatalog`。
+- L3 运行时层：`internal/scheduler`（多源路由 + 优先级重建），依赖 `breaker`、`anthropic`、`config`。
+- L4 编排层：`internal/server`，唯一的 `/v1/responses` 与 `/v1/models` 入口，串联 holder → scheduler → convert → anthropic → streamconv。是唯一允许跨层组装的包。
+- L5 管理/观测层（旁路）：`internal/admin`（H5 管理页 + `/admin/api/*` JSON 接口）、`internal/metrics`（指标聚合）。这一层**绝对不得**进入 `/v1/*` 转发路径。
+- L6 配置热重载：`internal/configwatch`，监听 `config.yaml` 变化并通过 Holder 注入新配置。
+- `cmd/server`：唯一组装入口，负责两阶段初始化、挂载管理页、启动 HTTP server。
+
+两条贯穿全局的关键路径：
+
+- **配置生效路径（单一真相源）**：磁盘 `config.yaml` → `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑（vim 等）都走写盘 → fsnotify → 这条链路，不允许存在第二条直接改运行时配置的入口。
+- **请求转发路径**：`/v1/responses` → `server.handleResponses` → `convert` → `scheduler.Pick` → `anthropic` 上游 → `streamconv` 回程 SSE。这条路径上的任何失败都必须以 error / SSE 错误事件形式返回客户端，不得 panic 逃逸。
+
+## 设计规范
+
+下列约束是本仓所有改动的硬性要求，违反其中任何一条都需要在 PR 中显式说明并给出权衡。
+
+- **Holder 原子配置模式**：运行时配置通过 `*config.Holder` 暴露，`holder.Current()` 返回不可变快照，读者从不持锁。任何需要读取配置的代码都必须走 `holder.Current()`，禁止把 `*config.Config` 缓存到长生命周期对象里。热重载以整体替换实现，**不做字段级 in-place 修改**。
+- **性能隔离**：`/v1/*` 转发路径是延迟敏感热路径。`metrics` 必须用 `select + default` 非阻塞投递到带缓冲 channel，channel 满直接丢弃事件；`admin` handler 必须被 `recoverMiddleware` 包裹，单次 panic 不得影响其他请求、更不得影响转发路径。新增旁路逻辑（观测、调试、profiling）同样不得阻塞或拖慢转发。
+- **策略注册表优于特例 handler**：协议转换中类似的变体（如 `streamconv` 的各类 tool call）必须抽象为策略 + 注册表（`dispatchCallKind`），通过差异轴（itemType / 承载字段 / delta 模式 / result 处理）表达，而不是为每个变体写独立 handler。新增一种变体只改注册表，不再扩 handler 列表。
+- **协议常量对齐官方 SDK**：wire 层的协议字面量（事件类型、content block 类型、finish reason 等）必须从 `github.com/openai/openai-go/v3` 和 `github.com/anthropics/anthropic-sdk-go` 的常量包派生（`constant.ValueOf[...]`），禁止硬编码字符串。新增协议字段时先查 SDK 是否已暴露常量。
+- **分层编辑约束**：新增字段或逻辑必须落到职责对应的 `internal/*` 包，禁止在 `server` 里写协议转换、在 `convert` 里做路由决策、在 `admin` 里直接改运行时状态。跨层共享的类型放 `internal/model`。
+- **可观测性优先结构化日志**：延续上文「日志规范」，业务/诊断日志一律走 `slog` 的结构化键值；error 正常返回而不是打印；静默跳过的分级判断见专节。
+- **测试靠近实现**：被测包同目录 `*_test.go`，跨包行为用表驱动测试；涉及共享状态或 goroutine 的改动必须通过 `task test-race`。
+- **配置项闭环**：新增配置项必须同时更新 `config.example.yaml`、`internal/config` 的校验与测试，并评估是否需要触发 `scheduler.Reload`。`config.yaml` 是本地运行配置，不得提交真实凭据。
+
 ## Build, Test, and Development Commands
 
 优先使用 `Taskfile.yml` 中的任务：
