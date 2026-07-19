@@ -4,6 +4,11 @@ vars:
   BINARY: codex-api-gateway
   CONFIG: config.yaml
   PACKAGES: ./...
+  VERSION:
+    sh: git describe --tags 2>/dev/null || echo "dev"
+  LDFLAGS: >-
+    -w -s
+    -X github.com/mapleafgo/codex-api-gateway/cmd/server.version={{.VERSION}}
 
 tasks:
   default:
@@ -20,7 +25,54 @@ tasks:
     generates:
       - '{{.BINARY}}'
     cmds:
-      - go build -o {{.BINARY}} ./cmd/server
+      - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} ./cmd/server
+
+  # ── CLI 交叉编译（对齐 singcast-cli 发布流程）──────────
+
+  cli:
+    desc: Build server binary for current platform
+    cmds:
+      - task: cli-linux-amd64
+
+  cli-linux-amd64:
+    desc: Build for Linux amd64
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-linux-amd64 ./cmd/server
+
+  cli-linux-arm64:
+    desc: Build for Linux arm64
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-linux-arm64 ./cmd/server
+
+  cli-darwin-amd64:
+    desc: Build for macOS amd64
+    cmds:
+      - CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-darwin-amd64 ./cmd/server
+
+  cli-darwin-arm64:
+    desc: Build for macOS arm64
+    cmds:
+      - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-darwin-arm64 ./cmd/server
+
+  cli-windows-amd64:
+    desc: Build for Windows amd64
+    cmds:
+      - CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-windows-amd64.exe ./cmd/server
+
+  cli-windows-arm64:
+    desc: Build for Windows arm64
+    cmds:
+      - CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-windows-arm64.exe ./cmd/server
+
+  cli-all:
+    desc: Build for all platforms
+    cmds:
+      - task: cli-linux-amd64
+      - task: cli-linux-arm64
+      - task: cli-darwin-amd64
+      - task: cli-darwin-arm64
+      - task: cli-windows-amd64
+      - task: cli-windows-arm64
 
   run:
     desc: Run the server (requires {{.CONFIG}})

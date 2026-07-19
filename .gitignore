@@ -1,5 +1,6 @@
 .task/
 /codex-api-gateway
+/bin/
 /dist/
 *.exe
 /server

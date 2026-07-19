@@ -1,0 +1,95 @@
+name: build
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+env:
+  GO_VERSION: "~1.26"
+  MODULE: github.com/mapleafgo/codex-api-gateway
+
+jobs:
+  get-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.get-release.outputs.tag_name }}
+      upload_url: ${{ steps.get-release.outputs.upload_url }}
+    steps:
+      - name: Get release info
+        id: get-release
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag_name=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            echo "upload_url=${{ github.event.release.upload_url }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
+            UPLOAD_URL=$(gh release view "$TAG" --json uploadUrl -q '.uploadUrl')
+            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+            echo "upload_url=$UPLOAD_URL" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 测试 ────────────────────────────────────────────────
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: go-task/setup-task@v2
+      - name: task test
+        run: task test
+
+  # ── CLI 二进制 ──────────────────────────────────────────
+
+  build-cli:
+    needs: [get-release, test]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: go-task/setup-task@v2
+      - name: task cli-${{ matrix.goos }}-${{ matrix.goarch }}
+        run: task cli-${{ matrix.goos }}-${{ matrix.goarch }}
+      - name: Package
+        shell: bash
+        run: |
+          cd bin
+          tar -czf codex-api-gateway-${{ needs.get-release.outputs.tag_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz *
+      - name: Upload
+        uses: shogo82148/actions-upload-release-asset@v1
+        with:
+          upload_url: ${{ needs.get-release.outputs.upload_url }}
+          asset_path: bin/*.tar.gz
+          overwrite: true

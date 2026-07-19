@@ -20,6 +20,10 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/tray"
 )
 
+// version 由 CI 通过 -ldflags "-X ...cmd/server.version=<tag>" 注入；
+// 本地构建或未注入时为空串（startup 日志中展示）。
+var version string
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
@@ -123,7 +127,7 @@ func main() {
 	shutdownCh := make(chan struct{})
 	serverErrCh := make(chan error, 1)
 	go func() {
-		slog.Info("codex-api-gateway 开始监听", "listen", cfg.Server.Listen, "log_level", cfg.Logging.Level, "log_format", cfg.Logging.Format)
+		slog.Info("codex-api-gateway 开始监听", "listen", cfg.Server.Listen, "log_level", cfg.Logging.Level, "log_format", cfg.Logging.Format, "version", version)
 		err := httpSrv.ListenAndServe()
 		// Shutdown 会使 ListenAndServe 返回 ErrServerClosed，属正常退出。
 		serverErrCh <- err
