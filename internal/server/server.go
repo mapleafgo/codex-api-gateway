@@ -17,6 +17,7 @@ import (
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
+	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/scheduler"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
@@ -31,28 +32,62 @@ var (
 
 // Server wires config, scheduler, and HTTP handlers.
 type Server struct {
-	cfg       *config.Config
+	holder    *config.Holder
 	sch       *scheduler.Scheduler
+	metrics   *metrics.Collector
 	startedAt int64
 }
 
 // New builds a Server.
 func New(cfg *config.Config) *Server {
-	slog.Info("初始化服务组件",
-		"sources", len(cfg.Sources))
+	holder := config.NewHolder(cfg)
+	slog.Info("初始化服务组件", "sources", len(cfg.Sources))
 	return &Server{
-		cfg:       cfg,
-		sch:       scheduler.New(cfg),
+		holder:    holder,
+		sch:       scheduler.New(holder),
+		metrics:   metrics.New(),
 		startedAt: time.Now().Unix(),
 	}
 }
 
+// Holder 返回内部的 Holder，供 admin 包挂载热重载回调。
+func (s *Server) Holder() *config.Holder { return s.holder }
+
+// Metrics 返回内部的 metrics Collector，供 admin 包读取。
+func (s *Server) Metrics() *metrics.Collector { return s.metrics }
+
+// Scheduler 返回内部的 Scheduler，供 admin 包触发 Reload。
+func (s *Server) Scheduler() *scheduler.Scheduler { return s.sch }
+
+// ReloadScheduler 让外层（configwatch）通知 scheduler 重建运行时优先级。
+func (s *Server) ReloadScheduler() {
+	func() {
+		defer func() { _ = recover() }()
+		s.sch.Reload()
+	}()
+}
+
 // Close releases server resources. Currently a no-op; retained as the
 // shutdown hook for future resources.
-func (s *Server) Close() error { return nil }
+func (s *Server) Close() error {
+	if s.metrics != nil {
+		s.metrics.Stop()
+	}
+	return nil
+}
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/responses", s.handleResponses)
+	mux.HandleFunc("/v1/models", s.handleModels)
+	return mux
+}
+
+// Mux 返回内部 mux 供 main 挂载额外路由（admin 等）。
+// 与 Handler() 的区别：返回 *http.ServeMux，便于外部追加路由。
+// 多次调用会创建多个独立的 mux，建议只调用一次。
+func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/responses", s.handleResponses)
 	mux.HandleFunc("/v1/models", s.handleModels)
@@ -71,7 +106,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	// Codex 用 serde_json::from_slice::<ModelsResponse> 直接解析，若返回 OpenAI 格式，
 	// 解析失败/拿到空 ModelInfo → supports_search_tool 默认 false → MCP deferred 不工作。
 	// 故返回 CodexModelsResponse，补全 ModelInfo 能力字段（关键是 supports_search_tool=true）。
-	names := s.cfg.ConfiguredModelSlugs()
+	cur := s.holder.Current()
+	names := cur.ConfiguredModelSlugs()
 	infos := make([]model.CodexModelInfo, 0, len(names))
 	for _, name := range names {
 		infos = append(infos, s.codexModelInfo(name))
@@ -140,7 +176,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		Priority:                   0,
 		AvailabilityNux:            nil,
 		Upgrade:                    nil,
-		BaseInstructions:           s.cfg.BaseInstructions,
+		BaseInstructions:           s.holder.Current().BaseInstructions,
 		SupportsReasoningSummaries: true,
 		SupportVerbosity:           false,
 		DefaultVerbosity:           nil,
@@ -203,13 +239,14 @@ func defaultReasoningLevels() []model.CodexReasoningLevel {
 // 别名继承机制让用户只需为真实上游模型（如 glm-5.2）配置一次能力字段，
 // model_map 里的别名（如 gpt-5.5→glm-5.2）自动继承，无需重复配置。
 func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) {
-	if ov, ok := s.cfg.ModelOverrides[slug]; ok {
+	cur := s.holder.Current()
+	if ov, ok := cur.ModelOverrides[slug]; ok {
 		return ov, true
 	}
-	for _, src := range s.cfg.Sources {
+	for _, src := range cur.Sources {
 		// mapped 是 model_map 别名指向的真实上游模型 slug。
 		if mapped, ok := src.ModelMap[slug]; ok {
-			if ov, ok2 := s.cfg.ModelOverrides[mapped]; ok2 {
+			if ov, ok2 := cur.ModelOverrides[mapped]; ok2 {
 				return ov, true
 			}
 		}
@@ -274,13 +311,17 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	warnDroppedOrIgnoredParams(req)
 
-	ordered := s.cfg.OrderedSources()
-	if len(ordered) > 0 {
-		if _, _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
-			slog.Warn("预转换响应请求失败", "source", ordered[0].Name, "error", err)
-			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+	ordered := s.holder.Current().OrderedSources()
+	if len(ordered) == 0 {
+		// 零源配置：进程可启动但无上游可转发。返回 503 引导用户去管理页配置。
+		slog.Warn("转发请求被拒绝：未配置任何上游源")
+		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
+		return
+	}
+	if _, _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
+		slog.Warn("预转换响应请求失败", "source", ordered[0].Name, "error", err)
+		http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -307,11 +348,13 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var evCount int
+	resolvedModel := string(req.Model) // 实际发送给上游的模型标识；若发生别名映射，build 回调中更新
 	sourceName, execErr := s.sch.ExecutePrepared(r.Context(), func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 		reqForSource, anthReq, mcp, err := s.buildAnthropicRequest(body, src)
 		if err != nil {
 			return nil, nil, err
 		}
+		resolvedModel = scheduler.ResolveModel(&src, string(req.Model))
 		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
 		conv.SetDeclaredServerTools(convert.DeclaredServerTools(reqForSource))
 		sysLen := 0
@@ -355,7 +398,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 		return nil
-	})
+	}, s.recordUpstream())
 
 	// Compute the response ID once so the error event and the completed
 	// event share the same value (I2: previously two newResponseID() calls produced
@@ -376,11 +419,30 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			status = model.ResponseStatusFailed
 		}
 		var cacheRead, cacheCreate int
+		var inputTok, outputTok int
 		if u := conv.Usage(); u != nil {
 			cacheRead = u.CacheReadInputTokens
 			cacheCreate = u.CacheCreationInputTokens
+			inputTok = u.InputTokens
+			outputTok = u.OutputTokens
 		}
 		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate, "elapsed", time.Since(reqStart).String())
+		// 投递指标事件；非阻塞，失败/丢弃不影响 API。
+		// Code：SSE 流式成功 HTTP 恒为 200；语义码用 status 映射给观测台展示。
+		s.metrics.Record(metrics.RequestEvent{
+			Kind:          metrics.KindClient,
+			StartedAt:     reqStart,
+			Duration:      time.Since(reqStart),
+			SourceName:    sourceName,
+			Model:         string(req.Model),
+			ResolvedModel: resolvedModel,
+			Status:        status,
+			Code:          200,
+			InputTokens:   inputTok,
+			OutputTokens:  outputTok,
+			CacheRead:     cacheRead,
+			CacheCreate:   cacheCreate,
+		})
 		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 		for _, e := range trailing {
 			writeSSE(w, e)
@@ -394,6 +456,29 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"error", execErr)
 	} else {
 		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		// 失败也记录指标：status=failed，token 通常为 0
+		var inputTok, outputTok, cacheRead, cacheCreate int
+		if u := conv.Usage(); u != nil {
+			inputTok = u.InputTokens
+			outputTok = u.OutputTokens
+			cacheRead = u.CacheReadInputTokens
+			cacheCreate = u.CacheCreationInputTokens
+		}
+		s.metrics.Record(metrics.RequestEvent{
+			Kind:          metrics.KindClient,
+			StartedAt:     reqStart,
+			Duration:      time.Since(reqStart),
+			SourceName:    sourceName,
+			Model:         string(req.Model),
+			ResolvedModel: resolvedModel,
+			Status:        model.ResponseStatusFailed,
+			Code:          clientFailCode(execErr),
+			InputTokens:   inputTok,
+			OutputTokens:  outputTok,
+			CacheRead:     cacheRead,
+			CacheCreate:   cacheCreate,
+			Error:         errSummary(execErr),
+		})
 		if !conv.Done() {
 			// I1: only emit a server-side response.failed if the converter hasn't
 			// already emitted one (e.g. via a mid-stream error event). Without this
@@ -417,7 +502,7 @@ func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesp
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	anthReq, mcp, err := convert.ToAnthropic(req, s.cfg)
+	anthReq, mcp, err := convert.ToAnthropic(req, s.holder.Current())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -789,4 +874,73 @@ func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks,
 
 func newResponseID() string {
 	return fmt.Sprintf("resp_%d", time.Now().UnixNano())
+}
+
+// recordUpstream 返回一个 scheduler.OnUpstream 回调，把单次上游尝试事件
+// 映射为 metrics.RequestEvent（Kind=KindUpstream）投递给观测台。
+// 每次 trySource 结束时调用：成功一条 completed，失败一条 failed。
+// scheduler 不依赖 metrics 包（分层约束），由 server（L4）做桥接。
+func (s *Server) recordUpstream() scheduler.OnUpstream {
+	return func(ev scheduler.UpstreamEvent) {
+		s.metrics.Record(metrics.RequestEvent{
+			Kind:          metrics.KindUpstream,
+			StartedAt:     ev.StartedAt,
+			Duration:      ev.Duration,
+			SourceName:    ev.SourceName,
+			Model:         ev.Model,
+			ResolvedModel: ev.ResolvedModel,
+			Status:        ev.Status,
+			Code:          ev.Code,
+			InputTokens:   ev.InputTokens,
+			OutputTokens:  ev.OutputTokens,
+			CacheRead:     ev.CacheRead,
+			CacheCreate:   ev.CacheCreate,
+			Error:         ev.Error,
+			Attempt:       ev.Attempt,
+		})
+	}
+}
+
+// errSummary 返回上游错误全文，供观测台 tip 展示完整上游返回。
+func errSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	// 保留上游完整返回（含 JSON body），观测台 tip 需要全量信息。
+	return err.Error()
+}
+
+// clientFailCode 从 execErr 解析上游 HTTP 状态码；解析不到（网络错误/取消）回退 500。
+// 客户端失败记录展示最终失败原因对应的上游码，便于观测台对齐限流/鉴权等场景。
+func clientFailCode(err error) int {
+	if sc := statusCodeFromErr(err); sc != 0 {
+		return sc
+	}
+	return 500
+}
+
+// statusCodeFromErr 从 anthropic client 错误串解析上游 HTTP 状态码。
+// 错误格式固定为 "anthropic upstream %d: ..."；解析失败返回 0。
+func statusCodeFromErr(err error) int {
+	if err == nil {
+		return 0
+	}
+	const prefix = "anthropic upstream "
+	s := err.Error()
+	i := strings.Index(s, prefix)
+	if i < 0 {
+		return 0
+	}
+	rest := s[i+len(prefix):]
+	n := 0
+	for _, ch := range rest {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n >= 100 && n <= 599 {
+		return n
+	}
+	return 0
 }
