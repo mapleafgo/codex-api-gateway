@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -18,6 +19,14 @@ import (
 
 // ErrAllSourcesFailed is returned when no source could serve the request.
 var ErrAllSourcesFailed = errors.New("all upstream sources failed")
+
+// Anthropic SSE 事件类型 wire 字面量，从官方 SDK 常量派生（对齐设计规范）。
+// 观测 usage 时需要区分 message_start（携带 input / cache_* 初值）与
+// message_delta（携带累计 output_tokens 等）。
+var (
+	anMessageStart = string(aconstant.ValueOf[aconstant.MessageStart]())
+	anMessageDelta = string(aconstant.ValueOf[aconstant.MessageDelta]())
+)
 
 // defaultBackoff is the fixed production backoff sequence in seconds.
 var defaultBackoff = []time.Duration{
@@ -356,6 +365,12 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	defer body.Close()
 
 	locked := false
+	// 累计当前上游流的 usage，供 onUpstream 汇报。
+	// - message_start 事件：Message.Usage 携带 input / cache_read / cache_creation 初值。
+	// - message_delta 事件：Usage 携带累计 output_tokens（Anthropic 规范：cumulative）
+	//   以及后续可能刷新的 cache_* 字段。
+	// 二者按"取最后一次非零值"合并即可，避免把 delta 的累计值加到 start 上导致翻倍。
+	var usage anthropic.MessageDeltaUsage
 	scanErr := anthropicclient.ScanEvents(body, func(ev *anthropic.MessageStreamEventUnion) error {
 		if !locked {
 			locked = true
@@ -366,6 +381,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			s.adjustOrder(src.Name, oldState, newState)
 			slog.Info("上游源流已锁定", "source", src.Name, "old_state", oldState, "new_state", newState)
 		}
+		mergeUsage(&usage, ev)
 		if err := onEvent(ev); err != nil {
 			return err
 		}
@@ -407,6 +423,10 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
 			StartedAt: sourceStart, Duration: time.Since(sourceStart),
 			Status: status, Code: code, Error: errSummary(scanErr), Attempt: attemptNo,
+			InputTokens:  int(usage.InputTokens),
+			OutputTokens: int(usage.OutputTokens),
+			CacheRead:    int(usage.CacheReadInputTokens),
+			CacheCreate:  int(usage.CacheCreationInputTokens),
 		})
 	}
 	return true, scanErr
@@ -475,4 +495,49 @@ func statusCodeFromErr(err error) int {
 		return n
 	}
 	return 0
+}
+
+// mergeUsage 合并单个 Anthropic SSE 事件携带的 usage 信息到累计视图。
+//
+// Anthropic 流式协议中 usage 的来源有两处：
+//   - message_start：Message.Usage 携带 input_tokens 与 cache_* 初值；
+//     此时 output_tokens 通常为 0 或很小。
+//   - message_delta：Usage 携带**累计**（cumulative）值，含最终 output_tokens。
+//
+// 采用"取最后一次非零值"策略：既能拿到 message_start 的 input/cache_*，
+// 又不会与 message_delta 的累计输出重复相加，避免 token 翻倍。
+func mergeUsage(acc *anthropic.MessageDeltaUsage, ev *anthropic.MessageStreamEventUnion) {
+	if acc == nil || ev == nil {
+		return
+	}
+	switch ev.Type {
+	case anMessageStart:
+		u := ev.Message.Usage
+		if u.InputTokens > 0 {
+			acc.InputTokens = u.InputTokens
+		}
+		if u.OutputTokens > 0 {
+			acc.OutputTokens = u.OutputTokens
+		}
+		if u.CacheReadInputTokens > 0 {
+			acc.CacheReadInputTokens = u.CacheReadInputTokens
+		}
+		if u.CacheCreationInputTokens > 0 {
+			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	case anMessageDelta:
+		u := ev.Usage
+		if u.InputTokens > 0 {
+			acc.InputTokens = u.InputTokens
+		}
+		if u.OutputTokens > 0 {
+			acc.OutputTokens = u.OutputTokens
+		}
+		if u.CacheReadInputTokens > 0 {
+			acc.CacheReadInputTokens = u.CacheReadInputTokens
+		}
+		if u.CacheCreationInputTokens > 0 {
+			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 )
@@ -712,5 +713,52 @@ func TestStatusCodeFromErr(t *testing.T) {
 		if got := statusCodeFromErr(tc.err); got != tc.want {
 			t.Errorf("statusCodeFromErr(%v) = %d, want %d", tc.err, got, tc.want)
 		}
+	}
+}
+
+// TestOnUpstreamUsage 验证 scheduler 从 Anthropic SSE 流中提取 usage 并通过
+// OnUpstream 回调上报。观测台的输入/输出 token、缓存创建/命中依赖这一路径，
+// 缺失会导致管理页统计恒为 0（曾经的实际问题）。
+func TestOnUpstreamUsage(t *testing.T) {
+	// 构造一次典型流：message_start 携带 input / cache_* 初值，
+	// message_delta 携带累计 output_tokens，message_stop 收尾。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\",\"usage\":{\"input_tokens\":123,\"output_tokens\":0,\"cache_read_input_tokens\":45,\"cache_creation_input_tokens\":6}}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":123,\"output_tokens\":89,\"cache_read_input_tokens\":45,\"cache_creation_input_tokens\":6}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
+			DegradeThreshold: 5, Cooldown: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{makeSource("good", srv.URL, 0)},
+	}
+	s := New(cfg)
+
+	var got []UpstreamEvent
+	_, err := s.ExecutePrepared(context.Background(),
+		func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+			return &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil, nil
+		},
+		func(ev *anthropic.MessageStreamEventUnion) error { return nil },
+		func(ev UpstreamEvent) { got = append(got, ev) },
+	)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 upstream event, got %d", len(got))
+	}
+	ev := got[0]
+	if ev.Status != "completed" {
+		t.Fatalf("status: want completed, got %q", ev.Status)
+	}
+	if ev.InputTokens != 123 || ev.OutputTokens != 89 ||
+		ev.CacheRead != 45 || ev.CacheCreate != 6 {
+		t.Fatalf("usage mismatch: in=%d out=%d cache_read=%d cache_create=%d",
+			ev.InputTokens, ev.OutputTokens, ev.CacheRead, ev.CacheCreate)
 	}
 }
