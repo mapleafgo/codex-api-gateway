@@ -203,18 +203,53 @@ func (t *Tray) closeDone() {
 func (t *Tray) Done() <-chan struct{} { return t.quitCh }
 
 // openBrowser 跨平台打开默认浏览器；拒绝非 http(s) 的 URL 防止命令注入。
+//
+// 关键实现要点（回归修复）：
+//   - 让浏览器进程脱离网关的会话/进程组：在 Linux/GNOME 下，当默认浏览器
+//     尚未启动时，xdg-open → gio open 拉起的 Chrome 会继承网关会话，被
+//     GNOME/systemd 认为是网关子进程而无法完成启动，表现为"托盘点开无
+//     反应，只有浏览器已运行时才能唤起新标签页"。detachProcess 通过平台
+//     特定的 SysProcAttr（Unix/mac 下 Setsid；Windows 下 DETACHED_PROCESS
+//   - CREATE_NEW_PROCESS_GROUP）解决。
+//   - 立即在 goroutine 中 Wait 回收包装器进程（xdg-open / open / rundll32
+//     都是短命脚本），避免僵尸；真正的浏览器进程已在 detach 后独立运行。
+//   - stdin/stdout/stderr 显式指向 /dev/null，避免包装器把提示信息污染
+//     到网关的 slog handler。
 func openBrowser(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("拒绝打开非 http(s) URL: %s", rawURL)
 	}
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		return exec.Command("xdg-open", rawURL).Start()
+		cmd = exec.Command("xdg-open", rawURL)
 	case "darwin":
-		return exec.Command("open", rawURL).Start()
+		cmd = exec.Command("open", rawURL)
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL).Start()
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+	default:
+		return fmt.Errorf("不支持的平台: %s", runtime.GOOS)
 	}
-	return fmt.Errorf("不支持的平台: %s", runtime.GOOS)
+	devnull, derr := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if derr == nil {
+		cmd.Stdin = devnull
+		cmd.Stdout = devnull
+		cmd.Stderr = devnull
+	}
+	detachProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		if devnull != nil {
+			_ = devnull.Close()
+		}
+		return err
+	}
+	// 异步 Wait 回收包装器进程，防止僵尸；真正的浏览器进程已脱离本会话。
+	go func() {
+		_ = cmd.Wait()
+		if devnull != nil {
+			_ = devnull.Close()
+		}
+	}()
+	return nil
 }
