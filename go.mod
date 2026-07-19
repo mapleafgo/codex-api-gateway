@@ -4,6 +4,8 @@ go 1.26.5
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.57.0
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/gogpu/systray v0.1.2
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/rawbytes v1.0.0
@@ -16,6 +18,8 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/go-webgpu/goffi v0.6.0 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
@@ -30,6 +34,7 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.3 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
