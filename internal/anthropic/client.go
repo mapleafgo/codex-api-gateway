@@ -57,6 +57,57 @@ func messagesURL(endpoint string) string {
 	return endpoint + "/v1/messages"
 }
 
+// modelsURL 在配置的 base_url 上补全 Anthropic Models 路径 /v1/models。
+// 与 messagesURL 同样的约定，避免 base_url 重复或缺失后缀。
+func modelsURL(endpoint string) string {
+	endpoint = strings.TrimRight(endpoint, "/")
+	if strings.HasSuffix(endpoint, "/v1/models") {
+		return endpoint
+	}
+	return endpoint + "/v1/models"
+}
+
+// ModelInfo 是 Anthropic /v1/models 响应中单个模型项的精简视图。
+// 仅取管理页展示所需的字段；不同兼容后端可能携带更多字段，此处按需取用。
+type ModelInfo struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Type        string `json:"type,omitempty"`
+}
+
+// ListModels 调用上游 Anthropic 兼容的 GET /v1/models 接口，返回可用模型列表。
+// 认证头与 Stream 一致（同时发 x-api-key 与 Authorization: Bearer，兼容各后端）。
+// 返回的模型按上游顺序透传，不做排序或去重。
+func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]ModelInfo, error) {
+	url := modelsURL(endpoint)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("content-type", "application/json")
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("x-api-key", apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := c.HTTP.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		slog.Warn("上游拉取模型列表失败", "status", resp.StatusCode, "url", url)
+		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, truncForLog(b, 500))
+	}
+	var body struct {
+		Data []ModelInfo `json:"data"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		return nil, fmt.Errorf("parse models response: %w: %s", err, truncForLog(b, 500))
+	}
+	slog.Info("拉取上游模型列表成功", "url", url, "count", len(body.Data))
+	return body.Data, nil
+}
+
 // truncForLog returns b as a string truncated to n bytes with a tail marker,
 // for embedding large request/response bodies in log lines.
 func truncForLog(b []byte, n int) string {
