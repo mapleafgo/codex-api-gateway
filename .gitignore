@@ -1,3 +1,4 @@
+.task/
 /codex-api-gateway
 /dist/
 *.exe
