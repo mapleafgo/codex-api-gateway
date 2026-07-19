@@ -34,6 +34,14 @@
 
 Lint 配置在 `.golangci.yml`，启用了 `errcheck`、`govet`、`staticcheck`、`unused`、`revive`、`misspell` 等检查。
 
+## 日志规范
+
+任何日志输出必须使用 `log/slog`，不允许使用 `fmt.Print*`、`log.Print*`、`os.Stderr.Write` 等其他方式打印信息。这是为了让进程内所有日志统一走 `internal/logging` 配置的 handler（level / format / file）。
+
+- 业务/诊断日志：用 `slog.Info` / `slog.Warn` / `slog.Error` / `slog.Debug`，关键上下文以结构化键值传入，不要用 `fmt.Sprintf` 拼接消息。
+- 错误返回：用 `fmt.Errorf` 构造 error 正常返回，不要把 error 文本当日志打印。
+- 唯一例外是 `internal/logging` 中的 `log.SetOutput(io.Discard)`，它是用来压制标准库 `log`（防止第三方依赖污染 stdout），不是日志输出。
+
 ## Testing Guidelines
 
 使用 Go 标准测试框架。单元测试靠近实现文件，集成测试可参考 `internal/server/integration_test.go`。新增转换、调度、熔断、配置解析或并发行为时，应补充表驱动测试；涉及共享状态或 goroutine 的改动应运行 `task test-race`。
@@ -50,8 +58,12 @@ PR 应包含：变更摘要、测试结果（至少 `task check`）、相关 iss
 
 ## 静默跳过与降级处理约定
 
-当代码需要静默跳过或忽略上游数据（例如流式转换中遇到无 Responses 等价物的 Anthropic content block、忽略无法映射的字段或事件）时，必须同时输出 **WARN 级别**的结构化日志，至少包含以下字段：被丢弃内容的类型/标识、关联的 response_id 或上下文 id、影响说明（如"对应数据被丢弃"）。
+静默跳过或忽略上游/请求数据（例如流式转换中遇到无 Responses 等价物的 Anthropic content block、忽略无法映射的字段或事件、边界输入的降级处理）在**可控范围内是允许的**，默认不强制 WARN。常规跳过可直接静默，或用 `slog.Debug` 记录以保留可观测性。
 
-禁止使用 `slog.Debug` 或 `fmt.Println` 处理此类静默跳过。跳过的目的是让流继续，而不是把信息丢失变成完全不可观测。
+仅当丢弃**重要且不可预期**的数据（例如完整的工具调用结果、用户可见的输出内容、会导致功能缺失的关键字段、上游协议外的异常分支）时，才输出 WARN 级别结构化日志，至少包含：被丢弃内容的类型/标识、关联的 response_id 或上下文 id、影响说明（如"对应数据被丢弃"）。
 
-新增静默跳过分支时，同步补充或更新对应的测试，验证跳过路径触发且不产生异常事件。
+判断标准：
+- **可控范围内**（已知协议限制、明确的降级路径、边界情况、协议字段无等价物）：允许静默，可选 DEBUG 日志。
+- **不可控 / 重要数据丢失**：必须 WARN。
+
+禁止使用 `fmt.Println` 处理需要观测的跳过（日志规范见上）。新增静默跳过分支时，同步补充或更新对应的测试，验证跳过路径触发且不产生异常事件。
