@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -575,5 +576,186 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	// 传输优化，第三方上游有害无益）。显式 false 而非省略，防 Codex hardcode/默认开启。
 	if url, ok := m0["use_responses_lite"]; !ok || strings.TrimSpace(string(url)) != "false" {
 		t.Fatalf("use_responses_lite 应显式为 false, got: %v (present=%v)", string(m0["use_responses_lite"]), ok)
+	}
+}
+
+// TestResponsesPostTerminalClientCancelTreatedAsCompleted 验证：上游已吐出
+// message_stop（converter 已终态），随后客户端断开导致 context canceled 时，
+// 不得 ERROR「响应请求失败」、不得把 client 指标记为 failed；应视为 completed。
+func TestResponsesPostTerminalClientCancelTreatedAsCompleted(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_cancel\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_delta\",\"delta\":{\"type\":\"message_delta\",\"stop_reason\":\"end_turn\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+		// 保持连接一会儿，给客户端取消制造读尾 race。
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/responses",
+		strings.NewReader(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+
+	// 读到 completed 后立即断开客户端，触发读尾 context canceled。
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	buf := make([]byte, 4096)
+	var body strings.Builder
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			body.Write(buf[:n])
+			if strings.Contains(body.String(), "event: response.completed\n") {
+				cancel()
+				break
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	_ = resp.Body.Close()
+
+	// 给 handler 一点时间收尾写日志/记指标。
+	time.Sleep(200 * time.Millisecond)
+
+	got := logs.String()
+	if strings.Contains(got, "响应请求失败") {
+		t.Fatalf("post-terminal client cancel must not ERROR as 响应请求失败. logs:\n%s", got)
+	}
+	if strings.Contains(got, "上游流终态后读取失败") {
+		t.Fatalf("post-terminal client cancel must not WARN 上游流终态后读取失败. logs:\n%s", got)
+	}
+
+	// 指标：client 侧应 completed，不得 failed。
+	// 先 Stop 强制 drain channel。
+	snap := srv.Metrics().Snapshot()
+	// 事件可能还在 channel；再等一轮。
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snap = srv.Metrics().Snapshot()
+		if len(snap.Recent) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var sawClientCompleted bool
+	for _, rec := range snap.Recent {
+		if rec.Kind == "client" && rec.Status == model.ResponseStatusFailed {
+			t.Fatalf("client metrics must not be failed after terminal stream: %+v", rec)
+		}
+		if rec.Kind == "client" && rec.Status == model.ResponseStatusCompleted {
+			sawClientCompleted = true
+		}
+	}
+	if !sawClientCompleted {
+		t.Fatalf("want client completed metric after post-terminal cancel, recent=%+v logs=\n%s", snap.Recent, got)
+	}
+}
+
+// TestResponsesMidStreamClientCancelNoFailedEvent 验证：流未终态时客户端断开，
+// 不向已断开连接硬写 response.failed，也不把请求记成 ERROR「响应请求失败」。
+func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	block := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_mid\",\"model\":\"claude\"}}\n\n")
+		flusher.Flush()
+		select {
+		case <-block:
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	defer close(block)
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/responses",
+		strings.NewReader(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("content-type", "application/json")
+
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		ch <- result{resp, err}
+	}()
+
+	// 等上游事件开始流出后取消。
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	res := <-ch
+	if res.err != nil {
+		// 客户端在建连后取消也可能直接报错，允许。
+		time.Sleep(300 * time.Millisecond)
+	} else {
+		// 尽量读一点再关，触发服务端写路径感知断开。
+		_, _ = io.CopyN(io.Discard, res.resp.Body, 256)
+		_ = res.resp.Body.Close()
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	got := logs.String()
+	if strings.Contains(got, `"level":"ERROR"`) && strings.Contains(got, "响应请求失败") {
+		t.Fatalf("mid-stream client cancel must not ERROR 响应请求失败. logs:\n%s", got)
+	}
+	snap := srv.Metrics().Snapshot()
+	for _, rec := range snap.Recent {
+		if rec.Kind == "client" && rec.Status == model.ResponseStatusFailed {
+			t.Fatalf("mid-stream cancel must not record client failed: %+v\nlogs:\n%s", rec, got)
+		}
 	}
 }

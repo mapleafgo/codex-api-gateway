@@ -4,7 +4,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -408,7 +410,20 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		id = newResponseID()
 	}
 
-	if execErr == nil {
+	clientCanceled := isClientCanceled(r.Context(), execErr)
+
+	if execErr == nil || (clientCanceled && conv.Done() && !conv.Failed()) {
+		// 干净成功，或客户端在上游终态之后断开：业务已完成，按 completed 收尾。
+		// 后者对应日志里的「上游流终态 + context canceled」——客户端已收到完整 SSE。
+		if execErr != nil {
+			slog.Info("响应请求完成（客户端在终态后断开）",
+				"response_id", id,
+				"status", model.ResponseStatusCompleted,
+				"source", sourceName,
+				"upstream_events", evCount,
+				"elapsed", time.Since(reqStart).String(),
+				"error", execErr)
+		}
 		items := conv.OutputItems()
 		var types []string
 		for _, it := range items {
@@ -426,7 +441,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			inputTok = u.InputTokens
 			outputTok = u.OutputTokens
 		}
-		slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate, "elapsed", time.Since(reqStart).String())
+		if execErr == nil {
+			slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate, "elapsed", time.Since(reqStart).String())
+		}
 		// 投递指标事件；非阻塞，失败/丢弃不影响 API。
 		// Code：SSE 流式成功 HTTP 恒为 200；语义码用 status 映射给观测台展示。
 		s.metrics.Record(metrics.RequestEvent{
@@ -443,11 +460,44 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			CacheRead:     cacheRead,
 			CacheCreate:   cacheCreate,
 		})
-		trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
-		for _, e := range trailing {
-			writeSSE(w, e)
+		if execErr == nil {
+			trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
+			for _, e := range trailing {
+				writeSSE(w, e)
+			}
+			flusher.Flush()
 		}
-		flusher.Flush()
+	} else if clientCanceled {
+		// 流未终态时客户端断开：不记 failed、不写 response.failed（对端已走）。
+		var inputTok, outputTok, cacheRead, cacheCreate int
+		if u := conv.Usage(); u != nil {
+			inputTok = u.InputTokens
+			outputTok = u.OutputTokens
+			cacheRead = u.CacheReadInputTokens
+			cacheCreate = u.CacheCreationInputTokens
+		}
+		slog.Info("响应请求被客户端取消",
+			"response_id", id,
+			"status", "canceled",
+			"source", sourceName,
+			"upstream_events", evCount,
+			"elapsed", time.Since(reqStart).String(),
+			"error", execErr)
+		s.metrics.Record(metrics.RequestEvent{
+			Kind:          metrics.KindClient,
+			StartedAt:     reqStart,
+			Duration:      time.Since(reqStart),
+			SourceName:    sourceName,
+			Model:         string(req.Model),
+			ResolvedModel: resolvedModel,
+			Status:        "canceled",
+			Code:          499, // 约定：客户端关闭连接（类 nginx 499）
+			InputTokens:   inputTok,
+			OutputTokens:  outputTok,
+			CacheRead:     cacheRead,
+			CacheCreate:   cacheCreate,
+			Error:         errSummary(execErr),
+		})
 	} else if conv.Done() && !conv.Failed() {
 		slog.Warn("上游流终态后读取失败",
 			"response_id", id,
@@ -899,6 +949,18 @@ func (s *Server) recordUpstream() scheduler.OnUpstream {
 			Attempt:       ev.Attempt,
 		})
 	}
+}
+
+// isClientCanceled 判断 execErr 是否由客户端断开（请求 ctx 取消）引起。
+// 与 scheduler.isClientCanceled 同语义；server 不依赖 scheduler 未导出 helper。
+func isClientCanceled(ctx context.Context, err error) bool {
+	if err == nil || ctx == nil {
+		return false
+	}
+	if ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ctx.Err())
 }
 
 // errSummary 返回上游错误全文，供观测台 tip 展示完整上游返回。

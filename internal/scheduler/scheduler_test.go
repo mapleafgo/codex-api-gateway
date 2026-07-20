@@ -762,3 +762,77 @@ func TestOnUpstreamUsage(t *testing.T) {
 			ev.InputTokens, ev.OutputTokens, ev.CacheRead, ev.CacheCreate)
 	}
 }
+
+// TestLockedStreamClientCancelNotRecordedAsFailed 验证：源已锁定且上游事件已吐完，
+// 随后因客户端断开（ctx cancel）导致读尾失败时，OnUpstream 不得记为 failed。
+// 这对应生产日志里「上游流终态 + context canceled」污染失败率的问题。
+func TestLockedStreamClientCancelNotRecordedAsFailed(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+		// 故意不关 body：模拟客户端在终态后断开导致读尾 context canceled。
+		select {
+		case <-released:
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 100,
+			Cooldown:         config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+		},
+		Sources: []config.Source{makeSource("up", upstream.URL, 0)},
+	}
+	s := New(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var got []UpstreamEvent
+	var events int
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.ExecutePrepared(ctx,
+			func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+				return &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil, nil
+			},
+			func(ev *anthropic.MessageStreamEventUnion) error {
+				events++
+				if events >= 2 {
+					// 终态事件已处理完，取消客户端上下文。
+					cancel()
+				}
+				return nil
+			},
+			func(ev UpstreamEvent) { got = append(got, ev) },
+		)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want context.Canceled (propagate disconnect), got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for ExecutePrepared")
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("want 1 upstream event, got %d: %+v", len(got), got)
+	}
+	// message_stop 已处理：业务完成，应记 completed；不得记 failed。
+	if got[0].Status != "completed" {
+		t.Fatalf("upstream status = %q, want completed (post-terminal client cancel)", got[0].Status)
+	}
+	if got[0].Code != 200 {
+		t.Fatalf("upstream code = %d, want 200 (stream was established)", got[0].Code)
+	}
+}

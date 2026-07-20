@@ -26,6 +26,7 @@ var ErrAllSourcesFailed = errors.New("all upstream sources failed")
 var (
 	anMessageStart = string(aconstant.ValueOf[aconstant.MessageStart]())
 	anMessageDelta = string(aconstant.ValueOf[aconstant.MessageDelta]())
+	anMessageStop  = string(aconstant.ValueOf[aconstant.MessageStop]())
 )
 
 // defaultBackoff is the fixed production backoff sequence in seconds.
@@ -371,6 +372,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	//   以及后续可能刷新的 cache_* 字段。
 	// 二者按"取最后一次非零值"合并即可，避免把 delta 的累计值加到 start 上导致翻倍。
 	var usage anthropic.MessageDeltaUsage
+	sawMessageStop := false
 	scanErr := anthropicclient.ScanEvents(body, func(ev *anthropic.MessageStreamEventUnion) error {
 		if !locked {
 			locked = true
@@ -380,6 +382,9 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 			newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
 			slog.Info("上游源流已锁定", "source", src.Name, "old_state", oldState, "new_state", newState)
+		}
+		if ev != nil && ev.Type == anMessageStop {
+			sawMessageStop = true
 		}
 		mergeUsage(&usage, ev)
 		if err := onEvent(ev); err != nil {
@@ -408,21 +413,42 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		return false, noEventErr
 	}
 	if scanErr != nil {
-		slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
+		if isClientCanceled(ctx, scanErr) {
+			// 源已锁定后的 context canceled 几乎都是客户端断开（首字节 timer 已停）。
+			// 这是可控的正常路径，不按上游故障记 WARN/failed。
+			slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
+		} else {
+			slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
+		}
 	}
 	if onUpstream != nil {
 		status := "completed"
 		code := 200 // 流已建立，HTTP 层成功
 		if scanErr != nil {
-			status = "failed"
-			if sc := statusCodeFromErr(scanErr); sc != 0 {
-				code = sc
+			if isClientCanceled(ctx, scanErr) {
+				if sawMessageStop {
+					// 终态事件已到，读尾取消不影响业务完成。
+					status = "completed"
+				} else {
+					// 未终态的客户端断开：不计入 failed，避免污染源失败率。
+					status = "canceled"
+				}
+			} else {
+				status = "failed"
+				if sc := statusCodeFromErr(scanErr); sc != 0 {
+					code = sc
+				}
 			}
+		}
+		errText := errSummary(scanErr)
+		if status == "completed" {
+			// completed 不挂读尾取消噪声，避免观测台 tip 误报失败原因。
+			errText = ""
 		}
 		onUpstream(UpstreamEvent{
 			SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
 			StartedAt: sourceStart, Duration: time.Since(sourceStart),
-			Status: status, Code: code, Error: errSummary(scanErr), Attempt: attemptNo,
+			Status: status, Code: code, Error: errText, Attempt: attemptNo,
 			InputTokens:  int(usage.InputTokens),
 			OutputTokens: int(usage.OutputTokens),
 			CacheRead:    int(usage.CacheReadInputTokens),
@@ -459,6 +485,18 @@ func ResolveModel(src *config.Source, reqModel string) string {
 		return src.DefaultModel
 	}
 	return reqModel
+}
+
+// isClientCanceled 判断 err 是否由请求 ctx 取消引起（客户端断开）。
+// 首字节超时会取消子 ctx，但父 ctx 仍有效，故须同时检查父 ctx.Err()。
+func isClientCanceled(ctx context.Context, err error) bool {
+	if err == nil || ctx == nil {
+		return false
+	}
+	if ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ctx.Err())
 }
 
 // errSummary 返回上游错误全文，供观测台 tip 展示。
