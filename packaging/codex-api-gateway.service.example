@@ -1,0 +1,26 @@
+# 仅作参考。不推荐用于桌面场景：systemd --user 默认不带 DISPLAY/WAYLAND_DISPLAY，
+# 托盘「打开」在浏览器未运行时会冷启动失败。请改用：
+#   ./packaging/install-autostart.sh
+#
+# 若坚持用 service，至少注入图形会话环境（登录后值可能变化）：
+#   Environment=DISPLAY=:0
+#   Environment=WAYLAND_DISPLAY=wayland-0
+#
+[Unit]
+Description=Codex API Gateway - OpenAI Responses to Anthropic compatible proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/mapleafgo/Projects/OpenProject/codex-api-gateway/codex-api-gateway -config /home/mapleafgo/Projects/OpenProject/codex-api-gateway/config.yaml
+WorkingDirectory=/home/mapleafgo/Projects/OpenProject/codex-api-gateway
+Environment="HOME=/home/mapleafgo"
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

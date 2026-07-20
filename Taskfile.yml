@@ -132,3 +132,15 @@ tasks:
     cmds:
       - task: build
       - ./{{.BINARY}} -config {{.CONFIG}}
+
+  install-autostart:
+    desc: 安装桌面自启（~/.config/autostart + applications）
+    deps: [build]
+    cmds:
+      - ./packaging/install-autostart.sh
+
+  uninstall-autostart:
+    desc: 移除桌面自启入口
+    cmds:
+      - ./packaging/uninstall-autostart.sh
+

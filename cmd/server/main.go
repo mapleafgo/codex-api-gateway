@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/admin"
+	"github.com/mapleafgo/codex-api-gateway/internal/autostart"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/configwatch"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
@@ -61,6 +62,22 @@ func main() {
 		urlMu    sync.RWMutex
 		adminURL string
 	)
+	// 开机自启 Spec：用当前可执行文件 + 绝对 config 路径，工作目录为二进制所在目录。
+	// Executable 失败时不展示菜单项（托盘仍可用）。
+	var autoSpec *autostart.Spec
+	if exe, err := os.Executable(); err != nil {
+		slog.Debug("无法解析可执行文件路径，隐藏开机自启菜单", "error", err)
+	} else {
+		exe, _ = filepath.EvalSymlinks(exe)
+		autoSpec = &autostart.Spec{
+			AppID:       "codex-api-gateway",
+			DisplayName: "Codex API Gateway",
+			Exec:        exe,
+			Args:        []string{"-config", absConfigPath},
+			WorkDir:     filepath.Dir(exe),
+		}
+	}
+
 	t := tray.New(tray.Config{
 		Tooltip: "codex-api-gateway",
 		OpenURLFunc: func() string {
@@ -68,6 +85,7 @@ func main() {
 			defer urlMu.RUnlock()
 			return adminURL
 		},
+		Autostart: autoSpec,
 	})
 	go t.Run()
 

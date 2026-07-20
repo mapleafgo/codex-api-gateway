@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Codex API Gateway
+Comment=OpenAI Responses → Anthropic 兼容后端本地网关
+Exec=PLACEHOLDER_EXEC
+Path=PLACEHOLDER_PATH
+Icon=PLACEHOLDER_ICON
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+X-KDE-autostart-after=panel

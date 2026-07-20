@@ -50,6 +50,32 @@ Codex 会自动在 `base_url` 后拼接 `/responses` 和 `/models`。**不要把
 
 退出时右键托盘图标选「退出」，或直接关闭托盘进程即可。
 
+### 开机自启（推荐托盘勾选）
+
+托盘菜单提供 **「开机自启」** 勾选项（Linux / Windows / macOS）：
+
+1. 右键托盘图标 → 勾选「开机自启」即写入系统登录自启；
+2. 再点一次取消勾选即关闭。
+
+平台机制：
+
+| 平台 | 注册位置 |
+|------|----------|
+| Linux | `~/.config/autostart/codex-api-gateway.desktop` |
+| Windows | `HKCU\...\CurrentVersion\Run` |
+| macOS | `~/Library/LaunchAgents/codex-api-gateway.plist` |
+
+自启命令为当前可执行文件 + `-config <绝对路径>`，工作目录为二进制所在目录，登录图形会话后自动带上 `DISPLAY`/`WAYLAND_DISPLAY`，托盘「打开」管理页可正常冷启动浏览器。
+
+**不要用** `systemd --user` 无图形环境拉起网关——浏览器冷启动会静默失败。若以前启用过：
+
+```bash
+systemctl --user disable --now codex-api-gateway.service
+```
+
+可选：`task install-autostart` 仍可安装应用菜单快捷方式（兼写 autostart desktop，与托盘开关读写同一文件）。
+
+
 ### 配置 Codex CLI 指向网关
 
 网关启动并配好上游源后，让 Codex CLI 走网关而不是直连 OpenAI。Codex 支持三种等价方式，任选其一。

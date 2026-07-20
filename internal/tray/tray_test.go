@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,67 @@ func TestLogoEmbedded(t *testing.T) {
 		if logoBytes[i] != b {
 			t.Fatalf("logoBytes 不是 PNG（偏移 %d: got %02x want %02x）", i, logoBytes[i], b)
 		}
+	}
+}
+
+// TestHasDesktopDisplay 验证 DISPLAY / WAYLAND_DISPLAY 识别。
+func TestHasDesktopDisplay(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		env  []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"HOME=/tmp"}, false},
+		{[]string{"DISPLAY="}, false},
+		{[]string{"DISPLAY=:0"}, true},
+		{[]string{"WAYLAND_DISPLAY=wayland-0"}, true},
+		{[]string{"DISPLAY=:0", "WAYLAND_DISPLAY=wayland-0"}, true},
+	}
+	for _, tc := range cases {
+		if got := hasDesktopDisplay(tc.env); got != tc.want {
+			t.Errorf("hasDesktopDisplay(%v)=%v want %v", tc.env, got, tc.want)
+		}
+	}
+}
+
+// TestMergeEnv 验证只补齐 base 缺失的键。
+func TestMergeEnv(t *testing.T) {
+	t.Parallel()
+	base := []string{"HOME=/tmp", "PATH=/usr/bin", "DISPLAY=:0"}
+	extras := map[string]string{
+		"DISPLAY":         ":1", // 已有，不覆盖
+		"WAYLAND_DISPLAY": "wayland-0",
+		"XAUTHORITY":      "/tmp/xauth",
+	}
+	got := mergeEnv(base, extras)
+	if got == nil {
+		t.Fatal("mergeEnv 应返回合并结果")
+	}
+	// base 前缀保留
+	if got[0] != "HOME=/tmp" || got[1] != "PATH=/usr/bin" || got[2] != "DISPLAY=:0" {
+		t.Fatalf("base 前缀被破坏: %v", got)
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "WAYLAND_DISPLAY=wayland-0") {
+		t.Fatalf("缺少 WAYLAND_DISPLAY: %v", got)
+	}
+	if !strings.Contains(joined, "XAUTHORITY=/tmp/xauth") {
+		t.Fatalf("缺少 XAUTHORITY: %v", got)
+	}
+	// DISPLAY 不应被覆盖成 :1
+	for _, e := range got {
+		if e == "DISPLAY=:1" {
+			t.Fatal("不应覆盖已有 DISPLAY")
+		}
+	}
+}
+
+// TestWithDesktopSessionEnvSkipsWhenDisplayPresent 已有 DISPLAY 时不改 env。
+func TestWithDesktopSessionEnvSkipsWhenDisplayPresent(t *testing.T) {
+	t.Parallel()
+	base := []string{"HOME=/tmp", "DISPLAY=:0"}
+	if got := withDesktopSessionEnv(base); got != nil {
+		t.Fatalf("已有 DISPLAY 时应返回 nil，实际 %v", got)
 	}
 }

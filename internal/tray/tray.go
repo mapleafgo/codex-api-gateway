@@ -2,7 +2,7 @@
 //
 // 设计要点：
 //   - Run 在独立 goroutine 中调用，通过 Show 立即显示图标，实现"在任何处理前启动托盘"。
-//   - 菜单两项："打开"（打开管理页浏览器）与"退出"（触发优雅关闭回调）。
+//   - 菜单："打开"、可选勾选"开机自启"、"退出"。
 //   - headless 降级：systray 在无图形桌面（无 D-Bus / DISPLAY）下初始化失败时，
 //     自动转为等待 SIGINT/SIGTERM 的信号模式，保证服务可在纯服务器环境运行。
 //   - logo 通过 go:embed 内嵌 assets/logo.png，零外部文件依赖。
@@ -29,6 +29,7 @@ import (
 
 	"github.com/gogpu/systray"
 	"github.com/mapleafgo/codex-api-gateway/assets"
+	"github.com/mapleafgo/codex-api-gateway/internal/autostart"
 )
 
 // logoBytes 从共享 assets 包获取，托盘与管理页 favicon 共用同一份 logo。
@@ -41,6 +42,8 @@ type Config struct {
 	// OpenURLFunc "打开"菜单点击时调用，返回要打开的 http(s) URL；
 	// 返回空串或非 http(s) URL 时记 DEBUG 并跳过。为 nil 时隐藏"打开"项。
 	OpenURLFunc func() string
+	// Autostart 非 nil 时显示「开机自启」勾选菜单；为 OS 自启注册的真相源。
+	Autostart *autostart.Spec
 	// OnQuit "退出"菜单点击或收到 SIGINT/SIGTERM 时调用（同步），
 	// 用于触发优雅关闭（关闭 HTTP server、释放资源）。可为 nil。
 	OnQuit func()
@@ -87,17 +90,9 @@ func (t *Tray) Run() {
 // （异步清理的副作用）或收到信号。
 func (t *Tray) runTray(sigCh chan os.Signal) error {
 	tray := systray.New()
-	menu := systray.NewMenu()
-
-	if t.cfg.OpenURLFunc != nil {
-		menu.Add("打开", t.onOpen)
-		menu.AddSeparator()
-	}
-	menu.Add("退出", t.onQuit)
-
 	tray.SetIcon(logoBytes).
 		SetTooltip(t.cfg.Tooltip).
-		SetMenu(menu)
+		SetMenu(t.buildMenu())
 	tray.Show()
 
 	t.mu.Lock()
@@ -128,6 +123,65 @@ func (t *Tray) runTray(sigCh chan os.Signal) error {
 func (t *Tray) runSignal(sigCh chan os.Signal) {
 	sig := <-sigCh
 	slog.Info("收到信号，准备退出", "signal", sig.String())
+}
+
+// buildMenu 按当前配置与自启状态组装菜单。
+// systray 的 Checkbox 不会在点击后自动翻转 Checked，切换成功后需重建菜单。
+func (t *Tray) buildMenu() *systray.Menu {
+	menu := systray.NewMenu()
+	if t.cfg.OpenURLFunc != nil {
+		menu.Add("打开", t.onOpen)
+		menu.AddSeparator()
+	}
+	if t.cfg.Autostart != nil {
+		enabled := false
+		if on, err := t.cfg.Autostart.IsEnabled(); err != nil {
+			slog.Debug("查询开机自启状态失败", "error", err)
+		} else {
+			enabled = on
+		}
+		menu.AddCheckbox("开机自启", enabled, t.onAutostartToggle)
+		menu.AddSeparator()
+	}
+	menu.Add("退出", t.onQuit)
+	return menu
+}
+
+// refreshMenu 在托盘已 Show 后替换菜单（用于自启勾选刷新）。
+func (t *Tray) refreshMenu() {
+	t.mu.Lock()
+	tr := t.tray
+	t.mu.Unlock()
+	if tr == nil {
+		return
+	}
+	tr.SetMenu(t.buildMenu())
+}
+
+// onAutostartToggle 切换开机自启；失败时保持原勾选并记 WARN。
+func (t *Tray) onAutostartToggle() {
+	if t.cfg.Autostart == nil {
+		return
+	}
+	on, err := t.cfg.Autostart.IsEnabled()
+	if err != nil {
+		slog.Warn("查询开机自启状态失败", "error", err)
+		return
+	}
+	if on {
+		if err := t.cfg.Autostart.Disable(); err != nil {
+			slog.Warn("关闭开机自启失败", "error", err)
+			return
+		}
+		slog.Info("已关闭开机自启")
+	} else {
+		if err := t.cfg.Autostart.Enable(); err != nil {
+			slog.Warn("开启开机自启失败", "error", err)
+			return
+		}
+		slog.Info("已开启开机自启")
+	}
+	t.refreshMenu()
 }
 
 // onOpen 菜单"打开"回调：打开管理页浏览器。
@@ -210,8 +264,13 @@ func (t *Tray) Done() <-chan struct{} { return t.quitCh }
 //     GNOME/systemd 认为是网关子进程而无法完成启动，表现为"托盘点开无
 //     反应，只有浏览器已运行时才能唤起新标签页"。detachProcess 通过平台
 //     特定的 SysProcAttr（Unix/mac 下 Setsid；Windows 下 DETACHED_PROCESS
-//   - CREATE_NEW_PROCESS_GROUP）解决。
-//   - 立即在 goroutine 中 Wait 回收包装器进程（xdg-open / open / rundll32
+//     | CREATE_NEW_PROCESS_GROUP）解决。
+//   - Linux 上若网关进程自身没有 DISPLAY/WAYLAND_DISPLAY（典型：systemd
+//     --user service），浏览器冷启动同样会静默失败。此时从 user manager
+//     的 show-environment 注入桌面会话变量（见 withDesktopSessionEnv）。
+//     推荐用 .desktop 自启（packaging/install-autostart.sh），进程会天然
+//     带着图形会话环境。
+//   - 立刻在 goroutine 中 Wait 回收包装器进程（xdg-open / open / rundll32
 //     都是短命脚本），避免僵尸；真正的浏览器进程已在 detach 后独立运行。
 //   - stdin/stdout/stderr 显式指向 /dev/null，避免包装器把提示信息污染
 //     到网关的 slog handler。
@@ -236,6 +295,9 @@ func openBrowser(rawURL string) error {
 		cmd.Stdin = devnull
 		cmd.Stdout = devnull
 		cmd.Stderr = devnull
+	}
+	if env := withDesktopSessionEnv(os.Environ()); env != nil {
+		cmd.Env = env
 	}
 	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
