@@ -646,6 +646,25 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 				"impact", "非 user_id 的键值对不会传递给上游")
 		}
 	}
+	// prompt_cache_*：Anthropic 用内容 hash + 网关自主 cache_control，不认 OpenAI client key/options/retention。
+	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
+		slog.Warn("忽略 prompt_cache_key（Anthropic 不认客户端 cache key，网关已自主设 cache_control），对应数据被丢弃",
+			"field", "prompt_cache_key",
+			"impact", "不会按 OpenAI prompt_cache_key 分桶缓存；上游缓存由 Anthropic cache_control 控制")
+	}
+	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
+		slog.Warn("忽略 prompt_cache_options（OpenAI options 对 Anthropic 无意义，网关已自主设 cache_control），对应数据被丢弃",
+			"field", "prompt_cache_options",
+			"mode", req.PromptCacheOptions.Mode,
+			"ttl", req.PromptCacheOptions.Ttl,
+			"impact", "不会按 OpenAI prompt_cache_options 调整缓存策略")
+	}
+	if req.PromptCacheRetention != "" {
+		slog.Warn("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同），对应数据被丢弃",
+			"field", "prompt_cache_retention",
+			"value", string(req.PromptCacheRetention),
+			"impact", "不会按 in_memory/24h 调整上游缓存保留；请用网关 cache_control TTL 配置")
+	}
 	// prompt：引用 OpenAI prompt template，网关无服务端模板存储。
 	if req.Prompt.ID != "" {
 		slog.Warn("忽略 prompt（网关无 OpenAI prompt 模板存储能力），对应数据被丢弃",

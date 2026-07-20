@@ -287,6 +287,45 @@ func TestPreviousResponseIDEmitsWarn(t *testing.T) {
 	}
 }
 
+// TestPromptCacheFieldsEmitWarn：OpenAI prompt_cache_* 对 Anthropic 无意义，须 WARN。
+func TestPromptCacheFieldsEmitWarn(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_pc\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","prompt_cache_key":"bucket-1","prompt_cache_options":{"mode":"explicit","ttl":"30m"},"prompt_cache_retention":"24h","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	got := logs.String()
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_options", "prompt_cache_retention"} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("expected WARN for %s, logs:\n%s", field, got)
+		}
+	}
+}
+
 func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
