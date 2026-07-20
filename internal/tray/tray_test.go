@@ -86,16 +86,6 @@ func TestOpenBrowserRejectsNonHTTP(t *testing.T) {
 	}
 }
 
-// TestOpenBrowserAcceptsHTTP 验证 http/https URL 通过校验（不检查能否真启动浏览器）。
-// 仅覆盖 URL 校验分支；exec.Command 在测试环境可能失败，属预期。
-func TestOpenBrowserAcceptsHTTP(t *testing.T) {
-	t.Parallel()
-	for _, raw := range []string{"http://localhost:8383/", "https://example.com/"} {
-		// 调用后只要 URL 校验通过即可；exec 失败也算通过校验分支。
-		_ = openBrowser(raw) // 不断言 err，因为 exec 可能因环境失败
-	}
-}
-
 // TestLogoEmbedded 验证 go:embed 的 logo 非空且是 PNG 魔数。
 func TestLogoEmbedded(t *testing.T) {
 	t.Parallel()
