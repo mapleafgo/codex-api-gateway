@@ -414,9 +414,11 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	}
 	if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
-			// 源已锁定后的 context canceled 几乎都是客户端断开（首字节 timer 已停）。
-			// 这是可控的正常路径，不按上游故障记 WARN/failed。
-			slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
+			// 终态后客户端断开：正常路径，静默。
+			// 流中途断开：INFO 便于排查主动取消，不按上游故障记 WARN。
+			if !sawMessageStop {
+				slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
+			}
 		} else {
 			slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
 		}

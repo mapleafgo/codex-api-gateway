@@ -414,16 +414,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	if execErr == nil || (clientCanceled && conv.Done() && !conv.Failed()) {
 		// 干净成功，或客户端在上游终态之后断开：业务已完成，按 completed 收尾。
-		// 后者对应日志里的「上游流终态 + context canceled」——客户端已收到完整 SSE。
-		if execErr != nil {
-			slog.Info("响应请求完成（客户端在终态后断开）",
-				"response_id", id,
-				"status", model.ResponseStatusCompleted,
-				"source", sourceName,
-				"upstream_events", evCount,
-				"elapsed", time.Since(reqStart).String(),
-				"error", execErr)
-		}
+		// 终态后断开是正常路径，不额外打日志（客户端已收到完整 SSE）。
 		items := conv.OutputItems()
 		var types []string
 		for _, it := range items {
