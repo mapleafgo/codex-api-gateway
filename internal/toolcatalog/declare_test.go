@@ -110,3 +110,59 @@ func TestToInputSchema(t *testing.T) {
 		t.Errorf("input_schema missing type=object: %s", b)
 	}
 }
+
+func TestDeclareWebSearchMapsUserLocation(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{
+		Filters: oairesponses.WebSearchToolFiltersParam{AllowedDomains: []string{"example.com"}},
+		UserLocation: oairesponses.WebSearchToolUserLocationParam{
+			City:     oparam.NewOpt("Shanghai"),
+			Country:  oparam.NewOpt("CN"),
+			Region:   oparam.NewOpt("Shanghai"),
+			Timezone: oparam.NewOpt("Asia/Shanghai"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	ws := decls[0].OfWebSearchTool20250305
+	if ws == nil {
+		t.Fatal("expected WebSearchTool20250305")
+	}
+	if !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Shanghai" {
+		t.Fatalf("user_location.city not mapped: %+v", ws.UserLocation)
+	}
+	if !ws.UserLocation.Country.Valid() || ws.UserLocation.Country.Value != "CN" {
+		t.Fatalf("user_location.country not mapped: %+v", ws.UserLocation)
+	}
+	if len(ws.AllowedDomains) != 1 || ws.AllowedDomains[0] != "example.com" {
+		t.Fatalf("allowed_domains regression: %+v", ws.AllowedDomains)
+	}
+}
+
+func TestDeclareWebSearchSearchContextSizeDoesNotPanic(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{
+		SearchContextSize: oairesponses.WebSearchToolSearchContextSizeHigh,
+	}})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	if decls[0].OfWebSearchTool20250305 == nil {
+		t.Fatal("expected web search tool")
+	}
+}
+
+func TestDeclareWebSearchPreviewMapsUserLocation(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfWebSearchPreview: &oairesponses.WebSearchPreviewToolParam{
+		UserLocation: oairesponses.WebSearchPreviewToolUserLocationParam{
+			City:    oparam.NewOpt("Beijing"),
+			Country: oparam.NewOpt("CN"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Declare: %v", err)
+	}
+	ws := decls[0].OfWebSearchTool20250305
+	if ws == nil || !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Beijing" {
+		t.Fatalf("preview user_location not mapped: %+v", decls)
+	}
+}

@@ -2,6 +2,7 @@ package toolcatalog
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -55,14 +56,54 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		// 其请求定义由 convert.collectMCP 产出 MCPInjection，client 注入。
 		return nil, nil
 	case t.OfWebSearch != nil:
-		return []anthropic.ToolUnionParam{{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
-			AllowedDomains: t.OfWebSearch.Filters.AllowedDomains,
-		}}}, nil
+		ws := t.OfWebSearch
+		if ws.SearchContextSize != "" {
+			slog.Warn("忽略 web_search.search_context_size（Anthropic web_search 无等价字段），对应数据被丢弃",
+				"field", "search_context_size",
+				"value", string(ws.SearchContextSize),
+				"impact", "不会调整 Anthropic 搜索上下文规模")
+		}
+		return []anthropic.ToolUnionParam{
+			webSearchTool(ws.Filters.AllowedDomains, ws.UserLocation.City, ws.UserLocation.Country, ws.UserLocation.Region, ws.UserLocation.Timezone),
+		}, nil
 	case t.OfWebSearchPreview != nil:
-		return []anthropic.ToolUnionParam{{OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{}}}, nil
+		wp := t.OfWebSearchPreview
+		if wp.SearchContextSize != "" {
+			slog.Warn("忽略 web_search_preview.search_context_size（Anthropic web_search 无等价字段），对应数据被丢弃",
+				"field", "search_context_size",
+				"value", string(wp.SearchContextSize),
+				"impact", "不会调整 Anthropic 搜索上下文规模")
+		}
+		return []anthropic.ToolUnionParam{
+			webSearchTool(nil, wp.UserLocation.City, wp.UserLocation.Country, wp.UserLocation.Region, wp.UserLocation.Timezone),
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))
 	}
+}
+
+// webSearchTool 构造 Anthropic web_search_20250305。
+// city/country/region/timezone 来自 OpenAI user_location（两侧均为 param.Opt[string] 但包不同，按值拷贝）。
+// Anthropic 无 search_context_size 字段，调用方对非空值自行 WARN。
+func webSearchTool(allowed []string, city, country, region, timezone oparam.Opt[string]) anthropic.ToolUnionParam {
+	p := &anthropic.WebSearchTool20250305Param{AllowedDomains: allowed}
+	if city.Valid() || country.Valid() || region.Valid() || timezone.Valid() {
+		loc := anthropic.UserLocationParam{}
+		if city.Valid() {
+			loc.City = aparam.NewOpt(city.Value)
+		}
+		if country.Valid() {
+			loc.Country = aparam.NewOpt(country.Value)
+		}
+		if region.Valid() {
+			loc.Region = aparam.NewOpt(region.Value)
+		}
+		if timezone.Valid() {
+			loc.Timezone = aparam.NewOpt(timezone.Value)
+		}
+		p.UserLocation = loc
+	}
+	return anthropic.ToolUnionParam{OfWebSearchTool20250305: p}
 }
 
 // ClientTool 构造一个 Anthropic client tool（ToolParam）。
