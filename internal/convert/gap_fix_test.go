@@ -147,6 +147,21 @@ func TestCodeInterpreterImageOutputWarns(t *testing.T) {
 	if !foundLogs {
 		t.Fatalf("logs should be preserved: %+v", out.Messages)
 	}
+	// image 丢弃后 logs 文本应带可读占位（与真实 logs 共存）。
+	foundPlaceholder := false
+	for _, msg := range out.Messages {
+		for _, b := range msg.Content {
+			if b.OfCodeExecutionToolResult != nil {
+				raw, _ := json.Marshal(b.OfCodeExecutionToolResult)
+				if strings.Contains(string(raw), "image output omitted") {
+					foundPlaceholder = true
+				}
+			}
+		}
+	}
+	if !foundPlaceholder {
+		t.Fatalf("expected image-omitted placeholder in result logs: %+v", out.Messages)
+	}
 	if !strings.Contains(buf.String(), "image") {
 		t.Fatalf("expected WARN for image output, got: %s", buf.String())
 	}

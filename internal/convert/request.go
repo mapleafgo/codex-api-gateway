@@ -780,13 +780,36 @@ func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 }
 
 func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemShellCallParam) error {
-	input := strings.Join(call.Action.Commands, "\n")
-	return appendToolUse(out, call.CallID, "shell", map[string]any{"input": input})
+	input := map[string]any{
+		"input": strings.Join(call.Action.Commands, "\n"),
+	}
+	// Environment 是 local/container 身份线索（非 env map）；只记 type，不 dump 整 union。
+	switch {
+	case call.Environment.OfLocal != nil:
+		input["environment_type"] = "local"
+	case call.Environment.OfContainerReference != nil:
+		input["environment_type"] = "container_reference"
+	}
+	return appendToolUse(out, call.CallID, "shell", input)
 }
 
 func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemLocalShellCallParam) error {
-	input := strings.Join(call.Action.Command, " ")
-	return appendToolUse(out, call.CallID, "shell", map[string]any{"input": input})
+	input := map[string]any{
+		"input": strings.Join(call.Action.Command, " "),
+	}
+	if len(call.Action.Env) > 0 {
+		input["env"] = call.Action.Env
+	}
+	if call.Action.WorkingDirectory.Valid() && call.Action.WorkingDirectory.Value != "" {
+		input["working_directory"] = call.Action.WorkingDirectory.Value
+	}
+	if call.Action.TimeoutMs.Valid() {
+		input["timeout_ms"] = call.Action.TimeoutMs.Value
+	}
+	if call.Action.User.Valid() && call.Action.User.Value != "" {
+		input["user"] = call.Action.User.Value
+	}
+	return appendToolUse(out, call.CallID, "shell", input)
 }
 
 func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemApplyPatchCallParam) error {
@@ -1134,10 +1157,12 @@ func codeInterpreterLogs(outputs []oairesponses.ResponseCodeInterpreterToolCallO
 			parts = append(parts, o.OfLogs.Logs)
 		} else if o.OfImage != nil {
 			// image 输出无 Anthropic code_execution_result 等价字段，丢弃 + WARN。
+			// URL 仅进 WARN；logs 放简短占位，避免空 result 被误读为「无输出」。
 			url := o.OfImage.URL
 			slog.Warn("丢弃 code_interpreter_call 的 image 输出（Anthropic code_execution 无等价字段），对应数据被丢弃",
 				"url", url,
 				"impact", "图片不会出现在 code_execution_tool_result 中")
+			parts = append(parts, "[code_interpreter image output omitted: no Anthropic equivalent]")
 		}
 	}
 	return strings.Join(parts, "\n")

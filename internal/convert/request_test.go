@@ -701,6 +701,97 @@ func TestLocalShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 	}
 }
 
+func TestLocalShellCallPreservesEnvInToolUseInput(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfLocalShellCall: &oairesponses.ResponseInputItemLocalShellCallParam{
+					ID:     "local_shell_1",
+					CallID: "call_local_shell",
+					Action: oairesponses.ResponseInputItemLocalShellCallActionParam{
+						Command:          []string{"echo", "hi"},
+						Env:              map[string]string{"FOO": "bar"},
+						WorkingDirectory: oparam.NewOpt("/tmp"),
+						TimeoutMs:        oparam.NewOpt(int64(5000)),
+						User:             oparam.NewOpt("runner"),
+					},
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolUse := out.Messages[0].Content[0].OfToolUse
+	if toolUse == nil || toolUse.Name != "shell" {
+		t.Fatalf("expected shell tool_use: %+v", out.Messages[0].Content[0])
+	}
+	in, ok := toolUse.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("input type %T", toolUse.Input)
+	}
+	if got := fmt.Sprint(in["input"]); !strings.Contains(got, "echo hi") {
+		t.Fatalf("command text lost: %#v", in)
+	}
+	env, _ := in["env"].(map[string]string)
+	if env == nil {
+		// JSON round-trip may produce map[string]any
+		if raw, ok := in["env"].(map[string]any); ok {
+			if raw["FOO"] != "bar" {
+				t.Fatalf("env FOO lost: %#v", raw)
+			}
+		} else {
+			t.Fatalf("env missing: %#v", in)
+		}
+	} else if env["FOO"] != "bar" {
+		t.Fatalf("env FOO lost: %#v", env)
+	}
+	if in["working_directory"] != "/tmp" {
+		t.Fatalf("working_directory: %#v", in["working_directory"])
+	}
+	if fmt.Sprint(in["timeout_ms"]) != "5000" {
+		t.Fatalf("timeout_ms: %#v", in["timeout_ms"])
+	}
+	if in["user"] != "runner" {
+		t.Fatalf("user: %#v", in["user"])
+	}
+}
+
+func TestShellCallRecordsEnvironmentType(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfShellCall: &oairesponses.ResponseInputItemShellCallParam{
+					CallID: "call_shell",
+					Action: oairesponses.ResponseInputItemShellCallActionParam{
+						Commands: []string{"ls"},
+					},
+					Environment: oairesponses.ResponseInputItemShellCallEnvironmentUnionParam{
+						OfLocal: &oairesponses.LocalEnvironmentParam{},
+					},
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, ok := out.Messages[0].Content[0].OfToolUse.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("input type %T", out.Messages[0].Content[0].OfToolUse.Input)
+	}
+	if in["environment_type"] != "local" {
+		t.Fatalf("environment_type: %#v", in["environment_type"])
+	}
+	if fmt.Sprint(in["input"]) != "ls" {
+		t.Fatalf("input text: %#v", in["input"])
+	}
+}
+
 func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
 	tests := []struct {
 		name      string
