@@ -163,3 +163,71 @@ func TestEnsureToolUsePairedServerToolUnaffected(t *testing.T) {
 		t.Errorf("server_tool_use + code_execution_tool_result pair missing: %+v", out.Messages)
 	}
 }
+
+// TestCoalesceUserAdjacentBeforeToolResult 复现日志中的 400 场景：
+// Codex 回灌的 input 顺序是「user message → function_call → user message → function_call_output」，
+// 转换后本会得到 user / assistant(tool_use) / user(text) / user(tool_result) 的排列，
+// Grok 兼容后端严格要求 assistant(tool_use) 之后立刻是 user(tool_result)，
+// 因此触发 "messages[3] 必须是包含 tool_result 的 user 消息" 400。
+// 合并策略把连续 user 合成一条既含 text 又含 tool_result 的 user message，通过。
+func TestCoalesceUserAdjacentBeforeToolResult(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"start"}]},
+		{"type":"function_call","call_id":"c1","name":"tool","arguments":"{}"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"more context"}]},
+		{"type":"function_call_output","call_id":"c1","output":"ok"}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 应当交替：user / assistant(tool_use) / user(text+tool_result)。
+	if len(out.Messages) != 3 {
+		t.Fatalf("expected 3 alternating messages, got %d: %+v", len(out.Messages), out.Messages)
+	}
+	if out.Messages[0].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("msg[0] should be user, got %s", out.Messages[0].Role)
+	}
+	if out.Messages[1].Role != anthropic.MessageParamRoleAssistant {
+		t.Fatalf("msg[1] should be assistant, got %s", out.Messages[1].Role)
+	}
+	last := out.Messages[2]
+	if last.Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("msg[2] should be user, got %s", last.Role)
+	}
+	hasText, hasResult := false, false
+	for _, b := range last.Content {
+		if b.OfText != nil {
+			hasText = true
+		}
+		if b.OfToolResult != nil && b.OfToolResult.ToolUseID == "c1" {
+			hasResult = true
+		}
+	}
+	if !hasText || !hasResult {
+		t.Fatalf("merged user should contain text+tool_result, got %+v", last.Content)
+	}
+}
+
+// TestCoalesceAssistantAdjacent：连续两条 assistant（如 reasoning 之后紧跟 assistant text）
+// 应合并为单条 assistant，保留原 block 顺序。
+func TestCoalesceAssistantAdjacent(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+		{"type":"reasoning","id":"r1","encrypted_content":"sig","summary":[{"type":"summary_text","text":"think"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantCount := 0
+	for _, m := range out.Messages {
+		if m.Role == anthropic.MessageParamRoleAssistant {
+			assistantCount++
+		}
+	}
+	if assistantCount != 1 {
+		t.Fatalf("expected a single merged assistant message, got %d: %+v", assistantCount, out.Messages)
+	}
+}

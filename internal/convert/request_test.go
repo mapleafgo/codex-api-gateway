@@ -304,6 +304,107 @@ func TestOnlyLatestReasoningPreservedAsThinking(t *testing.T) {
 	}
 }
 
+// TestAssistantOutputTextHistoryPreserved 验证 Codex 回灌的 assistant
+// content[].type=output_text 能恢复并转成 Anthropic assistant text。
+// 这是"模型看不到上一轮对话"丢上下文的根因回归：openai-go EasyInputMessage
+// content 列表不认 output_text，未恢复时正文被静默清空。
+func TestAssistantOutputTextHistoryPreserved(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"写大纲"}]},
+		{"type":"message","role":"assistant","id":"msg_1","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"一、开场\n二、ERP 系统\n三、物联网架构平台"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"展开第三章"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"第三章：Agent 智能体服务"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"你看不到上一轮吗"}]}
+	],"stream":true}`)
+
+	// Decode 后 OfMessage.content 必须已恢复（不是空 list）。
+	asst := req.Input.OfInputItemList[1]
+	if asst.OfMessage == nil {
+		t.Fatal("assistant item not decoded as OfMessage")
+	}
+	if n := len(asst.OfMessage.Content.OfInputItemContentList); n != 1 {
+		t.Fatalf("assistant content parts = %d, want 1 (output_text restored)", n)
+	}
+	part := asst.OfMessage.Content.OfInputItemContentList[0]
+	if part.OfInputText == nil || !strings.Contains(part.OfInputText.Text, "ERP 系统") {
+		t.Fatalf("output_text not restored into input_text: %+v", part)
+	}
+
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 期望 user / assistant / user / assistant / user，assistant 正文非空。
+	if len(out.Messages) != 5 {
+		t.Fatalf("want 5 messages, got %d: %+v", len(out.Messages), out.Messages)
+	}
+	a1 := out.Messages[1]
+	if a1.Role != anthropic.MessageParamRoleAssistant || len(a1.Content) == 0 || a1.Content[0].OfText == nil {
+		t.Fatalf("assistant[1] missing text: %+v", a1)
+	}
+	if !strings.Contains(a1.Content[0].OfText.Text, "物联网架构平台") {
+		t.Fatalf("assistant history text lost: %q", a1.Content[0].OfText.Text)
+	}
+	a2 := out.Messages[3]
+	if a2.Content[0].OfText == nil || !strings.Contains(a2.Content[0].OfText.Text, "Agent 智能体") {
+		t.Fatalf("second assistant history text lost: %+v", a2)
+	}
+}
+
+// TestAssistantOutputTextWithToolLoop 覆盖"历史 assistant 文本 + tool 循环"
+// 的真实 Codex 回灌形状：中间夹 function_call / function_call_output。
+func TestAssistantOutputTextWithToolLoop(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"改 slides"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"先看仓库结构"}]},
+		{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+		{"type":"function_call_output","call_id":"c1","output":"slides.md"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"看到 slides.md 了"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"继续"}]}
+	],"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asstTexts []string
+	for _, msg := range out.Messages {
+		if msg.Role != anthropic.MessageParamRoleAssistant {
+			continue
+		}
+		for _, b := range msg.Content {
+			if b.OfText != nil && b.OfText.Text != "" {
+				asstTexts = append(asstTexts, b.OfText.Text)
+			}
+		}
+	}
+	if len(asstTexts) < 2 {
+		t.Fatalf("want >=2 non-empty assistant texts, got %v (messages=%+v)", asstTexts, out.Messages)
+	}
+	joined := strings.Join(asstTexts, "\n")
+	if !strings.Contains(joined, "先看仓库结构") || !strings.Contains(joined, "看到 slides.md") {
+		t.Fatalf("assistant output_text history lost in tool loop: %v", asstTexts)
+	}
+}
+
+// TestAssistantRefusalHistoryPreserved 验证 output refusal part 折成可见文本，
+// 不至于把整条 assistant 历史抹成空消息。
+func TestAssistantRefusalHistoryPreserved(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
+		{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I cannot help with that."}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) < 2 || out.Messages[1].Content[0].OfText == nil {
+		t.Fatalf("refusal not converted: %+v", out.Messages)
+	}
+	if !strings.Contains(out.Messages[1].Content[0].OfText.Text, "I cannot help with that.") {
+		t.Fatalf("refusal text lost: %q", out.Messages[1].Content[0].OfText.Text)
+	}
+}
+
 func TestToolCallsConvert(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search x"}]},{"type":"function_call","call_id":"c1","name":"search","arguments":"{\"q\":\"x\"}"},{"type":"function_call_output","call_id":"c1","output":"result-x"}],"tools":[{"type":"function","name":"search","parameters":{"type":"object"}}],"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})

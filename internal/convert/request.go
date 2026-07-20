@@ -27,6 +27,11 @@ func DecodeResponseNewParams(data []byte) (*oairesponses.ResponseNewParams, erro
 		return nil, err
 	}
 	restoreToolChoiceFromRaw(data, &req)
+	// Codex 回灌历史 assistant 消息的 content 使用 output_text（与 Responses 输出
+	// item 同形）。openai-go 把 type=message 统一解到 EasyInputMessage，其 content
+	// 列表只认 input_text/input_image/input_file，output_text 被静默丢弃 → 上游
+	// 收到空 assistant 消息 → 模型表现为"丢上下文"。从 raw JSON 恢复。
+	restoreAssistantOutputTextFromRaw(data, &req)
 	return &req, nil
 }
 
@@ -75,6 +80,141 @@ func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) 
 			}
 		}
 	}
+}
+
+// restoreAssistantOutputTextFromRaw 把 input 历史里 assistant message 的
+// content[].type=output_text 归一成 EasyInputMessage 可承载的 input_text。
+//
+// 根因：openai-go 的 ResponseInputItemUnion 对 type=message 优先解成
+// EasyInputMessage；其 content 列表 discriminator 只注册 input_text /
+// input_image / input_file。Codex HTTP 回灌的 assistant 历史却是输出形态
+// （output_text，与 stream 下发的 message item 同形），解完后 content 变空
+// 列表，appendMessage 再填一个空 text block——角色骨架还在，正文全丢。
+// 真实会话（半年汇报 PPT）里模型反复说"看不到上一轮"即此症状。
+//
+// 策略：仅在 raw 含 output_text/refusal 时改写；已是 input_text 的路径不动。
+// 归一到 input_text 后复用既有 appendMessage，无需另开 OfOutputMessage 分支
+// （实测带 id/status/phase 时 SDK 仍落 OfMessage，OfOutputMessage 基本到不了）。
+func restoreAssistantOutputTextFromRaw(data []byte, req *oairesponses.ResponseNewParams) {
+	var raw struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil || len(raw.Input) == 0 {
+		return
+	}
+	// input 也可以是纯 string，与 OfInputItemList 无关。
+	if raw.Input[0] != '[' {
+		return
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(raw.Input, &rawItems); err != nil {
+		return
+	}
+	if len(rawItems) != len(req.Input.OfInputItemList) {
+		return
+	}
+	restored := 0
+	for i, rawItem := range rawItems {
+		if restoreOneAssistantOutputText(rawItem, &req.Input.OfInputItemList[i]) {
+			restored++
+		}
+	}
+	if restored > 0 {
+		slog.Debug("恢复历史 assistant output_text 为 input_text",
+			"restored_messages", restored,
+			"input_items", len(rawItems))
+	}
+}
+
+// restoreOneAssistantOutputText 处理单条 input item。返回是否执行了恢复。
+func restoreOneAssistantOutputText(rawItem json.RawMessage, item *oairesponses.ResponseInputItemUnionParam) bool {
+	var probe struct {
+		Type    string          `json:"type"`
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(rawItem, &probe); err != nil {
+		return false
+	}
+	// type 缺省时按 message 处理（部分客户端省略）；明确非 message 则跳过。
+	if probe.Type != "" && probe.Type != "message" {
+		return false
+	}
+	// 仅 assistant 历史用 output_text；user/system/developer 走 input_text。
+	if probe.Role != "" && probe.Role != "assistant" {
+		return false
+	}
+	if len(probe.Content) == 0 || probe.Content[0] != '[' {
+		return false
+	}
+	var parts []struct {
+		Type    string `json:"type"`
+		Text    string `json:"text"`
+		Refusal string `json:"refusal"`
+	}
+	if err := json.Unmarshal(probe.Content, &parts); err != nil || len(parts) == 0 {
+		return false
+	}
+	need := false
+	for _, p := range parts {
+		if p.Type == "output_text" || p.Type == "refusal" {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return false
+	}
+
+	list := make(oairesponses.ResponseInputMessageContentListParam, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case "output_text", "input_text":
+			if p.Text == "" && p.Type == "output_text" {
+				// 空 output_text 仍占位，保持与原 content 等长，避免结构漂移。
+			}
+			list = append(list, oairesponses.ResponseInputContentUnionParam{
+				OfInputText: &oairesponses.ResponseInputTextParam{Text: p.Text},
+			})
+		case "refusal":
+			// refusal 无 input 侧等价；折成可见文本保留语义，避免整段对话被抹掉。
+			text := p.Refusal
+			if text == "" {
+				text = p.Text
+			}
+			if text == "" {
+				text = "[refusal]"
+			}
+			list = append(list, oairesponses.ResponseInputContentUnionParam{
+				OfInputText: &oairesponses.ResponseInputTextParam{Text: text},
+			})
+		default:
+			// input_image / input_file 等若夹在 assistant content 里，此处不重建
+			// （SDK 若已解出则保留在 OfMessage；本恢复只补文本）。output_text
+			// 场景下 Codex 实际几乎只发文本 part。
+		}
+	}
+	if len(list) == 0 {
+		return false
+	}
+
+	if item.OfMessage == nil {
+		role := oairesponses.EasyInputMessageRoleAssistant
+		if probe.Role != "" {
+			role = oairesponses.EasyInputMessageRole(probe.Role)
+		}
+		item.OfMessage = &oairesponses.EasyInputMessageParam{
+			Role: role,
+			Type: oairesponses.EasyInputMessageTypeMessage,
+		}
+	}
+	// 覆盖被 SDK 解空的 content；保留 Role/Phase 等已解字段。
+	item.OfMessage.Content = oairesponses.EasyInputMessageContentUnionParam{
+		OfInputItemContentList: list,
+	}
+	// 若 SDK 误落到 OfOutputMessage（当前未观察到），清掉避免 appendItem 双路径。
+	item.OfOutputMessage = nil
+	return true
 }
 
 func validateNamespaceToolChildren(data []byte) error {
@@ -180,10 +320,20 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	if err := convertToolChoice(out, req); err != nil {
 		return nil, nil, err
 	}
+	// Codex 回灌历史或多轮 message item 可能产生连续同 role 的 Anthropic 消息
+	// （例如多条 user 输入、reasoning + assistant text 组合成两条 assistant）。
+	// Anthropic 官方后端会内部宽容合并，但部分兼容后端（如 Grok）以
+	// "messages[N] 必须是包含 tool_result 的 user 消息" 400 拒绝整请求：
+	// 它按位置严格校验 assistant(tool_use) → user(tool_result) 的交替顺序，
+	// 连续同 role 会破坏这个位置约束。这里在 tool_use 配对补齐之前先合并。
+	coalesceSameRoleMessages(out)
 	// Codex 回灌历史时若带 tool call 却漏了对应 output（中断后 resume / failover 丢历史 /
 	// 客户端 bug），会产出无配对的 tool_use，Anthropic 以 "tool_use without tool_result"
 	// 400 拒绝整请求。在 messages 定稿后、设 cache 断点前补占位 result 降级。
 	ensureToolUsePaired(out)
+	// ensureToolUsePaired 补占位时可能在 tail 追加一条新的 user 消息，
+	// 若原本末尾就是 user，会再次产生连续 user。再合并一次保证最终交替。
+	coalesceSameRoleMessages(out)
 	applyAnthropicCacheControl(out, cfg)
 
 	mcp, err := collectMCP(req)
@@ -286,6 +436,11 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfMessage != nil {
 		return appendMessage(out, sysParts, item.OfMessage)
 	}
+	// 防御：若未来 SDK 把带 id/status 的 assistant message 解到 OfOutputMessage，
+	// 也要转成 Anthropic assistant text，避免静默跳过。
+	if item.OfOutputMessage != nil {
+		return appendOutputMessage(out, item.OfOutputMessage)
+	}
 	if item.OfReasoning != nil {
 		return appendReasoning(out, item.OfReasoning)
 	}
@@ -384,6 +539,36 @@ func unknownInputItemPart(item *oairesponses.ResponseInputItemUnionParam) (instr
 		role: model.RoleSystem,
 		text: fmt.Sprintf("<openai_input_item type=\"%s\">\n%s\n</openai_input_item>", typ, raw),
 	}, true
+}
+
+// appendOutputMessage 把 ResponseOutputMessage（assistant 输出形态）转成
+// Anthropic assistant text。正常路径下 restoreAssistantOutputTextFromRaw 已把
+// output_text 归一进 OfMessage，本函数是 SDK 若改 discriminator 后的兜底。
+func appendOutputMessage(out *anthropic.MessageNewParams, m *oairesponses.ResponseOutputMessageParam) error {
+	var blocks []anthropic.ContentBlockParamUnion
+	for _, cp := range m.Content {
+		if cp.OfOutputText != nil {
+			blocks = append(blocks, anthropic.ContentBlockParamUnion{
+				OfText: &anthropic.TextBlockParam{Text: cp.OfOutputText.Text},
+			})
+		} else if cp.OfRefusal != nil {
+			text := cp.OfRefusal.Refusal
+			if text == "" {
+				text = "[refusal]"
+			}
+			blocks = append(blocks, anthropic.ContentBlockParamUnion{
+				OfText: &anthropic.TextBlockParam{Text: text},
+			})
+		}
+	}
+	if len(blocks) == 0 {
+		blocks = []anthropic.ContentBlockParamUnion{{OfText: &anthropic.TextBlockParam{}}}
+	}
+	out.Messages = append(out.Messages, anthropic.MessageParam{
+		Role:    anthropic.MessageParamRoleAssistant,
+		Content: blocks,
+	})
+	return nil
 }
 
 func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart, m *oairesponses.EasyInputMessageParam) error {
@@ -757,6 +942,39 @@ func placeholderToolResults(ids []string) []anthropic.ContentBlockParamUnion {
 		})
 	}
 	return out
+}
+
+// coalesceSameRoleMessages 合并相邻同 role 的 Anthropic 消息，保证最终 messages 严格
+// 按 user / assistant 交替排列。触发场景：
+//   - Codex 回灌历史时出现连续两条 user message（例如 apply_patch_call_output 之后紧跟
+//     用户 message，或多轮工具中断后累积的 user 输入）。
+//   - reasoning + text output 拆成的两条 assistant message。
+//
+// Anthropic 官方后端会宽容合并，但部分兼容后端（如 Grok）按位置严格校验
+// assistant(tool_use) → user(tool_result) 的交替顺序，连续同 role 会 400。
+// 合并策略：把后一条的 content 追加到前一条尾部，保持原始 block 顺序不变。
+// 若合并后触发去重（例如两条完全一致的空 assistant 占位）不做额外处理，
+// 由后续 ensureToolUsePaired / cache_control 逻辑自行消化。
+func coalesceSameRoleMessages(out *anthropic.MessageNewParams) {
+	if len(out.Messages) < 2 {
+		return
+	}
+	merged := make([]anthropic.MessageParam, 0, len(out.Messages))
+	mergedCount := 0
+	for i := range out.Messages {
+		cur := out.Messages[i]
+		if len(merged) > 0 && merged[len(merged)-1].Role == cur.Role {
+			merged[len(merged)-1].Content = append(merged[len(merged)-1].Content, cur.Content...)
+			mergedCount++
+			continue
+		}
+		merged = append(merged, cur)
+	}
+	if mergedCount == 0 {
+		return
+	}
+	out.Messages = merged
+	slog.Debug("合并相邻同 role 的 Anthropic messages", "merged", mergedCount, "messages", len(out.Messages))
 }
 
 // ensureToolUsePaired 扫描产出 messages，为没有配对 tool_result 的 tool_use 补一个
