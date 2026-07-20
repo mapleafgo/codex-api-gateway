@@ -183,3 +183,27 @@ func TestDeclareWebSearchPreviewMapsUserLocation(t *testing.T) {
 		t.Fatalf("preview user_location not mapped: %+v", decls)
 	}
 }
+
+func TestDeclareCodeInterpreterContainerWarns(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	decls, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{
+		Container: oairesponses.ToolCodeInterpreterContainerUnionParam{
+			OfCodeInterpreterToolAuto: &oairesponses.ToolCodeInterpreterContainerCodeInterpreterContainerAutoParam{
+				FileIDs: []string{"file_1"},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decls[0].OfCodeExecutionTool20250522 == nil {
+		t.Fatal("expected code_execution tool")
+	}
+	if !strings.Contains(logs.String(), "container") {
+		t.Fatalf("expected container WARN, logs: %s", logs.String())
+	}
+}

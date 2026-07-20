@@ -534,23 +534,19 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return appendLocalShellCall(out, item.OfLocalShellCall)
 	}
 	if item.OfLocalShellCallOutput != nil {
-		return appendToolResult(out, item.OfLocalShellCallOutput.ID, item.OfLocalShellCallOutput.Output)
+		return appendToolResult(out, item.OfLocalShellCallOutput.ID, localShellOutputText(item.OfLocalShellCallOutput))
 	}
 	if item.OfShellCall != nil {
 		return appendShellCall(out, item.OfShellCall)
 	}
 	if item.OfShellCallOutput != nil {
-		return appendToolResult(out, item.OfShellCallOutput.CallID, shellOutputText(item.OfShellCallOutput.Output))
+		return appendToolResult(out, item.OfShellCallOutput.CallID, shellCallOutputText(item.OfShellCallOutput))
 	}
 	if item.OfApplyPatchCall != nil {
 		return appendApplyPatchCall(out, item.OfApplyPatchCall)
 	}
 	if item.OfApplyPatchCallOutput != nil {
-		output := ""
-		if item.OfApplyPatchCallOutput.Output.Valid() {
-			output = item.OfApplyPatchCallOutput.Output.Value
-		}
-		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, output)
+		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, applyPatchOutputText(item.OfApplyPatchCallOutput))
 	}
 	if item.OfCompaction != nil {
 		*sysParts = append(*sysParts, instructionPart{
@@ -790,6 +786,16 @@ func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.Respons
 	case call.Environment.OfContainerReference != nil:
 		input["environment_type"] = "container_reference"
 	}
+	if call.Action.TimeoutMs.Valid() {
+		input["timeout_ms"] = call.Action.TimeoutMs.Value
+	}
+	if call.Action.MaxOutputLength.Valid() {
+		input["max_output_length"] = call.Action.MaxOutputLength.Value
+	}
+	if call.Status != "" {
+		input["status"] = call.Status
+	}
+	putCallerMeta(input, call.Caller.OfDirect != nil, call.Caller.OfProgram != nil, call.Caller.GetCallerID())
 	return appendToolUse(out, call.CallID, "shell", input)
 }
 
@@ -808,6 +814,9 @@ func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	}
 	if call.Action.User.Valid() && call.Action.User.Value != "" {
 		input["user"] = call.Action.User.Value
+	}
+	if call.Status != "" {
+		input["status"] = call.Status
 	}
 	return appendToolUse(out, call.CallID, "shell", input)
 }
@@ -835,11 +844,28 @@ func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	default:
 		return fmt.Errorf("apply_patch call %q has an invalid operation", call.CallID)
 	}
+	if call.Status != "" {
+		input["status"] = call.Status
+	}
+	putCallerMeta(input, call.Caller.OfDirect != nil, call.Caller.OfProgram != nil, call.Caller.GetCallerID())
 	return appendToolUse(out, call.CallID, "apply_patch", input)
 }
 
+// putCallerMeta 把 OpenAI tool call 的 caller 身份折进 tool_use.input（无 Anthropic 等价字段）。
+func putCallerMeta(input map[string]any, direct, program bool, programCallerID *string) {
+	switch {
+	case direct:
+		input["caller_type"] = "direct"
+	case program:
+		input["caller_type"] = "program"
+		if programCallerID != nil && *programCallerID != "" {
+			input["caller_id"] = *programCallerID
+		}
+	}
+}
+
 func shellOutputText(parts []oairesponses.ResponseFunctionShellCallOutputContentParam) string {
-	output := make([]string, 0, len(parts)*2)
+	output := make([]string, 0, len(parts)*3)
 	for _, part := range parts {
 		if part.Stdout != "" {
 			output = append(output, part.Stdout)
@@ -847,8 +873,54 @@ func shellOutputText(parts []oairesponses.ResponseFunctionShellCallOutputContent
 		if part.Stderr != "" {
 			output = append(output, part.Stderr)
 		}
+		// outcome 无 Anthropic tool_result 结构字段，折进文本保留退出/超时线索。
+		if part.Outcome.OfExit != nil {
+			output = append(output, fmt.Sprintf("[exit_code=%d]", part.Outcome.OfExit.ExitCode))
+		} else if part.Outcome.OfTimeout != nil {
+			output = append(output, "[timeout]")
+		}
 	}
 	return strings.Join(output, "\n")
+}
+
+// shellCallOutputText 拼 shell_call_output 全文：status/max_output_length 线索 + stdout/stderr/outcome。
+func shellCallOutputText(out *oairesponses.ResponseInputItemShellCallOutputParam) string {
+	var parts []string
+	if out.Status != "" {
+		parts = append(parts, "[status="+out.Status+"]")
+	}
+	if out.MaxOutputLength.Valid() {
+		parts = append(parts, fmt.Sprintf("[max_output_length=%d]", out.MaxOutputLength.Value))
+	}
+	body := shellOutputText(out.Output)
+	if body != "" {
+		parts = append(parts, body)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// applyPatchOutputText 拼 apply_patch_call_output：status + 可选日志。
+func applyPatchOutputText(out *oairesponses.ResponseInputItemApplyPatchCallOutputParam) string {
+	var parts []string
+	if out.Status != "" {
+		parts = append(parts, "[status="+out.Status+"]")
+	}
+	if out.Output.Valid() && out.Output.Value != "" {
+		parts = append(parts, out.Output.Value)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// localShellOutputText 拼 local_shell_call_output。
+func localShellOutputText(out *oairesponses.ResponseInputItemLocalShellCallOutputParam) string {
+	var parts []string
+	if out.Status != "" {
+		parts = append(parts, "[status="+out.Status+"]")
+	}
+	if out.Output != "" {
+		parts = append(parts, out.Output)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) error {

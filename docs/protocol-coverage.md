@@ -73,12 +73,28 @@
 - **不扩大 fail-fast 范围**去「假装严格」；已知无等价继续 WARN/drop 或 fail-fast 与矩阵一致。
 - 每改一行矩阵状态，同步本文件变更记录日期子弹。
 
-### 6. 本批打磨范围（有序）
+### 6. 收口内可打磨项（已做尽）
 
-1. web_search：`user_location` 映射；`search_context_size` 明确 WARN（不可映射）。
-2. shell / local_shell **历史 item**：env / cwd / timeout 等折入 `tool_use` input。
-3. code_interpreter 历史 image 输出：丢弃语义不变，日志与 logs 文本更清晰。
-4. MCP：文档确认 `allowed_tools` **字符串 allowlist 已支持**；filter 形态保持 WARN + 全启用（本批不展开 filter AST）。
+下列在 **不扩产品边界、不假映射** 前提下已做到可折入的最大集：
+
+1. web_search：`user_location` 映射；`search_context_size` WARN + 忽略（无 Anthropic 字段）。
+2. shell / local_shell / apply_patch **历史**：env、cwd、timeout、limits、status、caller、exit/timeout outcome 折入 `tool_use.input` 或 tool_result 文本。
+3. code_interpreter：image 丢弃 + logs 占位；声明侧 container **WARN + 丢弃**。
+4. MCP：string allowlist 已支持；filter / 审批 / 非 Bearer headers 保持降级（硬限制）。
+
+### 7. 收口内不再打磨（硬限制 / 协议天花板）
+
+| 项 | 原因 |
+|---|---|
+| `search_context_size` 真映射 | Anthropic web_search 无字段 |
+| code container / 生成文件 URL / image 真映射 | Anthropic code_execution 无等价 |
+| MCP 审批协议 / filter AST / 任意 headers | 后端无能力或成本/边界外 |
+| custom `format` grammar 完整保留 | Anthropic custom tool 无 OpenAI grammar 等价 |
+| structured output 非 tool 模拟 | 无原生 json_schema 强制 |
+| reasoning.effort 精确 token | OpenAI effort 非 budget；固定表近似已足够 |
+| system/developer 中的 image | Anthropic system 仅文本 |
+| 出站专用 `shell_call`/`apply_patch_call` item type | Codex 消费 `custom_tool_call` 已验证 |
+| SSE citation 非 web 类 → file_citation | OpenAI 无更细等价 |
 
 ## 变更记录
 
@@ -213,12 +229,12 @@
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；image 输出丢弃 + WARN，logs 可含 `image output omitted` 占位 |
-| `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user` 折入 tool_use.input；无 Anthropic 原生 shell env 协议 |
-| `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本 tool_result（item.id 作 tool_use_id） |
-| `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；`environment_type`（local/container_reference）可选；caller/limits 仍未映射 |
-| `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
-| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete 映射为 JSON object，保留 `operation`、`path` 与 create/update 的 `diff`；调用者元数据未映射 |
-| `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
+| `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user`/`status` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
+| `local_shell_call_output` | user `tool_result` | `lossy_supported` | 文本 tool_result；可前缀 `[status=…]`；item.id 作 tool_use_id |
+| `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `environment_type` + `timeout_ms`/`max_output_length`/`status`/`caller_type`/`caller_id` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
+| `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr + `[status]`/`[max_output_length]`/`[exit_code]`/`[timeout]` 折文本；caller 不映射 |
+| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete → JSON（operation/path/diff）+ `status`/`caller_type`/`caller_id` 折入 input |
+| `apply_patch_call_output` | user `tool_result` | `lossy_supported` | `[status=…]` + 可选日志文本；caller 不映射 |
 | `mcp_list_tools` | developer marker | `lossy_supported` | 无 Anthropic 列表块；折成 `<mcp_list_tools>` developer 文本（server + tool names + error） |
 | `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
@@ -253,11 +269,11 @@
 | `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
 | `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | `allowed_tools: string[]` → toolset allowlist（已实现）；`allowed_tools: filter` → WARN + 全启用；`require_approval≠never` 降级 never + WARN；headers 仅 Bearer → `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需 beta `mcp-client-2025-11-20` |
-| `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明为 `code_execution_20250522` server tool；`container`（file_ids / memory_limit / 显式 container）不可转换，请求侧显式 container 被丢弃 |
+| `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明 `code_execution_20250522`；`container`（id/auto file_ids/memory）**WARN + 丢弃**（Anthropic 无 container） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
-| `local_shell` | client custom tool `shell` | `lossy_supported` | 声明为 freeform `shell`；历史 `local_shell_call` 的 env/cwd/timeout/user 折入 tool_use.input（见 Input Item） |
-| `shell` | client custom tool `shell` | `lossy_supported` | 声明为 freeform `shell`；历史 `shell_call` 可记 `environment_type`；container/skills 细节仍 lossy |
+| `local_shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
+| `shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史 limits/caller/environment_type 折入 input（见 Input Item）；skills 细节仍 lossy |
 | `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
 | `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`，其他类型明确转换失败 |
 | `tool_search` | client tool `tool_search` | `supported` | 当前按普通 tool 暴露 |

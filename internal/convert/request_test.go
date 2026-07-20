@@ -834,6 +834,136 @@ func TestShellCallRecordsEnvironmentType(t *testing.T) {
 	}
 }
 
+func TestShellCallPreservesLimitsAndCaller(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfShellCall: &oairesponses.ResponseInputItemShellCallParam{
+					CallID: "call_shell",
+					Status: "completed",
+					Action: oairesponses.ResponseInputItemShellCallActionParam{
+						Commands:        []string{"ls", "-la"},
+						TimeoutMs:       oparam.NewOpt(int64(1200)),
+						MaxOutputLength: oparam.NewOpt(int64(4096)),
+					},
+					Environment: oairesponses.ResponseInputItemShellCallEnvironmentUnionParam{
+						OfLocal: &oairesponses.LocalEnvironmentParam{},
+					},
+					Caller: oairesponses.ResponseInputItemShellCallCallerUnionParam{
+						OfProgram: &oairesponses.ResponseInputItemShellCallCallerProgramParam{
+							CallerID: "prog_1",
+						},
+					},
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, ok := out.Messages[0].Content[0].OfToolUse.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("input type %T", out.Messages[0].Content[0].OfToolUse.Input)
+	}
+	if in["environment_type"] != "local" || in["status"] != "completed" {
+		t.Fatalf("meta: %#v", in)
+	}
+	if fmt.Sprint(in["timeout_ms"]) != "1200" || fmt.Sprint(in["max_output_length"]) != "4096" {
+		t.Fatalf("limits: %#v", in)
+	}
+	if in["caller_type"] != "program" || in["caller_id"] != "prog_1" {
+		t.Fatalf("caller: %#v", in)
+	}
+	if got := fmt.Sprint(in["input"]); !strings.Contains(got, "ls") {
+		t.Fatalf("commands: %#v", in["input"])
+	}
+}
+
+func TestShellCallOutputIncludesOutcomeAndStatus(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfShellCallOutput: &oairesponses.ResponseInputItemShellCallOutputParam{
+					CallID:          "call_shell",
+					Status:          "completed",
+					MaxOutputLength: oparam.NewOpt(int64(100)),
+					Output: []oairesponses.ResponseFunctionShellCallOutputContentParam{{
+						Stdout: "ok\n",
+						Stderr: "warn\n",
+						Outcome: oairesponses.ResponseFunctionShellCallOutputContentOutcomeUnionParam{
+							OfExit: &oairesponses.ResponseFunctionShellCallOutputContentOutcomeExitParam{ExitCode: 0},
+						},
+					}},
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	textOut := out.Messages[0].Content[0].OfToolResult.Content[0].OfText.Text
+	for _, want := range []string{"[status=completed]", "[max_output_length=100]", "ok", "warn", "[exit_code=0]"} {
+		if !strings.Contains(textOut, want) {
+			t.Fatalf("missing %q in %q", want, textOut)
+		}
+	}
+}
+
+func TestApplyPatchCallPreservesStatusAndCaller(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfApplyPatchCall: &oairesponses.ResponseInputItemApplyPatchCallParam{
+					CallID: "call_patch",
+					Status: "completed",
+					Operation: oairesponses.ResponseInputItemApplyPatchCallOperationUnionParam{
+						OfDeleteFile: &oairesponses.ResponseInputItemApplyPatchCallOperationDeleteFileParam{Path: "x.txt"},
+					},
+					Caller: oairesponses.ResponseInputItemApplyPatchCallCallerUnionParam{
+						OfDirect: &oairesponses.ResponseInputItemApplyPatchCallCallerDirectParam{},
+					},
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := out.Messages[0].Content[0].OfToolUse.Input.(map[string]any)
+	if in["status"] != "completed" || in["caller_type"] != "direct" || in["operation"] != "delete_file" {
+		t.Fatalf("apply_patch meta: %#v", in)
+	}
+}
+
+func TestApplyPatchCallOutputIncludesStatus(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: []oairesponses.ResponseInputItemUnionParam{{
+				OfApplyPatchCallOutput: &oairesponses.ResponseInputItemApplyPatchCallOutputParam{
+					CallID: "call_patch",
+					Status: "failed",
+					Output: oparam.NewOpt("conflict"),
+				},
+			}},
+		},
+	}
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	textOut := out.Messages[0].Content[0].OfToolResult.Content[0].OfText.Text
+	if !strings.Contains(textOut, "[status=failed]") || !strings.Contains(textOut, "conflict") {
+		t.Fatalf("output: %q", textOut)
+	}
+}
+
 func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
 	tests := []struct {
 		name      string

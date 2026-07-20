@@ -50,6 +50,23 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		// container（file_ids / memory_limit / 显式 cntr_xxx）无 Anthropic 等价，丢弃。
 		// Anthropic code execution 无状态单次执行、无 container 概念（已知损失）。
 		// Name 由 SDK default 为 code_execution，无需显式设。
+		ci := t.OfCodeInterpreter
+		if ci.Container.OfString.Valid() && ci.Container.OfString.Value != "" {
+			slog.Warn("丢弃 code_interpreter.container 显式 container_id（Anthropic code_execution 无 container），对应数据被丢弃",
+				"field", "container",
+				"container_id", ci.Container.OfString.Value,
+				"impact", "不会挂载 OpenAI container 文件或状态")
+		} else if ci.Container.OfCodeInterpreterToolAuto != nil {
+			auto := ci.Container.OfCodeInterpreterToolAuto
+			nFiles := 0
+			if auto != nil {
+				nFiles = len(auto.FileIDs)
+			}
+			slog.Warn("丢弃 code_interpreter.container auto 配置（file_ids/memory_limit 无 Anthropic 等价），对应数据被丢弃",
+				"field", "container",
+				"file_ids", nFiles,
+				"impact", "不会向 code_execution 注入上传文件或内存上限")
+		}
 		return []anthropic.ToolUnionParam{{OfCodeExecutionTool20250522: &anthropic.CodeExecutionTool20250522Param{}}}, nil
 	case t.OfMcp != nil:
 		// MCP 是 beta server tool，不产出标准 ToolUnionParam；
