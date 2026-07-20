@@ -151,28 +151,37 @@ func restoreOneAssistantOutputText(rawItem json.RawMessage, item *oairesponses.R
 		Type    string `json:"type"`
 		Text    string `json:"text"`
 		Refusal string `json:"refusal"`
+		// annotations 仅用于探测；OpenAI→Anthropic 历史无法还原 encrypted_index。
+		Annotations json.RawMessage `json:"annotations"`
 	}
 	if err := json.Unmarshal(probe.Content, &parts); err != nil || len(parts) == 0 {
 		return false
 	}
 	need := false
+	droppedAnnotations := 0
 	for _, p := range parts {
 		if p.Type == "output_text" || p.Type == "refusal" {
 			need = true
-			break
+			if p.Type == "output_text" && len(p.Annotations) > 2 && string(p.Annotations) != "[]" && string(p.Annotations) != "null" {
+				droppedAnnotations++
+			}
 		}
 	}
 	if !need {
 		return false
+	}
+	if droppedAnnotations > 0 {
+		// 可控 lossy：Anthropic 多轮 citation 需要 encrypted_index，OpenAI wire 无此字段。
+		slog.Debug("历史 assistant output_text 的 annotations 无法映射到 Anthropic，已丢弃",
+			"parts_with_annotations", droppedAnnotations,
+			"impact", "正文保留；url_citation 不回传上游（协议无 encrypted_index）")
 	}
 
 	list := make(oairesponses.ResponseInputMessageContentListParam, 0, len(parts))
 	for _, p := range parts {
 		switch p.Type {
 		case "output_text", "input_text":
-			if p.Text == "" && p.Type == "output_text" {
-				// 空 output_text 仍占位，保持与原 content 等长，避免结构漂移。
-			}
+			// 空 output_text 也 append 占位，保持与原 content 等长，避免结构漂移。
 			list = append(list, oairesponses.ResponseInputContentUnionParam{
 				OfInputText: &oairesponses.ResponseInputTextParam{Text: p.Text},
 			})
@@ -289,12 +298,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 			lastReasoning = i
 		}
 	}
+	var hasMCPHistory bool
 	for i := range req.Input.OfInputItemList {
 		item := &req.Input.OfInputItemList[i]
 		if item.OfReasoning != nil && i != lastReasoning {
 			continue
 		}
-		if err := appendItem(out, &sysParts, item); err != nil {
+		if err := appendItem(out, &sysParts, item, &hasMCPHistory); err != nil {
 			return nil, nil, fmt.Errorf("convert input item: %w", err)
 		}
 	}
@@ -339,6 +349,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	mcp, err := collectMCP(req)
 	if err != nil {
 		return nil, nil, err
+	}
+	// 历史 mcp_call 通过 param.Override 注入 messages；client 层需要据此设 beta header。
+	if mcp == nil {
+		mcp = &anthropicclient.MCPInjection{}
+	}
+	if hasMCPHistory {
+		mcp.History = true
 	}
 	return out, mcp, nil
 }
@@ -432,7 +449,8 @@ type instructionPart struct {
 	text string
 }
 
-func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam) error {
+// hasMCPHistory 非 nil 时，成功回放 mcp_call 会置 true，供 client 层设置 MCP beta header。
+func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam, hasMCPHistory *bool) error {
 	if item.OfMessage != nil {
 		return appendMessage(out, sysParts, item.OfMessage)
 	}
@@ -465,13 +483,51 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	if item.OfCodeInterpreterCall != nil {
 		return appendCodeInterpreterCall(out, item.OfCodeInterpreterCall)
 	}
-	// 历史 MCP items（mcp_call / mcp_list_tools / mcp_approval_request / mcp_approval_response）
-	// 无标准 Anthropic 请求侧 content block 变体（ContentBlockParamUnion 无 OfMCPToolUse 等），
-	// 回灌暂不支持 → 显式丢弃 + WARN（避免 raw JSON 污染 system context）。
-	if item.OfMcpCall != nil || item.OfMcpListTools != nil ||
-		item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
-		slog.Warn("丢弃历史 MCP item（Anthropic 请求侧无标准 mcp block 变体，回灌暂不支持）",
+	if item.OfWebSearchCall != nil {
+		return appendWebSearchCall(out, item.OfWebSearchCall)
+	}
+	// 历史 MCP items 按变体分档：
+	//   - mcp_call：通过 param.Override 注入 beta mcp_tool_use / mcp_tool_result（走
+	//     anthropic-beta: mcp-client-2025-11-20），保留调用上下文。
+	//   - mcp_list_tools：无 Anthropic 等价块，折成 developer marker（server + 工具名 + error），
+	//     保留「有哪些工具可用」的线索，lossy。
+	//   - mcp_approval_request / mcp_approval_response：Anthropic 无审批协议，网关不实现，
+	//     WARN + 丢弃，避免误导模型以为审批已发生。
+	if item.OfMcpCall != nil {
+		wrote, err := appendMcpCall(out, item.OfMcpCall)
+		if err != nil {
+			return err
+		}
+		if wrote && hasMCPHistory != nil {
+			*hasMCPHistory = true
+		}
+		return nil
+	}
+	if item.OfMcpListTools != nil {
+		return appendMcpListToolsMarker(sysParts, item.OfMcpListTools)
+	}
+	if item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
+		slog.Warn("丢弃历史 MCP 审批 item（Anthropic 无审批协议，网关不实现）",
 			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
+		return nil
+	}
+	// 无 Anthropic 等价语义的 hosted / 专有 item（file_search / computer / image_generation /
+	// program / item_reference / additional_tools）：WARN + 丢弃，禁止把整段 JSON 灌进
+	// system context 干扰模型。工具声明阶段这些类型多数已 fail-fast，此处兜底历史回灌路径。
+	if item.OfFileSearchCall != nil || item.OfComputerCall != nil ||
+		item.OfComputerCallOutput != nil || item.OfImageGenerationCall != nil ||
+		item.OfProgram != nil || item.OfProgramOutput != nil ||
+		item.OfItemReference != nil || item.OfAdditionalTools != nil {
+		typ := ""
+		if ptr := item.GetType(); ptr != nil {
+			typ = *ptr
+		}
+		if typ == "" {
+			typ = "unknown"
+		}
+		slog.Warn("丢弃无 Anthropic 等价语义的历史 input item，对应数据被丢弃",
+			"item_type", typ,
+			"impact", "该 item 不会进入 system context，也不会传给上游")
 		return nil
 	}
 	if item.OfLocalShellCall != nil {
@@ -656,6 +712,15 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 	if len(r.Summary) > 0 {
 		text = r.Summary[0].Text
 	}
+	// summary 为空时回退 content[].reasoning_text（部分 ZDR/兼容端只填 content）。
+	if text == "" {
+		for _, c := range r.Content {
+			if c.Text != "" {
+				text = c.Text
+				break
+			}
+		}
+	}
 	// encrypted_content 有值时，需要区分两种来源：
 	//   1) redacted_thinking（无 summary 文本）-> attachRedactedThinking
 	//   2) plaintext thinking 的 signature（有 summary 文本）-> attachThinking
@@ -779,6 +844,12 @@ func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) 
 }
 
 func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses.ResponseInputItemFunctionCallOutputParam) error {
+	// function_call_output.output 是 union：string 或 [{input_text|input_image|input_file}...]。
+	// 只读 OfString 会把 content list 静默变空 tool_result，参见协议覆盖表 Input Item 说明。
+	if items := fco.Output.OfResponseFunctionCallOutputItemArray; len(items) > 0 {
+		blocks := functionCallOutputContent(fco.CallID, items)
+		return appendToolResultBlocks(out, fco.CallID, blocks)
+	}
 	outputText := ""
 	if fco.Output.OfString.Valid() {
 		outputText = fco.Output.OfString.Value
@@ -787,6 +858,11 @@ func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses
 }
 
 func appendCustomToolCallOutput(out *anthropic.MessageNewParams, output *oairesponses.ResponseCustomToolCallOutputParam) error {
+	// custom_tool_call_output.output 同样是 union：string 或 [{input_text|input_image|input_file}...]。
+	if items := output.Output.OfOutputContentList; len(items) > 0 {
+		blocks := customToolOutputContent(output.CallID, items)
+		return appendToolResultBlocks(out, output.CallID, blocks)
+	}
 	outputText := ""
 	if output.Output.OfString.Valid() {
 		outputText = output.Output.OfString.Value
@@ -845,7 +921,7 @@ func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instruc
 // appendCodeInterpreterCall 把历史 code_interpreter_call input item 回放为 Anthropic
 // 历史 content block：server_tool_use(code_execution, input={code}) + code_execution_tool_result。
 // container_id 丢弃（Anthropic code execution 无 container 概念）。
-// image 输出（OfImage）不可转换，直接忽略——回灌静默。
+// image 输出（OfImage）不可转换，丢弃 + WARN。
 func appendCodeInterpreterCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCodeInterpreterToolCallParam) error {
 	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
 		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
@@ -866,12 +942,202 @@ func appendCodeInterpreterCall(out *anthropic.MessageNewParams, call *oairespons
 	return nil
 }
 
+// appendMcpCall 把历史 mcp_call 回放为 beta mcp_tool_use + mcp_tool_result。
+// 标准 ContentBlockParamUnion 无 MCP 变体，用 param.Override 塞原始 JSON，
+// 随 MessageNewParams marshal 后由 client 的 beta header 路径识别。
+// 第二个返回值表示是否真正写入了消息块（id 为空时跳过且不置 History）。
+func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemMcpCallParam) (bool, error) {
+	if call.ID == "" {
+		return false, nil
+	}
+	var input any = map[string]any{}
+	if call.Arguments != "" {
+		var parsed any
+		if err := json.Unmarshal([]byte(call.Arguments), &parsed); err == nil {
+			input = parsed
+		} else {
+			input = map[string]any{"raw": call.Arguments}
+		}
+	}
+	useRaw, err := json.Marshal(map[string]any{
+		"type":        "mcp_tool_use",
+		"id":          call.ID,
+		"name":        call.Name,
+		"server_name": call.ServerLabel,
+		"input":       input,
+	})
+	if err != nil {
+		return false, err
+	}
+	resultContent := ""
+	isError := false
+	if call.Error.Valid() && call.Error.Value != "" {
+		resultContent = call.Error.Value
+		isError = true
+	} else if call.Output.Valid() {
+		resultContent = call.Output.Value
+	}
+	resultObj := map[string]any{
+		"type":        "mcp_tool_result",
+		"tool_use_id": call.ID,
+		"is_error":    isError,
+		"content":     []map[string]any{{"type": "text", "text": resultContent}},
+	}
+	resultRaw, err := json.Marshal(resultObj)
+	if err != nil {
+		return false, err
+	}
+
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
+		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
+	}
+	last := &out.Messages[len(out.Messages)-1]
+	last.Content = append(last.Content, aparam.Override[anthropic.ContentBlockParamUnion](json.RawMessage(useRaw)))
+
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
+		out.Messages = append(out.Messages, anthropic.NewUserMessage())
+	}
+	last = &out.Messages[len(out.Messages)-1]
+	last.Content = append(last.Content, aparam.Override[anthropic.ContentBlockParamUnion](json.RawMessage(resultRaw)))
+	return true, nil
+}
+
+// appendMcpListToolsMarker 把历史 mcp_list_tools 折成 developer marker（工具名列表 + 可选 error）。
+// Anthropic Messages 无 mcp_list_tools 等价块；作为文本上下文比整段丢弃更利于模型判断可用工具。
+func appendMcpListToolsMarker(sysParts *[]instructionPart, list *oairesponses.ResponseInputItemMcpListToolsParam) error {
+	names := make([]string, 0, len(list.Tools))
+	for _, t := range list.Tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	buf := &strings.Builder{}
+	buf.WriteString("<mcp_list_tools server=\"")
+	buf.WriteString(list.ServerLabel)
+	buf.WriteString("\">")
+	if list.Error.Valid() && list.Error.Value != "" {
+		buf.WriteString("\n<error>")
+		buf.WriteString(list.Error.Value)
+		buf.WriteString("</error>")
+	}
+	if len(names) > 0 {
+		buf.WriteString("\n<tools>")
+		buf.WriteString(strings.Join(names, ","))
+		buf.WriteString("</tools>")
+	}
+	buf.WriteString("\n</mcp_list_tools>")
+	*sysParts = append(*sysParts, instructionPart{
+		role: model.RoleDeveloper,
+		text: buf.String(),
+	})
+	slog.Debug("mcp_list_tools 折成 developer marker（Anthropic 无等价历史块）",
+		"server_label", list.ServerLabel, "tool_count", len(names))
+	return nil
+}
+
+// appendWebSearchCall 把历史 web_search_call 回放为 Anthropic
+// server_tool_use(web_search) + web_search_tool_result。
+// 出站 stream 已支持 web_search；此函数补齐入站历史，让后端识别 hosted 搜索上下文。
+//
+// 映射约定：
+//   - action.search：query/queries → input.query；sources → result URL 列表
+//   - action.open_page / find：Anthropic Messages 无 open_page/find 原生历史块，
+//     将 URL/pattern 折入 query 文本做 lossy 回放
+//   - Anthropic `web_search_result` 的 required 字段 `encrypted_content` 在 OpenAI wire
+//     里没有；填空串会被官方 API 400。此处 result content 固定为空数组，sources URL 折成
+//     同一 user 消息内的可见文本，保留模型可读上下文
+func appendWebSearchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseFunctionWebSearchParam) error {
+	if call.ID == "" {
+		return nil
+	}
+	query, sourceURLs := webSearchCallReplay(call)
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
+		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
+	}
+	last := &out.Messages[len(out.Messages)-1]
+	last.Content = append(last.Content, anthropic.NewServerToolUseBlock(
+		call.ID,
+		map[string]any{"query": query},
+		anthropic.ServerToolUseBlockParamNameWebSearch,
+	))
+
+	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
+		out.Messages = append(out.Messages, anthropic.NewUserMessage())
+	}
+	last = &out.Messages[len(out.Messages)-1]
+	// OpenAI wire 无 Anthropic required 的 encrypted_content；带空 encrypted 的伪
+	// result 可能被官方 API 拒绝。result content 固定空数组，URL 列表折成可见文本
+	// 挂在同一 user 消息里，保留模型可读上下文。
+	last.Content = append(last.Content, anthropic.NewWebSearchToolResultBlock(
+		[]anthropic.WebSearchResultBlockParam{}, call.ID,
+	))
+	if len(sourceURLs) > 0 {
+		last.Content = append(last.Content, anthropic.ContentBlockParamUnion{
+			OfText: &anthropic.TextBlockParam{
+				Text: "[web_search sources]\n" + strings.Join(sourceURLs, "\n"),
+			},
+		})
+	}
+	return nil
+}
+
+// webSearchCallReplay 从 OpenAI web_search_call 提取 query 与 source URL 列表。
+//
+//nolint:staticcheck // OfSearch.Query 已 deprecated，但仍作 Queries 为空时的旧 wire 回退
+func webSearchCallReplay(call *oairesponses.ResponseFunctionWebSearchParam) (string, []string) {
+	query := ""
+	var urls []string
+	switch {
+	case call.Action.OfSearch != nil:
+		a := call.Action.OfSearch
+		// Queries 为现行字段；Query 已 deprecated，仅作旧 wire 回退。
+		if len(a.Queries) > 0 {
+			query = strings.Join(a.Queries, "\n")
+		} else if a.Query.Valid() && a.Query.Value != "" {
+			query = a.Query.Value
+		}
+		for _, s := range a.Sources {
+			if s.URL == "" {
+				continue
+			}
+			urls = append(urls, s.URL)
+		}
+	case call.Action.OfOpenPage != nil:
+		if call.Action.OfOpenPage.URL.Valid() {
+			query = call.Action.OfOpenPage.URL.Value
+		}
+		if query != "" {
+			urls = append(urls, query)
+		}
+	case call.Action.OfFind != nil:
+		a := call.Action.OfFind
+		parts := make([]string, 0, 2)
+		if a.URL != "" {
+			parts = append(parts, a.URL)
+		}
+		if a.Pattern != "" {
+			parts = append(parts, a.Pattern)
+		}
+		query = strings.Join(parts, "\n")
+		if a.URL != "" {
+			urls = append(urls, a.URL)
+		}
+	}
+	return query, urls
+}
+
 // codeInterpreterLogs 把 code_interpreter_call 的 logs outputs 拼成单段 stdout 文本。
 func codeInterpreterLogs(outputs []oairesponses.ResponseCodeInterpreterToolCallOutputUnionParam) string {
 	var parts []string
 	for _, o := range outputs {
 		if o.OfLogs != nil && o.OfLogs.Logs != "" {
 			parts = append(parts, o.OfLogs.Logs)
+		} else if o.OfImage != nil {
+			// image 输出无 Anthropic code_execution_result 等价字段，丢弃 + WARN。
+			url := o.OfImage.URL
+			slog.Warn("丢弃 code_interpreter_call 的 image 输出（Anthropic code_execution 无等价字段），对应数据被丢弃",
+				"url", url,
+				"impact", "图片不会出现在 code_execution_tool_result 中")
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -908,6 +1174,18 @@ func mcpHistoryItemID(item *oairesponses.ResponseInputItemUnionParam) string {
 }
 
 func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string) error {
+	return appendToolResultBlocks(out, callID, []anthropic.ToolResultBlockParamContentUnion{{
+		OfText: &anthropic.TextBlockParam{Text: outputText},
+	}})
+}
+
+// appendToolResultBlocks 追加一条 tool_result；content 为空时补空 text，避免 tool_use 失配。
+func appendToolResultBlocks(out *anthropic.MessageNewParams, callID string, content []anthropic.ToolResultBlockParamContentUnion) error {
+	if len(content) == 0 {
+		content = []anthropic.ToolResultBlockParamContentUnion{{
+			OfText: &anthropic.TextBlockParam{},
+		}}
+	}
 	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
 		out.Messages = append(out.Messages, anthropic.NewUserMessage())
 	}
@@ -915,12 +1193,90 @@ func appendToolResult(out *anthropic.MessageNewParams, callID, outputText string
 	last.Content = append(last.Content, anthropic.ContentBlockParamUnion{
 		OfToolResult: &anthropic.ToolResultBlockParam{
 			ToolUseID: callID,
-			Content: []anthropic.ToolResultBlockParamContentUnion{{
-				OfText: &anthropic.TextBlockParam{Text: outputText},
-			}},
+			Content:   content,
 		},
 	})
 	return nil
+}
+
+// functionCallOutputContent 把 function_call_output 的 content 数组转成 tool_result parts。
+func functionCallOutputContent(callID string, items []oairesponses.ResponseFunctionCallOutputItemUnionParam) []anthropic.ToolResultBlockParamContentUnion {
+	out := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(items))
+	for _, item := range items {
+		switch {
+		case item.OfInputText != nil:
+			out = append(out, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: item.OfInputText.Text},
+			})
+		case item.OfInputImage != nil:
+			if part, ok := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID); ok {
+				out = append(out, part)
+			}
+		case item.OfInputFile != nil:
+			if part, ok := toolResultFilePart(callID, item.OfInputFile.FileURL, item.OfInputFile.FileData, item.OfInputFile.FileID, item.OfInputFile.Filename); ok {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
+}
+
+// customToolOutputContent 把 custom_tool_call_output 的 content list 转成 tool_result parts。
+func customToolOutputContent(callID string, items []oairesponses.ResponseCustomToolCallOutputOutputOutputContentListItemUnionParam) []anthropic.ToolResultBlockParamContentUnion {
+	out := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(items))
+	for _, item := range items {
+		switch {
+		case item.OfInputText != nil:
+			out = append(out, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: item.OfInputText.Text},
+			})
+		case item.OfInputImage != nil:
+			if part, ok := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID); ok {
+				out = append(out, part)
+			}
+		case item.OfInputFile != nil:
+			if part, ok := toolResultFilePart(callID, item.OfInputFile.FileURL, item.OfInputFile.FileData, item.OfInputFile.FileID, item.OfInputFile.Filename); ok {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
+}
+
+func toolResultImagePart(callID string, imageURL, fileID oparam.Opt[string]) (anthropic.ToolResultBlockParamContentUnion, bool) {
+	if imageURL.Valid() && imageURL.Value != "" {
+		img := imageBlock(imageURL.Value)
+		if img.OfImage == nil {
+			return anthropic.ToolResultBlockParamContentUnion{}, false
+		}
+		return anthropic.ToolResultBlockParamContentUnion{OfImage: img.OfImage}, true
+	}
+	if fileID.Valid() && fileID.Value != "" {
+		slog.Warn("丢弃 tool output 中的 input_image.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
+			"call_id", callID,
+			"file_id", fileID.Value,
+			"impact", "图片不会出现在 tool_result 中")
+	}
+	return anthropic.ToolResultBlockParamContentUnion{}, false
+}
+
+func toolResultFilePart(callID string, fileURL, fileData, fileID, filename oparam.Opt[string]) (anthropic.ToolResultBlockParamContentUnion, bool) {
+	file := &oairesponses.ResponseInputFileParam{
+		FileURL:  fileURL,
+		FileData: fileData,
+		FileID:   fileID,
+		Filename: filename,
+	}
+	if block := documentBlock(file); block != nil {
+		return anthropic.ToolResultBlockParamContentUnion{OfDocument: block}, true
+	}
+	if fileID.Valid() && fileID.Value != "" {
+		slog.Warn("丢弃 tool output 中的 input_file.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
+			"call_id", callID,
+			"file_id", fileID.Value,
+			"impact", "文件不会出现在 tool_result 中")
+	}
+	return anthropic.ToolResultBlockParamContentUnion{}, false
 }
 
 // placeholderToolResultText 标注某 tool_use 在 input 历史中缺少 output，已由网关降级补占位。

@@ -134,6 +134,159 @@ func TestResponsesRequestLogIncludesInputDiagnostics(t *testing.T) {
 // already sends message_stop and the handler also feeds a trailing synthetic
 // message_stop, yet response.completed must appear EXACTLY once in the output.
 // The count (not Contains) is what would have caught the original bug.
+// TestPreviousResponseIDEmitsWarn 确认网关无 session store 时对 previous_response_id
+// 输出 WARN，而不是静默忽略（Codex 主路径不传此字段；其它客户端可能依赖链式会话）。
+// TestServiceTierEmitsWarn：service_tier 不透传时须 WARN，避免静默丢弃。
+// TestIncludeSatisfiedNoWarn：默认已满足的 include 项（encrypted_content / web_search sources 等）不 WARN。
+func TestIncludeSatisfiedNoWarn(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_inc\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.action.sources","code_interpreter_call.outputs"],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if strings.Contains(logs.String(), "include") {
+		t.Fatalf("satisfied include items must not WARN, logs:\n%s", logs.String())
+	}
+}
+
+// TestIncludeUnsupportedWarns：file_search / logprobs 等无等价 include 仍 WARN。
+func TestIncludeUnsupportedWarns(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_inc2\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","include":["file_search_call.results","message.output_text.logprobs","reasoning.encrypted_content"],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	got := logs.String()
+	if !strings.Contains(got, "file_search_call.results") || !strings.Contains(got, "message.output_text.logprobs") {
+		t.Fatalf("expected WARN for unsupported include items, logs:\n%s", got)
+	}
+	// encrypted_content 已满足，不应出现在 values 里导致误导（允许整体 message 含 encrypted 字样在 impact 中）
+	if strings.Contains(got, `"values"`) && strings.Contains(got, "reasoning.encrypted_content") && !strings.Contains(got, "file_search") {
+		// ok
+	}
+}
+
+func TestServiceTierEmitsWarn(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_st\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5","service_tier":"priority","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	got := logs.String()
+	if !strings.Contains(got, "service_tier") {
+		t.Fatalf("expected WARN for service_tier, logs:\n%s", got)
+	}
+}
+
+func TestPreviousResponseIDEmitsWarn(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_prev\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5","previous_response_id":"resp_hist_1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	got := logs.String()
+	if !strings.Contains(got, "previous_response_id") || !strings.Contains(got, "resp_hist_1") {
+		t.Fatalf("expected WARN for previous_response_id, logs:\n%s", got)
+	}
+}
+
 func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

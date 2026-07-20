@@ -298,13 +298,28 @@ rm -f ~/.codex/models_cache.json
 | 转发返回 503 | 网关未配置任何上游源 | 管理页「配置管理」加源并保存 |
 | Codex 拉不到新模型 | `models_cache.json` 旧缓存 | 删 `~/.codex/models_cache.json` 重启 Codex |
 
+## 产品边界
+
+本网关是 **Codex CLI → Anthropic 兼容后端** 的协议适配器，不是 OpenAI 全量 Responses 平台：
+
+- 客户端**自带完整 `input`** 回灌：不做 `previous_response_id` / `store` enrich，非空 `previous_response_id` WARN + 忽略。通用 AI SDK（`store:true` + `item_reference`）需自带完整 input，或改用带 session 库的网关。
+- **Responses ↔ Anthropic Messages 直转**：不走 Chat Completions 中枢，保留 Codex 专有 item / reasoning / hosted tool 形态。
+
 ## 已知限制
 
-- `input_image.file_id` 不支持：Anthropic 图片块只支持 base64 或 URL，网关无 OpenAI 凭据无法解析 `file_id`。
-- **code interpreter**：`container`、`code_execution_tool_result_error` 等不可转换；详见[协议覆盖矩阵](docs/protocol-coverage.md)。
-- **MCP**：`mcp_list_tools`、`require_approval`（≠never 降级为 never + WARN）、自定义 `headers`（仅提取 `Authorization: Bearer`）、`connector_id`/`tunnel_id`（fail-fast）、历史 MCP item 回灌暂不支持；需后端支持 beta `mcp-client-2025-11-20`。详见[协议覆盖矩阵](docs/protocol-coverage.md)。
-- `tool_choice: {type: "allowed_tools"}` 按声明工具精确过滤，仅 `auto`/`required` 映射为 Anthropic `auto`/`any`；与 structured output 组合或含不支持条目时 fail-fast。详见[协议覆盖矩阵](docs/protocol-coverage.md)。
-- 无 Anthropic 等价语义的 Responses 字段会被接受，但不保证映射到上游。
+- **多模态**：`input_image.file_id` 不支持（网关无 OpenAI 凭据拉取文件；仅接受 base64 / URL）。
+- **web_search**：出站完整（事件链 + `url_citation`，流式与终态 item annotations 都写）；历史回灌为 `server_tool_use` + 空 `web_search_tool_result` + sources 可见文本——OpenAI wire 无 Anthropic required 的 `encrypted_content`，无法做官方级 result round-trip。
+- **code interpreter**：`container`（file_ids / memory_limit / 显式 container）、image 输出、`code_execution_tool_result_error` 不可转换。
+- **MCP**：
+  - `mcp_call` 历史 → beta `mcp_tool_use` / `mcp_tool_result`（`param.Override` + `anthropic-beta: mcp-client-2025-11-20`）
+  - `mcp_list_tools` 历史 → developer marker（lossy）
+  - `mcp_approval_request` / `response` **不实现**：Anthropic 无审批协议，历史 WARN + 丢弃；请求侧 `require_approval≠never` 降级 never + WARN
+  - `headers` 仅提取 `Authorization: Bearer`；`connector_id`/`tunnel_id` fail-fast
+- **tool_choice `allowed_tools`**：仅 `auto`/`required` 映射；条目按 type/namespace/name 精确匹配已声明工具；与 structured output 组合或含 hosted/MCP 条目时 fail-fast。
+- **无等价历史 item**（`file_search_call` / `computer_call*` / `image_generation_call` / `program*` / `item_reference` / `additional_tools`）：WARN + 丢弃，不进 system context。
+- **无等价请求参数**：`background` / `conversation` / `moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / deprecated `user` 等按 WARN + 忽略；`service_tier` 非空时 WARN 且不透传。
+
+完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)。
 
 ## 设计文档
 

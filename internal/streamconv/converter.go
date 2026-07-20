@@ -126,6 +126,10 @@ type Converter struct {
 	textItemIdx     int
 	textContentIdx  int
 	annotationIndex int
+	// textAnnotations 累积当前 text block 上的 OpenAI 注解（citations_delta 映射），
+	// 在 content_part.done / output_item.done 时写入 content，避免只发流式事件、
+	// 终态 item 注解为空（Codex 多轮回灌只能看到 final item）。
+	textAnnotations []any
 
 	// Thinking block state
 	openThinking    bool
@@ -388,6 +392,7 @@ func (c *Converter) handleTextStart() []model.SSEEvent {
 	c.textContentIdx = 0
 	// annotation_index 是 per content part 的计数器，新 text block 开始时重置。
 	c.annotationIndex = 0
+	c.textAnnotations = nil
 	c.textBuilder.Reset()
 
 	itemID := fmt.Sprintf("msg_%d", idx)
@@ -538,6 +543,7 @@ func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) 
 			"filename": cit.DocumentTitle, // Anthropic document_title 近似为 filename
 			"index":    c.annotationIndex,
 		}
+		c.textAnnotations = append(c.textAnnotations, annotation)
 		out := c.buildAnnotationEvent(annotation)
 		c.annotationIndex++
 		return out
@@ -554,6 +560,9 @@ func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) 
 			"start_index": 0,
 			"end_index":   textLen,
 		}
+		// encrypted_index 无 OpenAI 等价字段；若客户端原样回灌也无法还原 Anthropic 多轮。
+		// 仍写入 url/title，保证 final item 与流式 annotation 事件一致。
+		c.textAnnotations = append(c.textAnnotations, annotation)
 		out := c.buildAnnotationEvent(annotation)
 		c.annotationIndex++
 		return out
@@ -595,9 +604,13 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		c.openText = false
 		itemID := fmt.Sprintf("msg_%d", c.textItemIdx)
 		text := c.textBuilder.String()
+		anns := c.textAnnotations
+		if anns == nil {
+			anns = []any{}
+		}
 		if c.textItemIdx < len(c.outputItems) {
 			c.outputItems[c.textItemIdx].Content = []model.OutputText{
-				{Type: model.ContentTypeOutputText, Text: text},
+				{Type: model.ContentTypeOutputText, Text: text, Annotations: anns},
 			}
 		}
 		out = append(out, model.MarshalEvent(evOutputTextDone, model.OutputTextDoneEvent{
@@ -608,13 +621,14 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		out = append(out, model.MarshalEvent(evContentPartDone, model.ContentPartDoneEvent{
 			Type: evContentPartDone, SequenceNumber: c.nextSeq(),
 			OutputIndex: c.textItemIdx, ContentIndex: c.textContentIdx,
-			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeOutputText, Text: text},
+			ItemID: itemID, Part: model.ContentPartOut{Type: model.ContentTypeOutputText, Text: text, Annotations: anns},
 		}))
 		c.outputItems[c.textItemIdx].Status = model.ResponseStatusCompleted
 		out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
 			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
 			OutputIndex: c.textItemIdx, Item: c.outputItems[c.textItemIdx],
 		}))
+		c.textAnnotations = nil
 	}
 
 	if c.openThinking {
@@ -770,6 +784,7 @@ func (c *Converter) resetOutputForRefusal() {
 	c.textItemIdx = 0
 	c.textContentIdx = 0
 	c.annotationIndex = 0
+	c.textAnnotations = nil
 	c.textBuilder.Reset()
 	c.openThinking = false
 	c.thinkItemIdx = 0

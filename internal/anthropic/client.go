@@ -141,7 +141,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// https://api.anthropic.com、智谱 https://open.bigmodel.cn/api/anthropic），
 	// 但 Messages 路径同为 /v1/messages，故配置不写该后缀、由 messagesURL 补全。
 	url := messagesURL(endpoint)
-	slog.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req), "mcp", !mcp.Empty())
+	slog.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req), "mcp", mcp != nil && mcp.NeedsBeta())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		slog.Warn("构造流式请求失败", "url", url, "error", err)
@@ -161,7 +161,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if thinkingEnabled(req) {
 		beta = "interleaved-thinking-2025-05-14"
 	}
-	if !mcp.Empty() {
+	if mcp != nil && mcp.NeedsBeta() {
 		beta = mergeBetaHeader(beta)
 	}
 	if beta != "" {

@@ -28,15 +28,24 @@ type MCPToolset struct {
 type MCPInjection struct {
 	Servers  []MCPServer
 	Toolsets []MCPToolset
+	// History 为 true 时，messages 中含 beta mcp_tool_use/result 历史块，
+	// 即使没有 mcp_servers 也需要 anthropic-beta: mcp-client-2025-11-20。
+	History bool
 }
 
 // Empty 报告该 MCPInjection 是否无需注入（nil 或无 server）。
-func (m *MCPInjection) Empty() bool { return m == nil || len(m.Servers) == 0 }
+func (m *MCPInjection) Empty() bool { return m == nil || (len(m.Servers) == 0 && !m.History) }
+
+// NeedsBeta 报告是否需要设置 MCP beta header。
+func (m *MCPInjection) NeedsBeta() bool {
+	return m != nil && (len(m.Servers) > 0 || m.History)
+}
 
 // injectMCP 把 mcp_servers（顶层）与 mcp_toolset（tools[] 追加）写入已 marshal 的请求体。
 // mcp 为空时原样返回。复用 injectStream 的 map 操作模式，json.Number 保数值精度。
 func injectMCP(body []byte, mcp *MCPInjection) ([]byte, error) {
-	if mcp.Empty() {
+	// 仅 History、无 Servers 时不需要改 body，但调用方仍会靠 NeedsBeta 设 header。
+	if mcp == nil || len(mcp.Servers) == 0 {
 		return body, nil
 	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))

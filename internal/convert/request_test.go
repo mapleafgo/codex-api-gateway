@@ -195,17 +195,20 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 		{"type":"image_generation_call","id":"ig_1","status":"completed","result":"base64data"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
 	],"stream":true}`)
+	buf, restore := captureWarnLogger(t)
+	defer restore()
 	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.System) != 1 {
-		t.Fatalf("expected unsupported item system context: %+v", out.System)
+	// 无 Anthropic 等价语义的历史 item 改为 WARN + 丢弃，禁止 raw dump 污染 system。
+	for _, s := range out.System {
+		if strings.Contains(s.Text, "openai_input_item") {
+			t.Fatalf("unsupported history item must not raw-dump: %s", s.Text)
+		}
 	}
-	got := out.System[0].Text
-	if !strings.Contains(got, "<openai_input_item type=\"image_generation_call\">") ||
-		!strings.Contains(got, `"id":"ig_1"`) {
-		t.Fatalf("unsupported item not preserved: %q", got)
+	if !strings.Contains(buf.String(), "image_generation_call") {
+		t.Fatalf("expected WARN for image_generation_call, got: %s", buf.String())
 	}
 }
 
@@ -469,6 +472,98 @@ func TestFunctionCallOutputLargeTextPreserved(t *testing.T) {
 	if got != skillBody {
 		t.Fatalf("function_call_output 大文本被截断或篡改: got len=%d want len=%d\nfirst diff at byte %d",
 			len(got), len(skillBody), firstDiff(got, skillBody))
+	}
+}
+
+// TestFunctionCallOutputContentArrayPreserved 锁定 Codex/官方 wire 的
+// function_call_output.output 数组形态（input_text/input_image/input_file）。
+// 只测 string 会假阳性：SDK 解出数组后 OfString 为空，旧实现静默变成空 tool_result。
+func TestFunctionCallOutputContentArrayPreserved(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+		{"type":"function_call","call_id":"c1","name":"inspect","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c1","output":[
+			{"type":"input_text","text":"result-text"},
+			{"type":"input_image","image_url":"https://example.com/shot.png"},
+			{"type":"input_file","filename":"note.txt","file_data":"data:text/plain;base64,aGVsbG8="}
+		]}
+	],"tools":[{"type":"function","name":"inspect","parameters":{"type":"object"}}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := findToolResult(out.Messages, "c1")
+	if tr == nil {
+		t.Fatalf("tool_result missing: %+v", out.Messages)
+	}
+	if len(tr.Content) < 3 {
+		t.Fatalf("want >=3 tool_result parts, got %d: %+v", len(tr.Content), tr.Content)
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfText.Text != "result-text" {
+		t.Fatalf("input_text part lost: %+v", tr.Content[0])
+	}
+	if tr.Content[1].OfImage == nil {
+		t.Fatalf("input_image part not mapped to tool_result image: %+v", tr.Content[1])
+	}
+	if tr.Content[2].OfDocument == nil {
+		t.Fatalf("input_file part not mapped to tool_result document: %+v", tr.Content[2])
+	}
+}
+
+// TestCustomToolCallOutputContentListPreserved 锁定 custom_tool_call_output.output
+// 为 content list 时不得静默变空 tool_result。
+func TestCustomToolCallOutputContentListPreserved(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+		{"type":"custom_tool_call","call_id":"c2","name":"shell","input":"ls"},
+		{"type":"custom_tool_call_output","call_id":"c2","output":[
+			{"type":"input_text","text":"file.txt"},
+			{"type":"input_image","image_url":"https://example.com/a.png"}
+		]}
+	],"tools":[{"type":"custom","name":"shell"}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := findToolResult(out.Messages, "c2")
+	if tr == nil {
+		t.Fatalf("custom tool_result missing: %+v", out.Messages)
+	}
+	if len(tr.Content) < 2 {
+		t.Fatalf("want >=2 parts, got %d: %+v", len(tr.Content), tr.Content)
+	}
+	if tr.Content[0].OfText == nil || tr.Content[0].OfText.Text != "file.txt" {
+		t.Fatalf("custom content list text lost: %+v", tr.Content[0])
+	}
+	if tr.Content[1].OfImage == nil {
+		t.Fatalf("custom content list image lost: %+v", tr.Content[1])
+	}
+}
+
+// TestFunctionCallOutputImageFileIDWarns 数组里只有 file_id 的图片无法拉取，应 WARN 且不崩溃。
+func TestFunctionCallOutputImageFileIDWarns(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+		{"type":"function_call","call_id":"c1","name":"shot","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","file_id":"file-abc"}]}
+	],"tools":[{"type":"function","name":"shot","parameters":{"type":"object"}}],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := findToolResult(out.Messages, "c1")
+	if tr == nil {
+		t.Fatalf("tool_result missing after file_id-only image: %+v", out.Messages)
+	}
+	// 无可用内容时仍保留空 text 占位，避免 tool_use 失配。
+	if len(tr.Content) != 1 || tr.Content[0].OfText == nil {
+		t.Fatalf("want empty text placeholder, got %+v", tr.Content)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "file_id") || !strings.Contains(logs, "file-abc") {
+		t.Fatalf("expected WARN for tool output image file_id, got: %s", logs)
 	}
 }
 
@@ -1620,6 +1715,93 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 }
 
 // TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult 验证历史
+// TestWebSearchCallHistoryReplay 把历史 web_search_call 回放为 Anthropic
+// server_tool_use(web_search) + web_search_tool_result，让后端识别 hosted 搜索上下文。
+func TestWebSearchCallHistoryReplay(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"search go"}]},
+		{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"golang tutorial","sources":[{"type":"url","url":"https://go.dev/doc/"}]}},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"see go.dev"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"more"}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 不得再把 web_search_call 整段塞进 system raw dump。
+	for _, s := range out.System {
+		if strings.Contains(s.Text, "openai_input_item type=\"web_search_call\"") {
+			t.Fatalf("web_search_call must not fall through to raw dump: %s", s.Text)
+		}
+	}
+	var foundUse, foundResult bool
+	var useID string
+	var foundSourceText bool
+	for _, msg := range out.Messages {
+		for _, b := range msg.Content {
+			if b.OfServerToolUse != nil && b.OfServerToolUse.Name == anthropic.ServerToolUseBlockParamNameWebSearch {
+				foundUse = true
+				useID = b.OfServerToolUse.ID
+				raw, _ := json.Marshal(b.OfServerToolUse.Input)
+				if !strings.Contains(string(raw), "golang tutorial") {
+					t.Fatalf("server_tool_use input missing query: %s", raw)
+				}
+			}
+			if b.OfWebSearchToolResult != nil {
+				foundResult = true
+				if b.OfWebSearchToolResult.ToolUseID != "ws_1" {
+					t.Fatalf("tool_use_id = %q, want ws_1", b.OfWebSearchToolResult.ToolUseID)
+				}
+				// 无 Anthropic encrypted_content：result content 必须为空数组。
+				if n := len(b.OfWebSearchToolResult.Content.OfWebSearchToolResultBlockItem); n != 0 {
+					t.Fatalf("want empty result items, got %d: %+v", n, b.OfWebSearchToolResult.Content.OfWebSearchToolResultBlockItem)
+				}
+			}
+			if b.OfText != nil && strings.Contains(b.OfText.Text, "https://go.dev/doc/") {
+				foundSourceText = true
+			}
+		}
+	}
+	if !foundUse || !foundResult {
+		b, _ := json.Marshal(out.Messages)
+		t.Fatalf("missing server_tool_use/result (use=%v result=%v id=%q): %s", foundUse, foundResult, useID, b)
+	}
+	if !foundSourceText {
+		t.Fatal("source URLs should be preserved as visible text alongside empty result")
+	}
+	if useID != "ws_1" {
+		t.Fatalf("server_tool_use id = %q, want ws_1", useID)
+	}
+}
+
+// TestWebSearchCallHistoryOpenPageLossy 非 search action 折成 query 回放，避免 raw dump。
+func TestWebSearchCallHistoryOpenPageLossy(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"web_search_call","id":"ws_2","status":"completed","action":{"type":"open_page","url":"https://example.com/page"}},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, msg := range out.Messages {
+		for _, b := range msg.Content {
+			if b.OfServerToolUse != nil && b.OfServerToolUse.Name == anthropic.ServerToolUseBlockParamNameWebSearch {
+				found = true
+				raw, _ := json.Marshal(b.OfServerToolUse.Input)
+				if !strings.Contains(string(raw), "https://example.com/page") {
+					t.Fatalf("open_page should fold URL into query/input: %s", raw)
+				}
+			}
+		}
+	}
+	if !found {
+		b, _ := json.Marshal(out.Messages)
+		t.Fatalf("open_page web_search_call not converted: %s", b)
+	}
+}
+
 // code_interpreter_call input item 回放为 Anthropic 历史内容块：
 // server_tool_use(code_execution, input={code}) + code_execution_tool_result。
 // container_id 必须丢弃（Anthropic code execution 无 container 概念）。
@@ -1650,48 +1832,55 @@ func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
 	}
 }
 
-// TestMcpHistoryInputItemsDroppedWithWarn 验证历史 MCP input items
-// （mcp_call / mcp_list_tools / mcp_approval_request / mcp_approval_response）
-// 被显式丢弃 + WARN，不污染 system context 也不报错。
-// Anthropic 请求侧 ContentBlockParamUnion 无标准 mcp block 变体，回灌暂不支持。
-func TestMcpHistoryInputItemsDroppedWithWarn(t *testing.T) {
-	tests := []struct {
-		name string
-		item string
-	}{
-		{
-			name: "mcp_call",
-			item: `{"type":"mcp_call","id":"mcp_1","status":"completed","server_label":"w","name":"get","arguments":"{}","output":"r"}`,
-		},
-		{
-			name: "mcp_list_tools",
-			item: `{"type":"mcp_list_tools","id":"mcp_lt_1","server_label":"w","tools":[{"name":"get","description":"d","input_schema":{}}]}`,
-		},
-		{
-			name: "mcp_approval_request",
-			item: `{"type":"mcp_approval_request","id":"mcp_ar_1","server_label":"w","name":"get","arguments":"{}"}`,
-		},
-		{
-			name: "mcp_approval_response",
-			item: `{"type":"mcp_approval_response","approval_request_id":"mcp_ar_1","approve":true}`,
-		},
+// TestMcpHistoryListAsDeveloperMarker：list_tools 折 developer marker（lossy）。
+// approval_request/response 无审批协议，按丢弃 + WARN 处理，不折 marker。
+func TestMcpHistoryListAsDeveloperMarker(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
+		{"type":"mcp_list_tools","id":"mcp_lt_1","server_label":"weather","tools":[{"name":"get","description":"d","input_schema":{}}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := mustReq(t, fmt.Sprintf(`{"model":"gpt-5","input":[
-				{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
-				%s
-			],"stream":true}`, tt.item))
-			out, _, err := ToAnthropic(req, &config.Config{})
-			if err != nil {
-				t.Fatalf("%s history must not error (drop+warn): %v", tt.name, err)
-			}
-			raw, _ := json.Marshal(out)
-			// MCP item 内容不得泄漏到 system context 或 messages（必须显式丢弃，不走 unknown 保留分支）
-			if strings.Contains(string(raw), "openai_input_item") {
-				t.Fatalf("%s must be dropped, but fell through to unknownInputItemPart: %s", tt.name, raw)
-			}
-		})
+	sys := ""
+	for _, b := range out.System {
+		sys += b.Text
+	}
+	for _, want := range []string{
+		"mcp_list_tools",
+		"weather",
+		"<tools>get</tools>",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("missing %q in system: %s", want, sys)
+		}
+	}
+}
+
+// TestMcpApprovalHistoryDroppedWithWarn：审批 item 丢弃 + WARN，不写 system。
+func TestMcpApprovalHistoryDroppedWithWarn(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"mcp_approval_request","id":"mcp_ar_1","server_label":"weather","name":"get","arguments":"{}"},
+		{"type":"mcp_approval_response","approval_request_id":"mcp_ar_1","approve":true},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}
+	],"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := ""
+	for _, b := range out.System {
+		sys += b.Text
+	}
+	if strings.Contains(sys, "mcp_approval") {
+		t.Fatalf("approval history must not be injected into system: %s", sys)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "mcp_approval_request") || !strings.Contains(logs, "mcp_approval_response") {
+		t.Fatalf("expected WARN for approval items, got: %s", logs)
 	}
 }
 

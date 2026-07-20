@@ -106,8 +106,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	// 仅返回 config.yaml 中 models.<slug> 显式配置的模型。
 	// Codex 期望 /v1/models 返回 { "models": [ModelInfo] }（不是 OpenAI {data:[]}）。
 	// Codex 用 serde_json::from_slice::<ModelsResponse> 直接解析，若返回 OpenAI 格式，
-	// 解析失败/拿到空 ModelInfo → supports_search_tool 默认 false → MCP deferred 不工作。
-	// 故返回 CodexModelsResponse，补全 ModelInfo 能力字段（关键是 supports_search_tool=true）。
+	// 解析失败/拿到空 ModelInfo → supports_search_tool 默认 false → tool_search 与 MCP
+	// 延迟加载工具（deferred tools）不可用。故返回 CodexModelsResponse，补全 ModelInfo
+	// 能力字段（关键是 supports_search_tool=true）。
 	cur := s.holder.Current()
 	names := cur.ConfiguredModelSlugs()
 	infos := make([]model.CodexModelInfo, 0, len(names))
@@ -140,7 +141,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	  - truncation_policy.limit = 10000（对齐官方固定值，单次工具输出截断阈值，
 //	    与 context_window 是独立维度，不随窗口缩放）
 //	可选字段（仅在网关必须告知时给值，其余交给 Codex 默认）：
-//	  - supports_search_tool=true（启用 tool_search + MCP deferred，网关核心）
+//	  - supports_search_tool=true（启用 tool_search + MCP deferred tools 懒加载，网关核心）
 //	  - context_window（Codex 默认 None，必须告知；同步到 max_context_window）
 //	  - include_skills_usage_instructions=true（注入 skills 使用说明块，引导 skill 发现）
 //	  - web_search_tool_type="text_and_image"（声明支持文本+图片 web 搜索）
@@ -538,7 +539,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (s *Server) buildAnthropicRequest(body []byte, src config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+func (s *Server) buildAnthropicRequest(body []byte, _ config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
 	req, err := convert.DecodeResponseNewParams(body)
 	if err != nil {
 		return nil, nil, nil, err
@@ -577,6 +578,21 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"reasoning_summary", string(req.Reasoning.Summary),
 			"impact", "generate_summary 不生效，请改用 reasoning.summary")
 	}
+	// previous_response_id：网关无 session store，不做 enrich。
+	// Codex 主路径不传此字段（客户端自带完整 input 回灌）；其它客户端若依赖链式会话会失效。
+	if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
+		slog.Warn("忽略 previous_response_id（网关无 session store，不做历史 enrich），对应数据被丢弃",
+			"field", "previous_response_id",
+			"previous_response_id", req.PreviousResponseID.Value,
+			"impact", "不会按 response_id 补全历史；请在 input 中完整回灌上下文")
+	}
+	// service_tier：网关不透传，由上游默认处理。
+	if req.ServiceTier != "" {
+		slog.Warn("忽略 service_tier（网关不透传，由上游按默认处理），对应数据被丢弃",
+			"field", "service_tier",
+			"value", string(req.ServiceTier),
+			"impact", "请求不会指定 OpenAI service tier")
+	}
 	// text.verbosity：Anthropic 无原生 verbosity 参数。
 	if req.Text.Verbosity != "" {
 		slog.Warn("忽略 text.verbosity（Anthropic 无原生等价参数），对应数据被丢弃",
@@ -588,22 +604,30 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 	// truncation 状态为 raw_preserved：值在响应对象中 echo 回显，未被丢弃，
 	// 不触发 WARN（AGENTS.md 的静默跳过约定针对丢弃场景，不针对 echo）。
 
-	// include：仅部分子项可处理，整体只记录不展开。
+	// include：按 include 项分档处理。
+	//   - satisfied：网关默认已发出对应字段（如 web_search sources、code_interpreter outputs），
+	//     无需额外行为，也不 WARN；
+	//   - encrypted_content：已通过 disable_response_storage 路径处理，不 WARN；
+	//   - unsupported：后端无等价能力（file_search、logprobs、computer 等），WARN + 丢弃。
 	if len(req.Include) > 0 {
-		// 只对非 encrypted_content 的 include 项 WARN（encrypted_content 已通过
-		// disable_response_storage 路径处理，不是丢弃）。
-		vals := make([]string, 0, len(req.Include))
+		satisfied := map[string]bool{
+			"reasoning.encrypted_content":    true, // ZDR 路径已处理
+			"web_search_call.action.sources": true, // action.sources 默认下发
+			"code_interpreter_call.outputs":  true, // outputs 默认下发
+			"message.input_image.image_url":  true, // 输入 image_url 原样保留
+		}
+		var unsupported []string
 		for _, inc := range req.Include {
-			if string(inc) == "reasoning.encrypted_content" {
+			if satisfied[string(inc)] {
 				continue
 			}
-			vals = append(vals, string(inc))
+			unsupported = append(unsupported, string(inc))
 		}
-		if len(vals) > 0 {
-			slog.Warn("忽略 include 中除 reasoning.encrypted_content 之外的所有 include 项，对应数据被丢弃",
+		if len(unsupported) > 0 {
+			slog.Warn("忽略无 Anthropic 等价能力的 include 项，对应数据被丢弃",
 				"field", "include",
-				"values", strings.Join(vals, ","),
-				"impact", "除 reasoning.encrypted_content 已通过 disable_response_storage 路径处理外，其余 include 不生效")
+				"values", strings.Join(unsupported, ","),
+				"impact", "该 include 项不会生效（file_search / logprobs / computer 等无后端等价）")
 		}
 	}
 	// metadata：Anthropic metadata 仅支持 user_id，整体 echo + 取 user_id 透传。

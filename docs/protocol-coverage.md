@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-18
+日期: 2026-07-20
 
 本文是 OpenAI Responses API 到 Anthropic Messages API 的覆盖矩阵。它记录协议项是否被语义级翻译、损耗翻译、raw 保真、后端无等价能力或延期专项设计。后续任何协议补齐都必须同步更新本文。
 
@@ -15,19 +15,52 @@
 | `deferred` | 需要专项设计才能决定语义 | 必须说明后续分析点 |
 | `dropped` | 在请求侧无 Anthropic 等价能力，回灌时静默丢弃 + WARN | 必须记录被丢弃内容的类型/标识/影响 |
 
-## 2026-07-18 更新
+## 关注面与产品边界
+
+本网关面向 **Codex CLI → Anthropic 兼容后端**，不做 OpenAI 全量 Responses 平台：
+
+- 客户端**自带完整 `input`** 回灌，网关不做 session store；`previous_response_id` 非空时 WARN + 忽略。
+- Responses ↔ Anthropic Messages **直转**，不走 Chat Completions 中枢，避免损失 Codex 专有形态。
+- Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
+
+## 变更记录
+
+### 2026-07-20
+
+- **Codex 主路径 wire 修复**
+  - `input` 历史 assistant `content[].type=output_text`/`refusal` 从 raw JSON 归一为 `input_text` 再走 `appendMessage`（原路径被 SDK EasyInputMessage 静默清空）。
+  - `function_call_output` / `custom_tool_call_output` 的 `output` 支持 content 数组（`input_text` / `input_image` / `input_file`）→ `tool_result` 多 part；仅 `file_id` 无法拉取时 WARN。
+  - `reasoning`：`summary` 为空时回退 `content[].reasoning_text`，避免误判 redacted。
+- **hosted server tool 历史回灌**
+  - `web_search_call` 历史：`server_tool_use(web_search)` + 空 `web_search_tool_result` + sources URL 折可见文本（Anthropic required `encrypted_content` 无 OpenAI 来源，填空会 400）。
+  - `mcp_call` 历史：`param.Override` 注入 beta `mcp_tool_use` / `mcp_tool_result`，client 层同步 `anthropic-beta: mcp-client-2025-11-20`。
+  - `mcp_list_tools` 历史：折 developer marker（server + 工具名 + error），lossy 保留可用工具线索。
+  - `mcp_approval_request` / `response`：Anthropic 无审批协议，**不实现**，WARN + 丢弃。
+  - `code_interpreter_call` 的 image 输出：丢弃 + WARN；logs 保留。
+- **出站流式**
+  - `citations_delta` 除流式 `annotation.added` 外，写入终态 `output_text.annotations`，避免 Codex 只看 final item 时 citation 丢失。
+- **无等价历史 item 一律 dropped**
+  - `file_search_call` / `computer_call` / `computer_call_output` / `image_generation_call` / `program` / `program_output` / `item_reference` / `additional_tools`：WARN + 丢弃，不再 raw dump 进 system context。
+- **请求参数状态订正**
+  - `previous_response_id` → `unsupported_by_backend`（非空时 WARN）。
+  - `store` → `raw_preserved`（响应对象 echo，无本地存储）。
+  - `service_tier` → 非空时 WARN，仍不透传。
+  - `include` 分档：已满足项（`reasoning.encrypted_content` / `web_search_call.action.sources` / `code_interpreter_call.outputs` / `message.input_image.image_url`）静默；其余（`file_search_call.results` / `message.output_text.logprobs` / `computer_call_output.output.image_url` 等）WARN + 忽略。
+- **表述订正**
+  - `output_message` / `input_message`：SDK 三个 `message` discriminator 实测几乎总落到 `OfMessage`；不再宣称「未做分支」的 raw_preserved。
+  - `tool_search_output`：入站回灌 supported，出站不生成（搜索由 Codex 本地执行）。
+  - 去掉 `response.output_text.annotation.added` 与 `error` 的重复旧行。
+
+### 2026-07-18
 
 - 为所有「静默忽略」的请求参数（deprecated / 无等价能力）补 WARN 结构化日志，见 AGENTS.md「静默跳过与降级处理约定」。
-- `metadata.user_id` 现透传到 Anthropic `metadata.user_id`；其余键值对仅 echo。
-- 流式 `citations_delta` 现映射为 `response.output_text.annotation.added`（`web_search_result_location`→`url_citation`，其余→`file_citation`）。
-- 流式上游 `error` 事件现在同时发出 OpenAI `error` 事件与 `response.failed` 终态。
-- 流式 `mid_conversation_system` 块按 WARN + 跳过处理，不中断流。
-- `local_shell_call`/`shell_call`/`apply_patch_call` 作为专用 Output Item、`tool_search_output`/`additional_tools` 作为 output、`item_reference` 与 `cancelled` status 仍为 `deferred`，原因见对应行说明。
-- 移除 `service_tier_passthrough` 配置与 `applyServiceTier` 逻辑：`service_tier` 不再透传，由上游默认处理。
-- 移除 `additional_tools` input item 处理分支：网关统一 `use_responses_lite=false`，该 item 不会出现。
-- 网关级指令注入从 `system_suffix`（转换层追加 system block）改为 `base_instructions_file`（经 /v1/models 由 Codex 客户端注入，prompt cache 更友好）。
-
-第一批只覆盖枚举/refusal、shell/apply_patch 输入项、`allowed_tools`、不支持工具的显式错误和未处理 Anthropic block 的显式失败；本文其余 `deferred` 项均不属于第一批，具体后续专项原因见各行说明。
+- `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对仅 echo。
+- 流式 `citations_delta` 映射为 `response.output_text.annotation.added`（`web_search_result_location` → `url_citation`，其余 → `file_citation`）。
+- 流式上游 `error` 事件同时发出 OpenAI `error` 事件与 `response.failed` 终态。
+- 流式 `mid_conversation_system` 块 WARN + 跳过，不中断流。
+- 移除 `service_tier_passthrough` 配置与 `applyServiceTier` 逻辑（`service_tier` 不再透传）。
+- 移除 `additional_tools` input item 转换分支（网关统一 `use_responses_lite=false`）。
+- 网关级指令注入从 `system_suffix` 改为 `base_instructions_file`（经 `/v1/models` 由 Codex 客户端注入，prompt cache 更友好）。
 
 ## 资料来源
 
@@ -58,10 +91,10 @@
 | `text.verbosity` | none | `deferred` | Anthropic 无原生输出 verbosity 参数；可注入 system 提示模拟但非语义等价，当前静默忽略 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
-| `previous_response_id` | session replay | `supported` | 依赖本地 store |
-| `store` | local session storage switch | `supported` | `false` 跳过存储与回填 |
+| `previous_response_id` | none | `unsupported_by_backend` | 网关无 session store，不做 enrich；Codex 主路径不传此字段（客户端完整回灌 `input`）。若请求携带非空值则 WARN + 忽略 |
+| `store` | response echo only | `raw_preserved` | 无本地会话存储/回填；仅在响应对象 echo 请求值 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
-| `include` | partial behavior | `deferred` | `reasoning.encrypted_content` 与 logprobs/source include 需逐项分析 |
+| `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`（默认下发/ZDR 路径）；其余（file_search/logprobs/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control，此字段忽略 |
 | `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义，忽略 |
 | `prompt_cache_retention` | none | `deferred` | deprecated 缓存保留策略（in_memory/24h），与 `prompt_cache_options` 独立；与 Anthropic cache_control 语义不同，当前静默忽略 |
@@ -70,7 +103,7 @@
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
 | `context_management` | none | `deferred` | 请求级上下文管理开关（当前仅 compaction）；OpenAI 服务端自动压缩，Anthropic 无等价请求参数，网关未实现 compaction，当前静默忽略 |
 | `max_tool_calls` | none | `deferred` | Anthropic 无直接请求参数，可能需网关计数截断 |
-| `service_tier` | none | `dropped` | 网关不透传 `service_tier`（`applyServiceTier` 与 `service_tier_passthrough` 配置已移除），由上游按默认处理 |
+| `service_tier` | none | `dropped` | 网关不透传；非空时 WARN，由上游默认处理 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
 | `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数，当前静默忽略 |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |
@@ -82,6 +115,8 @@
 | OpenAI content | Anthropic 映射 | 当前状态 | 说明 |
 |---|---|---|---|
 | `input_text` | `text` block | `supported` | 文本语义保留 |
+| `output_text`（作为 input 历史 content） | `text` block | `supported` | 非 Input Content 官方成员，但是 Codex 回灌 wire；解码时归一为 `input_text` 再转换 |
+| `refusal`（作为 input 历史 content） | `text` block | `lossy_supported` | 折成可见文本（`[refusal] …`），避免整段 assistant 历史被抹掉 |
 | `input_image.image_url` | `image` block | `supported` | URL 或 data URI 映射 |
 | `input_image.file_id` | none | `unsupported_by_backend` | 网关没有 OpenAI Files 凭据来拉取文件 |
 | `input_file.file_data` | `document` block | `supported` | 以 base64/plain text 方式构造 document |
@@ -93,38 +128,40 @@
 
 | OpenAI item | Anthropic 映射 | 当前状态 | 说明 |
 |---|---|---|---|
-| `message` / `EasyInputMessage` | message/system text | `lossy_supported` | system/developer 仅保留文本；图片等非文本内容无法放入 Anthropic system |
-| `input_message` | message | `raw_preserved` | 当前未做专门分支 |
-| `output_message` | assistant message | `raw_preserved` | 当前未做专门分支 |
-| `file_search_call` | none | `unsupported_by_backend` | Anthropic server tool 不等价 OpenAI file search |
-| `computer_call` | none | `unsupported_by_backend` | Computer use 需要专项执行环境 |
-| `computer_call_output` | none | `unsupported_by_backend` | 同上 |
-| `web_search_call` | Anthropic web search result/server tool | `supported` | server_tool_use + web_search_tool_result 映射为 web_search_call 事件链（in_progress/searching/completed），结果 URL 回显为 action.sources |
+| `message` / `EasyInputMessage` | message/system text | `lossy_supported` | system/developer 仅保留文本；图片等非文本内容无法放入 Anthropic system。Codex 回灌 assistant 正文见下「output_text 回灌」行 |
+| `message` + history `content[output_text]` | assistant text | `supported` | Codex 回灌主路径；raw 归一后走 `appendMessage` |
+| `message` + history `content[refusal]` | assistant text | `lossy_supported` | refusal 折成可见文本 |
+| `input_message` | message | `supported` | SDK 三个 `message` discriminator 实测几乎总落到 `OfMessage`；无独立分支需求 |
+| `output_message` | assistant text | `supported` | 兜底：若 SDK 解到 `OfOutputMessage` 则转 assistant text；真·Codex wire 通常是 `type=message` + `output_text` |
+| `file_search_call` | none | `dropped` | 历史回灌 WARN + 丢弃（不 raw dump）；工具声明阶段 fail-fast |
+| `computer_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
+| `computer_call_output` | none | `dropped` | 同上 |
+| `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；无 encrypted 时 result content 空；URL 折可见文本；open_page/find 折 query。出站 stream 见 Output/SSE |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
-| `function_call_output` | user `tool_result` | `supported` | output 转 text tool result |
+| `function_call_output` | user `tool_result` | `supported` | `output` string 或 content 数组（`input_text`/`input_image`/`input_file`）→ tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
 | `tool_search_output` | dynamic tools + tool_result | `supported` | 工具注入并记录 developer marker |
 | `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现，移除转换分支 |
-| `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 与 encrypted/signature 处理已有 |
+| `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 优先，空则回退 content[].reasoning_text；有 encrypted 无文本→redacted；无 encrypted 丢弃 |
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
-| `image_generation_call` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image output item |
+| `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container`（file_ids / memory_limit / 显式 container）与生成文件的 `file_id`→`url` 不可转换，container_id 丢弃 |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
-| `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本保留，session 以 raw JSON 回放 |
+| `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本 tool_result（item.id 作 tool_use_id） |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
 | `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete 映射为 JSON object，保留 `operation`、`path` 与 create/update 的 `diff`；调用者元数据未映射 |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
-| `mcp_list_tools` | none | `dropped` | Anthropic 请求侧无标准 mcp block 变体；历史回灌时丢弃 + WARN（item_type + call_id） |
-| `mcp_approval_request` | none | `dropped` | Anthropic 无等价审批协议；历史回灌时丢弃 + WARN |
-| `mcp_approval_response` | none | `dropped` | Anthropic 无等价审批协议；历史回灌时丢弃 + WARN |
-| `mcp_call` | none | `dropped` | Anthropic 请求侧无标准 mcp block 变体；历史回灌时丢弃 + WARN（item_type + call_id） |
+| `mcp_list_tools` | developer marker | `lossy_supported` | 无 Anthropic 列表块；折成 `<mcp_list_tools>` developer 文本（server + tool names + error） |
+| `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
+| `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
+| `mcp_call` | beta `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | param.Override 注入 messages；需 beta header；error→is_error |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
-| `custom_tool_call_output` | user `tool_result` | `supported` | output text 支持 |
+| `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `compaction_trigger` | system marker | `raw_preserved` | Anthropic 无等价事件 |
-| `item_reference` | local session lookup | `deferred` | 需决定是否解析本地 store item |
-| `program` | none | `unsupported_by_backend` | OpenAI program item 无 Anthropic 等价 |
-| `program_output` | none | `unsupported_by_backend` | 同上 |
+| `item_reference` | none | `dropped` | 网关无 session store；历史回灌 WARN + 丢弃 |
+| `program` | none | `dropped` | 历史回灌 WARN + 丢弃 |
+| `program_output` | none | `dropped` | 同上 |
 
 ## 转换后完整性保证
 
@@ -177,11 +214,11 @@
 | `message` | text block | `supported` | 输出 text message |
 | `reasoning` | thinking/redacted thinking block | `supported` | 支持 summary/signature/encrypted |
 | `function_call` | `tool_use` | `supported` | 普通 tool use |
-| `function_call_output` | request replay only | `supported` | 作为 input item 回放 |
+| `function_call_output` | request replay only | `supported` | 作为 input item 回放（含 content 数组形态） |
 | `custom_tool_call` | custom `tool_use` | `supported` | freeform input 解包 |
-| `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放 |
+| `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放（含 content list 形态） |
 | `tool_search_call` | `tool_use` name=`tool_search` | `supported` | `toolSearchCallKind` 产出 `tool_search_call` item（execution=client，arguments 随 done 一次性给出，不流式 delta） |
-| `tool_search_output` | request dynamic tools | `deferred` | 当前不作为 output item 发出 |
+| `tool_search_output` | request replay only | `supported` | 由 Codex 本地执行 tool_search 后回灌；网关入站注入 tools + tool_result。出站不生成该 item（后端非搜索持有者） |
 | `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现 |
 | `compaction` | response compact API | `raw_preserved` | 非模型 stream output |
 | `file_search_call` | none | `unsupported_by_backend` | 无等价 |
@@ -192,16 +229,16 @@
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
 | `code_interpreter_call` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) + code_execution_tool_result 映射为 code_interpreter_call 事件链；生成文件的 `file_id`→`url` 不可转换，stderr/return_code 并入 logs |
-| `local_shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
-| `local_shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
-| `shell_call` | `tool_use` name=`shell` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
-| `shell_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
-| `apply_patch_call` | `tool_use` name=`apply_patch` | `deferred` | 当前返回为 `custom_tool_call`，未生成此专用 Output Item |
-| `apply_patch_call_output` | request replay only | `deferred` | 仅作为请求 input 的 raw JSON 回放；网关不生成此 Output Item |
+| `local_shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `local_shell_call` item type |
+| `local_shell_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
+| `shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `shell_call` item type |
+| `shell_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
+| `apply_patch_call` | `custom_tool_call` name=`apply_patch` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `apply_patch_call` item type |
+| `apply_patch_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `mcp_call` | Anthropic beta MCP `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | server_tool_use(mcp_tool_use) + mcp_tool_result 映射为 mcp_call 事件链；error 变体并入 failed（is_error） |
-| `mcp_list_tools` | none | `unsupported_by_backend` | Anthropic 不暴露 MCP 工具列表 item；自动忽略 |
-| `mcp_approval_request` | none | `unsupported_by_backend` | Anthropic 无审批协议；`require_approval≠never` 降级为 never + WARN，历史回灌 dropped |
-| `mcp_approval_response` | none | `unsupported_by_backend` | Anthropic 无审批协议；同上 |
+| `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史见 Input Item（developer marker） |
+| `mcp_approval_request` | none | `unsupported_by_backend` | 出站不生成；`require_approval≠never` 降级 never + WARN；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
+| `mcp_approval_response` | none | `unsupported_by_backend` | 出站不生成；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 
 ## Responses SSE Events
 
@@ -212,7 +249,6 @@
 | `response.completed` | `message_stop` | `supported` | 已输出 |
 | `response.incomplete` | `message_stop` + stop reason | `lossy_supported` | `max_tokens` 与 refusal 使用合法 incomplete reason；`pause_turn` 不写非法 reason |
 | `response.failed` | upstream error | `supported` | 已输出 |
-| `error` | Anthropic error event | `deferred` | 当前多映射为 failed，需决定是否同时发 error |
 | `error` | Anthropic error event | `supported` | 上游 error 事件现在同时发出 OpenAI `error` 事件（code=upstream_error + message）与 `response.failed` 终态 |
 | `response.queued` | none | `unsupported_by_backend` | 后端无队列状态 |
 | `response.output_item.added` | content block start | `supported` | text/reasoning/tool use 支持 |
@@ -221,8 +257,7 @@
 | `response.content_part.done` | text block stop | `supported` | output_text 支持 |
 | `response.output_text.delta` | `text_delta` | `supported` | 已输出 |
 | `response.output_text.done` | text block stop | `supported` | 已输出 |
-| `response.output_text.annotation.added` | `citations_delta` | `deferred` | 需映射 Anthropic citation |
-| `response.output_text.annotation.added` | `citations_delta` | `lossy_supported` | `web_search_result_location`→`url_citation`（title/url），`char`/`page`/`content_block`/`search_result`_location→`file_citation`（file_id 占位）；start/end_index 以 0 占位（Anthropic citation 无 OpenAI 文本范围语义），未知 type WARN + 丢弃 |
+| `response.output_text.annotation.added` | `citations_delta` | `lossy_supported` | `web_search_result_location`→`url_citation`；其它→`file_citation`；start/end 占位；**同时写入终态 content.annotations**；未知 type WARN + 丢弃 |
 | `response.refusal.delta` | Anthropic refusal | `supported` | 已输出 |
 | `response.refusal.done` | Anthropic refusal | `supported` | 已输出 |
 | `response.reasoning_text.delta` | `thinking_delta` | `supported` | 已输出 |
@@ -245,7 +280,7 @@
 | `response.code_interpreter_call_code.done` | Anthropic code execution | `lossy_supported` | server_tool_use block stop 映射 |
 | `response.code_interpreter_call.in_progress` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) 触发 |
 | `response.code_interpreter_call.interpreting` | Anthropic code execution | `lossy_supported` | input_json_delta 结束后触发 |
-| `response.code_interpreter_call.completed` | Anthropic code execution | `lossy_supported` | code_execution_tool_result 触发；error 变体仍为 deferred |
+| `response.code_interpreter_call.completed` | Anthropic code execution | `lossy_supported` | `code_execution_tool_result` 触发；`code_execution_tool_result_error` 无对应 completed 语义，不映射 |
 | `response.image_generation_call.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.generating` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.partial_image` | none | `unsupported_by_backend` | 无等价 |
@@ -290,7 +325,7 @@
 | event `ping` | no-op | `supported` | 忽略是正确行为 |
 | event `message_start` | `response.created/in_progress` | `supported` | 已处理 |
 | event `content_block_start` | item/content start | `lossy_supported` | 已支持类型映射；未知类型会输出诊断性 failed |
-| event `content_block_delta` | delta events | `lossy_supported` | citation/server tool delta 未处理 |
+| event `content_block_delta` | delta events | `lossy_supported` | text/thinking/tool/citation 已处理；未知 server tool delta 随 skip |
 | event `content_block_stop` | done events | `lossy_supported` | 未知 block stop 未诊断 |
 | event `message_delta` | stop reason / usage | `lossy_supported` | `max_tokens` 与 refusal 已映射；`pause_turn` 结束为 incomplete 但不写非法 reason |
 | event `message_stop` | terminal response | `supported` | 已处理 |

@@ -601,6 +601,11 @@ func TestCitationsDeltaMapsToAnnotationAdded(t *testing.T) {
 		Index:        0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "text"},
 	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "text_delta", Text: "see docs"},
+	})
 	// web_search_result_location citation → url_citation
 	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_delta",
@@ -625,6 +630,33 @@ func TestCitationsDeltaMapsToAnnotationAdded(t *testing.T) {
 	// 验证 annotation_index 从 0 开始。
 	if payload["annotation_index"] != float64(0) {
 		t.Fatalf("expected annotation_index=0 for first annotation, got %v", payload["annotation_index"])
+	}
+
+	// 终态 output_item.done 的 content 必须带上 annotations，不能只有流式事件。
+	stopEvs, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	var donePayload map[string]any
+	for _, e := range stopEvs {
+		if e.Type == "response.output_item.done" {
+			donePayload = decodePayload(t, e.Data)
+			break
+		}
+	}
+	if donePayload == nil {
+		t.Fatalf("missing output_item.done in stop events: %+v", stopEvs)
+	}
+	item, _ := donePayload["item"].(map[string]any)
+	content, _ := item["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("empty content on done item: %v", item)
+	}
+	part, _ := content[0].(map[string]any)
+	anns, _ := part["annotations"].([]any)
+	if len(anns) != 1 {
+		t.Fatalf("final item annotations = %#v, want 1 url_citation", anns)
+	}
+	finalAnn, _ := anns[0].(map[string]any)
+	if finalAnn["type"] != "url_citation" || finalAnn["url"] != "https://go.dev" {
+		t.Fatalf("final annotation mismatch: %v", finalAnn)
 	}
 }
 
