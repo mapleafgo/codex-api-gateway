@@ -23,9 +23,76 @@
 - Responses ↔ Anthropic Messages **直转**，不走 Chat Completions 中枢，避免损失 Codex 专有形态。
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
 
+## 收口策略（产品 + 技术）
+
+本节是协议映射的**硬边界**。后续 PR 若扩大边界，必须先改本节再改代码。
+
+### 1. 产品范围内（做）
+
+- Codex CLI → Anthropic 兼容后端的 **Responses ↔ Messages 直转**。
+- 客户端自带完整 `input` 回灌；网关无 session store。
+- 可语义映射的 tool / content / SSE 生命周期；有损处登记 `lossy_supported` 并说明损失。
+- 网关自主 Anthropic `cache_control`（配置 TTL），不依赖 OpenAI prompt cache key。
+
+### 2. 产品范围外（声明不做）
+
+| 能力 | 处理 |
+|---|---|
+| `previous_response_id` / Conversation / 本地 `store` 会话回填 | `unsupported_by_backend` 或 echo-only；非空 WARN |
+| `background` / `queued` / 非 SSE 同步 JSON 响应体 | 不做 |
+| `file_search` / `computer*` / `image_generation` / `programmatic_tool_calling` | 工具声明 fail-fast；历史 item `dropped` |
+| `audio*` SSE | 不做 |
+| MCP `require_approval` 审批协议 | 降级 never + WARN；审批历史 item `dropped` |
+| OpenAI Files 凭据拉取（`file_id`） | WARN + 丢弃 |
+| OpenAI moderation / safety_identifier 透传 | WARN + 忽略 |
+
+### 3. 后端/协议限制（无法等价实现）
+
+| 限制 | 处理 |
+|---|---|
+| Anthropic 无 OpenAI `search_context_size` 字段 | **不得假映射**；请求带该字段时 WARN + 忽略 |
+| Anthropic 无 output logprobs / stream obfuscation | WARN + 忽略 |
+| Anthropic MCP 仅 `authorization_token` | 非 Bearer 的自定义 headers WARN + 丢弃 |
+| Anthropic code_execution 无 container / 生成文件 URL / image 输出字段 | 丢弃 + WARN；logs 文本尽量保留 |
+| 未知 Anthropic server tool（web_fetch 等） | 流式 **WARN + skip**，不 `response.failed` |
+
+### 4. Deprecated 字段（一律丢弃）
+
+下列字段 **禁止** 做兼容映射或注入 system 模拟：
+
+| 字段 | 行为 |
+|---|---|
+| `reasoning.generate_summary` | WARN + 忽略（只用 `reasoning.summary`） |
+| `prompt_cache_retention` | WARN + 忽略（不用其推导 TTL） |
+| `user`（OpenAI 已废弃） | WARN + 忽略（可用 `metadata.user_id`） |
+
+### 5. lossy 打磨原则
+
+- **优先透传 SDK 两侧均存在的字段**（如 web_search `user_location`）。
+- **历史回灌**可把客户端执行元数据折进 `tool_use.input` JSON（lossy 保留线索），不得改成 Anthropic 不认识的顶层字段。
+- **不扩大 fail-fast 范围**去「假装严格」；已知无等价继续 WARN/drop 或 fail-fast 与矩阵一致。
+- 每改一行矩阵状态，同步本文件变更记录日期子弹。
+
+### 6. 本批打磨范围（有序）
+
+1. web_search：`user_location` 映射；`search_context_size` 明确 WARN（不可映射）。
+2. shell / local_shell **历史 item**：env / cwd / timeout 等折入 `tool_use` input。
+3. code_interpreter 历史 image 输出：丢弃语义不变，日志与 logs 文本更清晰。
+4. MCP：文档确认 `allowed_tools` **字符串 allowlist 已支持**；filter 形态保持 WARN + 全启用（本批不展开 filter AST）。
+
 ## 变更记录
 
 ### 2026-07-20
+
+- **收口策略专节**：产品范围 / 范围外 / 后端限制 / deprecated 一律丢弃 / lossy 打磨原则写入 `docs/protocol-coverage.md`。
+
+- **文档对齐实现**
+  - Anthropic `stream server_tool_use`：未 catalog 的 server tool（web_fetch 等）与对应 result 为 **WARN + skip**，不是 `response.failed`（修正「仍显式失败」过时表述）。
+  - 补充「未知 Input Item 兜底」：`unknownInputItemPart` 仅对 SDK 未登记类型 raw_preserved；已知无等价类型保持 dropped。
+- **deferred 全 A 收口**
+  - `reasoning.generate_summary` / `text.verbosity` / `prompt_cache_retention` / `context_management` / `max_tool_calls` → `unsupported_by_backend`（WARN + 忽略；不实现语义模拟）。
+  - `prompt_cache_key` / `prompt_cache_options` / `prompt_cache_retention` 补齐 `warnDroppedOrIgnoredParams` WARN（与其它忽略字段一致）。
+  - response status `cancelled` → `supported`（metrics `canceled`/499 only；不写 SSE 终态，因对端通常已断）。
 
 - **Codex 主路径 wire 修复**
   - `input` 历史 assistant `content[].type=output_text`/`refusal` 从 raw JSON 归一为 `input_text` 再走 `appendMessage`（原路径被 SDK EasyInputMessage 静默清空）。
@@ -84,28 +151,28 @@
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
 | `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
-| `reasoning.generate_summary` | thinking display | `deferred` | deprecated，被 `reasoning.summary` 取代；值 auto/concise/detailed，当前静默忽略，是否复用 `summary` 路径需专项确认 |
+| `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
 | `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
-| `text.verbosity` | none | `deferred` | Anthropic 无原生输出 verbosity 参数；可注入 system 提示模拟但非语义等价，当前静默忽略 |
+| `text.verbosity` | none | `unsupported_by_backend` | Anthropic 无原生输出 verbosity；非空时 **WARN + 忽略**（不注入 system 假提示，避免污染 prompt cache） |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | none | `unsupported_by_backend` | 网关无 session store，不做 enrich；Codex 主路径不传此字段（客户端完整回灌 `input`）。若请求携带非空值则 WARN + 忽略 |
 | `store` | response echo only | `raw_preserved` | 无本地会话存储/回填；仅在响应对象 echo 请求值 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`（默认下发/ZDR 路径）；其余（file_search/logprobs/computer 等）WARN + 忽略 |
-| `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control，此字段忽略 |
-| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义，忽略 |
-| `prompt_cache_retention` | none | `deferred` | deprecated 缓存保留策略（in_memory/24h），与 `prompt_cache_options` 独立；与 Anthropic cache_control 语义不同，当前静默忽略 |
-| `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力，当前静默忽略 |
+| `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **WARN + 忽略** |
+| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **WARN + 忽略** |
+| `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **WARN + 忽略**（不映射 TTL） |
+| `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力；`prompt.id` 非空时 **WARN + 忽略** |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
-| `context_management` | none | `deferred` | 请求级上下文管理开关（当前仅 compaction）；OpenAI 服务端自动压缩，Anthropic 无等价请求参数，网关未实现 compaction，当前静默忽略 |
-| `max_tool_calls` | none | `deferred` | Anthropic 无直接请求参数，可能需网关计数截断 |
+| `context_management` | none | `unsupported_by_backend` | 请求级上下文管理（含 compaction）；OpenAI 服务端压缩，网关不做；非空时 **WARN + 忽略**。历史 `compaction` item 仍见 Input Item（`raw_preserved` marker） |
+| `max_tool_calls` | none | `unsupported_by_backend` | Anthropic 无直接请求参数；多轮 tool 环由客户端控制，网关单请求内不做计数截断；非空时 **WARN + 忽略** |
 | `service_tier` | none | `dropped` | 网关不透传；非空时 WARN，由上游默认处理 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
-| `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数，当前静默忽略 |
+| `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数；配置非空时 **WARN + 忽略** |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |
 | `top_logprobs` | none | `unsupported_by_backend` | Anthropic Messages 无 OpenAI output logprobs 等价 |
 | `user` | deprecated | `unsupported_by_backend` | OpenAI 已废弃字段，建议改用 `safety_identifier`/`prompt_cache_key`/`metadata.user_id`；当前 WARN + 丢弃（不透传给上游） |
@@ -146,9 +213,9 @@
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container`（file_ids / memory_limit / 显式 container）与生成文件的 `file_id`→`url` 不可转换，container_id 丢弃 |
-| `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；环境、超时、用户和工作目录未映射 |
+| `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user` 折入 tool_use.input；无 Anthropic 原生 shell env 协议 |
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本 tool_result（item.id 作 tool_use_id） |
-| `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；执行环境、调用者与限制未映射 |
+| `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；`environment_type`（local/container_reference）可选；caller/limits 仍未映射 |
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr 拼为文本；结果状态和调用者未映射 |
 | `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete 映射为 JSON object，保留 `operation`、`path` 与 create/update 的 `diff`；调用者元数据未映射 |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | 可选日志作为文本；状态和调用者未映射 |
@@ -162,6 +229,12 @@
 | `item_reference` | none | `dropped` | 网关无 session store；历史回灌 WARN + 丢弃 |
 | `program` | none | `dropped` | 历史回灌 WARN + 丢弃 |
 | `program_output` | none | `dropped` | 同上 |
+
+## 未知 Input Item 兜底
+
+| OpenAI item | Anthropic 映射 | 当前状态 | 说明 |
+|---|---|---|---|
+| SDK 尚未登记 / `GetType` 未知的 input item | system raw marker `<openai_input_item>` | `raw_preserved` | **仅**作为前向兼容兜底：已知无等价类型（file_search / computer / image_generation / program / item_reference / additional_tools / MCP approval 等）一律 `dropped`（WARN + 不 dump）。未知类型仍注入 system 以免整段历史静默蒸发；与「禁止把已知无等价 JSON 灌 system」不冲突。若产品希望未知也 drop，可改此兜底。 |
 
 ## 转换后完整性保证
 
@@ -177,14 +250,14 @@
 | `file_search` | none | `unsupported_by_backend` | 无 OpenAI vector store 后端；请求时返回明确转换错误 |
 | `computer` | none | `unsupported_by_backend` | 需 computer use 执行环境；请求时返回明确转换错误 |
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
-| `web_search` | Anthropic web search server tool (20250305) | `supported` | filters.allowed_domains → allowed_domains；search_context_size / user_location 暂未映射 |
-| `web_search_preview` | Anthropic web search server tool (20250305) | `supported` | 同 web_search，映射为同一 server tool |
-| `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | 映射为 Anthropic beta managed MCP connector；`require_approval≠never` 降级 never + WARN；自定义 `headers` 仅 `Authorization: Bearer` 提取到 `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需后端支持 beta `mcp-client-2025-11-20` |
+| `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
+| `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
+| `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | `allowed_tools: string[]` → toolset allowlist（已实现）；`allowed_tools: filter` → WARN + 全启用；`require_approval≠never` 降级 never + WARN；headers 仅 Bearer → `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需 beta `mcp-client-2025-11-20` |
 | `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明为 `code_execution_20250522` server tool；`container`（file_ids / memory_limit / 显式 container）不可转换，请求侧显式 container 被丢弃 |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
-| `local_shell` | client custom tool `shell` | `lossy_supported` | 环境/skills 字段未完整映射 |
-| `shell` | client custom tool `shell` | `lossy_supported` | environment 未完整映射 |
+| `local_shell` | client custom tool `shell` | `lossy_supported` | 声明为 freeform `shell`；历史 `local_shell_call` 的 env/cwd/timeout/user 折入 tool_use.input（见 Input Item） |
+| `shell` | client custom tool `shell` | `lossy_supported` | 声明为 freeform `shell`；历史 `shell_call` 可记 `environment_type`；container/skills 细节仍 lossy |
 | `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
 | `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`，其他类型明确转换失败 |
 | `tool_search` | client tool `tool_search` | `supported` | 当前按普通 tool 暴露 |
@@ -313,7 +386,7 @@
 | stream `thinking` | reasoning | `supported` | 已输出 reasoning events |
 | stream `redacted_thinking` | reasoning encrypted | `supported` | 已存 encrypted_content |
 | stream `tool_use` | function/custom tool call | `supported` | 已输出 tool call events |
-| stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call；web_fetch 等其他 server tool 仍显式失败 |
+| stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call（code_execution 见 catalog）；未登记的 server tool（如 web_fetch）及对应 result：**WARN + skip，不中断流**（非 response.failed） |
 | stream `web_search_tool_result` | web search call result | `supported` | 完成 web_search_call（completed + output_item.done） |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
 | stream `code_execution_tool_result` | code interpreter output | `supported` | 映射为 code_interpreter_call completed + outputs(logs)；`file_id` 丢弃 + WARN；`code_execution_tool_result_error` 无法转 completed |
@@ -346,7 +419,7 @@
 | response status | `incomplete` | `max_tokens` | `supported` | reason=`max_output_tokens` |
 | response status | `failed` | upstream error | `supported` | response.failed |
 | response status | `queued` | none | `unsupported_by_backend` | 无队列状态 |
-| response status | `cancelled` | client cancel | `deferred` | 需决定是否生成 cancelled response |
+| response status | `cancelled` | client cancel | `supported` | 客户端中途断开：metrics 记 `canceled`/499；**不写** `response.cancelled` / `response.failed` SSE（对端通常已断，写 socket 无收益）。终态后断开仍按 completed 收尾 |
 | incomplete reason | `max_output_tokens` | `max_tokens` | `supported` | 直接映射 |
 | incomplete reason | `content_filter` | policy/refusal | `supported` | refusal 映射 |
 | stop reason | none | `end_turn` | `supported` | completed |
