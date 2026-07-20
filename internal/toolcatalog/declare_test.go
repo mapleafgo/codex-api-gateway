@@ -1,7 +1,9 @@
 package toolcatalog
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -134,12 +136,23 @@ func TestDeclareWebSearchMapsUserLocation(t *testing.T) {
 	if !ws.UserLocation.Country.Valid() || ws.UserLocation.Country.Value != "CN" {
 		t.Fatalf("user_location.country not mapped: %+v", ws.UserLocation)
 	}
+	if !ws.UserLocation.Region.Valid() || ws.UserLocation.Region.Value != "Shanghai" {
+		t.Fatalf("user_location.region not mapped: %+v", ws.UserLocation)
+	}
+	if !ws.UserLocation.Timezone.Valid() || ws.UserLocation.Timezone.Value != "Asia/Shanghai" {
+		t.Fatalf("user_location.timezone not mapped: %+v", ws.UserLocation)
+	}
 	if len(ws.AllowedDomains) != 1 || ws.AllowedDomains[0] != "example.com" {
 		t.Fatalf("allowed_domains regression: %+v", ws.AllowedDomains)
 	}
 }
 
 func TestDeclareWebSearchSearchContextSizeDoesNotPanic(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
 	decls, err := Declare(oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{
 		SearchContextSize: oairesponses.WebSearchToolSearchContextSizeHigh,
 	}})
@@ -148,6 +161,10 @@ func TestDeclareWebSearchSearchContextSizeDoesNotPanic(t *testing.T) {
 	}
 	if decls[0].OfWebSearchTool20250305 == nil {
 		t.Fatal("expected web search tool")
+	}
+	got := logs.String()
+	if !strings.Contains(got, "search_context_size") || !strings.Contains(got, "high") {
+		t.Fatalf("expected WARN for search_context_size, logs: %s", got)
 	}
 }
 

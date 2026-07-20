@@ -239,6 +239,48 @@ func TestWebSearchPreviewToolMapsToAnthropicServerTool(t *testing.T) {
 	}
 }
 
+func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":"hi",
+		"tools":[{
+			"type":"web_search",
+			"filters":{"allowed_domains":["example.com"]},
+			"user_location":{"type":"approximate","city":"Shanghai","country":"CN","region":"Shanghai","timezone":"Asia/Shanghai"},
+			"search_context_size":"high"
+		}],
+		"stream":true
+	}`)
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ws *anthropic.WebSearchTool20250305Param
+	for _, tool := range out.Tools {
+		if tool.OfWebSearchTool20250305 != nil {
+			ws = tool.OfWebSearchTool20250305
+			break
+		}
+	}
+	if ws == nil {
+		t.Fatalf("web_search tool missing: %+v", out.Tools)
+	}
+	if !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Shanghai" {
+		t.Fatalf("user_location not mapped via convert: %+v", ws.UserLocation)
+	}
+	if len(ws.AllowedDomains) != 1 || ws.AllowedDomains[0] != "example.com" {
+		t.Fatalf("allowed_domains: %+v", ws.AllowedDomains)
+	}
+	if !strings.Contains(logs.String(), "search_context_size") {
+		t.Fatalf("expected search_context_size WARN via convert path, logs: %s", logs.String())
+	}
+}
+
 func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20250305Param {
 	for _, tool := range tools {
 		if tool.OfWebSearchTool20250305 != nil {

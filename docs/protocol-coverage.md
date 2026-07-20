@@ -103,7 +103,7 @@
   - `mcp_call` 历史：`param.Override` 注入 beta `mcp_tool_use` / `mcp_tool_result`，client 层同步 `anthropic-beta: mcp-client-2025-11-20`。
   - `mcp_list_tools` 历史：折 developer marker（server + 工具名 + error），lossy 保留可用工具线索。
   - `mcp_approval_request` / `response`：Anthropic 无审批协议，**不实现**，WARN + 丢弃。
-  - `code_interpreter_call` 的 image 输出：丢弃 + WARN；logs 保留。
+  - `code_interpreter_call` 的 image 输出：丢弃 + WARN；logs 保留，并写入可读占位（`image output omitted`）。
 - **出站流式**
   - `citations_delta` 除流式 `annotation.added` 外，写入终态 `output_text.annotations`，避免 Codex 只看 final item 时 citation 丢失。
 - **无等价历史 item 一律 dropped**
@@ -212,7 +212,7 @@
 | `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 优先，空则回退 content[].reasoning_text；有 encrypted 无文本→redacted；无 encrypted 丢弃 |
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
-| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container`（file_ids / memory_limit / 显式 container）与生成文件的 `file_id`→`url` 不可转换，container_id 丢弃 |
+| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；image 输出丢弃 + WARN，logs 可含 `image output omitted` 占位 |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user` 折入 tool_use.input；无 Anthropic 原生 shell env 协议 |
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 输出作为文本 tool_result（item.id 作 tool_use_id） |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令数组拼为文本；`environment_type`（local/container_reference）可选；caller/limits 仍未映射 |
