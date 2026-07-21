@@ -129,3 +129,46 @@ func TestAnthropicBackend_MissingMessageStopStillCompletes(t *testing.T) {
 		t.Fatalf("expected completed after missing message_stop, types=%v", types)
 	}
 }
+
+// TestAnthropicBackend_MidStreamEOFCode200 流已建立后 EOF：status=failed 且 code 保持 200（无上游 HTTP 码）。
+func TestAnthropicBackend_MidStreamEOFCode200(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"type":"message_start","message":{"id":"m_eof","model":"claude"}}`+"\n\n")
+		w.(http.Flusher).Flush()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer ts.Close()
+
+	var up UpstreamEvent
+	var types []string
+	b := NewAnthropic()
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		&config.Config{},
+		func(ev model.SSEEvent) error { types = append(types, ev.Type); return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err == nil {
+		t.Fatal("expected error on mid-stream EOF")
+	}
+	if up.Status != "failed" {
+		t.Fatalf("status=%q want failed", up.Status)
+	}
+	if up.Code != 200 {
+		t.Fatalf("code=%d want 200 (stream established, no HTTP status in err)", up.Code)
+	}
+	joined := strings.Join(types, ",")
+	if !strings.Contains(joined, "response.failed") {
+		t.Fatalf("expected response.failed, types=%v", types)
+	}
+}

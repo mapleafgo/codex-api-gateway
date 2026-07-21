@@ -377,9 +377,17 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	status := model.ResponseStatusCompleted
 	code := 200
 	errText := ""
-	// 上游已业务完成（lastUp.Status=completed）后客户端断开：按 completed 收尾。
+	// 上游业务完成（lastUp.Status=completed）后：客户端断开或读尾噪声均按 completed。
 	upstreamCompleted := lastUp.Status == "completed"
-	if execErr == nil || (clientCanceled && upstreamCompleted) {
+	if execErr == nil || upstreamCompleted {
+		if execErr != nil && !clientCanceled {
+			// 对齐旧路径：终态后读取失败只 WARN，不当作业务 failed。
+			slog.Warn("上游流终态后读取失败",
+				"response_id", respID,
+				"source", sourceName,
+				"elapsed", time.Since(reqStart).String(),
+				"error", execErr)
+		}
 		slog.Info("响应请求完成",
 			"response_id", respID,
 			"status", status,
@@ -396,7 +404,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		slog.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
 	} else {
 		status = model.ResponseStatusFailed
-		code = clientFailCode(execErr)
+		// 流已建立（有事件）时对齐旧语义：默认 200，能解析上游码再覆盖。
+		if evCount > 0 {
+			code = 200
+			if sc := statusCodeFromErr(execErr); sc != 0 {
+				code = sc
+			}
+		} else {
+			code = clientFailCode(execErr)
+		}
 		errText = errSummary(execErr)
 		slog.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
 		// 若流尚未写出任何事件，补一条 failed（Backend 通常已写）

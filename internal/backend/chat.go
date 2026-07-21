@@ -64,7 +64,7 @@ func (b *ChatBackend) Execute(
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: failCode(err), Error: errSummary(err), Attempt: attempt,
+				Status: "failed", Code: statusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendOpenAIChat,
 			})
 		}
@@ -112,7 +112,14 @@ func (b *ChatBackend) Execute(
 	status := "completed"
 	code := 200
 	errText := ""
-	if scanErr != nil {
+	if !locked {
+		if scanErr == nil {
+			scanErr = fmt.Errorf("upstream returned no events")
+		}
+		status = "failed"
+		code = statusCodeFromErr(scanErr)
+		errText = errSummary(scanErr)
+	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
 			if conv.Done() {
 				status = "completed"
@@ -121,14 +128,11 @@ func (b *ChatBackend) Execute(
 			}
 		} else {
 			status = "failed"
-			code = failCode(scanErr)
+			if sc := statusCodeFromErr(scanErr); sc != 0 {
+				code = sc
+			}
 			errText = errSummary(scanErr)
 		}
-	} else if !locked {
-		status = "failed"
-		code = 500
-		scanErr = fmt.Errorf("upstream returned no events")
-		errText = scanErr.Error()
 	}
 	var inTok, outTok int
 	if u := conv.Usage(); u != nil {

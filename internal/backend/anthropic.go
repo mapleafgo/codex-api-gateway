@@ -69,13 +69,21 @@ func (b *AnthropicBackend) Execute(
 		conv.SetSummarized(true)
 	}
 
+	slog.Info("尝试 Anthropic 上游",
+		"source", src.Name,
+		"endpoint", src.BaseURL,
+		"model", clientModel,
+		"resolved_model", resolved)
 	body, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp)
 	if err != nil {
+		slog.Warn("上游源建连失败",
+			"source", src.Name, "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {
+			// 与旧 trySource 一致：能解析出上游 HTTP 码则用，否则 0（非 failCode 默认 500）
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: failCode(err), Error: errSummary(err), Attempt: attempt,
+				Status: "failed", Code: statusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendAnthropic,
 			})
 		}
@@ -132,10 +140,29 @@ func (b *AnthropicBackend) Execute(
 		}
 	}
 
+	if locked && scanErr != nil {
+		if isClientCanceled(ctx, scanErr) {
+			if !sawStop && !conv.Done() {
+				slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(start).String(), "error", scanErr)
+			}
+		} else {
+			slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(start).String(), "error", scanErr)
+		}
+	}
+
 	status := "completed"
+	// 流已建立后，旧 trySource 默认 code=200；仅当错误串带上游 HTTP 码时覆盖。
 	code := 200
 	errText := ""
-	if scanErr != nil {
+	if !locked {
+		if scanErr == nil {
+			scanErr = fmt.Errorf("upstream returned no events")
+		}
+		status = "failed"
+		// 未出流：有 HTTP 码用 HTTP 码，否则 0（旧 trySource 语义）
+		code = statusCodeFromErr(scanErr)
+		errText = errSummary(scanErr)
+	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
 			if sawStop || conv.Done() {
 				status = "completed"
@@ -144,14 +171,11 @@ func (b *AnthropicBackend) Execute(
 			}
 		} else {
 			status = "failed"
-			code = failCode(scanErr)
+			if sc := statusCodeFromErr(scanErr); sc != 0 {
+				code = sc
+			}
 			errText = errSummary(scanErr)
 		}
-	} else if !locked {
-		status = "failed"
-		code = 500
-		scanErr = fmt.Errorf("upstream returned no events")
-		errText = scanErr.Error()
 	}
 	if onUpstream != nil {
 		if status == "completed" {

@@ -1454,13 +1454,15 @@ function app() {
 
     backendTypeLabel(v) {
       const x = String(v || '').trim();
-      if (x === 'c') return this.t('backendChat');
-      // 缺省/a/空：显示 Anthropic（历史记录若无字段，也默认 a）
-      return this.t('backendAnthropic');
+      // 请求列表用大写 A/C 区分：a=Anthropic，c=OpenAI Chat
+      if (x === 'c') return 'C';
+      // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
+      return 'A';
     },
     backendTypeTitle(v) {
       const x = String(v || '').trim() || 'a';
-      return this.t('colBackendType') + ': ' + x + ' · ' + this.backendTypeLabel(x);
+      const full = x === 'c' ? this.t('backendChat') : this.t('backendAnthropic');
+      return this.t('colBackendType') + ': ' + this.backendTypeLabel(x) + ' · ' + full;
     },
     isOk(row) {
       if (!row) return false;
