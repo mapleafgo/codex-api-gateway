@@ -2345,3 +2345,81 @@ func TestMetadataAbsentLeavesEmpty(t *testing.T) {
 		t.Fatalf("unexpected metadata.user_id: %q", out.Metadata.UserID.Value)
 	}
 }
+
+// TestExtractJSONPrefix 验证从 seed-XML 污染的 arguments 中提取 JSON 前缀的能力。
+func TestExtractJSONPrefix(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "clean JSON",
+			input: `{"cmd":"ls -la"}`,
+			want:  `{"cmd":"ls -la"}`,
+		},
+		{
+			name:  "seed XML after newline",
+			input: "{\"cmd\":\"python3 script.py\"}\n</function></seed:tool_call>",
+			want:  `{"cmd":"python3 script.py"}`,
+		},
+		{
+			name:  "only XML no JSON",
+			input: `</function></seed:tool_call>`,
+			want:  "",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "JSON followed by more JSON-like content after newline",
+			input: `{"a":1}\n{"b":2}`,
+			want:  `{"a":1}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractJSONPrefix(tc.input)
+			if tc.want == "" && got != "" {
+				t.Fatalf("expected empty, got: %s", got)
+			}
+			if tc.want != "" {
+				if got != tc.want {
+					t.Fatalf("extractJSONPrefix(%q) = %q, want %q", tc.input, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestFunctionCallArgumentsSeedXMLPollution 验证 function_call 的 arguments 中
+// 含尾部 seed XML 时仍能正确提取 JSON 前缀，而不是回退 {} 丢弃全部内容。
+func TestFunctionCallArgumentsSeedXMLPollution(t *testing.T) {
+	payload := `{"model":"gpt-5","input":[
+		{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"python3 script.py\"}\n</function></seed:tool_call>"},
+		{"type":"function_call_output","call_id":"c1","output":"done"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}
+	],"stream":true}`
+	req := mustReq(t, payload)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 应找到 tool_use 且 input 中包含 cmd 字段和 script.py 值
+	found := false
+	for i := range out.Messages {
+		for j := range out.Messages[i].Content {
+			if b := out.Messages[i].Content[j].OfToolUse; b != nil {
+				raw, _ := json.Marshal(b.Input)
+				if strings.Contains(string(raw), "script.py") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected tool_use with 'script.py' in arguments. got messages: %+v", out.Messages)
+	}
+}

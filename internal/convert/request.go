@@ -512,12 +512,27 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
 		return nil
 	}
+	// program_call / program_output：Codex 回灌历史（无 Anthropic 等价 tool），
+	// 折成 developer 文本保留上下文，避免丢失模型写过的 JavaScript 代码及执行结果。
+	if item.OfProgram != nil {
+		*sysParts = append(*sysParts, instructionPart{
+			role: model.RoleDeveloper,
+			text: fmt.Sprintf("<codex_program call_id=%q>\n%s\n</codex_program>", item.OfProgram.CallID, item.OfProgram.Code),
+		})
+		return nil
+	}
+	if item.OfProgramOutput != nil {
+		*sysParts = append(*sysParts, instructionPart{
+			role: model.RoleDeveloper,
+			text: fmt.Sprintf("<codex_program_output call_id=%q status=%q>\n%s\n</codex_program_output>", item.OfProgramOutput.CallID, item.OfProgramOutput.Status, item.OfProgramOutput.Result),
+		})
+		return nil
+	}
 	// 无 Anthropic 等价语义的 hosted / 专有 item（file_search / computer / image_generation /
-	// program / item_reference / additional_tools）：WARN + 丢弃，禁止把整段 JSON 灌进
+	// item_reference / additional_tools）：WARN + 丢弃，禁止把整段 JSON 灌进
 	// system context 干扰模型。工具声明阶段这些类型多数已 fail-fast，此处兜底历史回灌路径。
 	if item.OfFileSearchCall != nil || item.OfComputerCall != nil ||
 		item.OfComputerCallOutput != nil || item.OfImageGenerationCall != nil ||
-		item.OfProgram != nil || item.OfProgramOutput != nil ||
 		item.OfItemReference != nil || item.OfAdditionalTools != nil {
 		typ := ""
 		if ptr := item.GetType(); ptr != nil {
@@ -769,7 +784,39 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
-	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), json.RawMessage(orDefault(fc.Arguments, `{}`)))
+	args := orDefault(fc.Arguments, `{}`)
+	// Go 1.26 起 json.RawMessage.MarshalJSON 会对内容做 json.Valid 检查，
+	// 截断或非法的 arguments 会直接引发 marshal 失败。
+	// Codex seed 格式会在 arguments JSON 之后追加 XML 标记（如 \n</function></seed:tool_call>），
+	// 导致整体非 JSON。这里先尝试按前缀提取合法 JSON 对象，兜底回退 {}。
+	if !json.Valid([]byte(args)) {
+		if cleaned := extractJSONPrefix(args); cleaned != "" {
+			slog.Debug("从 function_call arguments 提取了 JSON 前缀（丢弃尾部非 JSON seed 标记）",
+				"call_id", fc.CallID, "name", fc.Name, "original_len", len(args), "clean_len", len(cleaned))
+			args = cleaned
+		} else {
+			slog.Warn("function_call arguments 非合法 JSON，全部回退 {}",
+				"call_id", fc.CallID, "name", fc.Name, "len", len(args))
+			args = `{}`
+		}
+	}
+	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), json.RawMessage(args))
+}
+
+// extractJSONPrefix attempts to parse a single JSON object from the beginning
+// of s. This handles Codex seed format where arguments JSON is followed by XML
+// tags such as \n</function></seed:tool_call>, making the full string invalid.
+func extractJSONPrefix(s string) string {
+	dec := json.NewDecoder(strings.NewReader(s))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return ""
+	}
+	// function_call arguments must be a JSON object.
+	if len(raw) == 0 || raw[0] != '{' {
+		return ""
+	}
+	return string(raw)
 }
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
