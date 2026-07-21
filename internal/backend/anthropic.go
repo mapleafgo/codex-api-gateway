@@ -32,6 +32,9 @@ func NewAnthropic() *AnthropicBackend {
 }
 
 // Execute 实现 Backend：convert → anthropic stream → streamconv。
+// 行为对齐改造前 server.handleResponses + scheduler.trySource 的 a 路径：
+// SetEcho / summarized / tools 声明、usage+cache 合并、message_stop 收尾、
+// 客户端取消判定、上游 HTTP 状态码、转换诊断日志。
 func (b *AnthropicBackend) Execute(
 	ctx context.Context,
 	rawBody []byte,
@@ -54,10 +57,14 @@ func (b *AnthropicBackend) Execute(
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
 
+	logAnthropicConverted(&src, anthReq)
+
 	conv := streamconv.New()
+	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
 	conv.SetCustomToolNames(convert.FreeformToolNames(req))
 	conv.SetDeclaredServerTools(convert.DeclaredServerTools(req))
+	// 仅 summary==concise 时上游返回 summarized thinking，才用 reasoning_summary_*。
 	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
 		conv.SetSummarized(true)
 	}
@@ -68,7 +75,7 @@ func (b *AnthropicBackend) Execute(
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: 500, Error: err.Error(), Attempt: attempt,
+				Status: "failed", Code: failCode(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendAnthropic,
 			})
 		}
@@ -90,8 +97,6 @@ func (b *AnthropicBackend) Execute(
 		if ev != nil && ev.Type == anMessageStop {
 			sawStop = true
 		}
-		// 与 scheduler.mergeUsage 一致：message_start 取 input/cache_* 初值，
-		// message_delta 取累计值（含 cache_* 刷新），按「最后一次非零」合并。
 		mergeAnthropicUsage(&usage, ev)
 		out, err := conv.Feed(ev)
 		if err != nil {
@@ -105,30 +110,42 @@ func (b *AnthropicBackend) Execute(
 		return nil
 	})
 
-	if scanErr != nil && locked && !conv.Done() {
-		// 流中途失败：补 response.failed（sequence 延续 converter）
-		errResp := model.NewResponseObject(conv.RespID(), model.ResponseStatusFailed, clientModel, time.Now().Unix(), model.ResponseObjectParams{})
-		errResp.Output = conv.OutputItems()
-		errResp.Error = &model.ResponseError{Message: scanErr.Error()}
-		evType := "response.failed"
-		_ = onEvent(model.MarshalEvent(evType, model.TerminalResponseEvent{
-			Type: evType, SequenceNumber: conv.NextSeq(), Response: errResp,
-		}))
+	// 收尾安全网：对齐旧 server 成功路径再喂一次 message_stop。
+	// 上游未发 message_stop 但干净结束时，仍产出 response.completed。
+	if locked && !conv.Done() {
+		if scanErr == nil || (isClientCanceled(ctx, scanErr) && sawStop) {
+			trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
+			for _, e := range trailing {
+				if err := onEvent(e); err != nil && scanErr == nil {
+					scanErr = err
+				}
+			}
+		} else if scanErr != nil && !isClientCanceled(ctx, scanErr) {
+			// 流中途失败：补 response.failed（sequence 延续 converter）
+			errResp := model.NewResponseObject(conv.RespID(), model.ResponseStatusFailed, clientModel, time.Now().Unix(), convert.EchoFromRequest(req))
+			errResp.Output = conv.OutputItems()
+			errResp.Error = &model.ResponseError{Message: scanErr.Error()}
+			evType := "response.failed"
+			_ = onEvent(model.MarshalEvent(evType, model.TerminalResponseEvent{
+				Type: evType, SequenceNumber: conv.NextSeq(), Response: errResp,
+			}))
+		}
 	}
+
 	status := "completed"
 	code := 200
 	errText := ""
 	if scanErr != nil {
-		if ctx.Err() != nil {
-			if sawStop {
+		if isClientCanceled(ctx, scanErr) {
+			if sawStop || conv.Done() {
 				status = "completed"
 			} else {
 				status = "canceled"
 			}
 		} else {
 			status = "failed"
-			code = 500
-			errText = scanErr.Error()
+			code = failCode(scanErr)
+			errText = errSummary(scanErr)
 		}
 	} else if !locked {
 		status = "failed"
@@ -140,19 +157,92 @@ func (b *AnthropicBackend) Execute(
 		if status == "completed" {
 			errText = ""
 		}
+		// 优先用 streamconv.Usage（含 cache），与旧 server 成功路径一致；
+		// 若 converter 尚未记 usage，回退 mergeAnthropicUsage。
+		inTok, outTok, cacheRead, cacheCreate := int(usage.InputTokens), int(usage.OutputTokens), int(usage.CacheReadInputTokens), int(usage.CacheCreationInputTokens)
+		if u := conv.Usage(); u != nil {
+			if u.InputTokens > 0 {
+				inTok = u.InputTokens
+			}
+			if u.OutputTokens > 0 {
+				outTok = u.OutputTokens
+			}
+			if u.CacheReadInputTokens > 0 {
+				cacheRead = u.CacheReadInputTokens
+			}
+			if u.CacheCreationInputTokens > 0 {
+				cacheCreate = u.CacheCreationInputTokens
+			}
+		}
 		onUpstream(UpstreamEvent{
 			SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 			StartedAt: start, Duration: time.Since(start), TTFB: ttfb,
 			Status: status, Code: code, Error: errText, Attempt: attempt,
-			InputTokens: int(usage.InputTokens), OutputTokens: int(usage.OutputTokens),
-			CacheRead: int(usage.CacheReadInputTokens), CacheCreate: int(usage.CacheCreationInputTokens),
+			InputTokens: inTok, OutputTokens: outTok,
+			CacheRead: cacheRead, CacheCreate: cacheCreate,
 			BackendType: config.BackendAnthropic,
 		})
 	}
 	if !locked {
 		return scanErr
 	}
+	// 业务已终态后客户端断开：返回 error 供上层记日志，但 onUpstream 已记 completed。
 	return scanErr
+}
+
+func logAnthropicConverted(src *config.Source, anthReq *anthropic.MessageNewParams) {
+	sysLen := 0
+	for _, b := range anthReq.System {
+		sysLen += len(b.Text)
+	}
+	thinkingOn := anthReq.Thinking.OfEnabled != nil || anthReq.Thinking.OfAdaptive != nil
+	thinkingBlocks, emptySig, toolUseBlk, toolResultBlk, assistantMsgs, userMsgs := summarizeAnthropicRequest(anthReq)
+	slog.Info("请求转换完成",
+		"source", src.Name,
+		"backend_type", config.BackendAnthropic,
+		"model", string(anthReq.Model),
+		"max_tokens", anthReq.MaxTokens,
+		"messages", len(anthReq.Messages),
+		"assistant_messages", assistantMsgs,
+		"user_messages", userMsgs,
+		"system_bytes", sysLen,
+		"thinking", thinkingOn,
+		"thinking_blocks", thinkingBlocks,
+		"thinking_empty_signature", emptySig,
+		"tool_use_blocks", toolUseBlk,
+		"tool_result_blocks", toolResultBlk,
+		"tools", len(anthReq.Tools))
+	if emptySig > 0 {
+		slog.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
+			"source", src.Name, "thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
+	}
+}
+
+func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks, emptySig, toolUse, toolResult, assistant, user int) {
+	for _, msg := range req.Messages {
+		switch msg.Role {
+		case anthropic.MessageParamRoleAssistant:
+			assistant++
+		case anthropic.MessageParamRoleUser:
+			user++
+		}
+		for _, b := range msg.Content {
+			switch {
+			case b.OfThinking != nil:
+				thinkingBlocks++
+				if b.OfThinking.Signature == "" {
+					emptySig++
+				}
+			case b.OfRedactedThinking != nil:
+				thinkingBlocks++
+			case b.OfToolUse != nil:
+				toolUse++
+			case b.OfToolResult != nil:
+				toolResult++
+			}
+		}
+	}
+	return
 }
 
 // mergeAnthropicUsage 合并单个 Anthropic SSE 事件的 usage 到累计视图。

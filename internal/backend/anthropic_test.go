@@ -2,9 +2,11 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -12,7 +14,7 @@ import (
 )
 
 // TestAnthropicBackend_ReportsCacheUsage 回归：message_start 带 cache_read/create，
-// message_delta 只刷新 output 时，观测事件仍应保留 cache_*（与旧 scheduler.mergeUsage 一致）。
+// message_delta 只刷新 output 时，观测事件仍应保留 cache_*。
 func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -43,5 +45,87 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	}
 	if up.InputTokens != 100 || up.OutputTokens != 5 {
 		t.Fatalf("token usage: in=%d out=%d", up.InputTokens, up.OutputTokens)
+	}
+}
+
+// TestAnthropicBackend_SetEchoOnCompleted 确保 response.completed 带回 instructions 等 echo 字段。
+func TestAnthropicBackend_SetEchoOnCompleted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"type":"message_start","message":{"id":"m_echo","model":"claude"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	var completed map[string]any
+	b := NewAnthropic()
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","instructions":"sys-echo","temperature":0.2,"input":"hi","stream":true}`),
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		&config.Config{},
+		func(ev model.SSEEvent) error {
+			if ev.Type == "response.completed" {
+				_ = json.Unmarshal(ev.Data, &completed)
+			}
+			return nil
+		},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if completed == nil {
+		t.Fatal("missing response.completed")
+	}
+	resp, _ := completed["response"].(map[string]any)
+	if resp == nil {
+		t.Fatalf("no response object: %v", completed)
+	}
+	if resp["instructions"] != "sys-echo" {
+		t.Fatalf("instructions not echoed: %v", resp["instructions"])
+	}
+	// temperature may be json.Number
+	if resp["temperature"] == nil {
+		t.Fatalf("temperature not echoed: %+v", resp)
+	}
+}
+
+// TestAnthropicBackend_MissingMessageStopStillCompletes 上游无 message_stop 时仍应补 completed。
+func TestAnthropicBackend_MissingMessageStopStillCompletes(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"type":"message_start","message":{"id":"m_nostop","model":"claude"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1}}`+"\n\n")
+		// intentionally no message_stop
+	}))
+	defer ts.Close()
+
+	var types []string
+	b := NewAnthropic()
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		&config.Config{},
+		func(ev model.SSEEvent) error {
+			types = append(types, ev.Type)
+			return nil
+		},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	joined := strings.Join(types, ",")
+	if !strings.Contains(joined, "response.completed") {
+		t.Fatalf("expected completed after missing message_stop, types=%v", types)
 	}
 }

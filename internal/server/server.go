@@ -14,9 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
-	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
@@ -320,7 +318,22 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
 		return
 	}
-	// 预检：body 可 decode 即可；按源协议转换在 Backend 内完成，避免纯 Chat 部署被 Anthropic 转换误杀。
+	// 预检：首源为 Anthropic 时 dry-run ToAnthropic，在写 SSE 头前返回 400（对齐旧行为）。
+	// 首源为 Chat 时不做 Anthropic 预检，避免纯 Chat 部署被误杀。
+	first := ordered[0]
+	bt, _ := config.NormalizeBackendType(first.BackendType)
+	if bt == config.BackendAnthropic {
+		if _, err := convert.DecodeResponseNewParams(body); err != nil {
+			slog.Warn("预解析响应请求失败", "source", first.Name, "error", err)
+			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, _, err := convert.ToAnthropic(req, s.holder.Current()); err != nil {
+			slog.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -357,10 +370,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 
-	id := lastUp.SourceName // placeholder overwritten below
-	_ = id
+	// Backend 已在 SSE 流内写入真实 response id；此处 id 仅用于日志/metrics 关联。
 	respID := newResponseID()
-	// 尽量从已写出事件无法反查 ID；用新 ID 仅用于日志。Backend 已在流内写了真实 response id。
 	clientCanceled := isClientCanceled(r.Context(), execErr)
 
 	status := model.ResponseStatusCompleted
@@ -369,7 +380,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// 上游已业务完成（lastUp.Status=completed）后客户端断开：按 completed 收尾。
 	upstreamCompleted := lastUp.Status == "completed"
 	if execErr == nil || (clientCanceled && upstreamCompleted) {
-		slog.Info("响应请求完成", "response_id", respID, "status", status, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String())
+		slog.Info("响应请求完成",
+			"response_id", respID,
+			"status", status,
+			"source", sourceName,
+			"backend_type", backendType,
+			"upstream_events", evCount,
+			"cache_read_tokens", lastUp.CacheRead,
+			"cache_creation_tokens", lastUp.CacheCreate,
+			"elapsed", time.Since(reqStart).String())
 	} else if clientCanceled {
 		status = "canceled"
 		code = 499
@@ -411,30 +430,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) buildAnthropicRequest(body []byte, _ config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
-	req, err := convert.DecodeResponseNewParams(body)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	anthReq, mcp, err := convert.ToAnthropic(req, s.holder.Current())
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return req, anthReq, mcp, nil
-}
-
 func writeSSE(w io.Writer, e model.SSEEvent) {
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, e.Data); err != nil {
 		slog.Warn("写出 SSE 事件失败", "event_type", e.Type, "error", err)
 	}
-}
-
-func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
-	// reasoning.summary 默认 none，不再因 effort≠none 强改。必须与 applyReasoning
-	// 严格对齐：只有 summary==concise 时上游才会返回 summarized thinking block，
-	// 此时才用 reasoning_summary_* 事件格式。其它情况上游返回 plaintext thinking，
-	// 走 reasoning_text.* 事件。
-	return string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
 }
 
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
@@ -616,50 +615,15 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 	}
 }
 
-// echoFromRequest extracts P2 echo fields from the request for response object.
+// echoFromRequest 保留包内调用点，实现统一走 convert.EchoFromRequest。
 func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectParams {
-	p := model.ResponseObjectParams{
-		Instructions: req.Instructions.Value,
-		Truncation:   string(req.Truncation),
-	}
-	if req.Temperature.Valid() {
-		v := req.Temperature.Value
-		p.Temperature = &v
-	}
-	if req.TopP.Valid() {
-		v := req.TopP.Value
-		p.TopP = &v
-	}
-	if req.MaxOutputTokens.Valid() {
-		v := req.MaxOutputTokens.Value
-		p.MaxOutputTokens = &v
-	}
-	if req.ParallelToolCalls.Valid() {
-		v := req.ParallelToolCalls.Value
-		p.ParallelToolCalls = &v
-	}
-	if req.Store.Valid() {
-		v := req.Store.Value
-		p.Store = &v
-	}
-	// Echo tool_choice if any variant is set.
-	if req.ToolChoice.OfToolChoiceMode.Valid() ||
-		req.ToolChoice.OfAllowedTools != nil ||
-		req.ToolChoice.OfFunctionTool != nil ||
-		req.ToolChoice.OfHostedTool != nil ||
-		req.ToolChoice.OfMcpTool != nil ||
-		req.ToolChoice.OfCustomTool != nil ||
-		req.ToolChoice.OfSpecificApplyPatchToolChoice != nil ||
-		req.ToolChoice.OfSpecificShellToolChoice != nil {
-		p.ToolChoice = req.ToolChoice
-	}
-	if req.Reasoning.Effort != "" || req.Reasoning.Summary != "" {
-		p.Reasoning = &model.ReasoningEcho{
-			Effort:  string(req.Reasoning.Effort),
-			Summary: string(req.Reasoning.Summary),
-		}
-	}
-	return p
+	return convert.EchoFromRequest(req)
+}
+
+// shouldSummarizeReasoning 与 AnthropicBackend / convert.applyReasoning 对齐：
+// 仅 reasoning.summary==concise 时使用 reasoning_summary_* 事件格式。
+func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
+	return string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
 }
 
 // itemType 返回 input item 的人类可读类型名称，用于日志。
@@ -804,32 +768,6 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 // Anthropic request for diagnostics: reasoning signature health (empty
 // signatures violate Anthropic's thinking round-trip rules and can corrupt
 // multi-turn thinking context), tool-loop balance, and context volume.
-func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks, emptySig, toolUse, toolResult, assistant, user int) {
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case anthropic.MessageParamRoleAssistant:
-			assistant++
-		case anthropic.MessageParamRoleUser:
-			user++
-		}
-		for _, b := range msg.Content {
-			switch {
-			case b.OfThinking != nil:
-				thinkingBlocks++
-				if b.OfThinking.Signature == "" {
-					emptySig++
-				}
-			case b.OfRedactedThinking != nil:
-				thinkingBlocks++
-			case b.OfToolUse != nil:
-				toolUse++
-			case b.OfToolResult != nil:
-				toolResult++
-			}
-		}
-	}
-	return
-}
 
 func newResponseID() string {
 	return fmt.Sprintf("resp_%d", time.Now().UnixNano())

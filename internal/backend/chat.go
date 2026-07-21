@@ -64,7 +64,7 @@ func (b *ChatBackend) Execute(
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: 500, Error: err.Error(), Attempt: attempt,
+				Status: "failed", Code: failCode(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendOpenAIChat,
 			})
 		}
@@ -73,8 +73,8 @@ func (b *ChatBackend) Execute(
 	defer stream.Close()
 
 	conv := chatstreamconv.New()
+	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
-	// 不注入完整 echo（MVP）；后续可从 req 填 ResponseObjectParams
 
 	var ttfb time.Duration
 	locked := false
@@ -113,12 +113,16 @@ func (b *ChatBackend) Execute(
 	code := 200
 	errText := ""
 	if scanErr != nil {
-		if ctx.Err() != nil {
-			status = "canceled"
+		if isClientCanceled(ctx, scanErr) {
+			if conv.Done() {
+				status = "completed"
+			} else {
+				status = "canceled"
+			}
 		} else {
 			status = "failed"
-			code = 500
-			errText = scanErr.Error()
+			code = failCode(scanErr)
+			errText = errSummary(scanErr)
 		}
 	} else if !locked {
 		status = "failed"
