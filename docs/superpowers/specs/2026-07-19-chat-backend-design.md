@@ -1,8 +1,18 @@
 # OpenAI Chat Completions 后端源设计
 
 > 日期：2026-07-19
-> 状态：待审阅
-> 方案：适配器模式（方案 B）
+> 状态：**已取代**
+> 取代文档：`docs/superpowers/specs/2026-07-21-openai-chat-backend-design.md`
+>
+> 本文保留作历史草案，请以 2026-07-21 文档为准。主要差异：
+> - `backend_type` wire 改为短码 `a` / `c`（非 `openai_chat`）
+> - 出站统一 `model.SSEEvent`（废弃草案中的 ResponseSSEEvent 层）
+> - Chat **仅流式**；base_url 拼接不写死 `/v1/chat/completions`
+> - 管理页必须支持类型配置、观测列必有值、允许未落盘试拉上游 models
+> - 转换细节改为厂商调研驱动策略，不在设计中锁死完整字段表
+> - 架构明确为完整 Backend 适配器（方案 A）
+
+---
 
 ## 1. 背景与目标
 
