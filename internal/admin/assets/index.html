@@ -422,7 +422,7 @@ html[data-theme="dark"] .ui-sel-list {
 }
 .ui-log-head, .ui-log-row {
   display: grid;
-  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 64px 64px 56px 40px;
+  grid-template-columns: 72px 48px minmax(72px,.7fr) minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 64px 64px 56px 40px;
   gap: 10px; align-items: center; padding: 0 16px;
 }
 .ui-log-head {
@@ -724,6 +724,7 @@ html[data-theme="dark"] .ui-select {
           <span x-text="t('colTime')"></span>
           <span class="center" x-text="t('colKind')"></span>
           <span x-text="t('source')"></span>
+          <span class="center" x-text="t('colBackendType')"></span>
           <span x-text="t('model')"></span>
           <span class="num" x-text="t('inputTok')"></span>
           <span class="num" x-text="t('outputTok')"></span>
@@ -744,6 +745,9 @@ html[data-theme="dark"] .ui-select {
                       :title="row.kind === 'upstream' ? (t('kindUpstream') + ' #' + row.attempt) : t('kindClient')"></span>
               </span>
               <span class="truncate" x-text="row.source" :title="row.source"></span>
+              <span class="center">
+                <span class="ui-badge ui-badge-soft-neutral" x-text="backendTypeLabel(row.backend_type)" :title="backendTypeLabel(row.backend_type)"></span>
+              </span>
               <span class="min0 mono truncate" style="font-size:12px" :title="modelCellTitle(row)">
                 <template x-if="row.resolved_model && row.resolved_model !== row.model">
                   <span style="display:flex; gap:4px; min-width:0; align-items:center">
@@ -835,6 +839,13 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('srcURL')"></span>
                     <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
                   </label>
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('backendType')"></span>
+                    <select class="ui-input ui-input-sm" x-model="src.backend_type" x-init="if(!src.backend_type) src.backend_type='a'">
+                      <option value="a" x-text="t('backendAnthropic')"></option>
+                      <option value="c" x-text="t('backendChat')"></option>
+                    </select>
+                  </label>
                   <div class="ui-field ui-span-2">
                     <div style="display:flex; align-items:center; gap:8px">
                       <span class="ui-label" x-text="t('apiKey')"></span>
@@ -843,13 +854,6 @@ html[data-theme="dark"] .ui-select {
                               :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
                               x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
                     </div>
-              <label class="ui-field">
-                <span x-text="t('backendType') || 'Backend'"></span>
-                <select class="ui-input" x-model="src.backend_type">
-                  <option value="a" x-text="t('backendAnthropic') || 'Anthropic'"></option>
-                  <option value="c" x-text="t('backendChat') || 'OpenAI Chat'"></option>
-                </select>
-              </label>
 
                     <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
                            x-model="src.api_key" autocomplete="off" spellcheck="false">
@@ -1162,7 +1166,17 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-label" x-text="f.label"></span>
               </span>
             </template>
-            <template x-if="f.type !== 'checkbox'">
+            <template x-if="f.type === 'select'">
+              <span class="ui-field">
+                <span class="ui-label" x-text="f.label"></span>
+                <select class="ui-input ui-input-sm" x-model="f.value">
+                  <template x-for="opt in (f.options || [])" :key="opt.v">
+                    <option :value="opt.v" x-text="opt.l"></option>
+                  </template>
+                </select>
+              </span>
+            </template>
+            <template x-if="f.type !== 'checkbox' && f.type !== 'select'">
               <span class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
                 <input class="ui-input ui-input-sm"
@@ -1213,11 +1227,11 @@ function app() {
       byGroup: '供应商 × 模型', groups: '组', source: '供应商', model: '模型',
       requests: '请求', cacheHit: '缓存命中', cacheCreate: '缓存创建', avgMs: '平均耗时', avgTtfb: '平均首字节', noData: '暂无数据',
       inputTok: '输入', outputTok: '输出', okCount: '成功', failCount: '失败',
-      colTime: '时间', colKind: '类型', colTtfb: '首字节', colDur: '耗时', colCode: '状态码', colOk: '结果',
+      colTime: '时间', colKind: '类型', colBackendType: '接口类型', colTtfb: '首字节', colDur: '耗时', colCode: '状态码', colOk: '结果',
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', backendType: '后端类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '引导语',
+      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '引导语',
       addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
       srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
@@ -1256,11 +1270,11 @@ function app() {
       byGroup: 'Source × Model', groups: 'groups', source: 'Source', model: 'Model',
       requests: 'Requests', cacheHit: 'Cache Hit', cacheCreate: 'Cache Create', avgMs: 'Avg Duration', avgTtfb: 'Avg TTFB', noData: 'No data',
       inputTok: 'Input', outputTok: 'Output', okCount: 'OK', failCount: 'Fail',
-      colTime: 'Time', colKind: 'Kind', colTtfb: 'TTFB', colDur: 'Dur', colCode: 'Code', colOk: 'Result',
+      colTime: 'Time', colKind: 'Kind', colBackendType: 'API Type', colTtfb: 'TTFB', colDur: 'Dur', colCode: 'Code', colOk: 'Result',
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', backendType: 'Backend', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Guidance',
+      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Guidance',
       addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
       srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
@@ -1549,6 +1563,9 @@ function app() {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
         Object.keys(data.models || {}).forEach(slug => { data.models[slug]._slug = slug; });
+        (data.sources || []).forEach(s => {
+          if (!s.backend_type) s.backend_type = 'a';
+        });
         this.cfg = data;
         this.cfgSnapshot = JSON.stringify(this.cfg);
       } catch (e) {
@@ -1614,6 +1631,10 @@ function app() {
         fields: [
           { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
           { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
+          { key: 'backend_type', label: this.t('backendType'), type: 'select', value: 'a', options: [
+            { v: 'a', l: this.t('backendAnthropic') },
+            { v: 'c', l: this.t('backendChat') },
+          ]},
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
           { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
         ],
@@ -1631,9 +1652,9 @@ function app() {
           return;
         }
         this.cfg.sources.push({
-          backend_type: 'a',
           name,
           base_url,
+          backend_type: (v.backend_type || 'a'),
           api_key: (v.api_key || '').trim(),
           model_map: {},
           default_model: (v.default_model || '').trim(),

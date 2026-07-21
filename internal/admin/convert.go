@@ -21,9 +21,13 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 		BaseInstructionsFile: in.BaseInstructionsFile,
 	}
 	for _, sv := range in.Sources {
+		bt := sv.BackendType
+		if n, err := config.NormalizeBackendType(sv.BackendType); err == nil {
+			bt = n
+		}
 		src := config.Source{
 			Name: sv.Name, BaseURL: sv.BaseURL, APIKey: sv.APIKey,
-			BackendType: sv.BackendType, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
+			BackendType: bt, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
 		}
 		if sv.Breaker != nil {
 			b := breakerViewToCfg(*sv.Breaker)

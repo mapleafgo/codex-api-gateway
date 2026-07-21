@@ -387,9 +387,10 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Models:               map[string]modelView{},
 	}
 	for _, src := range cfg.Sources {
+		bt, _ := config.NormalizeBackendType(src.BackendType)
 		sv := sourceView{
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
-			BackendType: src.BackendType,
+			BackendType: bt,
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
 		}
 		if src.Breaker != nil {
