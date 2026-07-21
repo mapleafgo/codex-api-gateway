@@ -82,9 +82,8 @@ func TestWebSearchHistoryResultEmptyWithoutEncrypted(t *testing.T) {
 	}
 }
 
-// TestUnsupportedHistoryItemsDroppedWithWarn：file_search/computer/image_generation/item_reference
+// TestUnsupportedHistoryItemsDroppedWithWarn：file_search/computer/image_generation/program/item_reference
 // 不得再 raw dump 进 system，应 WARN 后丢弃。
-// program / program_output 已单独处理（转 tool_use），不在此测试范围内。
 func TestUnsupportedHistoryItemsDroppedWithWarn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -95,6 +94,7 @@ func TestUnsupportedHistoryItemsDroppedWithWarn(t *testing.T) {
 		{"computer", `{"type":"computer_call","id":"cu1","call_id":"c1","status":"completed","actions":[{"type":"screenshot"}]}`, "computer_call"},
 		{"computer_out", `{"type":"computer_call_output","call_id":"c1","output":{"type":"computer_screenshot","image_url":"https://x/s.png"}}`, "computer_call_output"},
 		{"image_gen", `{"type":"image_generation_call","id":"ig1","status":"completed","result":"b64"}`, "image_generation_call"},
+		{"program", `{"type":"program","id":"p1"}`, "program"},
 		{"item_ref", `{"type":"item_reference","id":"msg_1"}`, "item_reference"},
 	}
 	for _, tc := range cases {
@@ -117,78 +117,6 @@ func TestUnsupportedHistoryItemsDroppedWithWarn(t *testing.T) {
 				t.Fatalf("expected WARN containing %s, got: %s", tc.typ, logs)
 			}
 		})
-	}
-}
-
-// TestProgramItemConvertedToSystemText 验证 program_call 被优雅折成 developer 文本
-// 保留在 system context，而不是 tool_use（回灌 history，无 Anthropic 等价语义）。
-func TestProgramItemConvertedToSystemText(t *testing.T) {
-	payload := `{"model":"gpt-5","input":[
-		{"type":"program","id":"p1","call_id":"c_prog1","code":"console.log('hello')","fingerprint":"fp1"},
-		{"type":"message","role":"user","content":[{"type":"input_text","text":"u"}]}
-	],"stream":true}`
-	req := mustReq(t, payload)
-	out, _, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 应在 system 中存在包含 codex_program 标记的文本
-	found := false
-	for _, s := range out.System {
-		if strings.Contains(s.Text, "codex_program") && strings.Contains(s.Text, "console.log") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected <codex_program> in system, got system: %+v", out.System)
-	}
-	// 不应 raw dump 为 openai_input_item
-	for _, s := range out.System {
-		if strings.Contains(s.Text, "openai_input_item") {
-			t.Fatal("program must not raw-dump into system")
-		}
-	}
-	// 不应出现在 messages 里（非 tool_use，是回灌历史）
-	for _, msg := range out.Messages {
-		for _, b := range msg.Content {
-			if b.OfToolUse != nil {
-				t.Fatalf("program item must not become a tool_use, got: %+v", b.OfToolUse)
-			}
-		}
-	}
-}
-
-// TestProgramOutputConvertedToSystemText 验证 program_output 被折成 developer 文本。
-func TestProgramOutputConvertedToSystemText(t *testing.T) {
-	payload := `{"model":"gpt-5","input":[
-		{"type":"program","id":"p1","call_id":"c_prog1","code":"console.log('hello')","fingerprint":"fp1"},
-		{"type":"program_output","id":"po1","call_id":"c_prog1","result":"hello\n","status":"completed"},
-		{"type":"message","role":"user","content":[{"type":"input_text","text":"u"}]}
-	],"stream":true}`
-	req := mustReq(t, payload)
-	out, _, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 应在 system 中存在包含 codex_program_output 标记的文本
-	found := false
-	for _, s := range out.System {
-		if strings.Contains(s.Text, "codex_program_output") && strings.Contains(s.Text, "hello") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected <codex_program_output> in system, got system: %+v", out.System)
-	}
-	// 不应出现在 messages 里
-	for _, msg := range out.Messages {
-		for _, b := range msg.Content {
-			if b.OfToolResult != nil {
-				t.Fatalf("program_output must not become a tool_result, got: %+v", b.OfToolResult)
-			}
-		}
 	}
 }
 

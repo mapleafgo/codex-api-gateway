@@ -512,27 +512,12 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
 		return nil
 	}
-	// program_call / program_output：Codex 回灌历史（无 Anthropic 等价 tool），
-	// 折成 developer 文本保留上下文，避免丢失模型写过的 JavaScript 代码及执行结果。
-	if item.OfProgram != nil {
-		*sysParts = append(*sysParts, instructionPart{
-			role: model.RoleDeveloper,
-			text: fmt.Sprintf("<codex_program call_id=%q>\n%s\n</codex_program>", item.OfProgram.CallID, item.OfProgram.Code),
-		})
-		return nil
-	}
-	if item.OfProgramOutput != nil {
-		*sysParts = append(*sysParts, instructionPart{
-			role: model.RoleDeveloper,
-			text: fmt.Sprintf("<codex_program_output call_id=%q status=%q>\n%s\n</codex_program_output>", item.OfProgramOutput.CallID, item.OfProgramOutput.Status, item.OfProgramOutput.Result),
-		})
-		return nil
-	}
 	// 无 Anthropic 等价语义的 hosted / 专有 item（file_search / computer / image_generation /
-	// item_reference / additional_tools）：WARN + 丢弃，禁止把整段 JSON 灌进
+	// program / item_reference / additional_tools）：WARN + 丢弃，禁止把整段 JSON 灌进
 	// system context 干扰模型。工具声明阶段这些类型多数已 fail-fast，此处兜底历史回灌路径。
 	if item.OfFileSearchCall != nil || item.OfComputerCall != nil ||
 		item.OfComputerCallOutput != nil || item.OfImageGenerationCall != nil ||
+		item.OfProgram != nil || item.OfProgramOutput != nil ||
 		item.OfItemReference != nil || item.OfAdditionalTools != nil {
 		typ := ""
 		if ptr := item.GetType(); ptr != nil {
