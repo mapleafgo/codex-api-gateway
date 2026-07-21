@@ -96,9 +96,60 @@
 | 出站专用 `shell_call`/`apply_patch_call` item type | Codex 消费 `custom_tool_call` 已验证 |
 | SSE citation 非 web 类 → file_citation | OpenAI 无更细等价 |
 
+
+### 8. 为何 `code_interpreter` image 输出无法真映射
+
+本条是收口内**硬限制**的详细依据，不是实现遗漏。
+
+#### 协议形状不对齐
+
+| 侧 | 形态 |
+|---|---|
+| OpenAI `code_interpreter` 输出 | union：`logs`（文本）与 **`image`（必填 `url` URI）** |
+| Anthropic `code_execution` 结果 | `stdout` / `stderr` / `return_code`，可选 `content[]` 的 **`file_id`**；**没有** `type=image` + `url` 输出项 |
+
+OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；Anthropic 标准 code_execution 结果是**文本（+ 文件句柄）**，不是同构的 image URL 项。
+
+#### 双向都缺关键能力
+
+**入站（历史回灌 OpenAI → Anthropic）**
+
+- 历史可能含 `outputs: [{type:image, url:...}]`。
+- Anthropic `code_execution_tool_result` **无 image 槽位**，无法语义级写入。
+- 把 URL 塞进 stdout 只是字符串，不是 image 输出。
+- 下载 URL 再当 `image` content 塞进其它消息：网关变成文件代理，越界且仍对不齐 code_execution result 形态。
+
+**出站（Anthropic → OpenAI SSE）**
+
+- 上游若产出文件，多为 **`file_id`**，不是 OpenAI 的 `outputs[].image.url`。
+- 要变成真 image 项，需：Files 凭据拉取 → 可访问 URL/data URI → 填 `outputs[{type:image,url}]`。
+- 本网关**纯协议转换**，不做 Anthropic/OpenAI Files 托管与拉文件，无法凭空生成客户端可用 URL。
+
+当前实现：入站 image **丢弃 + WARN + logs 占位**（`image output omitted`）；出站仅 `outputs[{type:logs}]`，对生成 `file_id` **WARN + 丢弃**。
+
+#### 与「shell env 折进 input」的差别
+
+| | shell 元数据 | code_interpreter image |
+|---|---|---|
+| 目标 | `tool_use.input` 任意 JSON 线索 | OpenAI **专用** `image` output 类型 |
+| 对端槽位 | 有 | Anthropic result **无** image 槽 |
+| 是否要托管资源 | 否 | 要（URL / 文件拉取） |
+
+因此 env/limits/caller 可打磨；真·image **缺协议槽位 + 缺 Files 基础设施**，收口内不做。
+
+#### 若未来要做（须先扩产品边界）
+
+1. 配置上游 Files 读权限；出站 `file_id` → 下载 → 签名 URL 或 data URI → `outputs[].image`。
+2. 入站历史 image：下载/缓存后以明确 lossy 策略回灌（仍可能非 code_execution 标准形态）。
+3. 处理过期 URL、体积、隐私与失败路径。
+
+在边界未扩大前，矩阵状态保持 `lossy_supported`，行为保持丢弃 + 可观测，**禁止**编造假 image URL 宣称语义支持。
+
 ## 变更记录
 
 ### 2026-07-20
+
+- **code_interpreter image 硬限制说明**：§8 写明 OpenAI `image`+url 与 Anthropic code_execution（stdout/`file_id`）不对齐，且网关无 Files 托管，入站/出站均无法真映射。
 
 - **收口策略专节**：产品范围 / 范围外 / 后端限制 / deprecated 一律丢弃 / lossy 打磨原则写入 `docs/protocol-coverage.md`。
 
@@ -228,7 +279,7 @@
 | `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 优先，空则回退 content[].reasoning_text；有 encrypted 无文本→redacted；无 encrypted 丢弃 |
 | `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
-| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；image 输出丢弃 + WARN，logs 可含 `image output omitted` 占位 |
+| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；**image 输出无法真映射**（见收口策略 §8），丢弃 + WARN，logs 可含 `image output omitted` 占位 |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user`/`status` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 文本 tool_result；可前缀 `[status=…]`；item.id 作 tool_use_id |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `environment_type` + `timeout_ms`/`max_output_length`/`status`/`caller_type`/`caller_id` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
@@ -317,7 +368,7 @@
 | `program` | none | `unsupported_by_backend` | 无等价 |
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
-| `code_interpreter_call` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) + code_execution_tool_result 映射为 code_interpreter_call 事件链；生成文件的 `file_id`→`url` 不可转换，stderr/return_code 并入 logs |
+| `code_interpreter_call` | Anthropic code execution | `lossy_supported` | server_tool_use + code_execution_tool_result → 事件链；outputs 仅 logs；`file_id`/image 真映射不可（§8）；stderr/return_code 并入 logs |
 | `local_shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `local_shell_call` item type |
 | `local_shell_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `shell_call` item type |
