@@ -3,134 +3,161 @@ version: '3'
 vars:
   BINARY: codex-api-gateway
   CONFIG: config.yaml
-  PACKAGES: ./...
-  VERSION:
-    sh: git describe --tags 2>/dev/null || echo "dev"
-  LDFLAGS: >-
-    -w -s
-    -X github.com/mapleafgo/codex-api-gateway/cmd/server.version={{.VERSION}}
 
 tasks:
   default:
-    desc: List available tasks
+    desc: Run task check
     cmds:
-      - task --list
+      - task: check
 
   build:
     desc: Build the server binary
-    sources:
-      - '**/*.go'
-      - go.mod
-      - go.sum
-    generates:
-      - '{{.BINARY}}'
     cmds:
-      - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} ./cmd/server
-
-  # ── CLI 交叉编译（对齐 singcast-cli 发布流程）──────────
+      - go build -ldflags '-w -s' -o {{.BINARY}} ./cmd/server
 
   cli:
-    desc: Build server binary for current platform
-    cmds:
-      - task: cli-linux-amd64
+    desc: Build all cli binaries for all platforms
+    deps:
+      - cli-linux-amd64
+      - cli-linux-arm64
+      - cli-darwin-amd64
+      - cli-darwin-arm64
+      - cli-windows-amd64
+      - cli-windows-arm64
 
   cli-linux-amd64:
-    desc: Build for Linux amd64
+    desc: Build cli binary for linux amd64
     cmds:
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-linux-amd64 ./cmd/server
+      - GOOS=linux GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-linux-amd64 ./cmd/server
 
   cli-linux-arm64:
-    desc: Build for Linux arm64
+    desc: Build cli binary for linux arm64
     cmds:
-      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-linux-arm64 ./cmd/server
+      - GOOS=linux GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-linux-arm64 ./cmd/server
 
   cli-darwin-amd64:
-    desc: Build for macOS amd64
+    desc: Build cli binary for darwin amd64
     cmds:
-      - CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-darwin-amd64 ./cmd/server
+      - GOOS=darwin GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-darwin-amd64 ./cmd/server
 
   cli-darwin-arm64:
-    desc: Build for macOS arm64
+    desc: Build cli binary for darwin arm64
     cmds:
-      - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-darwin-arm64 ./cmd/server
+      - GOOS=darwin GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-darwin-arm64 ./cmd/server
 
   cli-windows-amd64:
-    desc: Build for Windows amd64
+    desc: Build cli binary for windows amd64
     cmds:
-      - CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-windows-amd64.exe ./cmd/server
+      - GOOS=windows GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-windows-amd64.exe ./cmd/server
 
   cli-windows-arm64:
-    desc: Build for Windows arm64
+    desc: Build cli binary for windows arm64
     cmds:
-      - CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-windows-arm64.exe ./cmd/server
+      - GOOS=windows GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-windows-arm64.exe ./cmd/server
 
   cli-all:
-    desc: Build for all platforms
-    cmds:
-      - task: cli-linux-amd64
-      - task: cli-linux-arm64
-      - task: cli-darwin-amd64
-      - task: cli-darwin-arm64
-      - task: cli-windows-amd64
-      - task: cli-windows-arm64
+    desc: Build all cli binaries
+    deps:
+      - cli
 
   run:
     desc: Run the server (requires {{.CONFIG}})
     cmds:
       - go run ./cmd/server -config {{.CONFIG}}
 
+  up:
+    desc: 后台启动（-d，类似 docker compose up -d）；已在跑则先不动
+    deps: [build]
+    cmds:
+      - |
+        set -e
+        f=${GATEWAY_PID_FILE:-gateway.pid}
+        if [ -f "$f" ] && ps -p "$(tr -dc 0-9 < "$f")" >/dev/null 2>&1; then
+          echo "up: already running pid=$(cat "$f")"
+          exit 0
+        fi
+        ./{{.BINARY}} -config {{.CONFIG}} -d
+
+  stop:
+    desc: kill gateway.pid 指向的进程（无文件/进程不在也不失败）
+    cmds:
+      - sh -c 'f=${GATEWAY_PID_FILE:-gateway.pid}; p=$(cat "$f" 2>/dev/null) && /bin/kill "$p"; rm "$f" 2>/dev/null; true'
+
+  restart:
+    desc: stop 后后台启动（build + -d）；等待 /v1/models 与 gateway.pid
+    cmds:
+      - task: stop
+      - task: build
+      - |
+        set -e
+        PORT=$(grep -E '^[[:space:]]*listen:' {{.CONFIG}} | head -1 | sed -E 's/.*:([0-9]+).*/\1/')
+        PORT=${PORT:-9870}
+        ./{{.BINARY}} -config {{.CONFIG}} -d
+        code=000
+        for _ in $(seq 1 80); do
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 1 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/null || echo 000)
+          if [ "$code" = "200" ] && [ -f "${GATEWAY_PID_FILE:-gateway.pid}" ]; then
+            echo "restart: OK http=200 pid=$(cat ${GATEWAY_PID_FILE:-gateway.pid})"
+            exit 0
+          fi
+          sleep 0.25
+        done
+        echo "restart: FAIL last_http=$code" >&2
+        exit 1
+
   test:
     desc: Run all tests
     cmds:
-      - go test {{.PACKAGES}}
+      - go test ./...
 
   test-race:
-    desc: Run tests with the race detector
+    desc: Run all tests with race detector
     cmds:
-      - go test -race {{.PACKAGES}}
+      - go test -race ./...
 
   test-verbose:
-    desc: Run tests verbosely
+    desc: Run all tests verbose
     cmds:
-      - go test -v {{.PACKAGES}}
+      - go test -v ./...
 
   vet:
     desc: Run go vet
     cmds:
-      - go vet {{.PACKAGES}}
+      - go vet ./...
 
   fmt:
-    desc: Format Go code with gofmt
+    desc: Format go code
     cmds:
-      - gofmt -w internal/ cmd/
+      - gofmt -w cmd/ internal/
 
   fmt-check:
-    desc: Check formatting without writing (exits non-zero if unformatted)
+    desc: Check go code format
     cmds:
-      - gofmt -l internal/ cmd/
+      - gofmt -l cmd/ internal/ | diff - /dev/null
 
   tidy:
-    desc: Run go mod tidy
+    desc: go mod tidy
     cmds:
       - go mod tidy
 
   cover:
-    desc: Run tests with coverage and print the total
+    desc: Generate coverage report
     cmds:
-      - go test -coverprofile=coverage.out {{.PACKAGES}}
-      - 'go tool cover -func=coverage.out | tail -1'
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
 
   check:
-    desc: Run fmt-check + vet + test (pre-commit gate)
-    cmds:
-      - task: fmt-check
-      - task: vet
-      - task: test
+    desc: Run all check before commit
+    deps:
+      - fmt-check
+      - vet
+      - test
+    cmds: []
 
   smoke:
-    desc: Build then run the server for a manual smoke test
+    desc: Smoke test binary
+    deps: [build]
     cmds:
-      - task: build
       - ./{{.BINARY}} -config {{.CONFIG}}
 
   install-autostart:
@@ -143,4 +170,3 @@ tasks:
     desc: 移除桌面自启入口
     cmds:
       - ./packaging/uninstall-autostart.sh
-

@@ -290,7 +290,10 @@ L0 基础      internal/config internal/logging internal/model internal/breaker 
 
 ```bash
 task build       # 构建二进制 ./codex-api-gateway（双击即用）
-task run         # 开发调试：用当前目录 config.yaml 跑起来
+task run         # 前台开发调试：用当前目录 config.yaml 跑起来
+task up          # 后台启动（-d，类似 docker compose up -d）
+task stop        # 按 gateway.pid 停止
+task restart     # stop 后后台启动，并等 /v1/models 健康
 task test        # 运行全部测试
 task test-race   # race detector
 task cover       # 覆盖率
@@ -303,6 +306,7 @@ task check       # gofmt 检查 + go vet + go test
 go test ./...
 go build -o codex-api-gateway ./cmd/server   # 构建双击即用二进制
 go run ./cmd/server                          # 开发调试：默认读 ./config.yaml
+go run ./cmd/server -config config.yaml -d   # 后台启动（写 gateway.pid / gateway.log）
 ```
 
 ## 维护与排错

@@ -44,6 +44,9 @@ type Config struct {
 	OpenURLFunc func() string
 	// Autostart 非 nil 时显示「开机自启」勾选菜单；为 OS 自启注册的真相源。
 	Autostart *autostart.Spec
+	// ForceSignal 为 true 时跳过图形托盘，仅监听 SIGINT/SIGTERM。
+	// 用于 -d 后台进程：无交互会话时 systray 可能秒退导致 main 退出。
+	ForceSignal bool
 	// OnQuit "退出"菜单点击或收到 SIGINT/SIGTERM 时调用（同步），
 	// 用于触发优雅关闭（关闭 HTTP server、释放资源）。可为 nil。
 	OnQuit func()
@@ -76,7 +79,10 @@ func (t *Tray) Run() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
-	if err := t.runTray(sigCh); err != nil {
+	if t.cfg.ForceSignal {
+		slog.Info("ForceSignal：跳过系统托盘，信号模式运行")
+		t.runSignal(sigCh)
+	} else if err := t.runTray(sigCh); err != nil {
 		slog.Warn("系统托盘初始化失败，降级为信号模式（headless）", "error", err)
 		t.runSignal(sigCh)
 	}

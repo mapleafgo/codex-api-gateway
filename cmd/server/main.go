@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,9 +26,32 @@ import (
 // 本地构建或未注入时为空串（startup 日志中展示）。
 var version string
 
+// pidFilePath 默认 gateway.pid（工作目录），可用 GATEWAY_PID_FILE 覆盖。
+// task stop 优先读此文件定位进程，避免端口解析误杀。
+func pidFilePath() string {
+	if v := os.Getenv("GATEWAY_PID_FILE"); v != "" {
+		return v
+	}
+	return "gateway.pid"
+}
+
+func writePIDFile(path string) error {
+	pid := os.Getpid()
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644)
+}
+
+func removePIDFile(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		slog.Debug("清理 pid 文件失败", "path", path, "error", err)
+	}
+}
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
+	daemon := flag.Bool("d", false, "run in background (detach, like docker compose -d)")
+	daemonLong := flag.Bool("daemon", false, "alias of -d")
 	flag.Parse()
+	maybeDaemonize(*daemon || *daemonLong)
 
 	absConfigPath, err := filepath.Abs(*configPath)
 	if err != nil {
@@ -80,6 +104,8 @@ func main() {
 
 	t := tray.New(tray.Config{
 		Tooltip: "codex-api-gateway",
+		// -d 子进程无交互会话：systray 可能秒退，导致 main 立刻退出、pid 文件被 defer 删掉。
+		ForceSignal: os.Getenv("GATEWAY_DAEMON") == "1",
 		OpenURLFunc: func() string {
 			urlMu.RLock()
 			defer urlMu.RUnlock()
@@ -140,14 +166,32 @@ func main() {
 			return appCtx
 		},
 	}
+	// 先绑定监听地址，再写 pid 文件。
+	// 避免端口占用时仍写 pid/挂起托盘，导致 -d 父进程误报成功、task stop 指向僵尸进程。
+	ln, err := net.Listen("tcp", cfg.Server.Listen)
+	if err != nil {
+		slog.Error("监听失败", "listen", cfg.Server.Listen, "error", err)
+		os.Exit(1)
+	}
+	// pid 文件：仅在监听成功后写入，退出时删除；task stop 靠它精准定位。
+	// -d 父进程也以 pid 文件作为“已就绪”信号。
+	pidPath := pidFilePath()
+	if err := writePIDFile(pidPath); err != nil {
+		// pid 文件是 -d 就绪信号与 task stop 定位依据，写失败则直接退出，避免假启动。
+		slog.Error("写入 pid 文件失败", "path", pidPath, "error", err)
+		_ = ln.Close()
+		os.Exit(1)
+	}
+	slog.Info("已写入 pid 文件", "path", pidPath, "pid", os.Getpid())
+	defer removePIDFile(pidPath)
 	// shutdownCh：收到"退出"信号（托盘退出菜单或 SIGINT/SIGTERM）时关闭，
 	// 由 shutdownHandler 统一触发 HTTP Shutdown + watcher.Close + srv.Close。
 	shutdownCh := make(chan struct{})
 	serverErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("codex-api-gateway 开始监听", "listen", cfg.Server.Listen, "log_level", cfg.Logging.Level, "log_format", cfg.Logging.Format, "version", version)
-		err := httpSrv.ListenAndServe()
-		// Shutdown 会使 ListenAndServe 返回 ErrServerClosed，属正常退出。
+		err := httpSrv.Serve(ln)
+		// Shutdown 会使 Serve 返回 ErrServerClosed，属正常退出。
 		serverErrCh <- err
 		slog.Debug("退出流程：HTTP goroutine 即将等待 shutdownCh")
 		<-shutdownCh
