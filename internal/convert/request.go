@@ -1479,6 +1479,10 @@ var reasoningEffortToOutputConfig = map[string]anthropic.OutputConfigEffort{
 	"max":    anthropic.OutputConfigEffortMax,
 }
 
+// minBudgetTokens 是 Anthropic thinking.budget_tokens 的最小有效值。
+// API 要求 ≥1024；实际 thinking 深度由 output_config.effort 控制。
+const minBudgetTokens = 1024
+
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" {
@@ -1492,7 +1496,9 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 	}
 
 	out.Thinking = anthropic.ThinkingConfigParamUnion{
-		OfEnabled: &anthropic.ThinkingConfigEnabledParam{},
+		OfEnabled: &anthropic.ThinkingConfigEnabledParam{
+			BudgetTokens: minBudgetTokens, // API 要求 ≥1024；effort 由 output_config.effort 控制
+		},
 	}
 
 	// 映射 output_config.effort：语义级别让模型自行决定 thinking 深度。
