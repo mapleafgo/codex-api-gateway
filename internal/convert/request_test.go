@@ -53,9 +53,9 @@ func TestReasoningEffortMapsToOutputConfigEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Thinking.OfEnabled == nil {
-		b, _ := json.Marshal(out)
-		t.Fatalf("thinking not set: %s", b)
+	b, _ := json.Marshal(out)
+	if !strings.Contains(string(b), `"thinking":{"type":"enabled"}`) {
+		t.Fatalf("thinking not enabled: %s", b)
 	}
 	if out.OutputConfig.Effort != anthropic.OutputConfigEffortHigh {
 		t.Fatalf("expected output_config.effort=high, got %q", out.OutputConfig.Effort)
@@ -1202,8 +1202,9 @@ func TestReasoningSummaryConciseSetsDisplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Thinking.OfEnabled == nil || out.Thinking.OfEnabled.Display != anthropic.ThinkingConfigEnabledDisplaySummarized {
-		t.Fatalf("concise summary should set display=summarized")
+	b, _ := json.Marshal(out)
+	if !strings.Contains(string(b), `"display":"summarized"`) {
+		t.Fatalf("concise summary should set display=summarized, got: %s", b)
 	}
 }
 

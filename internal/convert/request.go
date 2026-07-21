@@ -1479,10 +1479,6 @@ var reasoningEffortToOutputConfig = map[string]anthropic.OutputConfigEffort{
 	"max":    anthropic.OutputConfigEffortMax,
 }
 
-// minBudgetTokens 是 Anthropic thinking.budget_tokens 的最小有效值。
-// API 要求 ≥1024；实际 thinking 深度由 output_config.effort 控制。
-const minBudgetTokens = 1024
-
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" {
@@ -1495,20 +1491,20 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 		return
 	}
 
-	out.Thinking = anthropic.ThinkingConfigParamUnion{
-		OfEnabled: &anthropic.ThinkingConfigEnabledParam{
-			BudgetTokens: minBudgetTokens, // API 要求 ≥1024；effort 由 output_config.effort 控制
-		},
+	// 用 Override 注入 raw JSON，不传 budget_tokens（SDK struct 无 omitempty，
+	// 零值会序列化为 0 导致 API 拒绝；effort 由 output_config.effort 控制）。
+	summarized := string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
+	thinkingJSON := `{"type":"enabled"}`
+	if summarized {
+		thinkingJSON = `{"type":"enabled","display":"summarized"}`
 	}
+	out.Thinking = aparam.Override[anthropic.ThinkingConfigParamUnion](
+		json.RawMessage(thinkingJSON),
+	)
 
 	// 映射 output_config.effort：语义级别让模型自行决定 thinking 深度。
 	if mapped, ok := reasoningEffortToOutputConfig[effort]; ok {
 		out.OutputConfig.Effort = mapped
-	}
-
-	// reasoning.summary=concise -> summarized thinking display.
-	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
-		out.Thinking.OfEnabled.Display = anthropic.ThinkingConfigEnabledDisplaySummarized
 	}
 }
 
