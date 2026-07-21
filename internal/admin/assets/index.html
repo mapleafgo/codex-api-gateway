@@ -1000,7 +1000,12 @@ html[data-theme="dark"] .ui-select {
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('cacheTtl')"></span>
-                <input class="ui-input ui-input-sm mono" x-model="cfg.cache.ttl" autocomplete="off" spellcheck="false">
+                <div class="ui-sel" x-data="uiSel()" data-field="cfg.cache.ttl" x-init="model=cfg.cache.ttl||'5m'" x-effect="const v=cfg.cache.ttl||'5m'; if(v!==model) model=v; opts=[{v:'5m',l:t('cacheTtl5m')},{v:'1h',l:t('cacheTtl1h')}]">
+                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+                  </div>
+                </div>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('logLevel')"></span>
@@ -1210,7 +1215,7 @@ function app() {
       addModel: '新增模型', modelHint: '只列出 /v1/models 暴露的 slug',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', actions: '操作',
       globalParams: '全局参数', breaker: '断路器',
-      listen: '监听地址', cacheTtl: '缓存时效（5m / 1h）',
+      listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
       logLevel: '日志级别', logFormat: '日志格式', logFile: '日志文件（空则写 stderr）',
       levelDebug: '调试', levelInfo: '信息', levelWarn: '警告', levelError: '错误',
       fmtText: '文本', fmtJson: 'JSON',
@@ -1253,7 +1258,7 @@ function app() {
       addModel: 'Add model', modelHint: 'Only slugs exposed via /v1/models',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', actions: 'Actions',
       globalParams: 'Global Parameters', breaker: 'Breaker',
-      listen: 'Listen address', cacheTtl: 'Cache TTL (5m / 1h)',
+      listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',
       logLevel: 'Log level', logFormat: 'Log format', logFile: 'Log file (empty = stderr)',
       levelDebug: 'Debug', levelInfo: 'Info', levelWarn: 'Warn', levelError: 'Error',
       fmtText: 'Text', fmtJson: 'JSON',
