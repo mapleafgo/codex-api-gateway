@@ -81,6 +81,76 @@ func TestInjectMCPAllEnabledToolset(t *testing.T) {
 	}
 }
 
+// TestInjectMCPRelocatesCacheControlToLastToolset 普通 tools + MCP：
+// 旧 function 上的 cache_control 必须清除，末项 mcp_toolset 必须带断点。
+func TestInjectMCPRelocatesCacheControlToLastToolset(t *testing.T) {
+	body := []byte(`{
+		"model":"x",
+		"cache_control":{"type":"ephemeral","ttl":"5m"},
+		"tools":[{"type":"tool","name":"f","cache_control":{"type":"ephemeral","ttl":"5m"}}]
+	}`)
+	out, err := injectMCP(body, &MCPInjection{
+		Servers:  []MCPServer{{URL: "https://s.example", Name: "weather"}},
+		Toolsets: []MCPToolset{{MCPServerName: "weather", EnabledTools: []string{"get"}}},
+	})
+	if err != nil {
+		t.Fatalf("injectMCP: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := obj["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("tools len=%d want 2", len(tools))
+	}
+	first := tools[0].(map[string]any)
+	if _, ok := first["cache_control"]; ok {
+		t.Fatalf("first tool must not keep cache_control: %v", first)
+	}
+	last := tools[1].(map[string]any)
+	cc, ok := last["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("last tool missing cache_control: %v", last)
+	}
+	if cc["type"] != "ephemeral" || cc["ttl"] != "5m" {
+		t.Fatalf("bad cache_control: %v", cc)
+	}
+}
+
+// TestInjectMCPOnlyToolsetGetsCacheControl 仅 MCP（初始 tools 空）时
+// 末项 mcp_toolset 仍应带 cache_control，TTL 继承顶层 1h。
+func TestInjectMCPOnlyToolsetGetsCacheControl(t *testing.T) {
+	body := []byte(`{
+		"model":"x",
+		"cache_control":{"type":"ephemeral","ttl":"1h"},
+		"tools":[]
+	}`)
+	out, err := injectMCP(body, &MCPInjection{
+		Servers:  []MCPServer{{URL: "https://s.example", Name: "weather"}},
+		Toolsets: []MCPToolset{{MCPServerName: "weather"}},
+	})
+	if err != nil {
+		t.Fatalf("injectMCP: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := obj["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools len=%d want 1", len(tools))
+	}
+	last := tools[0].(map[string]any)
+	cc, ok := last["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("last tool missing cache_control: %v", last)
+	}
+	if cc["ttl"] != "1h" {
+		t.Fatalf("ttl want 1h, got %v", cc["ttl"])
+	}
+}
+
 func TestMergeBetaHeader(t *testing.T) {
 	if got := mergeBetaHeader(""); got != MCPBetaHeader {
 		t.Fatalf("empty base: %q", got)

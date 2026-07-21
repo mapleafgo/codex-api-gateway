@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	asdk "github.com/anthropics/anthropic-sdk-go"
@@ -81,7 +82,39 @@ func injectMCP(body []byte, mcp *MCPInjection) ([]byte, error) {
 		tools = append(tools, entry)
 	}
 	obj["tools"] = tools
+	relocateToolsCacheControl(obj)
 	return json.Marshal(obj)
+}
+
+// relocateToolsCacheControl 在 MCP toolset 追加后，保证 tools 列表只有
+// 末项一个 cache_control 断点；TTL 继承顶层 cache_control，缺省 5m。
+func relocateToolsCacheControl(obj map[string]any) {
+	tools, ok := obj["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return
+	}
+	ttl := "5m"
+	if top, ok := obj["cache_control"].(map[string]any); ok {
+		if t, ok := top["ttl"].(string); ok && t != "" {
+			ttl = t
+		}
+	}
+	for _, item := range tools {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(m, "cache_control")
+	}
+	last, ok := tools[len(tools)-1].(map[string]any)
+	if !ok {
+		slog.Warn("tools 末项不是 object，无法设 cache_control，tools 列表缓存将丢失")
+		return
+	}
+	last["cache_control"] = map[string]any{
+		"type": "ephemeral",
+		"ttl":  ttl,
+	}
 }
 
 // mergeBetaHeader 把 mcp beta 值并入已有 anthropic-beta（逗号分隔），避免覆盖 thinking。
