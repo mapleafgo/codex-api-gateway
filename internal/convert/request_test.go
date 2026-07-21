@@ -47,7 +47,7 @@ func TestTextRequestConverts(t *testing.T) {
 	}
 }
 
-func TestReasoningEffortMapsToThinking(t *testing.T) {
+func TestReasoningEffortMapsToOutputConfigEffort(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
@@ -57,8 +57,44 @@ func TestReasoningEffortMapsToThinking(t *testing.T) {
 		b, _ := json.Marshal(out)
 		t.Fatalf("thinking not set: %s", b)
 	}
-	if out.Thinking.OfEnabled.BudgetTokens != 32000 {
-		t.Fatalf("bad budget: %d", out.Thinking.OfEnabled.BudgetTokens)
+	if out.OutputConfig.Effort != anthropic.OutputConfigEffortHigh {
+		t.Fatalf("expected output_config.effort=high, got %q", out.OutputConfig.Effort)
+	}
+}
+
+func TestReasoningEffortLowMapsToOutputConfigLow(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"low"},"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OutputConfig.Effort != anthropic.OutputConfigEffortLow {
+		t.Fatalf("expected output_config.effort=low, got %q", out.OutputConfig.Effort)
+	}
+}
+
+func TestReasoningEffortMaxMapsToOutputConfigMax(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"max"},"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OutputConfig.Effort != anthropic.OutputConfigEffortMax {
+		t.Fatalf("expected output_config.effort=max, got %q", out.OutputConfig.Effort)
+	}
+}
+
+func TestReasoningEffortNoneDisablesThinking(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none"},"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Thinking.OfDisabled == nil {
+		t.Fatalf("effort=none should disable thinking")
+	}
+	if out.OutputConfig.Effort != "" {
+		t.Fatalf("effort=none should not set output_config.effort, got %q", out.OutputConfig.Effort)
 	}
 }
 
@@ -1146,17 +1182,17 @@ func TestDefaultMaxTokens(t *testing.T) {
 	}
 }
 
-func TestThinkingBudgetRaisesMaxTokens(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"high"},"stream":true}`)
+func TestOutputConfigEffortDoesNotAlterMaxTokens(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","max_output_tokens":2048,"reasoning":{"effort":"high"},"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Thinking.OfEnabled == nil || out.Thinking.OfEnabled.BudgetTokens != 32000 {
-		t.Fatalf("bad budget: %+v", out.Thinking)
+	if out.OutputConfig.Effort != anthropic.OutputConfigEffortHigh {
+		t.Fatalf("expected effort=high, got %q", out.OutputConfig.Effort)
 	}
-	if out.MaxTokens <= 32000 {
-		t.Fatalf("max_tokens %d must exceed budget 32000", out.MaxTokens)
+	if out.MaxTokens != 2048 {
+		t.Fatalf("max_tokens should remain 2048, got %d", out.MaxTokens)
 	}
 }
 

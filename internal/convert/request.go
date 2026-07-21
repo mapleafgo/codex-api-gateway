@@ -1470,22 +1470,13 @@ func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 	}
 }
 
-// effortBudgetTokens 把 Responses reasoning effort 映射到 Anthropic thinking.budget_tokens。
-// 固定预算表（原 config.yaml thinking.effort_budget 的值固化为编译期常量）：
-var effortBudgetTokens = map[string]int64{
-	"low":    8000,
-	"medium": 16000,
-	"high":   32000,
-	"xhigh":  48000,
-}
-
-// effortBudgetFor 返回指定 effort 的 thinking 预算 token 数。
-// 未知档位（含空串）回落到 medium（与 Codex 默认 ReasoningEffort::Medium 一致）。
-func effortBudgetFor(effort string) int64 {
-	if b, ok := effortBudgetTokens[effort]; ok {
-		return b
-	}
-	return effortBudgetTokens["medium"]
+// reasoningEffortToOutputConfig 把 OpenAI reasoning effort 透传到 Anthropic output_config.effort。
+var reasoningEffortToOutputConfig = map[string]anthropic.OutputConfigEffort{
+	"low":    anthropic.OutputConfigEffortLow,
+	"medium": anthropic.OutputConfigEffortMedium,
+	"high":   anthropic.OutputConfigEffortHigh,
+	"xhigh":  anthropic.OutputConfigEffortXhigh,
+	"max":    anthropic.OutputConfigEffortMax,
 }
 
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
@@ -1500,14 +1491,13 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 		return
 	}
 
-	budget := effortBudgetFor(effort)
 	out.Thinking = anthropic.ThinkingConfigParamUnion{
-		OfEnabled: &anthropic.ThinkingConfigEnabledParam{BudgetTokens: budget},
+		OfEnabled: &anthropic.ThinkingConfigEnabledParam{},
 	}
 
-	// Anthropic requires thinking.budget_tokens < max_tokens.
-	if out.MaxTokens <= budget {
-		out.MaxTokens = budget + 4096
+	// 映射 output_config.effort：语义级别让模型自行决定 thinking 深度。
+	if mapped, ok := reasoningEffortToOutputConfig[effort]; ok {
+		out.OutputConfig.Effort = mapped
 	}
 
 	// reasoning.summary=concise -> summarized thinking display.

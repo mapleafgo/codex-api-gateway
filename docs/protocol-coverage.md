@@ -91,7 +91,7 @@
 | MCP 审批协议 / filter AST / 任意 headers | 后端无能力或成本/边界外 |
 | custom `format` grammar 完整保留 | Anthropic custom tool 无 OpenAI grammar 等价 |
 | structured output 非 tool 模拟 | 无原生 json_schema 强制 |
-| reasoning.effort 精确 token | OpenAI effort 非 budget；固定表近似已足够 |
+| reasoning.effort 精确 token | OpenAI effort 非 budget；已改用 `output_config.effort` 语义映射，模型自行决定深度 |
 | system/developer 中的 image | Anthropic system 仅文本 |
 | 出站专用 `shell_call`/`apply_patch_call` item type | Codex 消费 `custom_tool_call` 已验证 |
 | SSE citation 非 web 类 → file_citation | OpenAI 无更细等价 |
@@ -216,7 +216,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `temperature` | `temperature` | `supported` | 直接映射 |
 | `top_p` | `top_p` | `supported` | 直接映射 |
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
-| `reasoning.effort` | `thinking` budget | `lossy_supported` | OpenAI effort 非 token budget，当前用配置预算映射 |
+| `reasoning.effort` | `output_config.effort` + `thinking` | `lossy_supported` | 映射到 Anthropic `output_config.effort`（low/medium/high/xhigh），模型自行决定 thinking 深度；兼容后端对不支持的值静默降级 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
 | `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
