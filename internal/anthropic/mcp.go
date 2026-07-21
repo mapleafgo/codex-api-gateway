@@ -10,6 +10,21 @@ import (
 
 // MCPBetaHeader 是 MCP managed connector 所需的 anthropic-beta 值。
 const MCPBetaHeader = "mcp-client-2025-11-20"
+const ExtendedCacheTTLBetaHeader = "extended-cache-ttl-2025-04-11"
+
+// appendBeta 把 beta 值合并到现有列表，去重后逗号分隔。
+func appendBeta(existing, value string) string {
+	if value == "" {
+		return existing
+	}
+	if existing == "" {
+		return value
+	}
+	if strings.Contains(existing, value) {
+		return existing
+	}
+	return existing + "," + value
+}
 
 // MCPServer 描述一个待注入请求体顶层 mcp_servers[] 的 beta server 定义。
 type MCPServer struct {
@@ -119,13 +134,7 @@ func relocateToolsCacheControl(obj map[string]any) {
 
 // mergeBetaHeader 把 mcp beta 值并入已有 anthropic-beta（逗号分隔），避免覆盖 thinking。
 func mergeBetaHeader(existing string) string {
-	if existing == "" {
-		return MCPBetaHeader
-	}
-	if strings.Contains(existing, MCPBetaHeader) {
-		return existing
-	}
-	return existing + "," + MCPBetaHeader
+	return appendBeta(existing, MCPBetaHeader)
 }
 
 // synthesizeMCPEvent 把 beta mcp block 的 raw JSON（content_block_start envelope）

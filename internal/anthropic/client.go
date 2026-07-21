@@ -156,13 +156,16 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// the one it knows and ignores the other.
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	// anthropic-beta：thinking 与 MCP beta 可共存（逗号分隔），mergeBetaHeader 去重。
+	// anthropic-beta：thinking 与 MCP beta 可共存（逗号分隔），appendBeta 去重。
 	beta := ""
 	if thinkingEnabled(req) {
-		beta = "interleaved-thinking-2025-05-14"
+		beta = appendBeta(beta, "interleaved-thinking-2025-05-14")
 	}
 	if mcp != nil && mcp.NeedsBeta() {
-		beta = mergeBetaHeader(beta)
+		beta = appendBeta(beta, MCPBetaHeader)
+	}
+	if req != nil && req.CacheControl.TTL == anthropic.CacheControlEphemeralTTLTTL1h {
+		beta = appendBeta(beta, ExtendedCacheTTLBetaHeader)
 	}
 	if beta != "" {
 		httpReq.Header.Set("anthropic-beta", beta)

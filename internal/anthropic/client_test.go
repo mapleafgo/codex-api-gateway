@@ -171,3 +171,57 @@ func TestMessagesURL(t *testing.T) {
 		}
 	}
 }
+
+
+// TestStreamExtendedCacheTTLBetaOn1h 验证 cache_control TTL=1h 时
+// anthropic-beta 自动包含 extended-cache-ttl-2025-04-11。
+func TestStreamExtendedCacheTTLBetaOn1h(t *testing.T) {
+	var gotBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	req := &anthropic.MessageNewParams{
+		CacheControl: anthropic.CacheControlEphemeralParam{
+			Type: "ephemeral",
+			TTL:  anthropic.CacheControlEphemeralTTLTTL1h,
+		},
+	}
+	rc, err := New().Stream(context.Background(), srv.URL, "k", req, nil)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	rc.Close()
+	if !strings.Contains(gotBeta, ExtendedCacheTTLBetaHeader) {
+		t.Fatalf("anthropic-beta missing extended-cache-ttl: %q", gotBeta)
+	}
+}
+
+// TestStreamNoExtendedCacheTTLOn5m 验证 5m 路径不带 extended-cache-ttl beta。
+func TestStreamNoExtendedCacheTTLOn5m(t *testing.T) {
+	var gotBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	req := &anthropic.MessageNewParams{
+		CacheControl: anthropic.CacheControlEphemeralParam{
+			Type: "ephemeral",
+			TTL:  anthropic.CacheControlEphemeralTTLTTL5m,
+		},
+	}
+	rc, err := New().Stream(context.Background(), srv.URL, "k", req, nil)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	rc.Close()
+	if strings.Contains(gotBeta, ExtendedCacheTTLBetaHeader) {
+		t.Fatalf("5m must not set extended-cache-ttl: %q", gotBeta)
+	}
+}
