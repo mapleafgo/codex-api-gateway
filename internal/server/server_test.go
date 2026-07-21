@@ -991,3 +991,48 @@ func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestResponsesChatBackendEndToEnd(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-t\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-t\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, Cooldown: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{{
+			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
+		}},
+	}
+	// validate normalizes backend type
+	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sources[0].BackendType = bt
+
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-4o","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "response.created") || !strings.Contains(s, "response.completed") {
+		t.Fatalf("unexpected SSE body: %s", s)
+	}
+	if !strings.Contains(s, "ok") {
+		t.Fatalf("missing content in body: %s", s)
+	}
+}

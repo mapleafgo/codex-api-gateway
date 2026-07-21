@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
+	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 )
@@ -58,6 +59,7 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/guidance", wrap("guidance", h.handleGuidance))
 	mux.HandleFunc("/admin/api/events", wrap("events", h.handleEvents))
 	mux.HandleFunc("/admin/api/models", wrap("models", h.handleModels))
+	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
 }
 
 // recoverMiddleware 捕获 handler panic，记录日志后返回 500。
@@ -215,6 +217,55 @@ func (h *handler) handleReload(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleModels 拉取指定源的上游 /v1/models 列表。
+
+// POST /admin/api/upstream-models
+// body: {base_url, api_key, backend_type} — 允许未落盘试拉。
+func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		BaseURL     string `json:"base_url"`
+		APIKey      string `json:"api_key"`
+		BackendType string `json:"backend_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	if in.BaseURL == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing base_url"})
+		return
+	}
+	bt, err := config.NormalizeBackendType(in.BackendType)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	var models []anthropic.ModelInfo
+	if bt == config.BackendOpenAIChat {
+		ms, err := chatclient.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
+			return
+		}
+		for _, m := range ms {
+			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+	} else {
+		ms, err := anthropic.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
+			return
+		}
+		models = ms
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
 // GET /admin/api/models?source=<name>
 // 成功返回 { source, models: [{id, display_name}] }。
 // source 未提供或 fetcher 缺失分别返回 400 / 501。
@@ -283,6 +334,7 @@ type sourceView struct {
 	Name         string            `json:"name"`
 	BaseURL      string            `json:"base_url"`
 	APIKey       string            `json:"api_key"`
+	BackendType  string            `json:"backend_type"`
 	ModelMap     map[string]string `json:"model_map"`
 	DefaultModel string            `json:"default_model"`
 	Breaker      *breakerView      `json:"breaker,omitempty"`
@@ -337,7 +389,8 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	for _, src := range cfg.Sources {
 		sv := sourceView{
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
-			ModelMap: src.ModelMap, DefaultModel: src.DefaultModel,
+			BackendType: src.BackendType,
+			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
 		}
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{

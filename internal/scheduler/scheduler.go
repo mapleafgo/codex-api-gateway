@@ -13,8 +13,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
+	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
 // ErrAllSourcesFailed is returned when no source could serve the request.
@@ -42,13 +44,15 @@ type orderEntry struct {
 
 // Scheduler routes requests across prioritized sources with failover.
 type Scheduler struct {
-	holder   *config.Holder
-	client   *anthropicclient.Client
-	breakers map[string]*breaker.Breaker
-	order    []orderEntry // runtimeOrder: runtime priority sequence
-	bkMu     sync.Mutex
-	ordMu    sync.RWMutex
-	backoff  []time.Duration // injectable for tests; defaults to defaultBackoff
+	holder           *config.Holder
+	client           *anthropicclient.Client
+	anthropicBackend *backend.AnthropicBackend
+	chatBackend      *backend.ChatBackend
+	breakers         map[string]*breaker.Breaker
+	order            []orderEntry // runtimeOrder: runtime priority sequence
+	bkMu             sync.Mutex
+	ordMu            sync.RWMutex
+	backoff          []time.Duration // injectable for tests; defaults to defaultBackoff
 }
 
 // RequestBuilder builds a source-specific Anthropic request, plus an optional
@@ -76,6 +80,7 @@ type UpstreamEvent struct {
 	CacheCreate  int
 	Error        string // 失败原因摘要
 	Attempt      int    // 该次尝试在客户端请求内的序号（从 1 开始）
+	BackendType  string // a | c
 }
 
 // OnUpstream 是单次上游尝试结束时的回调。nil 时不上报。
@@ -105,11 +110,13 @@ func New(cfg any) *Scheduler {
 		"max_retries", cur.Breaker.MaxRetries,
 		"first_byte_timeout", time.Duration(cur.Breaker.FirstByteTimeout).String())
 	return &Scheduler{
-		holder:   holder,
-		client:   anthropicclient.New(),
-		breakers: map[string]*breaker.Breaker{},
-		order:    order,
-		backoff:  defaultBackoff,
+		holder:           holder,
+		client:           anthropicclient.New(),
+		anthropicBackend: backend.NewAnthropic(),
+		chatBackend:      backend.NewChat(),
+		breakers:         map[string]*breaker.Breaker{},
+		order:            order,
+		backoff:          defaultBackoff,
 	}
 }
 
@@ -220,11 +227,27 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 }
 
 // ListUpstreamModels 拉取指定源的上游模型列表，供管理页编辑模型映射时选用。
-// 透传上游 GET /v1/models 响应中的 data 数组。
+// 按 backend_type 分发：a → anthropic ListModels；c → chatclient ListModels。
+// 返回统一 anthropicclient.ModelInfo 形状供管理页复用。
 func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) ([]anthropicclient.ModelInfo, error) {
 	src, ok := s.sourceByName(sourceName)
 	if !ok {
 		return nil, fmt.Errorf("source %q not found", sourceName)
+	}
+	bt, err := config.NormalizeBackendType(src.BackendType)
+	if err != nil {
+		return nil, err
+	}
+	if bt == config.BackendOpenAIChat {
+		ms, err := s.chatBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]anthropicclient.ModelInfo, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+		return out, nil
 	}
 	return s.client.ListModels(ctx, src.BaseURL, src.APIKey)
 }
@@ -244,6 +267,150 @@ func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// ExecuteGeneric 按 runtime 优先级尝试各源，根据 backend_type 选择 Backend。
+// rawBody 为客户端 Responses JSON；onEvent 接收已转换的 Responses SSE。
+func (s *Scheduler) ExecuteGeneric(
+	ctx context.Context,
+	rawBody []byte,
+	onEvent func(model.SSEEvent) error,
+	onUpstream OnUpstream,
+) (string, error) {
+	cur := s.holder.Current()
+	mr := cur.Breaker.MaxRetries
+	start := time.Now()
+	attemptNo := 0
+	var lastErr error
+	var lastSource string
+	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
+		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo)
+		if sourceName != "" {
+			lastSource = sourceName
+		}
+		if success {
+			slog.Info("上游请求完成", "source", sourceName, "attempts", attempt+1, "elapsed", time.Since(start).String())
+			return sourceName, err
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if mr == 0 {
+			break
+		}
+		if mr != -1 && attempt == mr {
+			break
+		}
+		slog.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
+		if werr := s.waitBackoff(ctx, attempt); werr != nil {
+			slog.Warn("退避等待被取消", "attempt", attempt, "error", werr)
+			return lastSource, werr
+		}
+	}
+	if lastErr != nil {
+		slog.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_error", lastErr)
+		return lastSource, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
+	}
+	slog.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String())
+	return lastSource, ErrAllSourcesFailed
+}
+
+func (s *Scheduler) tryRoundGeneric(
+	ctx context.Context,
+	rawBody []byte,
+	onEvent func(model.SSEEvent) error,
+	onUpstream OnUpstream,
+	attemptNo *int,
+) (string, bool, error) {
+	var lastErr error
+	var lastSource string
+	for _, src := range s.runtimeSeq() {
+		bk := s.breakerFor(&src)
+		if !bk.Allow() {
+			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
+			continue
+		}
+		*attemptNo++
+		locked, err := s.trySourceGeneric(ctx, &src, bk, rawBody, onEvent, onUpstream, *attemptNo)
+		if locked {
+			return src.Name, true, err
+		}
+		if err != nil {
+			lastErr = err
+			lastSource = src.Name
+			bt, _ := config.NormalizeBackendType(src.BackendType)
+			slog.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "error", err)
+		}
+	}
+	return lastSource, false, lastErr
+}
+
+func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
+	bt, err := config.NormalizeBackendType(src.BackendType)
+	if err == nil && bt == config.BackendOpenAIChat {
+		return s.chatBackend
+	}
+	return s.anthropicBackend
+}
+
+func (s *Scheduler) trySourceGeneric(
+	ctx context.Context,
+	src *config.Source,
+	bk *breaker.Breaker,
+	rawBody []byte,
+	onEvent func(model.SSEEvent) error,
+	onUpstream OnUpstream,
+	attemptNo int,
+) (bool, error) {
+	timeout := time.Duration(s.holder.Current().BreakerFor(src).FirstByteTimeout)
+	fbCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	timer := time.AfterFunc(timeout, cancel)
+	defer timer.Stop()
+
+	bt, _ := config.NormalizeBackendType(src.BackendType)
+	slog.Info("尝试上游源",
+		"source", src.Name,
+		"endpoint", src.BaseURL,
+		"backend_type", bt)
+
+	locked := false
+	wrapEvent := func(ev model.SSEEvent) error {
+		if !locked {
+			locked = true
+			timer.Stop()
+			oldState := bk.State()
+			newState := bk.RecordSuccess()
+			s.adjustOrder(src.Name, oldState, newState)
+			slog.Info("上游源流已锁定", "source", src.Name, "backend_type", bt, "old_state", oldState, "new_state", newState)
+		}
+		return onEvent(ev)
+	}
+	wrapUpstream := func(ev backend.UpstreamEvent) {
+		if onUpstream == nil {
+			return
+		}
+		onUpstream(UpstreamEvent{
+			SourceName: ev.SourceName, Model: ev.Model, ResolvedModel: ev.ResolvedModel,
+			StartedAt: ev.StartedAt, Duration: ev.Duration, TTFB: ev.TTFB,
+			Status: ev.Status, Code: ev.Code,
+			InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens,
+			CacheRead: ev.CacheRead, CacheCreate: ev.CacheCreate,
+			Error: ev.Error, Attempt: ev.Attempt, BackendType: ev.BackendType,
+		})
+	}
+
+	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, wrapUpstream, attemptNo)
+	if !locked {
+		if ctx.Err() == nil {
+			oldState := bk.State()
+			newState := bk.RecordFailure()
+			s.adjustOrder(src.Name, oldState, newState)
+			slog.Warn("上游源失败（未锁定）", "source", src.Name, "backend_type", bt, "old_state", oldState, "new_state", newState, "error", err)
+		}
+		return false, err
+	}
+	return true, err
 }
 
 // Execute tries sources by runtime priority with failover, and retries the

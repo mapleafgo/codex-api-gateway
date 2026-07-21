@@ -16,6 +16,24 @@ codex-api-gateway  ── 协议转换 + 多源路由 + 熔断
 Anthropic 兼容后端 (官方 Anthropic、DeepSeek、火山 …)
 ```
 
+
+
+### OpenAI Chat 兼容上游（backend_type: c）
+
+除 Anthropic Messages（`backend_type: a`，默认）外，源可配置为 OpenAI Chat Completions 兼容后端（**仅流式**）：
+
+```yaml
+sources:
+  - name: openai-compat
+    base_url: https://api.openai.com/v1   # 填 OpenAI SDK 的 base_url，不要带 /chat/completions
+    api_key: ${OPENAI_API_KEY}
+    backend_type: c
+    model_map: { gpt-5: gpt-4o }
+    default_model: gpt-4o
+```
+
+`base_url` 示例：OpenAI `…/v1`、DeepSeek `https://api.deepseek.com`、智谱 `https://open.bigmodel.cn/api/paas/v4`、火山 `https://ark.cn-beijing.volces.com/api/v3`、百炼 `https://dashscope.aliyuncs.com/compatible-mode/v1`。客户端仍只访问网关的 `/v1/responses`。
+
 ## 功能
 
 - **协议转换**：OpenAI Responses API ⇄ Anthropic Messages API，流式 SSE 双向转换。

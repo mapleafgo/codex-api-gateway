@@ -843,6 +843,14 @@ html[data-theme="dark"] .ui-select {
                               :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
                               x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
                     </div>
+              <label class="ui-field">
+                <span x-text="t('backendType') || 'Backend'"></span>
+                <select class="ui-input" x-model="src.backend_type">
+                  <option value="a" x-text="t('backendAnthropic') || 'Anthropic'"></option>
+                  <option value="c" x-text="t('backendChat') || 'OpenAI Chat'"></option>
+                </select>
+              </label>
+
                     <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
                            x-model="src.api_key" autocomplete="off" spellcheck="false">
                   </div>
@@ -1209,7 +1217,7 @@ function app() {
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', models: '模型', global: '全局参数', guidance: '引导语',
+      sources: '供应商', backendType: '后端类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '引导语',
       addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
       srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
@@ -1252,7 +1260,7 @@ function app() {
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', models: 'Models', global: 'Global', guidance: 'Guidance',
+      sources: 'Sources', backendType: 'Backend', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Guidance',
       addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
       srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
@@ -1623,6 +1631,7 @@ function app() {
           return;
         }
         this.cfg.sources.push({
+          backend_type: 'a',
           name,
           base_url,
           api_key: (v.api_key || '').trim(),

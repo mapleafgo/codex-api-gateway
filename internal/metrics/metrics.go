@@ -52,6 +52,8 @@ type RequestEvent struct {
 	// Attempt 表示该次上游尝试在客户端请求内的序号（从 1 开始）。
 	// 仅 KindUpstream 有意义；KindClient 为 0。
 	Attempt int
+	// BackendType 实际尝试/命中源的后端类型：a | c。
+	BackendType string
 }
 
 // Snapshot 是管理端读取的聚合快照。
@@ -101,9 +103,10 @@ type RequestRecord struct {
 	CacheCreate   int    `json:"cache_create"`
 	DurationMs    int64  `json:"duration_ms"`
 	// TTFBMs 首字节耗时毫秒；0 表示无首字节或未测量。
-	TTFBMs int64  `json:"ttfb_ms"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	TTFBMs      int64  `json:"ttfb_ms"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+	BackendType string `json:"backend_type,omitempty"`
 }
 
 // HistorySize 是环形历史缓冲容量。
@@ -253,6 +256,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		TTFBMs:        ev.TTFB.Milliseconds(),
 		Status:        ev.Status,
 		Error:         ev.Error,
+		BackendType:   ev.BackendType,
 	}
 	c.history[c.histIdx] = rec
 	c.histIdx = (c.histIdx + 1) % HistorySize

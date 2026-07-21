@@ -22,7 +22,6 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/scheduler"
-	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
 )
@@ -321,11 +320,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
 		return
 	}
-	if _, _, _, err := s.buildAnthropicRequest(body, ordered[0]); err != nil {
-		slog.Warn("预转换响应请求失败", "source", ordered[0].Name, "error", err)
-		http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+	// 预检：body 可 decode 即可；按源协议转换在 Backend 内完成，避免纯 Chat 部署被 Anthropic 转换误杀。
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -337,206 +332,83 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	conv := streamconv.New()
-	conv.SetEcho(echoFromRequest(req))
-	conv.SetClientModel(string(req.Model))
-	conv.SetCustomToolNames(convert.FreeformToolNames(req))
-	conv.SetDeclaredServerTools(convert.DeclaredServerTools(req))
-	// 仅当上游会返回 summarized thinking block（applyReasoning 在
-	// reasoning.summary==concise 时设置 display=summarized）时，才使用
-	// reasoning_summary_* 事件格式。reasoning.summary 默认 none，不因 effort≠none
-	// 强改，否则上游返回 plaintext thinking 而流被当作 summary 事件输出，语义错配。
-	if shouldSummarizeReasoning(req) {
-		conv.SetSummarized(true)
-	}
-
 	var evCount int
-	resolvedModel := string(req.Model) // 实际发送给上游的模型标识；若发生别名映射，build 回调中更新
-	sourceName, execErr := s.sch.ExecutePrepared(r.Context(), func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
-		reqForSource, anthReq, mcp, err := s.buildAnthropicRequest(body, src)
-		if err != nil {
-			return nil, nil, err
-		}
-		resolvedModel = scheduler.ResolveModel(&src, string(req.Model))
-		conv.SetCustomToolNames(convert.FreeformToolNames(reqForSource))
-		conv.SetDeclaredServerTools(convert.DeclaredServerTools(reqForSource))
-		sysLen := 0
-		for _, b := range anthReq.System {
-			sysLen += len(b.Text)
-		}
-		thinkingOn := anthReq.Thinking.OfEnabled != nil || anthReq.Thinking.OfAdaptive != nil
-		thinkingBlocks, emptySig, toolUseBlk, toolResultBlk, assistantMsgs, userMsgs := summarizeAnthropicRequest(anthReq)
-		slog.Info("请求转换完成",
-			"source", src.Name,
-			"model", string(anthReq.Model),
-			"max_tokens", anthReq.MaxTokens,
-			"messages", len(anthReq.Messages),
-			"assistant_messages", assistantMsgs,
-			"user_messages", userMsgs,
-			"system_bytes", sysLen,
-			"thinking", thinkingOn,
-			"thinking_blocks", thinkingBlocks,
-			"thinking_empty_signature", emptySig,
-			"tool_use_blocks", toolUseBlk,
-			"tool_result_blocks", toolResultBlk,
-			"tools", len(anthReq.Tools))
-		if emptySig > 0 {
-			slog.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
-				"source", src.Name, "thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
-		}
-		return anthReq, mcp, nil
-	}, func(ev *anthropic.MessageStreamEventUnion) error {
-		evCount++
-		blkType := ""
-		blkName := ""
-		if ev.Type == anContentBlockStart {
-			blkType = ev.ContentBlock.Type
-			blkName = ev.ContentBlock.Name
-		}
-		slog.Debug("收到上游流事件", "event_index", evCount, "event_type", ev.Type, "block_index", ev.Index, "block_type", blkType, "block_name", blkName)
-		out, _ := conv.Feed(ev)
-		for _, e := range out {
+	resolvedModel := string(req.Model)
+	backendType := config.BackendAnthropic
+	var lastUp scheduler.UpstreamEvent
+
+	sourceName, execErr := s.sch.ExecuteGeneric(r.Context(), body,
+		func(e model.SSEEvent) error {
+			evCount++
 			slog.Debug("写出响应 SSE 事件", "event_type", e.Type)
 			writeSSE(w, e)
-		}
-		flusher.Flush()
-		return nil
-	}, s.recordUpstream())
+			flusher.Flush()
+			return nil
+		},
+		func(ev scheduler.UpstreamEvent) {
+			lastUp = ev
+			if ev.ResolvedModel != "" {
+				resolvedModel = ev.ResolvedModel
+			}
+			if ev.BackendType != "" {
+				backendType = ev.BackendType
+			}
+			s.recordUpstream()(ev)
+		},
+	)
 
-	// Compute the response ID once so the error event and the completed
-	// event share the same value (I2: previously two newResponseID() calls produced
-	// different IDs when conv.RespID() == "").
-	id := conv.RespID()
-	if id == "" {
-		id = newResponseID()
-	}
-
+	id := lastUp.SourceName // placeholder overwritten below
+	_ = id
+	respID := newResponseID()
+	// 尽量从已写出事件无法反查 ID；用新 ID 仅用于日志。Backend 已在流内写了真实 response id。
 	clientCanceled := isClientCanceled(r.Context(), execErr)
 
-	if execErr == nil || (clientCanceled && conv.Done() && !conv.Failed()) {
-		// 干净成功，或客户端在上游终态之后断开：业务已完成，按 completed 收尾。
-		// 终态后断开是正常路径，不额外打日志（客户端已收到完整 SSE）。
-		items := conv.OutputItems()
-		var types []string
-		for _, it := range items {
-			types = append(types, it.Type)
-		}
-		status := model.ResponseStatusCompleted
-		if conv.Failed() {
-			status = model.ResponseStatusFailed
-		}
-		var cacheRead, cacheCreate int
-		var inputTok, outputTok int
-		if u := conv.Usage(); u != nil {
-			cacheRead = u.CacheReadInputTokens
-			cacheCreate = u.CacheCreationInputTokens
-			inputTok = u.InputTokens
-			outputTok = u.OutputTokens
-		}
-		if execErr == nil {
-			slog.Info("响应请求完成", "response_id", id, "status", status, "source", sourceName, "upstream_events", evCount, "stop_reason", conv.StopReason(), "output_types", types, "cache_read_tokens", cacheRead, "cache_creation_tokens", cacheCreate, "elapsed", time.Since(reqStart).String())
-		}
-		// 投递指标事件；非阻塞，失败/丢弃不影响 API。
-		// Code：SSE 流式成功 HTTP 恒为 200；语义码用 status 映射给观测台展示。
-		s.metrics.Record(metrics.RequestEvent{
-			Kind:          metrics.KindClient,
-			StartedAt:     reqStart,
-			Duration:      time.Since(reqStart),
-			SourceName:    sourceName,
-			Model:         string(req.Model),
-			ResolvedModel: resolvedModel,
-			Status:        status,
-			Code:          200,
-			InputTokens:   inputTok,
-			OutputTokens:  outputTok,
-			CacheRead:     cacheRead,
-			CacheCreate:   cacheCreate,
-		})
-		if execErr == nil {
-			trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
-			for _, e := range trailing {
-				writeSSE(w, e)
-			}
-			flusher.Flush()
-		}
+	status := model.ResponseStatusCompleted
+	code := 200
+	errText := ""
+	// 上游已业务完成（lastUp.Status=completed）后客户端断开：按 completed 收尾。
+	upstreamCompleted := lastUp.Status == "completed"
+	if execErr == nil || (clientCanceled && upstreamCompleted) {
+		slog.Info("响应请求完成", "response_id", respID, "status", status, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String())
 	} else if clientCanceled {
-		// 流未终态时客户端断开：不记 failed、不写 response.failed（对端已走）。
-		var inputTok, outputTok, cacheRead, cacheCreate int
-		if u := conv.Usage(); u != nil {
-			inputTok = u.InputTokens
-			outputTok = u.OutputTokens
-			cacheRead = u.CacheReadInputTokens
-			cacheCreate = u.CacheCreationInputTokens
-		}
-		slog.Info("响应请求被客户端取消",
-			"response_id", id,
-			"status", "canceled",
-			"source", sourceName,
-			"upstream_events", evCount,
-			"elapsed", time.Since(reqStart).String(),
-			"error", execErr)
-		s.metrics.Record(metrics.RequestEvent{
-			Kind:          metrics.KindClient,
-			StartedAt:     reqStart,
-			Duration:      time.Since(reqStart),
-			SourceName:    sourceName,
-			Model:         string(req.Model),
-			ResolvedModel: resolvedModel,
-			Status:        "canceled",
-			Code:          499, // 约定：客户端关闭连接（类 nginx 499）
-			InputTokens:   inputTok,
-			OutputTokens:  outputTok,
-			CacheRead:     cacheRead,
-			CacheCreate:   cacheCreate,
-			Error:         errSummary(execErr),
-		})
-	} else if conv.Done() && !conv.Failed() {
-		slog.Warn("上游流终态后读取失败",
-			"response_id", id,
-			"source", sourceName,
-			"elapsed", time.Since(reqStart).String(),
-			"error", execErr)
+		status = "canceled"
+		code = 499
+		errText = errSummary(execErr)
+		slog.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
 	} else {
-		slog.Error("响应请求失败", "response_id", id, "status", "failed", "source", sourceName, "elapsed", time.Since(reqStart).String(), "error", execErr)
-		// 失败也记录指标：status=failed，token 通常为 0
-		var inputTok, outputTok, cacheRead, cacheCreate int
-		if u := conv.Usage(); u != nil {
-			inputTok = u.InputTokens
-			outputTok = u.OutputTokens
-			cacheRead = u.CacheReadInputTokens
-			cacheCreate = u.CacheCreationInputTokens
-		}
-		s.metrics.Record(metrics.RequestEvent{
-			Kind:          metrics.KindClient,
-			StartedAt:     reqStart,
-			Duration:      time.Since(reqStart),
-			SourceName:    sourceName,
-			Model:         string(req.Model),
-			ResolvedModel: resolvedModel,
-			Status:        model.ResponseStatusFailed,
-			Code:          clientFailCode(execErr),
-			InputTokens:   inputTok,
-			OutputTokens:  outputTok,
-			CacheRead:     cacheRead,
-			CacheCreate:   cacheCreate,
-			Error:         errSummary(execErr),
-		})
-		if !conv.Done() {
-			// I1: only emit a server-side response.failed if the converter hasn't
-			// already emitted one (e.g. via a mid-stream error event). Without this
-			// guard, a mid-stream error followed by a connection reset would produce
-			// two response.failed events.
-			errResp := model.NewResponseObject(id, model.ResponseStatusFailed, "", time.Now().Unix(), echoFromRequest(req))
+		status = model.ResponseStatusFailed
+		code = clientFailCode(execErr)
+		errText = errSummary(execErr)
+		slog.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		// 若流尚未写出任何事件，补一条 failed（Backend 通常已写）
+		if evCount == 0 {
+			errResp := model.NewResponseObject(respID, model.ResponseStatusFailed, string(req.Model), time.Now().Unix(), echoFromRequest(req))
 			errResp.Output = []model.OutputItem{}
 			errResp.Error = &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
 			evType := string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
 			writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
-				Type: evType, SequenceNumber: conv.NextSeq(), Response: errResp,
+				Type: evType, SequenceNumber: 1, Response: errResp,
 			}))
 			flusher.Flush()
 		}
 	}
 
+	s.metrics.Record(metrics.RequestEvent{
+		Kind:          metrics.KindClient,
+		StartedAt:     reqStart,
+		Duration:      time.Since(reqStart),
+		SourceName:    sourceName,
+		Model:         string(req.Model),
+		ResolvedModel: resolvedModel,
+		Status:        status,
+		Code:          code,
+		InputTokens:   lastUp.InputTokens,
+		OutputTokens:  lastUp.OutputTokens,
+		CacheRead:     lastUp.CacheRead,
+		CacheCreate:   lastUp.CacheCreate,
+		Error:         errText,
+		BackendType:   backendType,
+	})
 }
 
 func (s *Server) buildAnthropicRequest(body []byte, _ config.Source) (*oairesponses.ResponseNewParams, *anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
@@ -985,6 +857,7 @@ func (s *Server) recordUpstream() scheduler.OnUpstream {
 			CacheCreate:   ev.CacheCreate,
 			Error:         ev.Error,
 			Attempt:       ev.Attempt,
+			BackendType:   ev.BackendType,
 		})
 	}
 }
