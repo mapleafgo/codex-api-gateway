@@ -771,37 +771,13 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
 	args := orDefault(fc.Arguments, `{}`)
 	// Go 1.26 起 json.RawMessage.MarshalJSON 会对内容做 json.Valid 检查，
-	// 截断或非法的 arguments 会直接引发 marshal 失败。
-	// Codex seed 格式会在 arguments JSON 之后追加 XML 标记（如 \n</function></seed:tool_call>），
-	// 导致整体非 JSON。这里先尝试按前缀提取合法 JSON 对象，兜底回退 {}。
+	// 非法的 arguments 会直接引发 marshal 失败，导致上游请求发不出去。
 	if !json.Valid([]byte(args)) {
-		if cleaned := extractJSONPrefix(args); cleaned != "" {
-			slog.Debug("从 function_call arguments 提取了 JSON 前缀（丢弃尾部非 JSON seed 标记）",
-				"call_id", fc.CallID, "name", fc.Name, "original_len", len(args), "clean_len", len(cleaned))
-			args = cleaned
-		} else {
-			slog.Warn("function_call arguments 非合法 JSON，全部回退 {}",
-				"call_id", fc.CallID, "name", fc.Name, "len", len(args))
-			args = `{}`
-		}
+		slog.Warn("function_call arguments 非合法 JSON，回退为 {}",
+			"call_id", fc.CallID, "name", fc.Name, "len", len(args))
+		args = `{}`
 	}
 	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), json.RawMessage(args))
-}
-
-// extractJSONPrefix attempts to parse a single JSON object from the beginning
-// of s. This handles Codex seed format where arguments JSON is followed by XML
-// tags such as \n</function></seed:tool_call>, making the full string invalid.
-func extractJSONPrefix(s string) string {
-	dec := json.NewDecoder(strings.NewReader(s))
-	var raw json.RawMessage
-	if err := dec.Decode(&raw); err != nil {
-		return ""
-	}
-	// function_call arguments must be a JSON object.
-	if len(raw) == 0 || raw[0] != '{' {
-		return ""
-	}
-	return string(raw)
 }
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
