@@ -76,16 +76,37 @@ type BreakerCfg struct {
 	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries,omitempty"`
 	Recovery         string   `koanf:"recovery" yaml:"recovery,omitempty"`
 }
+// Source configures one upstream.
+// backend_type: 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming)
+const (
+	BackendAnthropic  = "a"
+	BackendOpenAIChat = "c"
+)
 
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
 	Name          string            `koanf:"name" yaml:"name"`
 	BaseURL       string            `koanf:"base_url" yaml:"base_url"`
 	APIKey        string            `koanf:"api_key" yaml:"api_key,omitempty"`
+	BackendType   string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
 	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel  string            `koanf:"default_model" yaml:"default_model,omitempty"`
 	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
 	OriginalIndex int               `koanf:"-" yaml:"-"`
+}
+
+// NormalizeBackendType normalizes and validates the backend_type value.
+// Returns normalized a/c or error if invalid.
+func NormalizeBackendType(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "", BackendAnthropic:
+		return BackendAnthropic, nil
+	case BackendOpenAIChat:
+		return BackendOpenAIChat, nil
+	default:
+		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c)", s)
+	}
 }
 
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
@@ -386,6 +407,11 @@ func (c *Config) validate() error {
 		if s.Name == "" || s.BaseURL == "" {
 			return fmt.Errorf("config: source %d missing name/base_url", i)
 		}
+		norm, err := NormalizeBackendType(s.BackendType)
+		if err != nil {
+			return fmt.Errorf("config: source %d: %w", i, err)
+		}
+		s.BackendType = norm
 		if s.Breaker != nil && s.Breaker.Recovery != "" &&
 			s.Breaker.Recovery != "normal" && s.Breaker.Recovery != "degraded" {
 			return fmt.Errorf("config: source %d breaker.recovery must be \"normal\" or \"degraded\", got %q",

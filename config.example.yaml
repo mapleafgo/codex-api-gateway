@@ -84,4 +84,12 @@ sources:
     default_model: glm-5.2
     breaker:
       first_byte_timeout: 8s    # 该源更快判定首字节超时，其余字段继承全局
+
+  # 备用源：演示 OpenAI Chat 兼容上游（取消注释使用）
+  #- name: openai-compat
+  #  base_url: https://api.openai.com/v1
+  #  api_key: ${OPENAI_API_KEY}
+  #  backend_type: c
+  #  model_map: { gpt-5: gpt-4o }
+  #  default_model: gpt-4o
       cooldown: 10s
