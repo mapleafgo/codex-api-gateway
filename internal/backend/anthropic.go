@@ -78,7 +78,7 @@ func (b *AnthropicBackend) Execute(
 
 	var ttfb time.Duration
 	locked := false
-	var usageIn, usageOut, cacheRead, cacheCreate int
+	var usage anthropic.MessageDeltaUsage
 	sawStop := false
 
 	scanErr := anthropicclient.ScanEvents(body, func(ev *anthropic.MessageStreamEventUnion) error {
@@ -90,20 +90,9 @@ func (b *AnthropicBackend) Execute(
 		if ev != nil && ev.Type == anMessageStop {
 			sawStop = true
 		}
-		// usage 粗提
-		if ev != nil && ev.Type == anMessageStart {
-			usageIn = int(ev.Message.Usage.InputTokens)
-			cacheRead = int(ev.Message.Usage.CacheReadInputTokens)
-			cacheCreate = int(ev.Message.Usage.CacheCreationInputTokens)
-		}
-		if ev != nil && ev.Type == anMessageDelta {
-			if ev.Usage.OutputTokens > 0 {
-				usageOut = int(ev.Usage.OutputTokens)
-			}
-			if ev.Usage.InputTokens > 0 {
-				usageIn = int(ev.Usage.InputTokens)
-			}
-		}
+		// 与 scheduler.mergeUsage 一致：message_start 取 input/cache_* 初值，
+		// message_delta 取累计值（含 cache_* 刷新），按「最后一次非零」合并。
+		mergeAnthropicUsage(&usage, ev)
 		out, err := conv.Feed(ev)
 		if err != nil {
 			return err
@@ -155,8 +144,8 @@ func (b *AnthropicBackend) Execute(
 			SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 			StartedAt: start, Duration: time.Since(start), TTFB: ttfb,
 			Status: status, Code: code, Error: errText, Attempt: attempt,
-			InputTokens: usageIn, OutputTokens: usageOut,
-			CacheRead: cacheRead, CacheCreate: cacheCreate,
+			InputTokens: int(usage.InputTokens), OutputTokens: int(usage.OutputTokens),
+			CacheRead: int(usage.CacheReadInputTokens), CacheCreate: int(usage.CacheCreationInputTokens),
 			BackendType: config.BackendAnthropic,
 		})
 	}
@@ -164,4 +153,43 @@ func (b *AnthropicBackend) Execute(
 		return scanErr
 	}
 	return scanErr
+}
+
+// mergeAnthropicUsage 合并单个 Anthropic SSE 事件的 usage 到累计视图。
+// message_start 用 Message.Usage；message_delta 用事件级 Usage（累计）。
+// 取最后一次非零值，避免把 delta 累计值与 start 初值重复相加。
+func mergeAnthropicUsage(acc *anthropic.MessageDeltaUsage, ev *anthropic.MessageStreamEventUnion) {
+	if acc == nil || ev == nil {
+		return
+	}
+	switch ev.Type {
+	case anMessageStart:
+		u := ev.Message.Usage
+		if u.InputTokens > 0 {
+			acc.InputTokens = u.InputTokens
+		}
+		if u.OutputTokens > 0 {
+			acc.OutputTokens = u.OutputTokens
+		}
+		if u.CacheReadInputTokens > 0 {
+			acc.CacheReadInputTokens = u.CacheReadInputTokens
+		}
+		if u.CacheCreationInputTokens > 0 {
+			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	case anMessageDelta:
+		u := ev.Usage
+		if u.InputTokens > 0 {
+			acc.InputTokens = u.InputTokens
+		}
+		if u.OutputTokens > 0 {
+			acc.OutputTokens = u.OutputTokens
+		}
+		if u.CacheReadInputTokens > 0 {
+			acc.CacheReadInputTokens = u.CacheReadInputTokens
+		}
+		if u.CacheCreationInputTokens > 0 {
+			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	}
 }
