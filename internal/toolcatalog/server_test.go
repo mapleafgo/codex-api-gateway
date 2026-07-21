@@ -53,6 +53,12 @@ func TestApplyCacheControlRecognizedVariants(t *testing.T) {
 	if !ApplyCacheControl(&ce, cc) {
 		t.Fatalf("OfCodeExecutionTool20250522 cache_control not applied")
 	}
+
+	// SDK GetCacheControl 应覆盖 switch 未枚举的变体（如 bash）。
+	bash := anthropic.ToolUnionParam{OfBashTool20250124: &anthropic.ToolBash20250124Param{}}
+	if !ApplyCacheControl(&bash, cc) || bash.OfBashTool20250124.CacheControl.TTL != cc.TTL {
+		t.Fatalf("OfBashTool20250124 cache_control not applied via GetCacheControl")
+	}
 }
 
 func TestApplyCacheControlUnknownReturnsFalse(t *testing.T) {
