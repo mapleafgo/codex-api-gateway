@@ -63,7 +63,7 @@
 | 字段 | 行为 |
 |---|---|
 | `reasoning.generate_summary` | WARN + 忽略（只用 `reasoning.summary`） |
-| `prompt_cache_retention` | WARN + 忽略（不用其推导 TTL） |
+| `prompt_cache_retention` | DEBUG + 忽略（不用其推导 TTL） |
 | `user`（OpenAI 已废弃） | WARN + 忽略（可用 `metadata.user_id`） |
 
 ### 5. lossy 打磨原则
@@ -157,8 +157,8 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
   - Anthropic `stream server_tool_use`：未 catalog 的 server tool（web_fetch 等）与对应 result 为 **WARN + skip**，不是 `response.failed`（修正「仍显式失败」过时表述）。
   - 补充「未知 Input Item 兜底」：`unknownInputItemPart` 仅对 SDK 未登记类型 raw_preserved；已知无等价类型保持 dropped。
 - **deferred 全 A 收口**
-  - `reasoning.generate_summary` / `text.verbosity` / `prompt_cache_retention` / `context_management` / `max_tool_calls` → `unsupported_by_backend`（WARN + 忽略；不实现语义模拟）。
-  - `prompt_cache_options` / `prompt_cache_retention` 补齐 WARN；`prompt_cache_key` 为 DEBUG（Codex 常发，可控协议差异）。
+  - `reasoning.generate_summary` / `text.verbosity` / `context_management` / `max_tool_calls` → `unsupported_by_backend`（WARN + 忽略；不实现语义模拟）。`prompt_cache_retention` 同其它 prompt_cache_* 为 DEBUG + 忽略。
+  - `prompt_cache_key` / `prompt_cache_options` / `prompt_cache_retention` 均为 DEBUG + 忽略（网关已自主 cache_control，可控协议差异）。
   - response status `cancelled` → `supported`（metrics `canceled`/499 only；不写 SSE 终态，因对端通常已断）。
 
 - **Codex 主路径 wire 修复**
@@ -230,8 +230,8 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`（默认下发/ZDR 路径）；其余（file_search/logprobs/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **DEBUG + 忽略**（Codex 常发，可控协议差异） |
-| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **WARN + 忽略** |
-| `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **WARN + 忽略**（不映射 TTL） |
+| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **DEBUG + 忽略** |
+| `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **DEBUG + 忽略**（不映射 TTL） |
 | `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力；`prompt.id` 非空时 **WARN + 忽略** |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |

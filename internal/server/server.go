@@ -654,14 +654,16 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"impact", "不会按 OpenAI prompt_cache_key 分桶缓存；上游缓存由 Anthropic cache_control 控制")
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
-		slog.Warn("忽略 prompt_cache_options（OpenAI options 对 Anthropic 无意义，网关已自主设 cache_control），对应数据被丢弃",
+		// 与 prompt_cache_key 同属可控协议差异，网关已自主 cache_control → DEBUG。
+		slog.Debug("忽略 prompt_cache_options（OpenAI options 对 Anthropic 无意义，网关已自主设 cache_control）",
 			"field", "prompt_cache_options",
 			"mode", req.PromptCacheOptions.Mode,
 			"ttl", req.PromptCacheOptions.Ttl,
 			"impact", "不会按 OpenAI prompt_cache_options 调整缓存策略")
 	}
 	if req.PromptCacheRetention != "" {
-		slog.Warn("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同），对应数据被丢弃",
+		// deprecated 字段且语义不等价；网关用 cache.ttl 配置，DEBUG 即可。
+		slog.Debug("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同）",
 			"field", "prompt_cache_retention",
 			"value", string(req.PromptCacheRetention),
 			"impact", "不会按 in_memory/24h 调整上游缓存保留；请用网关 cache_control TTL 配置")
