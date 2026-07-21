@@ -32,7 +32,7 @@
 - Codex CLI → Anthropic 兼容后端的 **Responses ↔ Messages 直转**。
 - 客户端自带完整 `input` 回灌；网关无 session store。
 - 可语义映射的 tool / content / SSE 生命周期；有损处登记 `lossy_supported` 并说明损失。
-- 网关自主 Anthropic `cache_control`（配置 TTL），不依赖 OpenAI prompt cache key。
+- 网关自主 Anthropic `cache_control`（配置 TTL），不依赖 OpenAI prompt cache key。MCP `mcp_toolset` 在 inject 后重定位 tools 末项断点；`cache.ttl=1h` 时带 `extended-cache-ttl-2025-04-11` beta。
 
 ### 2. 产品范围外（声明不做）
 
@@ -230,7 +230,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`（默认下发/ZDR 路径）；其余（file_search/logprobs/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **WARN + 忽略** |
-| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **WARN + 忽略** |
+| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **WARN + 忽略** |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **WARN + 忽略**（不映射 TTL） |
 | `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力；`prompt.id` 非空时 **WARN + 忽略** |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
@@ -256,7 +256,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `input_file.file_data` | `document` block | `supported` | 以 base64/plain text 方式构造 document |
 | `input_file.file_url` | `document` block | `supported` | URL document |
 | `input_file.file_id` | none | `unsupported_by_backend` | 同 OpenAI Files 限制 |
-| `prompt_cache_breakpoint` | none | `unsupported_by_backend` | 网关已自主设 cache_control（system/tools 末尾 + 顶层 automatic），不读 OpenAI breakpoint，忽略 |
+| `prompt_cache_breakpoint` | none | `unsupported_by_backend` | 网关已自主设 cache_control（system/tools 末尾 + 顶层 automatic；MCP 注入后 tools 末项重定位），不读 OpenAI breakpoint，忽略 |
 
 ## Input Item Union
 
@@ -284,7 +284,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 文本 tool_result；可前缀 `[status=…]`；item.id 作 tool_use_id |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `environment_type` + `timeout_ms`/`max_output_length`/`status`/`caller_type`/`caller_id` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr + `[status]`/`[max_output_length]`/`[exit_code]`/`[timeout]` 折文本；caller 不映射 |
-| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete → JSON（operation/path/diff）+ `status`/`caller_type`/`caller_id` 折入 input |
+| `apply_patch_call` | assistant freeform `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete → V4A 文本（`*** Begin/End Patch`）；`status`/`caller` 无 Anthropic 字段（丢失） |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | `[status=…]` + 可选日志文本；caller 不映射 |
 | `mcp_list_tools` | developer marker | `lossy_supported` | 无 Anthropic 列表块；折成 `<mcp_list_tools>` developer 文本（server + tool names + error） |
 | `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
@@ -353,9 +353,9 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 |---|---|---|---|
 | `message` | text block | `supported` | 输出 text message |
 | `reasoning` | thinking/redacted thinking block | `supported` | 支持 summary/signature/encrypted |
-| `function_call` | `tool_use` | `supported` | 普通 tool use |
+| `function_call` | `tool_use` | `supported` | 回程 arguments 把整数值 `N.0` 收成整数，避免 Codex serde 失败 | 普通 tool use |
 | `function_call_output` | request replay only | `supported` | 作为 input item 回放（含 content 数组形态） |
-| `custom_tool_call` | custom `tool_use` | `supported` | freeform input 解包 |
+| `custom_tool_call` | custom `tool_use` | `supported` | freeform input 解包；`apply_patch` 额外归一 V4A 标记（去多余 `***`） |
 | `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放（含 content list 形态） |
 | `tool_search_call` | `tool_use` name=`tool_search` | `supported` | `toolSearchCallKind` 产出 `tool_search_call` item（execution=client，arguments 随 done 一次性给出，不流式 delta） |
 | `tool_search_output` | request replay only | `supported` | 由 Codex 本地执行 tool_search 后回灌；网关入站注入 tools + tool_result。出站不生成该 item（后端非搜索持有者） |
