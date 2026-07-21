@@ -1,10 +1,9 @@
 package streamconv
 
 import (
-	"encoding/json"
-
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 // customCallKind 把 tool_use（customToolNames 命中，含 shell/apply_patch）映射为
@@ -36,7 +35,8 @@ func (customCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model
 
 func (customCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
 	item := c.outputItems[st.itemIdx]
-	input := customToolInput(args)
+	// 统一 freeform 出口：解包 {"input"} + 工具契约归一（apply_patch V4A 等）
+	input := toolcatalog.SanitizeClientToolInput(st.name, true, args)
 	item.Input = input
 	var evts []model.SSEEvent
 	if input != "" {
@@ -60,15 +60,8 @@ func (customCallKind) handleResult(_ *Converter, _ *anthropic.MessageStreamEvent
 	return nil
 }
 
-// customToolInput 从累积的 custom tool args（{"input": ...}）中解出 input 文本。
-// 解析失败时原样返回 raw。
+// customToolInput 保留给测试：等价于 freeform 解包（不带 name 特化）。
+// 生产路径请走 toolcatalog.SanitizeClientToolInput。
 func customToolInput(raw string) string {
-	var obj map[string]any
-	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
-		return raw
-	}
-	if input, ok := obj["input"].(string); ok {
-		return input
-	}
-	return raw
+	return toolcatalog.SanitizeClientToolInput("", true, raw)
 }

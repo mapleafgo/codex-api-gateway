@@ -2,6 +2,7 @@ package convert
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -52,6 +53,17 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	}
 	if tool.Type != anthropic.ToolTypeCustom {
 		t.Fatalf("apply_patch should be exposed as Anthropic custom tool, got %q", tool.Type)
+	}
+	// freeform schema：properties.input，不得是 structured operation/path/diff
+	props, _ := tool.InputSchema.Properties.(map[string]any)
+	if props == nil || props["input"] == nil {
+		t.Fatalf("apply_patch must use freeform {input:string} schema, got %#v", tool.InputSchema.Properties)
+	}
+	if _, ok := props["operation"]; ok {
+		t.Fatalf("apply_patch must not declare structured operation schema: %#v", props)
+	}
+	if !tool.Description.Valid() || !strings.Contains(tool.Description.Value, "Begin Patch") {
+		t.Fatalf("apply_patch description should mention V4A markers: %#v", tool.Description)
 	}
 }
 

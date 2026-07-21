@@ -111,7 +111,8 @@ func restoreAssistantOutputTextFromRaw(data []byte, req *oairesponses.ResponseNe
 		return
 	}
 	if len(rawItems) != len(req.Input.OfInputItemList) {
-		return
+		// 不严格长度匹配，因为 phase/metadata 等额外字段可能导致 SDK 解析后条目数对不上(raw 有而 req 无)
+		// 能恢复一条是一条，避免 commentary 等特殊 phase 的正文丢了
 	}
 	restored := 0
 	for i, rawItem := range rawItems {
@@ -822,33 +823,24 @@ func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 }
 
 func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemApplyPatchCallParam) error {
-	var input map[string]any
+	// 与声明/回程一致：freeform V4A 文本，不要 structured JSON。
+	// status/caller 无 Anthropic freeform 字段可挂，折入 tool_result 侧已有 status 文本；
+	// 历史 call 本身只回灌 patch 正文（lossy：caller 丢失，见覆盖表）。
+	var patch string
 	switch {
 	case call.Operation.OfCreateFile != nil:
-		input = map[string]any{
-			"operation": "create_file",
-			"path":      call.Operation.OfCreateFile.Path,
-			"diff":      call.Operation.OfCreateFile.Diff,
-		}
+		patch = toolcatalog.FormatApplyPatchV4A("create_file", call.Operation.OfCreateFile.Path, call.Operation.OfCreateFile.Diff)
 	case call.Operation.OfUpdateFile != nil:
-		input = map[string]any{
-			"operation": "update_file",
-			"path":      call.Operation.OfUpdateFile.Path,
-			"diff":      call.Operation.OfUpdateFile.Diff,
-		}
+		patch = toolcatalog.FormatApplyPatchV4A("update_file", call.Operation.OfUpdateFile.Path, call.Operation.OfUpdateFile.Diff)
 	case call.Operation.OfDeleteFile != nil:
-		input = map[string]any{
-			"operation": "delete_file",
-			"path":      call.Operation.OfDeleteFile.Path,
-		}
+		patch = toolcatalog.FormatApplyPatchV4A("delete_file", call.Operation.OfDeleteFile.Path, "")
 	default:
 		return fmt.Errorf("apply_patch call %q has an invalid operation", call.CallID)
 	}
-	if call.Status != "" {
-		input["status"] = call.Status
+	if patch == "" {
+		return fmt.Errorf("apply_patch call %q has an invalid operation", call.CallID)
 	}
-	putCallerMeta(input, call.Caller.OfDirect != nil, call.Caller.OfProgram != nil, call.Caller.GetCallerID())
-	return appendToolUse(out, call.CallID, "apply_patch", input)
+	return appendToolUse(out, call.CallID, "apply_patch", map[string]any{"input": patch})
 }
 
 // putCallerMeta 把 OpenAI tool call 的 caller 身份折进 tool_use.input（无 Anthropic 等价字段）。

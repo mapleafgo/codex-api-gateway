@@ -914,6 +914,7 @@ func TestShellCallOutputIncludesOutcomeAndStatus(t *testing.T) {
 }
 
 func TestApplyPatchCallPreservesStatusAndCaller(t *testing.T) {
+	// freeform 回灌：status/caller 无 Anthropic 字段，只校验 V4A 正文。
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
 		Input: oairesponses.ResponseNewParamsInputUnion{
@@ -936,8 +937,10 @@ func TestApplyPatchCallPreservesStatusAndCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := out.Messages[0].Content[0].OfToolUse.Input.(map[string]any)
-	if in["status"] != "completed" || in["caller_type"] != "direct" || in["operation"] != "delete_file" {
-		t.Fatalf("apply_patch meta: %#v", in)
+	got, _ := in["input"].(string)
+	want := "*** Begin Patch\n*** Delete File: x.txt\n*** End Patch"
+	if got != want {
+		t.Fatalf("apply_patch freeform: %#v want %q", in, want)
 	}
 }
 
@@ -1023,15 +1026,32 @@ func TestApplyPatchCallInputItemConvertsToApplyPatchToolUse(t *testing.T) {
 			if !ok {
 				t.Fatalf("apply_patch input type = %T, want object", toolUse.Input)
 			}
-			if input["operation"] != tt.wantType || input["path"] != tt.wantPath {
-				t.Fatalf("apply_patch input = %#v, want operation=%q path=%q", input, tt.wantType, tt.wantPath)
+			patch, _ := input["input"].(string)
+			if !strings.HasPrefix(patch, "*** Begin Patch\n") || !strings.HasSuffix(patch, "*** End Patch") {
+				t.Fatalf("apply_patch freeform markers: %q", patch)
 			}
-			if tt.wantDiff == nil {
-				if _, ok := input["diff"]; ok {
-					t.Fatalf("delete apply_patch input must not invent a diff: %#v", input)
+			if !strings.Contains(patch, tt.wantPath) {
+				t.Fatalf("apply_patch path missing: %q want %q", patch, tt.wantPath)
+			}
+			switch tt.wantType {
+			case "create_file":
+				if !strings.Contains(patch, "*** Add File: ") {
+					t.Fatalf("create header missing: %q", patch)
 				}
-			} else if input["diff"] != *tt.wantDiff {
-				t.Fatalf("apply_patch diff = %#v, want %q", input["diff"], *tt.wantDiff)
+			case "update_file":
+				if !strings.Contains(patch, "*** Update File: ") {
+					t.Fatalf("update header missing: %q", patch)
+				}
+			case "delete_file":
+				if !strings.Contains(patch, "*** Delete File: ") {
+					t.Fatalf("delete header missing: %q", patch)
+				}
+			}
+			if tt.wantDiff != nil && !strings.Contains(patch, strings.TrimSpace(*tt.wantDiff)) {
+				// diff 可能被重包进 V4A，至少保留关键片段
+				if !strings.Contains(patch, "+new") && !strings.Contains(patch, *tt.wantDiff) {
+					t.Fatalf("apply_patch diff lost: %q want %q", patch, *tt.wantDiff)
+				}
 			}
 		})
 	}

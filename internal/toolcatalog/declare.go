@@ -22,7 +22,10 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		c := t.OfCustom
 		return []anthropic.ToolUnionParam{ClientTool(c.Name, freeformInputSchema(), optionalString(c.Description), true)}, nil
 	case t.OfApplyPatch != nil:
-		return []anthropic.ToolUnionParam{ClientTool("apply_patch", applyPatchInputSchema(), nil, true)}, nil
+		// Codex apply_patch 是 freeform V4A 文本工具（非 structured operation/path/diff）。
+		// 声明 structured schema 会诱导上游产出 JSON，回程/客户端校验双双失败。
+		desc := ApplyPatchDescription()
+		return []anthropic.ToolUnionParam{ClientTool("apply_patch", freeformInputSchema(), &desc, true)}, nil
 	case t.OfShell != nil:
 		return []anthropic.ToolUnionParam{ClientTool("shell", freeformInputSchema(), nil, true)}, nil
 	case t.OfLocalShell != nil:
@@ -170,18 +173,6 @@ func freeformInputSchema() map[string]any {
 			"input": map[string]any{"type": "string"},
 		},
 		"required": []string{"input"},
-	}
-}
-
-func applyPatchInputSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"operation": map[string]any{"type": "string", "enum": []string{"create_file", "delete_file", "update_file"}},
-			"path":      map[string]any{"type": "string"},
-			"diff":      map[string]any{"type": "string"},
-		},
-		"required": []string{"operation", "path"},
 	}
 }
 

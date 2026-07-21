@@ -5,6 +5,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 // functionCallKind 把 tool_use（非 custom、非 tool_search）映射为 function_call。
@@ -60,6 +61,8 @@ func (functionCallKind) consumeDelta(c *Converter, st *callState, partial string
 
 func (functionCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
 	item := c.outputItems[st.itemIdx]
+	// 统一 function 出口：整型 float（85100.0）→ 整数，避免 Codex serde 失败
+	args = toolcatalog.SanitizeClientToolInput(st.name, false, args)
 	item.Arguments = args
 	item.Status = model.ResponseStatusCompleted
 	evts := []model.SSEEvent{

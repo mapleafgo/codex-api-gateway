@@ -1954,3 +1954,57 @@ func TestAnthropicServerToolResultsSkippedNotFailed(t *testing.T) {
 		})
 	}
 }
+
+func TestConverterApplyPatchNormalizesExtraStars(t *testing.T) {
+	c := New()
+	c.SetCustomToolNames([]string{"apply_patch"})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_patch", Name: "apply_patch"},
+	})
+	raw := `{"input":"*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***"}`
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_delta", Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: raw},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	items := c.OutputItems()
+	if len(items) != 1 {
+		t.Fatalf("items=%+v", items)
+	}
+	if strings.Contains(items[0].Input, "Patch ***") {
+		t.Fatalf("extra stars remain: %q", items[0].Input)
+	}
+	if !strings.HasPrefix(items[0].Input, "*** Begin Patch\n") {
+		t.Fatalf("begin: %q", items[0].Input)
+	}
+	if !strings.HasSuffix(items[0].Input, "*** End Patch") {
+		t.Fatalf("end: %q", items[0].Input)
+	}
+}
+
+func TestConverterFunctionArgsCoerceIntegerFloats(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_1", Name: "write_stdin"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_delta", Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"session_id":85100.0,"yield_time_ms":300000.0}`},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	args := c.OutputItems()[0].Arguments
+	if strings.Contains(args, ".0") {
+		t.Fatalf("float ints remain: %s", args)
+	}
+	if !strings.Contains(args, "85100") || !strings.Contains(args, "300000") {
+		t.Fatalf("ints missing: %s", args)
+	}
+}

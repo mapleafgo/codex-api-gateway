@@ -10,7 +10,7 @@
 |---|---|---|---|
 | `local_shell_call` / `shell_call` | `lossy_supported` | 均映射为 Anthropic `tool_use`，名称为 `shell`；环境、超时和调用者元数据不映射 | `TestShellCallInputItemConvertsToShellToolUse`、`TestLocalShellCallInputItemConvertsToShellToolUse` |
 | `local_shell_call_output` / `shell_call_output` | `lossy_supported` | 映射为 `tool_result`；会话以 raw JSON 回放 | `TestShellAndApplyPatchOutputsConvertToToolResults`、session 测试 |
-| `apply_patch_call` / `apply_patch_call_output` | `lossy_supported` | 映射为 `apply_patch` tool use/result，保留 operation、path 和适用的 diff | `TestApplyPatchCallInputItemConvertsToApplyPatchToolUse`、`TestShellAndApplyPatchOutputsConvertToToolResults` |
+| `apply_patch_call` / `apply_patch_call_output` | `lossy_supported` | 映射为 freeform `apply_patch` tool use/result（V4A 文本），operation/path/diff 折入 patch 正文 | `TestApplyPatchCallInputItemConvertsToApplyPatchToolUse`、`TestShellAndApplyPatchOutputsConvertToToolResults` |
 | `text.format.json_schema` / `json_object` | `lossy_supported` | 单独使用时以强制 Anthropic synthetic tool 模拟结构化输出 | `TestStructuredOutputInjectsTool`、`TestJSONObjectFormatInjectsTool` |
 | structured output + explicit incompatible `tool_choice` | `unsupported_by_backend` | synthetic tool 已强制时，`none`、`auto`、`required`、不等价 specific choice、`allowed_tools` 和未知 choice 均 fail-fast，不静默覆盖 | `TestStructuredOutputRejectsIncompatibleExplicitToolChoice`、`TestStructuredOutputRejectsAllowedToolsWithoutEquivalent` |
 | specific `function` / `custom` choice | `supported` | 仅在声明工具中存在相同 type/name 时映射为 Anthropic 指定工具 | `TestSpecificToolChoiceRejectsUndeclaredIdentity`、`TestSpecificToolChoiceMapsDeclaredIdentity` |
