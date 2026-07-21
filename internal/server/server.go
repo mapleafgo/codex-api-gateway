@@ -973,6 +973,7 @@ func (s *Server) recordUpstream() scheduler.OnUpstream {
 			Kind:          metrics.KindUpstream,
 			StartedAt:     ev.StartedAt,
 			Duration:      ev.Duration,
+			TTFB:          ev.TTFB,
 			SourceName:    ev.SourceName,
 			Model:         ev.Model,
 			ResolvedModel: ev.ResolvedModel,

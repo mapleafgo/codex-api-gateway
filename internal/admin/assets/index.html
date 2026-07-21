@@ -422,7 +422,7 @@ html[data-theme="dark"] .ui-sel-list {
 }
 .ui-log-head, .ui-log-row {
   display: grid;
-  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 72px 56px 40px;
+  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 64px 64px 56px 40px;
   gap: 10px; align-items: center; padding: 0 16px;
 }
 .ui-log-head {
@@ -660,6 +660,7 @@ html[data-theme="dark"] .ui-select {
               <th class="num" x-text="t('cacheCreate')"></th>
               <th class="num" x-text="t('cacheHit')"></th>
               <th class="num" x-text="t('avgMs')"></th>
+              <th class="num" x-text="t('avgTtfb')"></th>
             </tr>
           </thead>
           <tbody>
@@ -675,10 +676,11 @@ html[data-theme="dark"] .ui-select {
                 <td class="num t-info" x-text="fmtTokens(g.cache_create)"></td>
                 <td class="num t-good" x-text="fmtTokens(g.cache_read)"></td>
                 <td class="num" x-text="fmtDuration(g.requests > 0 ? Math.round(g.total_duration_ms / g.requests) : 0)"></td>
+                <td class="num" x-text="fmtDuration(g.ttfb_samples > 0 ? Math.round(g.total_ttfb_ms / g.ttfb_samples) : 0)"></td>
               </tr>
             </template>
             <tr x-show="(snap.by_group||[]).length === 0">
-              <td colspan="10" class="empty" x-text="t('noData')"></td>
+              <td colspan="11" class="empty" x-text="t('noData')"></td>
             </tr>
           </tbody>
         </table>
@@ -727,6 +729,7 @@ html[data-theme="dark"] .ui-select {
           <span class="num" x-text="t('outputTok')"></span>
           <span class="num" x-text="t('cacheCreate')"></span>
           <span class="num" x-text="t('cacheHit')"></span>
+          <span class="num" x-text="t('colTtfb')"></span>
           <span class="num" x-text="t('colDur')"></span>
           <span class="num" x-text="t('colCode')"></span>
           <span class="center" x-text="t('colOk')"></span>
@@ -757,6 +760,7 @@ html[data-theme="dark"] .ui-select {
               <span class="num" x-text="fmtTokens(row.output_tokens) || '-'"></span>
               <span class="num t-info" x-text="fmtTokens(row.cache_create) || '-'"></span>
               <span class="num t-good" x-text="fmtTokens(row.cache_read) || '-'"></span>
+              <span class="num t-soft" x-text="row.ttfb_ms ? fmtDuration(row.ttfb_ms) : '-'"></span>
               <span class="num t-soft" x-text="fmtDuration(row.duration_ms)"></span>
               <span class="num">
                 <span class="ui-tip"
@@ -1199,9 +1203,9 @@ function app() {
     zh: {
       console: '控制台', observe: '观测台', config: '配置',
       byGroup: '供应商 × 模型', groups: '组', source: '供应商', model: '模型',
-      requests: '请求', cacheHit: '缓存命中', cacheCreate: '缓存创建', avgMs: '平均耗时', noData: '暂无数据',
+      requests: '请求', cacheHit: '缓存命中', cacheCreate: '缓存创建', avgMs: '平均耗时', avgTtfb: '平均首字节', noData: '暂无数据',
       inputTok: '输入', outputTok: '输出', okCount: '成功', failCount: '失败',
-      colTime: '时间', colKind: '类型', colDur: '耗时', colCode: '状态码', colOk: '结果',
+      colTime: '时间', colKind: '类型', colTtfb: '首字节', colDur: '耗时', colCode: '状态码', colOk: '结果',
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
@@ -1242,9 +1246,9 @@ function app() {
     en: {
       console: 'Console', observe: 'Observe', config: 'Config',
       byGroup: 'Source × Model', groups: 'groups', source: 'Source', model: 'Model',
-      requests: 'Requests', cacheHit: 'Cache Hit', cacheCreate: 'Cache Create', avgMs: 'Avg Duration', noData: 'No data',
+      requests: 'Requests', cacheHit: 'Cache Hit', cacheCreate: 'Cache Create', avgMs: 'Avg Duration', avgTtfb: 'Avg TTFB', noData: 'No data',
       inputTok: 'Input', outputTok: 'Output', okCount: 'OK', failCount: 'Fail',
-      colTime: 'Time', colKind: 'Kind', colDur: 'Dur', colCode: 'Code', colOk: 'Result',
+      colTime: 'Time', colKind: 'Kind', colTtfb: 'TTFB', colDur: 'Dur', colCode: 'Code', colOk: 'Result',
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -834,5 +835,90 @@ func TestLockedStreamClientCancelNotRecordedAsFailed(t *testing.T) {
 	}
 	if got[0].Code != 200 {
 		t.Fatalf("upstream code = %d, want 200 (stream was established)", got[0].Code)
+	}
+}
+
+// TestOnUpstreamTTFB 验证锁定成功后 OnUpstream 携带非零 TTFB，
+// 且 TTFB 不大于整次 Duration（首字节不可能晚于结束）。
+func TestOnUpstreamTTFB(t *testing.T) {
+	// 故意延迟首字节，便于断言 TTFB 至少达到该量级。
+	delay := 80 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"x\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
+			DegradeThreshold: 5, Cooldown: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{makeSource("good", srv.URL, 0)},
+	}
+	s := New(cfg)
+
+	var got []UpstreamEvent
+	_, err := s.ExecutePrepared(context.Background(),
+		func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+			return &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil, nil
+		},
+		func(ev *anthropic.MessageStreamEventUnion) error { return nil },
+		func(ev UpstreamEvent) { got = append(got, ev) },
+	)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 upstream event, got %d", len(got))
+	}
+	ev := got[0]
+	if ev.Status != "completed" {
+		t.Fatalf("status: want completed, got %q", ev.Status)
+	}
+	if ev.TTFB < delay {
+		t.Fatalf("TTFB = %v, want >= %v", ev.TTFB, delay)
+	}
+	if ev.TTFB > ev.Duration {
+		t.Fatalf("TTFB %v > Duration %v", ev.TTFB, ev.Duration)
+	}
+}
+
+// TestOnUpstreamTTFBZeroOnConnectFail 验证建连失败时 TTFB 为 0。
+func TestOnUpstreamTTFBZeroOnConnectFail(t *testing.T) {
+	// 立刻关闭的 listener 地址：建连失败
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
+			DegradeThreshold: 5, Cooldown: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{makeSource("bad", "http://"+addr, 0)},
+	}
+	s := New(cfg)
+
+	var got []UpstreamEvent
+	_, err = s.ExecutePrepared(context.Background(),
+		func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+			return &anthropic.MessageNewParams{Model: "x", MaxTokens: 64}, nil, nil
+		},
+		func(ev *anthropic.MessageStreamEventUnion) error { return nil },
+		func(ev UpstreamEvent) { got = append(got, ev) },
+	)
+	if err == nil {
+		t.Fatal("expected connect error")
+	}
+	if len(got) == 0 {
+		t.Fatal("want at least 1 upstream failed event")
+	}
+	for _, ev := range got {
+		if ev.TTFB != 0 {
+			t.Fatalf("failed attempt TTFB = %v, want 0", ev.TTFB)
+		}
 	}
 }

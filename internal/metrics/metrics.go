@@ -27,9 +27,13 @@ const (
 
 // RequestEvent 描述一次请求的观测数据（客户端请求或单次上游尝试）。
 type RequestEvent struct {
-	Kind       EventKind
-	StartedAt  time.Time
-	Duration   time.Duration
+	Kind      EventKind
+	StartedAt time.Time
+	Duration  time.Duration
+	// TTFB 是上游首字节耗时：从开始尝试到收到第一个 SSE 事件。
+	// 未收到首字节（建连失败/首字节超时）时为 0。
+	// KindClient 通常为 0（客户端视角的首字节由对应 upstream 事件表达）。
+	TTFB       time.Duration
 	SourceName string
 	Model      string
 	// ResolvedModel 是该请求实际发送给上游的模型标识。
@@ -75,6 +79,10 @@ type GroupStat struct {
 	CacheRead       int64  `json:"cache_read"`
 	CacheCreate     int64  `json:"cache_create"`
 	TotalDurationMs int64  `json:"total_duration_ms"`
+	// TotalTTFBMs 仅累加 TTFB>0 的样本，配合 TTFBSamples 算平均首字节。
+	TotalTTFBMs int64 `json:"total_ttfb_ms"`
+	// TTFBSamples 有首字节的上游尝试次数（用于平均，避免 0 值拉低均值）。
+	TTFBSamples int64 `json:"ttfb_samples"`
 }
 
 // RequestRecord 是单条历史记录。
@@ -92,8 +100,10 @@ type RequestRecord struct {
 	CacheRead     int    `json:"cache_read"`
 	CacheCreate   int    `json:"cache_create"`
 	DurationMs    int64  `json:"duration_ms"`
-	Status        string `json:"status"`
-	Error         string `json:"error,omitempty"`
+	// TTFBMs 首字节耗时毫秒；0 表示无首字节或未测量。
+	TTFBMs int64  `json:"ttfb_ms"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // HistorySize 是环形历史缓冲容量。
@@ -136,6 +146,8 @@ type groupAgg struct {
 	cacheRead   int64
 	cacheCreate int64
 	totalDurMs  int64
+	totalTTFBMs int64
+	ttfbSamples int64
 }
 
 // New 构造 Collector 并启动消费 goroutine。
@@ -214,6 +226,10 @@ func (c *Collector) apply(ev RequestEvent) {
 		g.cacheRead += int64(ev.CacheRead)
 		g.cacheCreate += int64(ev.CacheCreate)
 		g.totalDurMs += ev.Duration.Milliseconds()
+		if ms := ev.TTFB.Milliseconds(); ms > 0 {
+			g.totalTTFBMs += ms
+			g.ttfbSamples++
+		}
 	}
 
 	kindStr := "client"
@@ -234,6 +250,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		CacheRead:     ev.CacheRead,
 		CacheCreate:   ev.CacheCreate,
 		DurationMs:    ev.Duration.Milliseconds(),
+		TTFBMs:        ev.TTFB.Milliseconds(),
 		Status:        ev.Status,
 		Error:         ev.Error,
 	}
@@ -287,6 +304,8 @@ func (c *Collector) Snapshot() Snapshot {
 			InputTokens: g.input, OutputTokens: g.output,
 			CacheRead: g.cacheRead, CacheCreate: g.cacheCreate,
 			TotalDurationMs: g.totalDurMs,
+			TotalTTFBMs:     g.totalTTFBMs,
+			TTFBSamples:     g.ttfbSamples,
 		})
 	}
 

@@ -65,14 +65,17 @@ type UpstreamEvent struct {
 	ResolvedModel string // 实际发给上游的模型（经 ModelMap 解析）
 	StartedAt     time.Time
 	Duration      time.Duration
-	Status        string // "completed" | "failed"
-	Code          int    // 200 成功 / 500 失败
-	InputTokens   int
-	OutputTokens  int
-	CacheRead     int
-	CacheCreate   int
-	Error         string // 失败原因摘要
-	Attempt       int    // 该次尝试在客户端请求内的序号（从 1 开始）
+	// TTFB 是从开始尝试到收到第一个 SSE 事件的耗时。
+	// 未收到首字节（建连失败/首字节超时）时为 0。
+	TTFB         time.Duration
+	Status       string // "completed" | "failed"
+	Code         int    // 200 成功 / 500 失败
+	InputTokens  int
+	OutputTokens int
+	CacheRead    int
+	CacheCreate  int
+	Error        string // 失败原因摘要
+	Attempt      int    // 该次尝试在客户端请求内的序号（从 1 开始）
 }
 
 // OnUpstream 是单次上游尝试结束时的回调。nil 时不上报。
@@ -366,6 +369,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 	defer body.Close()
 
 	locked := false
+	var ttfb time.Duration // 首字节耗时；未锁定则为 0
 	// 累计当前上游流的 usage，供 onUpstream 汇报。
 	// - message_start 事件：Message.Usage 携带 input / cache_read / cache_creation 初值。
 	// - message_delta 事件：Usage 携带累计 output_tokens（Anthropic 规范：cumulative）
@@ -377,7 +381,8 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		if !locked {
 			locked = true
 			timer.Stop()
-			slog.Info("上游首字节到达", "source", src.Name, "ttfb", time.Since(sourceStart).String())
+			ttfb = time.Since(sourceStart)
+			slog.Info("上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
 			oldState := bk.State()
 			newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
@@ -406,7 +411,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		if onUpstream != nil {
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
-				StartedAt: sourceStart, Duration: time.Since(sourceStart),
+				StartedAt: sourceStart, Duration: time.Since(sourceStart), TTFB: ttfb,
 				Status: "failed", Code: statusCodeFromErr(noEventErr), Error: errSummary(noEventErr), Attempt: attemptNo,
 			})
 		}
@@ -449,7 +454,7 @@ func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *break
 		}
 		onUpstream(UpstreamEvent{
 			SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
-			StartedAt: sourceStart, Duration: time.Since(sourceStart),
+			StartedAt: sourceStart, Duration: time.Since(sourceStart), TTFB: ttfb,
 			Status: status, Code: code, Error: errText, Attempt: attemptNo,
 			InputTokens:  int(usage.InputTokens),
 			OutputTokens: int(usage.OutputTokens),

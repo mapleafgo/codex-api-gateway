@@ -191,3 +191,70 @@ func TestCollectorGroupsByResolvedModel(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectorTTFB 验证首字节耗时进入历史记录与 by_group 聚合；
+// 无首字节的失败样本不计入 ttfb_samples，避免把 0 拉低平均值。
+func TestCollectorTTFB(t *testing.T) {
+	c := New()
+	defer c.Stop()
+
+	c.Record(RequestEvent{
+		Kind: KindUpstream, StartedAt: time.Now(),
+		Duration: 500 * time.Millisecond, TTFB: 120 * time.Millisecond,
+		SourceName: "zhipu", Model: "glm", Status: "completed",
+	})
+	c.Record(RequestEvent{
+		Kind: KindUpstream, StartedAt: time.Now(),
+		Duration: 800 * time.Millisecond, TTFB: 180 * time.Millisecond,
+		SourceName: "zhipu", Model: "glm", Status: "completed",
+	})
+	// 建连失败：无首字节，TTFB 为 0
+	c.Record(RequestEvent{
+		Kind: KindUpstream, StartedAt: time.Now(),
+		Duration: 50 * time.Millisecond, TTFB: 0,
+		SourceName: "zhipu", Model: "glm", Status: "failed",
+	})
+	// 客户端汇总不参与 by_group，但历史应保留其 TTFB（通常为 0）
+	c.Record(RequestEvent{
+		Kind: KindClient, StartedAt: time.Now(),
+		Duration: 900 * time.Millisecond, TTFB: 0,
+		SourceName: "zhipu", Model: "glm", Status: "completed",
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(c.Snapshot().Recent) == 4 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	s := c.Snapshot()
+	if len(s.ByGroup) != 1 {
+		t.Fatalf("ByGroup len = %d, want 1", len(s.ByGroup))
+	}
+	g := s.ByGroup[0]
+	if g.TotalTTFBMs != 300 { // 120 + 180
+		t.Errorf("TotalTTFBMs = %d, want 300", g.TotalTTFBMs)
+	}
+	if g.TTFBSamples != 2 {
+		t.Errorf("TTFBSamples = %d, want 2", g.TTFBSamples)
+	}
+	if g.TotalDurationMs != 1350 { // 500+800+50
+		t.Errorf("TotalDurationMs = %d, want 1350", g.TotalDurationMs)
+	}
+
+	// 历史最新在前：client、failed、completed180、completed120
+	if s.Recent[0].TTFBMs != 0 || s.Recent[0].Kind != "client" {
+		t.Errorf("Recent[0] = %+v, want client ttfb=0", s.Recent[0])
+	}
+	if s.Recent[1].TTFBMs != 0 || s.Recent[1].Status != "failed" {
+		t.Errorf("Recent[1] = %+v, want failed ttfb=0", s.Recent[1])
+	}
+	if s.Recent[2].TTFBMs != 180 {
+		t.Errorf("Recent[2].TTFBMs = %d, want 180", s.Recent[2].TTFBMs)
+	}
+	if s.Recent[3].TTFBMs != 120 {
+		t.Errorf("Recent[3].TTFBMs = %d, want 120", s.Recent[3].TTFBMs)
+	}
+}
