@@ -648,7 +648,8 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 	}
 	// prompt_cache_*：Anthropic 用内容 hash + 网关自主 cache_control，不认 OpenAI client key/options/retention。
 	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
-		slog.Warn("忽略 prompt_cache_key（Anthropic 不认客户端 cache key，网关已自主设 cache_control），对应数据被丢弃",
+		// Codex 常发；网关已自主 cache_control，属可控协议差异 → DEBUG 即可。
+		slog.Debug("忽略 prompt_cache_key（Anthropic 不认客户端 cache key，网关已自主设 cache_control）",
 			"field", "prompt_cache_key",
 			"impact", "不会按 OpenAI prompt_cache_key 分桶缓存；上游缓存由 Anthropic cache_control 控制")
 	}

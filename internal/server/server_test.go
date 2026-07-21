@@ -287,7 +287,7 @@ func TestPreviousResponseIDEmitsWarn(t *testing.T) {
 	}
 }
 
-// TestPromptCacheFieldsEmitWarn：OpenAI prompt_cache_* 对 Anthropic 无意义，须 WARN。
+// TestPromptCacheFieldsEmitWarn：options/retention 仍 WARN；key 已降为 DEBUG（Codex 常发）。
 func TestPromptCacheFieldsEmitWarn(t *testing.T) {
 	var logs bytes.Buffer
 	oldLogger := slog.Default()
@@ -319,10 +319,50 @@ func TestPromptCacheFieldsEmitWarn(t *testing.T) {
 	defer resp.Body.Close()
 	_, _ = io.ReadAll(resp.Body)
 	got := logs.String()
-	for _, field := range []string{"prompt_cache_key", "prompt_cache_options", "prompt_cache_retention"} {
+	for _, field := range []string{"prompt_cache_options", "prompt_cache_retention"} {
 		if !strings.Contains(got, field) {
 			t.Fatalf("expected WARN for %s, logs:\n%s", field, got)
 		}
+	}
+	if strings.Contains(got, "prompt_cache_key") {
+		t.Fatalf("prompt_cache_key must be DEBUG, not WARN; logs:\n%s", got)
+	}
+}
+
+// TestPromptCacheKeyEmitsDebug：prompt_cache_key 属可控协议差异，仅 DEBUG。
+func TestPromptCacheKeyEmitsDebug(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_pck\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","prompt_cache_key":"bucket-1","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	got := logs.String()
+	if !strings.Contains(got, "prompt_cache_key") {
+		t.Fatalf("expected DEBUG for prompt_cache_key, logs:\n%s", got)
 	}
 }
 
