@@ -422,7 +422,7 @@ html[data-theme="dark"] .ui-sel-list {
 }
 .ui-log-head, .ui-log-row {
   display: grid;
-  grid-template-columns: 72px 48px minmax(72px,.7fr) minmax(90px,1fr) minmax(140px,1.5fr) repeat(4, 72px) 64px 64px 56px 40px;
+  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) 88px repeat(4, 72px) 64px 64px 56px 40px;
   gap: 10px; align-items: center; padding: 0 16px;
 }
 .ui-log-head {
@@ -724,8 +724,8 @@ html[data-theme="dark"] .ui-select {
           <span x-text="t('colTime')"></span>
           <span class="center" x-text="t('colKind')"></span>
           <span x-text="t('source')"></span>
-          <span class="center" x-text="t('colBackendType')"></span>
           <span x-text="t('model')"></span>
+          <span class="center" x-text="t('colBackendType')"></span>
           <span class="num" x-text="t('inputTok')"></span>
           <span class="num" x-text="t('outputTok')"></span>
           <span class="num" x-text="t('cacheCreate')"></span>
@@ -745,9 +745,6 @@ html[data-theme="dark"] .ui-select {
                       :title="row.kind === 'upstream' ? (t('kindUpstream') + ' #' + row.attempt) : t('kindClient')"></span>
               </span>
               <span class="truncate" x-text="row.source" :title="row.source"></span>
-              <span class="center">
-                <span class="ui-badge ui-badge-soft-neutral" x-text="backendTypeLabel(row.backend_type)" :title="backendTypeLabel(row.backend_type)"></span>
-              </span>
               <span class="min0 mono truncate" style="font-size:12px" :title="modelCellTitle(row)">
                 <template x-if="row.resolved_model && row.resolved_model !== row.model">
                   <span style="display:flex; gap:4px; min-width:0; align-items:center">
@@ -759,6 +756,11 @@ html[data-theme="dark"] .ui-select {
                 <template x-if="!(row.resolved_model && row.resolved_model !== row.model)">
                   <span class="truncate" x-text="row.model"></span>
                 </template>
+              </span>
+              <span class="center">
+                <span class="ui-badge ui-badge-soft-neutral mono" style="font-size:11px"
+                      x-text="backendTypeLabel(row.backend_type)"
+                      :title="backendTypeTitle(row.backend_type)"></span>
               </span>
               <span class="num" x-text="fmtTokens(row.input_tokens) || '-'"></span>
               <span class="num" x-text="fmtTokens(row.output_tokens) || '-'"></span>
@@ -1450,6 +1452,16 @@ function app() {
       this.viewCount = visible;
     },
 
+    backendTypeLabel(v) {
+      const x = String(v || '').trim();
+      if (x === 'c') return this.t('backendChat');
+      // 缺省/a/空：显示 Anthropic（历史记录若无字段，也默认 a）
+      return this.t('backendAnthropic');
+    },
+    backendTypeTitle(v) {
+      const x = String(v || '').trim() || 'a';
+      return this.t('colBackendType') + ': ' + x + ' · ' + this.backendTypeLabel(x);
+    },
     isOk(row) {
       if (!row) return false;
       // 业务结果以 status 为准：completed/incomplete 为成功；failed 为失败。

@@ -239,6 +239,10 @@ func (c *Collector) apply(ev RequestEvent) {
 	if ev.Kind == KindUpstream {
 		kindStr = "upstream"
 	}
+	bt := ev.BackendType
+	if bt == "" {
+		bt = "a" // 历史兼容：缺省视为 Anthropic
+	}
 	rec := RequestRecord{
 		Time:          ev.StartedAt.UTC().Format(time.RFC3339),
 		TimeUnix:      ev.StartedAt.Unix(),
@@ -256,7 +260,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		TTFBMs:        ev.TTFB.Milliseconds(),
 		Status:        ev.Status,
 		Error:         ev.Error,
-		BackendType:   ev.BackendType,
+		BackendType:   bt,
 	}
 	c.history[c.histIdx] = rec
 	c.histIdx = (c.histIdx + 1) % HistorySize
