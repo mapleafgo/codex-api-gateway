@@ -769,31 +769,34 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
-	// 上游是 LLM 兼容 API：arguments 尽量原样 JSON 透传，不做强校验改写。
-	// 用 Decoder 取首个 JSON 值（尾部杂质自动丢掉）；解不出 object 则跳过本条，
-	// 不把整段改成 {} 伪装成功，也不让非法 RawMessage 拖垮整请求 marshal。
-	args := strings.TrimSpace(fc.Arguments)
-	if args == "" {
-		args = `{}`
-	}
-	input, ok := toolUseInputJSON(args)
-	if !ok {
-		slog.Debug("function_call arguments 无法透传为 tool_use input，已跳过",
-			"call_id", fc.CallID, "name", fc.Name, "len", len(fc.Arguments))
-		return nil
-	}
-	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), input)
+	// tool_use.input：优先嵌 JSON object（Decoder 取首值，丢尾部杂质）；
+	// 解不出 object 时把原串当 JSON string 原样塞入（能塞字符串就不丢、不改 {}）。
+	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name),
+		toolUseInputPassthrough(fc.Arguments))
 }
 
-// toolUseInputJSON 把 function_call.arguments 字符串解成可透传的 JSON object。
-// 成功返回 object 的 RawMessage（保留原始字节，避免二次序列化改写）；失败 ok=false。
+// toolUseInputPassthrough 产出可 marshal 进 tool_use.input 的值：
+//   - 空 → {}
+//   - 首个 JSON object → RawMessage 原样字节
+//   - 否则 → 原字符串（JSON 里成为 string，不二次改写内容）
+func toolUseInputPassthrough(s string) any {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return json.RawMessage(`{}`)
+	}
+	if raw, ok := toolUseInputJSON(s); ok {
+		return raw
+	}
+	return s
+}
+
+// toolUseInputJSON 尝试从 s 开头解出一个 JSON object（保留原始字节）。
 func toolUseInputJSON(s string) (json.RawMessage, bool) {
 	dec := json.NewDecoder(strings.NewReader(s))
 	var raw json.RawMessage
 	if err := dec.Decode(&raw); err != nil || len(raw) == 0 {
 		return nil, false
 	}
-	// tool_use.input 需要 JSON object；array/string/number 等直接丢给上游也多半 400，按忽略处理。
 	if raw[0] != '{' {
 		return nil, false
 	}
@@ -990,35 +993,23 @@ func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	if callID == "" {
 		callID = call.ID.Value
 	}
-	input, ok := toolSearchArgumentsInput(call.Arguments)
-	if !ok {
-		slog.Debug("tool_search_call arguments 无法透传为 tool_use input，已跳过",
-			"call_id", callID)
-		return nil
-	}
-	return appendToolUse(out, callID, "tool_search", input)
+	return appendToolUse(out, callID, "tool_search", toolSearchArgumentsInput(call.Arguments))
 }
 
-// toolSearchArgumentsInput 把 tool_search_call 的 arguments 转成可嵌进 tool_use.input 的 JSON object。
-// 与 function_call 一致：尽量透传首个 object；解不出则 ok=false（由调用方忽略）。
-func toolSearchArgumentsInput(args any) (any, bool) {
+// toolSearchArgumentsInput 与 function_call 一致：优先 object，否则字符串原样（含 nil/空 → {}）。
+func toolSearchArgumentsInput(args any) any {
 	switch v := args.(type) {
 	case string:
-		s := strings.TrimSpace(v)
-		if s == "" {
-			return json.RawMessage(`{}`), true
-		}
-		return toolUseInputJSON(s)
+		return toolUseInputPassthrough(v)
 	case nil:
-		return json.RawMessage(`{}`), true
+		return json.RawMessage(`{}`)
 	case json.RawMessage:
 		if len(v) == 0 {
-			return json.RawMessage(`{}`), true
+			return json.RawMessage(`{}`)
 		}
-		return toolUseInputJSON(string(v))
+		return toolUseInputPassthrough(string(v))
 	default:
-		// 已是 object/map 等可直接 marshal 的值，原样透传
-		return v, true
+		return v
 	}
 }
 
@@ -1079,17 +1070,8 @@ func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseI
 	if call.ID == "" {
 		return false, nil
 	}
-	var input any = json.RawMessage(`{}`)
-	if s := strings.TrimSpace(call.Arguments); s != "" {
-		raw, ok := toolUseInputJSON(s)
-		if !ok {
-			// 与 function_call 一致：解不出 object 则忽略整条 mcp_call，不包 raw 伪装。
-			slog.Debug("mcp_call arguments 无法透传为 mcp_tool_use input，已跳过",
-				"id", call.ID, "name", call.Name, "len", len(call.Arguments))
-			return false, nil
-		}
-		input = raw
-	}
+	// mcp_tool_use.input：优先 object，否则 arguments 原串当 string 塞入。
+	input := toolUseInputPassthrough(call.Arguments)
 	useRaw, err := json.Marshal(map[string]any{
 		"type":        "mcp_tool_use",
 		"id":          call.ID,

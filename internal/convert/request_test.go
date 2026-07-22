@@ -727,44 +727,33 @@ func TestShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 // 若以字符串透传，GLM 会收到 input="..." 而非 object，对它 .get() 直接 500
 // （"'str' object has no attribute 'get'"）——S4 修复回程产出 tool_search_call
 // 后，请求侧 appendToolSearchCall 这条回灌路径才被触发，暴露本 bug。
-func TestToolSearchArgumentsInputIsObject(t *testing.T) {
-	// string（含空串）→ json.RawMessage object
+func TestToolSearchArgumentsInputPassthrough(t *testing.T) {
 	for _, in := range []any{`{"query":"fetch"}`, ""} {
-		got, ok := toolSearchArgumentsInput(in)
-		if !ok {
-			t.Fatalf("input %v: want ok", in)
-		}
+		got := toolSearchArgumentsInput(in)
 		raw, isRaw := got.(json.RawMessage)
 		if !isRaw {
 			t.Fatalf("input %v: want json.RawMessage, got %T", in, got)
 		}
 		s := string(raw)
 		if len(s) == 0 || s[0] != '{' {
-			t.Fatalf("input %v: must marshal as JSON object, got %q", in, s)
+			t.Fatalf("input %v: want object, got %q", in, s)
 		}
 	}
-	// seed 尾部杂质：取首个 object
-	got, ok := toolSearchArgumentsInput(`{"q":"x"}</seed>`)
-	if !ok {
-		t.Fatal("seed tail want ok")
-	}
+	got := toolSearchArgumentsInput(`{"q":"x"}</seed>`)
 	if string(got.(json.RawMessage)) != `{"q":"x"}` {
 		t.Fatalf("seed tail got %s", got)
 	}
-	// 非法 → 不 ok
-	if _, ok := toolSearchArgumentsInput(`not-json`); ok {
-		t.Fatal("invalid should not ok")
+	// 非 object 字符串原样
+	got = toolSearchArgumentsInput(`not-json`)
+	if s, ok := got.(string); !ok || s != "not-json" {
+		t.Fatalf("want string not-json, got %#v", got)
 	}
-	// nil → {}
-	got, ok = toolSearchArgumentsInput(nil)
-	if !ok || string(got.(json.RawMessage)) != "{}" {
-		t.Fatalf("nil want {}, got %v ok=%v", got, ok)
+	if s := string(toolSearchArgumentsInput(nil).(json.RawMessage)); s != "{}" {
+		t.Fatalf("nil want {}, got %s", s)
 	}
-	// 已是 object/map → 原样透传
 	m := map[string]any{"a": 1}
-	got, ok = toolSearchArgumentsInput(m)
-	if !ok || got == nil {
-		t.Fatal("map input should pass through")
+	if toolSearchArgumentsInput(m) == nil {
+		t.Fatal("map pass-through")
 	}
 }
 
@@ -2432,12 +2421,12 @@ func TestFunctionCallArgumentsSeedTailPassthrough(t *testing.T) {
 	}
 }
 
-func TestFunctionCallArgumentsInvalidSkipped(t *testing.T) {
+func TestFunctionCallArgumentsNonObjectAsString(t *testing.T) {
+	// 解不出 object 时原串当 string 塞进 input，不跳过、不改 {}。
 	req := mustReq(t, `{
 		"model":"gpt-5",
 		"input":[
-			{"type":"function_call","call_id":"c1","name":"shell","arguments":"not-json"},
-			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"not-json"}
 		],
 		"stream":true
 	}`)
@@ -2445,11 +2434,18 @@ func TestFunctionCallArgumentsInvalidSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, m := range out.Messages {
 		for _, b := range m.Content {
-			if b.OfToolUse != nil {
-				t.Fatalf("invalid args should skip tool_use, got %+v", b.OfToolUse)
+			if b.OfToolUse != nil && b.OfToolUse.Name == "shell" {
+				found = true
+				if s, ok := b.OfToolUse.Input.(string); !ok || s != "not-json" {
+					t.Fatalf("want string input not-json, got %#v", b.OfToolUse.Input)
+				}
 			}
 		}
+	}
+	if !found {
+		t.Fatal("expected tool_use")
 	}
 }
