@@ -96,17 +96,24 @@ func (b *ChatBackend) Execute(
 		}
 		return nil
 	})
-	// [DONE] 路径：ScanEvents 在 [DONE] 处 break；补 FeedDone
-	if scanErr == nil {
-		for _, e := range conv.FeedDone() {
-			if err := onEvent(e); err != nil {
-				scanErr = err
-				break
+	// [DONE] 路径：ScanEvents 在 [DONE] 处 break；补 FeedDone。
+	// 仅当已收到过 data chunk（locked）时才 FeedDone。
+	// OpenCode/OpenRouter 常见：先发 `: OPENROUTER PROCESSING` 注释，随后仅
+	// `data: [DONE]` 或空 body 关闭。若此时 FeedDone，会合成 created+completed，
+	// scheduler 误判已锁定，客户端先看到空成功，server 再 ERROR
+	// "upstream returned no events"。
+	if locked {
+		if scanErr == nil {
+			for _, e := range conv.FeedDone() {
+				if err := onEvent(e); err != nil {
+					scanErr = err
+					break
+				}
 			}
-		}
-	} else if locked && !conv.Done() {
-		for _, e := range conv.Fail(scanErr.Error()) {
-			_ = onEvent(e)
+		} else if !conv.Done() {
+			for _, e := range conv.Fail(scanErr.Error()) {
+				_ = onEvent(e)
+			}
 		}
 	}
 
