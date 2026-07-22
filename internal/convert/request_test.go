@@ -1288,7 +1288,7 @@ func TestToolChoiceRequired(t *testing.T) {
 	}
 }
 
-func TestUnsupportedHostedToolChoiceReturnsError(t *testing.T) {
+func TestHostedToolChoicePassesThrough(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
 		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
@@ -1298,9 +1298,13 @@ func TestUnsupportedHostedToolChoiceReturnsError(t *testing.T) {
 			},
 		},
 	}
-	_, _, err := ToAnthropic(req, &config.Config{})
-	if err == nil || !strings.Contains(err.Error(), "unsupported tool_choice") {
-		t.Fatalf("expected unsupported tool_choice error, got %v", err)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("hosted tool_choice must not fail fast: %v", err)
+	}
+	// tool_choice 留给上游处理，转换后应无 Anthropic tool_choice（由上游自行决定）。
+	if out.ToolChoice.OfAuto != nil || out.ToolChoice.OfAny != nil || out.ToolChoice.OfTool != nil || out.ToolChoice.OfNone != nil {
+		t.Fatalf("hosted tool_choice should leave tool_choice unset, got %+v", out.ToolChoice)
 	}
 }
 

@@ -1620,32 +1620,19 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	tc := req.ToolChoice
 	switch {
 	case tc.OfHostedTool != nil:
-		if out.ToolChoice.OfTool != nil {
-			// structured output 已强制 schema 工具：忽略不兼容的 hosted tool_choice，继续转发。
-			slog.Warn("structured output 与 hosted tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
-				"structured_tool", out.ToolChoice.OfTool.Name,
-				"tool_choice_type", *tc.GetType())
-			applyParallelToolChoice(out, req)
-			return nil
-		}
-		return fmt.Errorf("unsupported tool_choice %q: hosted tools are not supported by this Anthropic backend", *tc.GetType())
+		// hosted tool_choice 无 Anthropic 等价物：由上游自行决定如何处理。网关不代劳拒绝。
+		slog.Debug("hosted tool_choice 交给上游处理（网关不映射 Anthropic 等价 type）",
+			"tool_choice_type", *tc.GetType())
+		return nil
 	case tc.OfMcpTool != nil:
-		if out.ToolChoice.OfTool != nil {
-			slog.Warn("structured output 与 MCP tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
-				"structured_tool", out.ToolChoice.OfTool.Name,
-				"tool_choice_type", *tc.GetType())
-			applyParallelToolChoice(out, req)
-			return nil
-		}
-		return fmt.Errorf("unsupported tool_choice %q: MCP tool choice is not supported by this Anthropic backend", *tc.GetType())
+		// MCP tool_choice 无 Anthropic 等价物：由上游自行决定。网关不代劳拒绝。
+		slog.Debug("MCP tool_choice 交给上游处理（网关不映射 Anthropic 等价 type）",
+			"tool_choice_type", *tc.GetType())
+		return nil
 	case tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
-		if out.ToolChoice.OfTool != nil {
-			slog.Warn("structured output 与 programmatic tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
-				"structured_tool", out.ToolChoice.OfTool.Name)
-			applyParallelToolChoice(out, req)
-			return nil
-		}
-		return fmt.Errorf("unsupported tool_choice %q: programmatic tool calling is not supported by this Anthropic backend", *tc.GetType())
+		// programmatic tool_choice 无 Anthropic 等价物：由上游自行决定。网关不代劳拒绝。
+		slog.Debug("programmatic tool_choice 交给上游处理（网关不映射 Anthropic 等价 type）")
+		return nil
 	}
 	if tc.OfAllowedTools != nil {
 		if out.ToolChoice.OfTool != nil {

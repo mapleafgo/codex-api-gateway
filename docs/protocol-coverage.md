@@ -501,7 +501,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
 | `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | `allowed_tools: string[]` → toolset allowlist（已实现）；`allowed_tools: filter` → WARN + 全启用；`require_approval≠never` 降级 never + WARN；headers 仅 Bearer → `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需 beta `mcp-client-2025-11-20` |
 | `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明 `code_execution_20250522`；`container`（id/auto file_ids/memory）**WARN + 丢弃**（Anthropic 无 container） |
-| `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价能力；请求时返回明确转换错误 |
+| `programmatic_tool_calling` | none | `unsupported_by_backend` | 无 Anthropic 等价物；DEBUG + 忽略，透传上游自行决定 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
 | `shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史 limits/caller/environment_type 折入 input（见 Input Item）；skills 细节仍 lossy |
