@@ -483,13 +483,16 @@ html[data-theme="dark"] .ui-sel-list {
   text-align: center; color: var(--ink-faint); padding: 64px 16px;
 }
 .ui-select {
-  appearance: none;
+  appearance: none; -webkit-appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 8l3-3.5' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-position: right 8px center;
   background-repeat: no-repeat;
   background-size: 14px 14px;
-  padding-right: 28px;
+  height: var(--control-h); min-height: var(--control-h); max-height: var(--control-h);
+  box-sizing: border-box;
+  padding: 0 28px 0 10px;
   cursor: pointer;
+  line-height: normal;
 }
 .ui-select:hover { border-color: color-mix(in srgb, var(--focus) 35%, var(--line)); }
 .ui-select option {
@@ -1109,22 +1112,22 @@ html[data-theme="dark"] .ui-select {
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('degradeThreshold')"></span>
-                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.degrade_threshold" autocomplete="off" inputmode="numeric">
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.degrade_threshold" autocomplete="off" inputmode="numeric">
                 <span class="ui-hint" x-text="t('degradeThresholdHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('recoverThreshold')"></span>
-                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.recover_threshold" autocomplete="off" inputmode="numeric">
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.recover_threshold" autocomplete="off" inputmode="numeric">
                 <span class="ui-hint" x-text="t('recoverThresholdHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('halfOpenProbes')"></span>
-                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.half_open_probes" autocomplete="off" inputmode="numeric">
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.half_open_probes" autocomplete="off" inputmode="numeric">
                 <span class="ui-hint" x-text="t('halfOpenProbesHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('maxRetries')"></span>
-                <input type="number" class="ui-input ui-input-sm" x-model.number="cfg.breaker.max_retries" autocomplete="off" inputmode="numeric">
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.max_retries" autocomplete="off" inputmode="numeric">
                 <span class="ui-hint" x-text="t('maxRetriesHint')"></span>
               </label>
               <label class="ui-field">
@@ -1216,17 +1219,28 @@ html[data-theme="dark"] .ui-select {
             <template x-if="f.type === 'select'">
               <label class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
-                <select class="ui-select ui-select-sm" x-model="f.value">
-                  <template x-for="opt in (f.options || [])" :key="opt.v">
-                    <option :value="opt.v" x-text="opt.l"></option>
-                  </template>
-                </select>
+                <div class="ui-sel"
+                     x-data="uiSel()"
+                     x-init="model = f.value; opts = f.options || []"
+                     x-effect="if (f.value !== model) model = f.value; opts = f.options || []"
+                     @sel-change="f.value = $event.detail">
+                  <button type="button" class="ui-sel-btn"
+                          @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
+                    <span x-text="label"></span>
+                  </button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v">
+                      <div class="ui-sel-item" :class="i===ai&&'is-active'"
+                           @mousedown.prevent="pick(o.v)" x-text="o.l"></div>
+                    </template>
+                  </div>
+                </div>
               </label>
             </template>
             <template x-if="f.type !== 'checkbox' && f.type !== 'select'">
               <label class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
-                <input class="ui-input ui-input-sm"
+                <input class="ui-input ui-input-sm mono"
                        :type="f.type === 'number' ? 'number' : 'text'"
                        :value="f.value"
                        @input="f.value = $event.target.value"
