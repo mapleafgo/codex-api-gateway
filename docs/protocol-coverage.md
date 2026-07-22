@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-20
+日期: 2026-07-22（Chat 全面透传 + 出站 token logprobs；structured / usage details 已支持）
 
 本文是 OpenAI Responses API 到 Anthropic Messages API 的覆盖矩阵。它记录协议项是否被语义级翻译、损耗翻译、raw 保真、后端无等价能力或延期专项设计。后续任何协议补齐都必须同步更新本文。
 
@@ -26,11 +26,17 @@
 
 客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: c` 时，网关经 `chatconvert` → Chat Completions 流式上游 → `chatstreamconv` 回写 Responses SSE。
 
-- **MVP 覆盖**：文本多轮、function tools / tool_calls 分片、`max_tokens`、采样参数、usage（有则填）。
-- **明确降级**：reasoning / MCP / hosted tools / 多模态 / structured output 等不映射到 Chat；重要丢弃 WARN，已知缺口 DEBUG。
+详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
+
+- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`/`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key/options`、usage（含 details）、`finish_reason` 终态。
+- **明确降级**：reasoning **出站 item/thinking 回灌** / 多模态 image/file；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；compaction system marker。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
+
+## 架构基础（与 AGENTS.md 对齐）
+
+**形状透传，结果归上游。** 网关是协议转换层，不代上游拒绝能力、不编造 failed 终态。仅「协议不可映射」才允许转换错误或矩阵登记的丢弃。详见仓库根目录 `AGENTS.md`「协议转换职责边界」。
 
 ## 收口策略（产品 + 技术）
 
@@ -156,6 +162,13 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 ## 变更记录
 
+### 2026-07-22
+
+- **Chat 后端（`backend_type: c`）专节**：补全 Request / Input Item / Tool / 出站 SSE 矩阵；批次 A+B（合并 tool_calls、Codex freeform 工具环、output_text 回灌、`parallel_tool_calls`、`finish_reason` 终态）。
+  - **usage 末包时序**：finish_reason 后仍接收空 choices usage；终态延后到 FeedDone，避免 `include_usage` 下 terminal usage 恒 0。
+  - **DRY**：`toolcatalog.FreeformInputSchema` / `SplitToolName` 供 a/c 共用。
+  - **P2**：content_filter refusal 事件链；orphan tool 占位；`max_tokens`+`max_completion_tokens` 双写。
+
 ### 2026-07-20
 
 - **code_interpreter image 硬限制说明**：§8 写明 OpenAI `image`+url 与 Anthropic code_execution（stdout/`file_id`）不对齐，且网关无 Files 托管，入站/出站均无法真映射。
@@ -188,7 +201,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
   - `previous_response_id` → `unsupported_by_backend`（非空时 WARN）。
   - `store` → `raw_preserved`（响应对象 echo，无本地存储）。
   - `service_tier` → 非空时 WARN，仍不透传。
-  - `include` 分档：已满足项（`reasoning.encrypted_content` / `web_search_call.action.sources` / `code_interpreter_call.outputs` / `message.input_image.image_url`）静默；其余（`file_search_call.results` / `message.output_text.logprobs` / `computer_call_output.output.image_url` 等）WARN + 忽略。
+  - `include` 分档：已满足项静默；`message.output_text.logprobs` 在配置含 Chat 源时 satisfied（出站由 chatstreamconv 映射）；纯 a 源或 file_search/computer 等仍 WARN + 忽略。
 - **表述订正**
   - `output_message` / `input_message`：SDK 三个 `message` discriminator 实测几乎总落到 `OfMessage`；不再宣称「未做分支」的 raw_preserved。
   - `tool_search_output`：入站回灌 supported，出站不生成（搜索由 Codex 本地执行）。
@@ -204,6 +217,164 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 - 移除 `service_tier_passthrough` 配置与 `applyServiceTier` 逻辑（`service_tier` 不再透传）。
 - 移除 `additional_tools` input item 转换分支（网关统一 `use_responses_lite=false`）。
 - 网关级指令注入从 `system_suffix` 改为 `base_instructions_file`（经 `/v1/models` 由 Codex 客户端注入，prompt cache 更友好）。
+
+## Chat 后端覆盖矩阵（backend_type: c）
+
+日期: 2026-07-22
+
+本节只描述 **Responses → Chat Completions → Responses SSE** 路径（`backend_type: c`）。Anthropic 直转见上文各表；两路径**不共享**字段状态。
+
+### 状态约定
+
+沿用全局状态定义。Chat 路径额外：
+
+- freeform 工具（`shell` / `apply_patch` / `custom`）在 Chat 侧声明为 `type=function` + `parameters={input:string}`；出站回程按 freeform 名映射为 Responses `custom_tool_call`（`tool_search` 为 `tool_search_call`）。
+- 连续多条 Responses `function_call` / freeform call **必须**合并为一条 Chat `assistant` 消息的 `tool_calls[]`，否则多数 Chat 兼容上游 400。
+
+### 产品边界（c）
+
+| 做 | 不做 |
+|---|---|
+| Codex 文本 + 客户端 function / freeform agent 工具环 | 对外 `/v1/chat/completions` |
+| 流式 SSE only（固定 `stream:true` + `include_usage`） | 非流式 Chat 完成体 |
+| 与 a 源混排 failover / 熔断 | hosted **真实** server 执行（Chat 仅 shape） |
+| `finish_reason` 终态对齐（stop/tool_calls/length/content_filter） | reasoning / thinking 与 Chat `reasoning_content` 完整等价 |
+| | structured output / 多模态 image / OpenAI Files |
+
+### Request 参数（c）
+
+| Responses 参数 | Chat 映射 | 状态 | 说明 |
+|---|---|---|---|
+| `model` | `model` | `supported` | 经 source ModelMap / DefaultModel |
+| `input` string | user message | `supported` | |
+| `input` item list | `messages` | `lossy_supported` | 见下表；无 Chat 等价 item DEBUG/WARN 跳过 |
+| `instructions` | system message（首条） | `supported` | 与 developer/system item 可合并 |
+| `max_output_tokens` | `max_tokens` + `max_completion_tokens` | `supported` | 双写兼容旧上游与新模型 |
+| `temperature` / `top_p` | 同名 | `supported` | |
+| `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
+| `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过 |
+| `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice 忽略 |
+| `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
+| `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
+| `reasoning.*` | none | `unsupported_by_backend` | 跳过；不映射 Chat thinking 扩展 |
+| `text.format` structured | `response_format` | `supported` | `json_schema`/`json_object`/`text` 原生透传 Chat；含 `strict`；不做 a 路径 synthetic tool |
+| `text.verbosity` | `verbosity` | `supported` | low/medium/high 透传；a 路径仍忽略 |
+| `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |
+| `safety_identifier` | `safety_identifier` | `supported` | Chat 透传；a 路径忽略 |
+| `metadata` | `metadata` | `supported` | Chat 整表透传；a 路径仅 user_id + echo |
+| `store` | `store` | `supported` | Chat 透传；响应 echo 仍保留 |
+| `moderation` | `moderation` | `supported` | model + policy modes 同形透传；a 路径忽略 |
+| `reasoning.effort` | `reasoning_effort` | `supported` | 仅 effort；summary/context 无 Chat 顶层等价 |
+| `top_logprobs` | `logprobs=true` + `top_logprobs` | `supported` | Chat 透传；a 路径忽略；出站见 SSE 表 |
+| `stream_options.include_obfuscation` | 同名 | `supported` | 强制 `include_usage=true` 并透传 obfuscation；a 路径忽略 |
+| `previous_response_id` 等平台字段 | none | `unsupported_by_backend` | 与 a 路径同产品边界 |
+| `prompt_cache_key` | `prompt_cache_key` | `supported` | Chat 官方字段透传 |
+| `prompt_cache_options` | `prompt_cache_options` | `supported` | mode/ttl 透传；content `prompt_cache_breakpoint` 不支持 |
+| `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated，不映射 |
+| `user`（deprecated） | none | `dropped` | 与 a 一致不映射；请用 safety_identifier / metadata.user_id |
+
+### Input Item（c）
+
+| Responses item | Chat 映射 | 状态 | 说明 |
+|---|---|---|---|
+| `message` / EasyInputMessage | role + content 文本 | `lossy_supported` | `developer`→`system`；保留 `system`/`user`/`assistant`；content 取 text / input_text / **output_text**（经 Decode 归一） |
+| `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
+| `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant |
+| `function_call_output` | role=tool | `supported` | content 数组拼文本；图片丢弃 |
+| `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"input":...}` freeform；相邻合并 |
+| `custom_tool_call_output` | role=tool | `supported` | |
+| `shell_call` / `local_shell_call` | tool_calls name=`shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema |
+| `shell_call_output` / `local_shell_call_output` | role=tool | `lossy_supported` | status/stdout 折文本 |
+| `apply_patch_call` | tool_calls name=`apply_patch` | `lossy_supported` | V4A 文本进 freeform `input` |
+| `apply_patch_call_output` | role=tool | `lossy_supported` | |
+| `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
+| `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
+| `reasoning` | none | `dropped` | DEBUG 跳过（Chat 无加密 thinking 回灌） |
+| `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
+| `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) | `lossy_supported` | image 丢弃 |
+| `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
+| computer / file_search / image_generation / program / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
+| `compaction` / `compaction_trigger` | system marker | `raw_preserved` | 对齐 a 路径：`<compaction>` / `<compaction_trigger />` 文本 |
+
+### Tool 声明（c）
+
+| Responses tool | Chat tools[] | 状态 | 说明 |
+|---|---|---|---|
+| `function` | function | `supported` | name/description/parameters/**strict** |
+| `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；grammar 丢失 |
+| `shell` / `local_shell` | function name=`shell` freeform | `lossy_supported` | |
+| `apply_patch` | function name=`apply_patch` freeform | `lossy_supported` | description 强调 V4A |
+| `tool_search` | function name=`tool_search` | `supported` | |
+| `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项 |
+| `web_search` / `web_search_preview` | function `web_search` | `lossy_supported` | 无 server 搜索 |
+| `code_interpreter` | function `code_interpreter` | `lossy_supported` | 无 sandbox；container 丢弃 |
+| `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | 无连接/审批；filter 不展开 |
+| file_search / computer / image_generation / programmatic | none | `unsupported_by_backend` | 声明跳过 |
+
+### 出站 SSE（c → Responses）
+
+| Chat 流 | Responses 事件 | 状态 | 说明 |
+|---|---|---|---|
+| 首 chunk | `response.created` / `in_progress` | `supported` | |
+| `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
+| `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
+| `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name） |
+| `delta.tool_calls` freeform 名（shell/apply_patch/custom） | `custom_tool_call` + input delta/done | `supported` | 同上；`SanitizeClientToolInput` 解包/归一 |
+| `delta.tool_calls` name=`tool_search` | `tool_search_call` | `supported` | arguments 随 item done |
+| `delta.tool_calls` name=`web_search` | `web_search_call` 链 | `lossy_supported` | 无真实 sources |
+| `delta.tool_calls` name=`code_interpreter` | `code_interpreter_call` 链 | `lossy_supported` | code 从 arguments 解；无 logs |
+| `delta.tool_calls` name=`mcp__*__*` | `mcp_call` 链 | `lossy_supported` | 无 server result |
+| `finish_reason=stop` / `tool_calls` | `response.completed` | `supported` | |
+| `finish_reason=length` | `response.incomplete` reason=`max_output_tokens` | `supported` | |
+| `finish_reason=content_filter` | `response.incomplete` + refusal 事件链 | `supported` | 累积 `delta.refusal`，缺省用 fallback 文案；清掉半截 text/tool output |
+| usage 末包（空 choices） | 填 `usage` | `supported` | totals + `input_tokens_details.cached_tokens` + `output_tokens_details.reasoning_tokens`；并写 `cache_read_input_tokens` 兼容 a 路径字段名 |
+| `[DONE]` 且无 finish_reason | 补 completed/incomplete | `supported` | FeedDone |
+| 流中断 | `response.failed` | `supported` | Backend Fail |
+
+### 已知缺口（c，产品边界外 / 硬限制）
+
+| 项 | 说明 |
+|---|---|
+| 多模态 image/file 输入 | content 仅文本（image/file part DEBUG 跳过） |
+| 厂商 `reasoning_content` | 忽略，不映射 Responses reasoning |
+| hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
+| Chat 原生 `tools[].type=custom` + grammar | freeform 统一 function 化以兼容通用上游；grammar 丢失 |
+| 出站 logprobs `bytes` 字段 | Chat TokenLogprob.bytes 不映射到 Responses（官方 delta logprobs 无 bytes） |
+| Responses-only：`max_tool_calls` / `background` / `conversation` / `context_management` / `prompt` 模板 | 无 Chat 等价或产品边界外 |
+| Chat-only：`frequency_penalty` / `presence_penalty` / `seed` / `stop` / `n` / `logit_bias` / `prediction` / `audio`/`modalities` / `web_search_options` | Responses 请求无对应顶层字段，无法从客户端映射 |
+| orphan tool 配对 | **已补**：缺 output 时 WARN + 占位 `role=tool` |
+
+### 收口内已打磨（2026-07-22）
+
+| 项 | 行为 |
+|---|---|
+| computer/file_search/image_generation 等历史 | 显式 WARN + drop（非 unknown 静默） |
+| compaction 历史 | system marker 回灌 |
+| tool_calls 分片 name 晚到 | 有 name 再 `output_item.added`，避免误判 function |
+| `delta.content` 数组 | 解析 text part，不整段 Feed 失败 |
+| `developer` role | 压成 `system`（兼容 OpenCode 等对 developer 400 的上游） |
+| `tool_choice.allowed_tools` | 精确过滤 tools + mode（auto/required） |
+| `prompt_cache_key` / `prompt_cache_options` | 透传到 Chat body（retention 仍忽略） |
+| structured `text.format` | → Chat `response_format`（含 strict） |
+| `function.strict` | → Chat `tools[].function.strict` |
+| `text.verbosity` / `service_tier` | → Chat 同名字段透传 |
+| `safety_identifier` / `metadata` / `store` / `moderation` | → Chat 同形透传 |
+| `reasoning.effort` | → Chat `reasoning_effort` |
+| `top_logprobs` | → Chat `logprobs` + `top_logprobs` |
+| `stream_options.include_obfuscation` | 透传；始终 `include_usage` |
+| usage details | `cached_tokens` + `reasoning_tokens` 出站明细 + `cache_read_input_tokens` 兼容字段 |
+| 出站 token logprobs | Chat `choices[].logprobs` → `response.output_text.delta/done.logprobs` + content part |
+| OfInputMessage / OfOutputMessage | chatconvert 防御分支（SDK 极少落点） |
+| `developer`→`system` | OpenCode/Console 等兼容上游对 developer 400 |
+
+### 实现包
+
+| 包 | 职责 |
+|---|---|
+| `internal/chatconvert` | Responses → Chat 请求 |
+| `internal/chatclient` | HTTP SSE 客户端 |
+| `internal/chatstreamconv` | Chat chunk → Responses SSE |
+| `internal/backend` | `ChatBackend` 组装 |
 
 ## 资料来源
 
@@ -231,13 +402,13 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
 | `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
-| `text.verbosity` | none | `unsupported_by_backend` | Anthropic 无原生输出 verbosity；非空时 **WARN + 忽略**（不注入 system 假提示，避免污染 prompt cache） |
+| `text.verbosity` | none | `unsupported_by_backend` | a 忽略；Chat 见 c 专节 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | none | `unsupported_by_backend` | 网关无 session store，不做 enrich；Codex 主路径不传此字段（客户端完整回灌 `input`）。若请求携带非空值则 WARN + 忽略 |
 | `store` | response echo only | `raw_preserved` | 无本地会话存储/回填；仅在响应对象 echo 请求值 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
-| `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`（默认下发/ZDR 路径）；其余（file_search/logprobs/computer 等）WARN + 忽略 |
+| `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`；`message.output_text.logprobs` 仅 Chat 源 satisfied；其余（file_search/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **DEBUG + 忽略**（Codex 常发，可控协议差异） |
 | `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **DEBUG + 忽略** |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **DEBUG + 忽略**（不映射 TTL） |
@@ -246,7 +417,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
 | `context_management` | none | `unsupported_by_backend` | 请求级上下文管理（含 compaction）；OpenAI 服务端压缩，网关不做；非空时 **WARN + 忽略**。历史 `compaction` item 仍见 Input Item（`raw_preserved` marker） |
 | `max_tool_calls` | none | `unsupported_by_backend` | Anthropic 无直接请求参数；多轮 tool 环由客户端控制，网关单请求内不做计数截断；非空时 **WARN + 忽略** |
-| `service_tier` | none | `dropped` | 网关不透传；非空时 WARN，由上游默认处理 |
+| `service_tier` | none | `dropped` | a 忽略；Chat 见 c 专节 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
 | `moderation` | none | `unsupported_by_backend` | OpenAI 输入/输出 moderation 配置，Anthropic Messages 无等价参数；配置非空时 **WARN + 忽略** |
 | `stream_options.include_obfuscation` | none | `unsupported_by_backend` | Anthropic streaming 无等价 obfuscation |

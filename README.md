@@ -367,7 +367,7 @@ rm -f ~/.codex/models_cache.json
 - **无等价历史 item**（`file_search_call` / `computer_call*` / `image_generation_call` / `program*` / `item_reference` / `additional_tools`）：WARN + 丢弃，不进 system context。
 - **无等价请求参数**：`background` / `conversation` / `moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / deprecated `user` 等按 WARN + 忽略；`service_tier` 非空时 WARN 且不透传。
 
-完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)。
+完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)（含 Anthropic `a` 与 Chat Completions `c` 专节）。
 
 ## 设计文档
 

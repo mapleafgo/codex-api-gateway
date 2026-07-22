@@ -1,7 +1,7 @@
 # OpenAI Chat Completions 上游后端设计
 
 > 日期：2026-07-21
-> 状态：已实现（MVP）
+> 状态：已实现（MVP + 批次 A/B：Codex freeform 工具环与终态对齐）
 > 方案：完整 Backend 适配器（方案 A）
 > 取代：`docs/superpowers/specs/2026-07-19-chat-backend-design.md`（该文状态改为已取代）
 

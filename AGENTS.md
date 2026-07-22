@@ -35,6 +35,28 @@
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml` → `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑（vim 等）都走写盘 → fsnotify → 这条链路，不允许存在第二条直接改运行时配置的入口。
 - **请求转发路径**：`/v1/responses` → `server.handleResponses` → `convert` → `scheduler.Pick` → `anthropic` 上游 → `streamconv` 回程 SSE。这条路径上的任何失败都必须以 error / SSE 错误事件形式返回客户端，不得 panic 逃逸。
 
+## 协议转换职责边界（架构基础）
+
+本网关的定位是 **OpenAI Responses ↔ 上游协议** 的纯协议转换与转发层，不是上游能力裁判，也不是工具运行时。下列边界适用于 **全部后端**（Anthropic `backend_type: a`、Chat Completions `backend_type: c`，以及未来新增 Backend），是架构级硬约束，与下文「设计规范」同等优先级。
+
+### 核心原则：形状透传，结果归上游
+
+- **网关只做 wire 对齐**：把客户端 Responses 请求转成上游可接受的请求形状，把上游流式/事件转回 Responses SSE。不替上游决定「这个模型/源能不能搜、能不能跑 code、能不能连 MCP」。
+- **能力与错误交给上游**：上游接受、拒绝、空结果、部分字段缺失，均由上游自行表现（HTTP 4xx/5xx、SSE error、空 content、无 tool result 等）。网关按协议映射这些结果，**不代劳拒绝**。
+- **禁止替上游做产品裁决**：不得因「我们推断某兼容后端可能没有 hosted/MCP/真搜索」而主动 fail-fast、改写为 failed、或编造「能力不足」终态。是否支持由上游运行时决定。
+- **唯一可拒的是协议不可映射**：仅当客户端字段/item **无法安全翻译成目标协议**（无 wire 槽位、SDK 无变体、继续转发必然破坏协议）时，才允许明确转换错误、WARN + 丢弃、或矩阵登记的降级。这是翻译边界，不是替上游判能力。
+
+### 推论（落地时对照）
+
+| 场景 | 正确做法 | 错误做法 |
+|---|---|---|
+| Chat 路径把 `web_search` 变成 function 发给上游 | 形状透传，上游 400/忽略/执行均随上游 | 网关因「Chat 无真 hosted」主动 400 或出站改 failed |
+| 上游 tool 调用后无 sources/logs | 按上游返回映射（空则空） | 网关编造失败文案或强制 incomplete/failed |
+| a 路径 Anthropic 无等价字段 | 矩阵登记：映射 / WARN 忽略 / fail-fast（**仅**协议原因） | 以「某厂商可能不支持」为由全局禁止字段 |
+| 熔断 / 选源 / 5xx 重试 | 传输与可用性（scheduler/breaker） | 与「协议能力裁判」混为一谈 |
+
+文档（`docs/protocol-coverage.md`）中的 `lossy_supported` 表示 **协议有损或语义不保证**，**不**表示网关会替上游拦截请求。新增转换逻辑时必须先问：这是「无法映射」还是「替上游判能力」——后者一律不做。
+
 ## 设计规范
 
 下列约束是本仓所有改动的硬性要求，违反其中任何一条都需要在 PR 中显式说明并给出权衡。
