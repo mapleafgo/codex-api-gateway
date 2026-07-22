@@ -315,6 +315,8 @@ html[data-theme="dark"] .ui-sel-list {
 .ui-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ui-field .ui-hint { font-size: 11px; color: var(--ink-faint); margin-top: -2px; }
 .ui-label { font-size: 12px; font-weight: 500; color: var(--ink-soft); }
+.ui-label-row { display:flex; align-items:center; gap:8px; min-height: 18px; }
+.ui-label-row .ui-label { line-height: 18px; }
 .ui-input, .ui-select, .ui-textarea {
   width: 100%; border: 1px solid var(--line); background: var(--surface);
   border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px;
@@ -838,21 +840,6 @@ html[data-theme="dark"] .ui-select {
                     <input class="ui-input ui-input-sm" x-model="src.name" autocomplete="off" spellcheck="false">
                   </label>
                   <label class="ui-field">
-                    <span class="ui-label" x-text="t('srcURL')"></span>
-                    <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
-                  </label>
-                  <div class="ui-field">
-                    <div style="display:flex; align-items:center; gap:8px">
-                      <span class="ui-label" x-text="t('apiKey')"></span>
-                      <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
-                              @click="toggleKeyVisibility(idx)"
-                              :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
-                              x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
-                    </div>
-                    <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
-                           x-model="src.api_key" autocomplete="off" spellcheck="false">
-                  </div>
-                  <label class="ui-field">
                     <span class="ui-label" x-text="t('backendType')"></span>
                     <div class="ui-sel"
                          x-data="uiSel()"
@@ -869,6 +856,21 @@ html[data-theme="dark"] .ui-select {
                       </div>
                     </div>
                   </label>
+                  <label class="ui-field ui-span-2">
+                    <span class="ui-label" x-text="t('srcURL')"></span>
+                    <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
+                  </label>
+                  <div class="ui-field ui-span-2">
+                    <div class="ui-label-row">
+                      <span class="ui-label" x-text="t('apiKey')"></span>
+                      <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
+                              @click="toggleKeyVisibility(idx)"
+                              :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
+                              x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
+                    </div>
+                    <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
+                           x-model="src.api_key" autocomplete="off" spellcheck="false">
+                  </div>
                   <label class="ui-field ui-span-2">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
@@ -1170,25 +1172,25 @@ html[data-theme="dark"] .ui-select {
     <template x-if="modal.open && modal.kind === 'form'">
       <div class="ui-stack" style="margin-top:12px; gap:10px">
         <template x-for="f in modal.fields" :key="f.key">
-          <label class="ui-field" :style="f.type === 'checkbox' ? 'flex-direction:row; align-items:center; gap:8px' : ''">
+          <div>
             <template x-if="f.type === 'checkbox'">
-              <span style="display:inline-flex; align-items:center; gap:8px">
+              <label class="ui-field" style="flex-direction:row; align-items:center; gap:8px">
                 <input type="checkbox" x-model="f.value">
                 <span class="ui-label" x-text="f.label"></span>
-              </span>
+              </label>
             </template>
             <template x-if="f.type === 'select'">
-              <span class="ui-field">
+              <label class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
                 <select class="ui-select ui-select-sm" x-model="f.value">
                   <template x-for="opt in (f.options || [])" :key="opt.v">
                     <option :value="opt.v" x-text="opt.l"></option>
                   </template>
                 </select>
-              </span>
+              </label>
             </template>
             <template x-if="f.type !== 'checkbox' && f.type !== 'select'">
-              <span class="ui-field">
+              <label class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
                 <input class="ui-input ui-input-sm"
                        :type="f.type === 'number' ? 'number' : 'text'"
@@ -1198,9 +1200,9 @@ html[data-theme="dark"] .ui-select {
                        autocomplete="off" spellcheck="false"
                        :inputmode="f.type === 'number' ? 'numeric' : 'text'"
                        :placeholder="f.placeholder">
-              </span>
+              </label>
             </template>
-          </label>
+          </div>
         </template>
       </div>
     </template>
@@ -1653,11 +1655,11 @@ function app() {
         confirmText: this.t('addSrc'),
         fields: [
           { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
-          { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
           { key: 'backend_type', label: this.t('backendType'), type: 'select', value: 'a', options: [
             { v: 'a', l: this.t('backendAnthropic') },
             { v: 'c', l: this.t('backendChat') },
           ]},
+          { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
           { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
         ],
