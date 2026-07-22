@@ -50,12 +50,26 @@ type ResponseError struct {
 }
 
 // ResponseUsage reports token usage on terminal response events.
+// 官方 Responses 以 input_tokens_details / output_tokens_details 表达明细；
+// 同时保留 cache_read_input_tokens / cache_creation_input_tokens 以兼容 a 路径 Anthropic 字段名。
 type ResponseUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	TotalTokens              int `json:"total_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	InputTokens              int                         `json:"input_tokens"`
+	OutputTokens             int                         `json:"output_tokens"`
+	TotalTokens              int                         `json:"total_tokens"`
+	InputTokensDetails       *ResponseUsageInputDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails      *ResponseUsageOutputDetails `json:"output_tokens_details,omitempty"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// ResponseUsageInputDetails 对齐官方 input_tokens_details（cached_tokens 等）。
+type ResponseUsageInputDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+// ResponseUsageOutputDetails 对齐官方 output_tokens_details（reasoning_tokens 等）。
+type ResponseUsageOutputDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // IncompleteDetails describes why a response ended incomplete.

@@ -136,7 +136,7 @@ func TestResponsesRequestLogIncludesInputDiagnostics(t *testing.T) {
 // The count (not Contains) is what would have caught the original bug.
 // TestPreviousResponseIDEmitsWarn 确认网关无 session store 时对 previous_response_id
 // 输出 WARN，而不是静默忽略（Codex 主路径不传此字段；其它客户端可能依赖链式会话）。
-// TestServiceTierEmitsWarn：service_tier 不透传时须 WARN，避免静默丢弃。
+// TestServiceTierEmitsInfo：service_tier 路径差异（Chat 透传 / a 忽略）须有可观测日志。
 // TestIncludeSatisfiedNoWarn：默认已满足的 include 项（encrypted_content / web_search sources 等）不 WARN。
 func TestIncludeSatisfiedNoWarn(t *testing.T) {
 	var logs bytes.Buffer
@@ -214,10 +214,52 @@ func TestIncludeUnsupportedWarns(t *testing.T) {
 	}
 }
 
-func TestServiceTierEmitsWarn(t *testing.T) {
+func TestIncludeLogprobsChatNoWarn(t *testing.T) {
 	var logs bytes.Buffer
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-t\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-t\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{
+			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
+		}},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","include":["message.output_text.logprobs"],"top_logprobs":2,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if strings.Contains(logs.String(), "message.output_text.logprobs") {
+		t.Fatalf("Chat source should not WARN logprobs include, logs:\n%s", logs.String())
+	}
+}
+
+func TestServiceTierEmitsInfo(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +288,7 @@ func TestServiceTierEmitsWarn(t *testing.T) {
 	_, _ = io.ReadAll(resp.Body)
 	got := logs.String()
 	if !strings.Contains(got, "service_tier") {
-		t.Fatalf("expected WARN for service_tier, logs:\n%s", got)
+		t.Fatalf("expected INFO for service_tier, logs:\n%s", got)
 	}
 }
 

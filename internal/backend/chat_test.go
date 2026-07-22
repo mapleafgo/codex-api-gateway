@@ -53,3 +53,41 @@ func TestChatBackend_TextStream(t *testing.T) {
 		}
 	}
 }
+
+// TestChatBackend_CacheReadPropagated 复现：Chat 上游 usage 含 cached_tokens 时，
+// onUpstream.CacheRead 必须非 0（此前 chat.go 只填 Input/Output，metrics 缓存命中恒空）。
+func TestChatBackend_CacheReadPropagated(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-c\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-c\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"total_tokens\":110,\"prompt_tokens_details\":{\"cached_tokens\":80}}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewChat()
+	var up UpstreamEvent
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
+		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "c"},
+		&config.Config{},
+		func(model.SSEEvent) error { return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if up.Status != "completed" {
+		t.Fatalf("status=%q", up.Status)
+	}
+	if up.InputTokens != 100 || up.OutputTokens != 10 {
+		t.Fatalf("tokens in=%d out=%d", up.InputTokens, up.OutputTokens)
+	}
+	if up.CacheRead != 80 {
+		t.Fatalf("CacheRead=%d want 80", up.CacheRead)
+	}
+	if up.CacheCreate != 0 {
+		t.Fatalf("CacheCreate=%d want 0 (Chat 无 creation 字段)", up.CacheCreate)
+	}
+}

@@ -55,6 +55,8 @@ type OutputText struct {
 	Text        string  `json:"text"`
 	Annotations []any   `json:"annotations,omitempty"`
 	Refusal     *string `json:"refusal,omitempty"`
+	// Logprobs 仅 output_text；Chat 路径在上游返回 token logprobs 时填充。
+	Logprobs []TokenLogprob `json:"logprobs,omitempty"`
 }
 
 // MarshalJSON 保证 message item 的必填 content 字段即使为空也会写入 wire payload。
@@ -184,12 +186,14 @@ func (p OutputText) MarshalJSON() ([]byte, error) {
 		annotations = []any{}
 	}
 	return json.Marshal(struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
-		Annotations []any  `json:"annotations"`
+		Type        string         `json:"type"`
+		Text        string         `json:"text"`
+		Annotations []any          `json:"annotations"`
+		Logprobs    []TokenLogprob `json:"logprobs,omitempty"`
 	}{
 		Type:        p.Type,
 		Text:        p.Text,
 		Annotations: annotations,
+		Logprobs:    p.Logprobs,
 	})
 }

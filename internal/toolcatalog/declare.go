@@ -3,6 +3,7 @@ package toolcatalog
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -166,6 +167,10 @@ func schemaFromAny(v any) map[string]any {
 	return s
 }
 
+func FreeformInputSchema() map[string]any {
+	return freeformInputSchema()
+}
+
 func freeformInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -191,4 +196,13 @@ func toInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
 		}
 	}
 	return anthropic.ToolInputSchemaParam{Properties: props, Required: required}
+}
+
+// SplitToolName splits a namespaced tool name into namespace and base name.
+func SplitToolName(name string) (namespace, base string) {
+	idx := strings.Index(name, "__")
+	if idx < 0 {
+		return "", name
+	}
+	return name[:idx], name[idx+2:]
 }

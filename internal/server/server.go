@@ -309,8 +309,6 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
 	}
 
-	warnDroppedOrIgnoredParams(req)
-
 	ordered := s.holder.Current().OrderedSources()
 	if len(ordered) == 0 {
 		// 零源配置：进程可启动但无上游可转发。返回 503 引导用户去管理页配置。
@@ -318,6 +316,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
 		return
 	}
+	warnDroppedOrIgnoredParams(req, ordered)
+
 	// 预检：首源为 Anthropic 时 dry-run ToAnthropic，在写 SSE 头前返回 400（对齐旧行为）。
 	// 首源为 Chat 时不做 Anthropic 预检，避免纯 Chat 部署被误杀。
 	first := ordered[0]
@@ -455,7 +455,7 @@ func writeSSE(w io.Writer, e model.SSEEvent) {
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
 // 或 deprecated 的请求字段统一输出 WARN 级别结构化日志，避免静默丢弃。
 // 约定见 AGENTS.md「静默跳过与降级处理约定」。
-func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
+func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []config.Source) {
 	// deprecated reasoning.generate_summary：被 reasoning.summary 取代。
 	//nolint:staticcheck // 字段被 OpenAI 标记 deprecated，但我们正是要检测它以输出 WARN
 	if req.Reasoning.GenerateSummary != "" {
@@ -473,19 +473,20 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"previous_response_id", req.PreviousResponseID.Value,
 			"impact", "不会按 response_id 补全历史；请在 input 中完整回灌上下文")
 	}
-	// service_tier：网关不透传，由上游默认处理。
+	// service_tier：Chat 源（backend_type c）透传；Anthropic 源无等价，仍忽略。
+	// 此处 INFO 提示路径差异，避免「全局永不透传」误导（混排 failover 时以实际 Backend 为准）。
 	if req.ServiceTier != "" {
-		slog.Warn("忽略 service_tier（网关不透传，由上游按默认处理），对应数据被丢弃",
+		slog.Info("service_tier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "service_tier",
 			"value", string(req.ServiceTier),
-			"impact", "请求不会指定 OpenAI service tier")
+			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
 	}
-	// text.verbosity：Anthropic 无原生 verbosity 参数。
+	// text.verbosity：Chat 源透传；Anthropic 无原生参数。
 	if req.Text.Verbosity != "" {
-		slog.Warn("忽略 text.verbosity（Anthropic 无原生等价参数），对应数据被丢弃",
+		slog.Info("text.verbosity 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "text.verbosity",
 			"value", string(req.Text.Verbosity),
-			"impact", "verbosity 不生效")
+			"impact", "backend_type=c 写入 Chat verbosity；backend_type=a 不传上游")
 	}
 	// truncation：Anthropic 无直接等价策略，仅在响应中 echo。
 	// truncation 状态为 raw_preserved：值在响应对象中 echo 回显，未被丢弃，
@@ -495,7 +496,8 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 	//   - satisfied：网关默认已发出对应字段（如 web_search sources、code_interpreter outputs），
 	//     无需额外行为，也不 WARN；
 	//   - encrypted_content：已通过 disable_response_storage 路径处理，不 WARN；
-	//   - unsupported：后端无等价能力（file_search、logprobs、computer 等），WARN + 丢弃。
+	//   - chat_only：仅 Chat 上游可映射（如 message.output_text.logprobs）；
+	//   - unsupported：后端无等价能力（file_search、computer 等），WARN + 丢弃。
 	if len(req.Include) > 0 {
 		satisfied := map[string]bool{
 			"reasoning.encrypted_content":    true, // ZDR 路径已处理
@@ -503,23 +505,49 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"code_interpreter_call.outputs":  true, // outputs 默认下发
 			"message.input_image.image_url":  true, // 输入 image_url 原样保留
 		}
+		chatOnly := map[string]bool{
+			// Chat 路径 chatstreamconv 映射 token logprobs；需请求 top_logprobs 且上游返回。
+			"message.output_text.logprobs": true,
+		}
+		hasChat := false
+		for _, src := range sources {
+			bt, _ := config.NormalizeBackendType(src.BackendType)
+			if bt == config.BackendOpenAIChat {
+				hasChat = true
+				break
+			}
+		}
 		var unsupported []string
+		var chatSkipped []string
 		for _, inc := range req.Include {
-			if satisfied[string(inc)] {
+			s := string(inc)
+			if satisfied[s] {
 				continue
 			}
-			unsupported = append(unsupported, string(inc))
+			if chatOnly[s] {
+				if hasChat {
+					continue // Chat 源可映射；混排时以实际 Backend 为准
+				}
+				chatSkipped = append(chatSkipped, s)
+				continue
+			}
+			unsupported = append(unsupported, s)
+		}
+		if len(chatSkipped) > 0 {
+			slog.Warn("忽略仅 Chat 源可映射的 include 项（当前无 Chat 上游）",
+				"field", "include",
+				"values", strings.Join(chatSkipped, ","),
+				"impact", "backend_type=c 且 top_logprobs 时才有 output_text.logprobs；当前配置无法生效")
 		}
 		if len(unsupported) > 0 {
-			slog.Warn("忽略无 Anthropic 等价能力的 include 项，对应数据被丢弃",
+			slog.Warn("忽略无后端等价能力的 include 项，对应数据被丢弃",
 				"field", "include",
 				"values", strings.Join(unsupported, ","),
-				"impact", "该 include 项不会生效（file_search / logprobs / computer 等无后端等价）")
+				"impact", "该 include 项不会生效（file_search / computer 等）")
 		}
 	}
-	// metadata：Anthropic metadata 仅支持 user_id，整体 echo + 取 user_id 透传。
+	// metadata：Chat 整表透传；a 路径仅 user_id 进 Anthropic metadata，其余 echo。
 	if len(req.Metadata) > 0 {
-		// 只有存在非 user_id 键值对时才 WARN（user_id 被透传，不是丢弃）。
 		nonUserID := 0
 		for k := range req.Metadata {
 			if k != "user_id" {
@@ -527,26 +555,28 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			}
 		}
 		if nonUserID > 0 {
-			slog.Warn("metadata 整体仅在响应中 echo，Anthropic metadata 只透传 user_id（取自 metadata.user_id）",
+			slog.Info("metadata 按后端分流（c 整表透传；a 仅 user_id + 响应 echo）",
 				"field", "metadata",
 				"entries", len(req.Metadata),
-				"impact", "非 user_id 的键值对不会传递给上游")
+				"impact", "backend_type=c 写入 Chat metadata；backend_type=a 仅 metadata.user_id 进上游")
 		}
 	}
 	// prompt_cache_*：Anthropic 用内容 hash + 网关自主 cache_control，不认 OpenAI client key/options/retention。
 	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
 		// Codex 常发；网关已自主 cache_control，属可控协议差异 → DEBUG 即可。
-		slog.Debug("忽略 prompt_cache_key（Anthropic 不认客户端 cache key，网关已自主设 cache_control）",
+		// a 路径：网关自主 cache_control；c 路径：chatconvert 透传 prompt_cache_key。
+		slog.Debug("prompt_cache_key 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
 			"field", "prompt_cache_key",
-			"impact", "不会按 OpenAI prompt_cache_key 分桶缓存；上游缓存由 Anthropic cache_control 控制")
+			"impact", "Anthropic 源不按 OpenAI cache key 分桶；Chat 源由 chatconvert 写入 prompt_cache_key")
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		// 与 prompt_cache_key 同属可控协议差异，网关已自主 cache_control → DEBUG。
-		slog.Debug("忽略 prompt_cache_options（OpenAI options 对 Anthropic 无意义，网关已自主设 cache_control）",
+		// a 路径：自主 cache_control；c 路径：chatconvert 透传 prompt_cache_options。
+		slog.Debug("prompt_cache_options 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
 			"field", "prompt_cache_options",
 			"mode", req.PromptCacheOptions.Mode,
 			"ttl", req.PromptCacheOptions.Ttl,
-			"impact", "不会按 OpenAI prompt_cache_options 调整缓存策略")
+			"impact", "Anthropic 源不按 OpenAI options 调缓存；Chat 源由 chatconvert 写入 prompt_cache_options")
 	}
 	if req.PromptCacheRetention != "" {
 		// deprecated 字段且语义不等价；网关用 cache.ttl 配置，DEBUG 即可。
@@ -592,36 +622,36 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams) {
 			"value", req.MaxToolCalls.Value,
 			"impact", "工具调用次数不会在网关层被截断")
 	}
-	// safety_identifier：后端无等价字段。
+	// safety_identifier：Chat 透传；Anthropic 无等价。
 	if req.SafetyIdentifier.Valid() && req.SafetyIdentifier.Value != "" {
-		slog.Warn("忽略 safety_identifier（Anthropic 后端无等价字段），对应数据被丢弃",
+		slog.Info("safety_identifier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "safety_identifier",
-			"impact", "不会传递给上游")
+			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
 	}
-	// moderation：OpenAI 输入/输出 moderation 配置。
+	// moderation：Chat 透传；Anthropic 无等价。
 	if req.Moderation.Model != "" ||
 		req.Moderation.Policy.Input.Mode != "" ||
 		req.Moderation.Policy.Output.Mode != "" {
-		slog.Warn("忽略 moderation（Anthropic Messages 无等价参数），对应数据被丢弃",
+		slog.Info("moderation 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "moderation",
 			"moderation_model", req.Moderation.Model,
 			"input_mode", req.Moderation.Policy.Input.Mode,
 			"output_mode", req.Moderation.Policy.Output.Mode,
-			"impact", "不会对输入/输出做 OpenAI moderation")
+			"impact", "backend_type=c 写入 Chat moderation；backend_type=a 不传上游")
 	}
-	// stream_options.include_obfuscation：Anthropic streaming 无等价 obfuscation。
+	// stream_options.include_obfuscation：Chat 透传；Anthropic 无等价。
 	if req.StreamOptions.IncludeObfuscation.Valid() {
-		slog.Warn("忽略 stream_options.include_obfuscation（Anthropic streaming 无等价机制），对应数据被丢弃",
+		slog.Info("stream_options.include_obfuscation 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "stream_options.include_obfuscation",
 			"value", req.StreamOptions.IncludeObfuscation.Value,
-			"impact", "obfuscation 字段不生效")
+			"impact", "backend_type=c 写入 Chat stream_options；backend_type=a 不传上游")
 	}
-	// top_logprobs：Anthropic Messages 无 OpenAI output logprobs 等价。
+	// top_logprobs：Chat 透传（并开 logprobs）；Anthropic 无等价。
 	if req.TopLogprobs.Valid() {
-		slog.Warn("忽略 top_logprobs（Anthropic Messages 无 OpenAI output logprobs 等价能力），对应数据被丢弃",
+		slog.Info("top_logprobs 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "top_logprobs",
 			"value", req.TopLogprobs.Value,
-			"impact", "logprobs 不会返回")
+			"impact", "backend_type=c 写入 Chat logprobs/top_logprobs；backend_type=a 不返回 logprobs")
 	}
 	// deprecated user：OpenAI 已废弃，需决定忽略或映射 metadata。
 	if req.User.Valid() && req.User.Value != "" {

@@ -17,6 +17,8 @@ type OutputTextDeltaEvent struct {
 	ContentIndex   int    `json:"content_index,omitempty"`
 	ItemID         string `json:"item_id"`
 	Delta          string `json:"delta"`
+	// Logprobs 对齐官方 response.output_text.delta.logprobs；空时 omitempty。
+	Logprobs []TokenLogprob `json:"logprobs,omitempty"`
 }
 
 // OutputTextDoneEvent closes an output text content part.
@@ -27,6 +29,21 @@ type OutputTextDoneEvent struct {
 	ContentIndex   int    `json:"content_index,omitempty"`
 	ItemID         string `json:"item_id"`
 	Text           string `json:"text"`
+	// Logprobs 对齐官方 response.output_text.done.logprobs；空时 omitempty。
+	Logprobs []TokenLogprob `json:"logprobs,omitempty"`
+}
+
+// TokenLogprob 是 Responses output_text 的 token 级 log 概率（无 Chat bytes 字段）。
+type TokenLogprob struct {
+	Token       string            `json:"token"`
+	Logprob     float64           `json:"logprob"`
+	TopLogprobs []TopTokenLogprob `json:"top_logprobs,omitempty"`
+}
+
+// TopTokenLogprob 是某一位置的候选 token。
+type TopTokenLogprob struct {
+	Token   string  `json:"token"`
+	Logprob float64 `json:"logprob"`
 }
 
 // RefusalDeltaEvent 承载拒绝内容的增量文本。
@@ -272,6 +289,8 @@ type ContentPartOut struct {
 	Text        string  `json:"text"`
 	Annotations []any   `json:"annotations,omitempty"`
 	Refusal     *string `json:"refusal,omitempty"`
+	// Logprobs 仅 output_text done 时可能带上累计 token 概率。
+	Logprobs []TokenLogprob `json:"logprobs,omitempty"`
 }
 
 // MarshalJSON 按 content part 类型输出互斥的 Responses wire 字段。
@@ -294,13 +313,15 @@ func (p ContentPartOut) MarshalJSON() ([]byte, error) {
 		annotations = []any{}
 	}
 	return json.Marshal(struct {
-		Type        string `json:"type"`
-		Text        string `json:"text"`
-		Annotations []any  `json:"annotations"`
+		Type        string         `json:"type"`
+		Text        string         `json:"text"`
+		Annotations []any          `json:"annotations"`
+		Logprobs    []TokenLogprob `json:"logprobs,omitempty"`
 	}{
 		Type:        p.Type,
 		Text:        p.Text,
 		Annotations: annotations,
+		Logprobs:    p.Logprobs,
 	})
 }
 

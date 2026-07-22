@@ -2,12 +2,9 @@ package chatstreamconv
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
-
-func typesOf(t *testing.T, evs []interface { /* placeholder */
-}) {
-}
 
 func evTypes(t *testing.T, data []byte) string {
 	t.Helper()
@@ -19,24 +16,10 @@ func evTypes(t *testing.T, data []byte) string {
 	return typ
 }
 
-func feedAll(t *testing.T, chunks ...string) *Converter {
-	t.Helper()
-	c := New()
-	c.SetClientModel("gpt-4o")
-	for _, ch := range chunks {
-		if _, err := c.Feed([]byte(ch)); err != nil {
-			t.Fatalf("Feed: %v", err)
-		}
-	}
-	return c
-}
-
 func TestTextStream(t *testing.T) {
 	c := New()
 	c.SetClientModel("gpt-4o")
 	var all []string
-	collect := func(evs interface{}) {}
-	_ = collect
 	evs, err := c.Feed([]byte(`{"id":"chatcmpl-1","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"He"}}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +69,6 @@ func TestEmptyChoicesUsageChunk(t *testing.T) {
 	if _, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"content":"x"}}]}`)); err != nil {
 		t.Fatal(err)
 	}
-	// OpenAI include_usage 末包：choices 为空
 	if _, err := c.Feed([]byte(`{"id":"c1","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)); err != nil {
 		t.Fatalf("empty choices should not fail: %v", err)
 	}
@@ -100,8 +82,6 @@ func TestToolCallStream(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")
 	var types []string
-	add := func(evs []interface{}) {}
-	_ = add
 	chunks := []string{
 		`{"id":"c1","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}`,
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}`,
@@ -116,6 +96,9 @@ func TestToolCallStream(t *testing.T) {
 		for _, e := range evs {
 			types = append(types, evTypes(t, e.Data))
 		}
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
 	}
 	wantAny := []string{
 		"response.output_item.added",
@@ -139,10 +122,6 @@ func TestToolCallStream(t *testing.T) {
 		t.Fatalf("stop=%q", c.StopReason())
 	}
 	items := c.OutputItems()
-	if len(items) == 0 {
-		t.Fatal("no output items")
-	}
-	// last function_call should have full args
 	var foundFC bool
 	for _, it := range items {
 		if it.Type == "function_call" {
@@ -157,6 +136,104 @@ func TestToolCallStream(t *testing.T) {
 	}
 	if !foundFC {
 		t.Fatalf("items=%+v", items)
+	}
+}
+
+func TestShellCustomToolStream(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	c.SetFreeformNames(map[string]struct{}{"shell": {}})
+	var types []string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"shell","arguments":""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"ls\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+		}
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	has := false
+	for _, typ := range types {
+		if typ == "response.custom_tool_call_input.done" {
+			has = true
+		}
+		if typ == "response.function_call_arguments.delta" {
+			t.Fatalf("shell must not emit function arguments delta: %v", types)
+		}
+	}
+	if !has {
+		t.Fatalf("missing custom input done: %v", types)
+	}
+	var found bool
+	for _, it := range c.OutputItems() {
+		if it.Type == "custom_tool_call" && it.Name == "shell" {
+			found = true
+			if it.Input != "ls" {
+				t.Fatalf("input unwrapped want ls got %q", it.Input)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("items=%+v", c.OutputItems())
+	}
+}
+
+func TestFinishReasonLengthIncomplete(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		types = append(types, evTypes(t, e.Data))
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	found := false
+	for _, typ := range types {
+		if typ == "response.incomplete" {
+			found = true
+		}
+		if typ == "response.completed" {
+			t.Fatal("length must not complete")
+		}
+	}
+	if !found {
+		t.Fatalf("want incomplete, got %v", types)
+	}
+}
+
+func TestFinishReasonContentFilter(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	evs, _ := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"content_filter"}]}`))
+	for _, e := range evs {
+		types = append(types, evTypes(t, e.Data))
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	found := false
+	for _, typ := range types {
+		if typ == "response.incomplete" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want incomplete for content_filter, got %v", types)
 	}
 }
 
@@ -176,5 +253,499 @@ func TestFeedDoneWithoutFinishReason(t *testing.T) {
 	}
 	if !c.Done() {
 		t.Fatal("expected Done after FeedDone")
+	}
+}
+
+// TestUsageChunkAfterFinishReason 覆盖官方流顺序：
+// finish_reason 包 → 空 choices 的 usage 末包 → [DONE]。
+// include_usage 时 usage 在 finish 之后；终态 response 与 Converter.Usage 都必须带上 token。
+func TestUsageChunkAfterFinishReason(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var all []string
+	feed := func(raw string) {
+		t.Helper()
+		evs, err := c.Feed([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			all = append(all, evTypes(t, e.Data))
+		}
+	}
+	feed(`{"id":"c1","choices":[{"delta":{"content":"hi"}}]}`)
+	feed(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	// 官方：finish 后才来空 choices + usage
+	feed(`{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`)
+	doneEvs := c.FeedDone()
+	for _, e := range doneEvs {
+		all = append(all, evTypes(t, e.Data))
+	}
+	if u := c.Usage(); u == nil || u.InputTokens != 10 || u.OutputTokens != 4 || u.TotalTokens != 14 {
+		t.Fatalf("Usage after late usage chunk: %+v", u)
+	}
+	// 终态事件应携带 usage（在 FeedDone 发出，或 usage 包触发补全后的终态）
+	var terminal string
+	var terminalUsage any
+	scan := func(evs interface { /* */
+	}) {
+	}
+	_ = scan
+	// re-feed from scratch to inspect terminal payload
+	c2 := New()
+	c2.SetClientModel("m")
+	var terminalData []byte
+	for _, raw := range []string{
+		`{"id":"c1","choices":[{"delta":{"content":"hi"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`,
+	} {
+		evs, err := c2.Feed([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			typ := evTypes(t, e.Data)
+			if typ == "response.completed" || typ == "response.incomplete" {
+				terminalData = e.Data
+			}
+		}
+	}
+	for _, e := range c2.FeedDone() {
+		typ := evTypes(t, e.Data)
+		if typ == "response.completed" || typ == "response.incomplete" {
+			terminalData = e.Data
+		}
+	}
+	if terminalData == nil {
+		t.Fatalf("no terminal event, types so far from first run: %v", all)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(terminalData, &m); err != nil {
+		t.Fatal(err)
+	}
+	resp, _ := m["response"].(map[string]any)
+	if resp == nil {
+		t.Fatalf("no response in terminal: %s", terminalData)
+	}
+	u, _ := resp["usage"].(map[string]any)
+	if u == nil {
+		t.Fatalf("terminal response missing usage: %s", terminalData)
+	}
+	if int(u["input_tokens"].(float64)) != 10 || int(u["output_tokens"].(float64)) != 4 {
+		t.Fatalf("terminal usage=%v", u)
+	}
+	_ = terminal
+	_ = terminalUsage
+}
+
+func TestContentFilterEmitsRefusalChain(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	feed := func(raw string) {
+		t.Helper()
+		evs, err := c.Feed([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+		}
+	}
+	feed(`{"id":"c1","choices":[{"delta":{"refusal":"I cannot help with that."}}]}`)
+	feed(`{"id":"c1","choices":[{"delta":{},"finish_reason":"content_filter"}]}`)
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	want := []string{
+		"response.refusal.delta",
+		"response.refusal.done",
+		"response.incomplete",
+	}
+	for _, w := range want {
+		found := false
+		for _, typ := range types {
+			if typ == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in %v", w, types)
+		}
+	}
+	var hasRefusalItem bool
+	for _, it := range c.OutputItems() {
+		if it.Type == "message" {
+			for _, part := range it.Content {
+				if part.Type == "refusal" {
+					hasRefusalItem = true
+					if part.Refusal == nil || *part.Refusal == "" {
+						t.Fatalf("empty refusal text: %+v", part)
+					}
+				}
+			}
+		}
+	}
+	if !hasRefusalItem {
+		t.Fatalf("output items missing refusal: %+v", c.OutputItems())
+	}
+}
+
+func TestContentFilterFallbackRefusalText(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"content_filter"}]}`))
+	c.FeedDone()
+	var text string
+	for _, it := range c.OutputItems() {
+		for _, part := range it.Content {
+			if part.Type == "refusal" && part.Refusal != nil {
+				text = *part.Refusal
+			}
+		}
+	}
+	if text == "" {
+		t.Fatalf("expected fallback refusal text, items=%+v", c.OutputItems())
+	}
+}
+
+func TestWebSearchOutboundShape(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"ws1","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"go\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+		}
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	for _, w := range []string{"response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"} {
+		ok := false
+		for _, typ := range types {
+			if typ == w {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Fatalf("missing %s in %v", w, types)
+		}
+	}
+	for _, it := range c.OutputItems() {
+		if it.Type == "web_search_call" {
+			if it.Action == nil || it.Action.Query != "go" {
+				t.Fatalf("item=%+v", it)
+			}
+			return
+		}
+	}
+	t.Fatalf("no web_search_call item: %+v", c.OutputItems())
+}
+
+func TestMCPOutboundShape(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"m1","type":"function","function":{"name":"mcp__fetch__get","arguments":"{\"x\":1}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, _ := c.Feed([]byte(ch))
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+		}
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	for _, w := range []string{"response.mcp_call.in_progress", "response.mcp_call.completed"} {
+		ok := false
+		for _, typ := range types {
+			if typ == w {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Fatalf("missing %s in %v", w, types)
+		}
+	}
+	for _, it := range c.OutputItems() {
+		if it.Type == "mcp_call" {
+			if it.ServerLabel != "fetch" || it.Name != "get" {
+				t.Fatalf("item=%+v", it)
+			}
+			return
+		}
+	}
+	t.Fatalf("no mcp item %+v", c.OutputItems())
+}
+
+func TestToolCallNameArrivesAfterID(t *testing.T) {
+	// 兼容上游常见分片：先 id，后 name/arguments。
+	// 仅有 id 时若立即 open，会按空 name 误判 function_call，output_item.added 类型错误。
+	c := New()
+	c.SetClientModel("m")
+	c.SetFreeformNames(map[string]struct{}{"shell": {}})
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{\"input\":\"pwd\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	var addedTypes []string
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			if evTypes(t, e.Data) != "response.output_item.added" {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			item, _ := m["item"].(map[string]any)
+			typ, _ := item["type"].(string)
+			addedTypes = append(addedTypes, typ)
+		}
+	}
+	for _, e := range c.FeedDone() {
+		_ = e
+	}
+	if len(addedTypes) != 1 || addedTypes[0] != "custom_tool_call" {
+		t.Fatalf("output_item.added types=%v want [custom_tool_call]", addedTypes)
+	}
+	var found bool
+	for _, it := range c.OutputItems() {
+		if it.Type == "custom_tool_call" && it.Name == "shell" && it.Input == "pwd" {
+			found = true
+		}
+		if it.Type == "function_call" {
+			t.Fatalf("unexpected function_call item: %+v", it)
+		}
+	}
+	if !found {
+		t.Fatalf("items=%+v", c.OutputItems())
+	}
+}
+
+func TestDeltaContentArrayTextParts(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	// content 为数组时须拼 text，不能 Feed 失败
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","content":[{"type":"text","text":"He"},{"type":"text","text":"llo"}]}}]}`))
+	if err != nil {
+		t.Fatalf("array content should parse: %v", err)
+	}
+	evs2, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = evs
+	_ = evs2
+	for _, e := range c.FeedDone() {
+		_ = e
+	}
+	var text string
+	for _, it := range c.OutputItems() {
+		if it.Type == "message" {
+			for _, p := range it.Content {
+				if p.Type == "output_text" {
+					text += p.Text
+				}
+			}
+		}
+	}
+	if text != "Hello" {
+		t.Fatalf("text=%q items=%+v", text, c.OutputItems())
+	}
+}
+
+func TestUsageCachedTokensMapped(t *testing.T) {
+	c := New()
+	// finish + usage 同包，含 prompt_tokens_details / completion_tokens_details
+	raw := `{"id":"c1","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":80},"completion_tokens_details":{"reasoning_tokens":20}}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	c.FeedDone()
+	u := c.Usage()
+	if u == nil {
+		t.Fatal("nil usage")
+	}
+	if u.InputTokens != 100 || u.OutputTokens != 50 || u.TotalTokens != 150 {
+		t.Fatalf("base usage=%+v", u)
+	}
+	if u.CacheReadInputTokens != 80 {
+		t.Fatalf("CacheReadInputTokens=%d want 80", u.CacheReadInputTokens)
+	}
+	if u.InputTokensDetails == nil || u.InputTokensDetails.CachedTokens != 80 {
+		t.Fatalf("InputTokensDetails=%+v", u.InputTokensDetails)
+	}
+	if u.OutputTokensDetails == nil || u.OutputTokensDetails.ReasoningTokens != 20 {
+		t.Fatalf("OutputTokensDetails=%+v", u.OutputTokensDetails)
+	}
+}
+
+func TestLogprobsOnTextDelta(t *testing.T) {
+	c := New()
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","content":"Hi"},"logprobs":{"content":[{"token":"Hi","logprob":-0.1,"top_logprobs":[{"token":"Hi","logprob":-0.1},{"token":"Hello","logprob":-1.2}]}]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, `"logprobs"`) || !strings.Contains(joined, `"token":"Hi"`) {
+		t.Fatalf("delta should carry logprobs: %s", joined)
+	}
+	evs, err = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, "response.output_text.done") {
+		t.Fatalf("expect done events: %s", joined)
+	}
+	if !strings.Contains(joined, `"logprobs"`) {
+		t.Fatalf("done should carry accumulated logprobs: %s", joined)
+	}
+}
+
+func TestLogprobsOnlyChunkAccumulates(t *testing.T) {
+	c := New()
+	// first: content without logprobs
+	if _, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","content":"Hi"}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	// second: logprobs only (empty content)
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"logprobs":{"content":[{"token":"Hi","logprob":-0.2}]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, `"logprobs"`) {
+		t.Fatalf("logprobs-only chunk should emit delta with logprobs: %s", joined)
+	}
+	evs, err = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, "response.output_text.done") || !strings.Contains(joined, `"logprobs"`) {
+		t.Fatalf("done should keep accumulated logprobs: %s", joined)
+	}
+}
+
+func TestCodeInterpreterOutboundShape(t *testing.T) {
+	c := New()
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"ci1","type":"function","function":{"name":"code_interpreter","arguments":""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"code\":\"print(1)\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	var joined string
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			joined += string(e.Data)
+		}
+	}
+	if !strings.Contains(joined, "code_interpreter_call") {
+		t.Fatalf("want code_interpreter_call events: %s", joined)
+	}
+	if !strings.Contains(joined, "print(1)") {
+		t.Fatalf("want code in events: %s", joined)
+	}
+}
+
+func TestToolSearchOutboundShape(t *testing.T) {
+	c := New()
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"ts1","type":"function","function":{"name":"tool_search","arguments":""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"x\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	var joined string
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			joined += string(e.Data)
+		}
+	}
+	if !strings.Contains(joined, "tool_search_call") {
+		t.Fatalf("want tool_search_call: %s", joined)
+	}
+}
+
+func TestMultiIndexParallelToolCalls(t *testing.T) {
+	c := New()
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"fa","arguments":"{}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","type":"function","function":{"name":"fb","arguments":"{}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	var joined string
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			joined += string(e.Data)
+		}
+	}
+	if !strings.Contains(joined, `"name":"fa"`) || !strings.Contains(joined, `"name":"fb"`) {
+		t.Fatalf("want both tools: %s", joined)
+	}
+	// two function_call items
+	if strings.Count(joined, `"type":"function_call"`) < 2 {
+		t.Fatalf("want >=2 function_call items: %s", joined)
+	}
+}
+
+func TestFailEmitsResponseFailed(t *testing.T) {
+	c := New()
+	_, _ = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","content":"x"}}]}`))
+	evs := c.Fail("upstream reset")
+	joined := ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, "response.failed") {
+		t.Fatalf("want failed: %s", joined)
+	}
+	if !c.Failed() || !c.Done() {
+		t.Fatal("converter should be failed+done")
 	}
 }

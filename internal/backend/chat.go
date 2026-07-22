@@ -75,6 +75,7 @@ func (b *ChatBackend) Execute(
 	conv := chatstreamconv.New()
 	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
+	conv.SetFreeformNames(chatReq.FreeformNames)
 
 	var ttfb time.Duration
 	locked := false
@@ -134,9 +135,11 @@ func (b *ChatBackend) Execute(
 			errText = errSummary(scanErr)
 		}
 	}
-	var inTok, outTok int
+	var inTok, outTok, cacheRead, cacheCreate int
 	if u := conv.Usage(); u != nil {
 		inTok, outTok = u.InputTokens, u.OutputTokens
+		cacheRead = u.CacheReadInputTokens
+		cacheCreate = u.CacheCreationInputTokens
 	}
 	if onUpstream != nil {
 		onUpstream(UpstreamEvent{
@@ -144,6 +147,8 @@ func (b *ChatBackend) Execute(
 			StartedAt: start, Duration: time.Since(start), TTFB: ttfb,
 			Status: status, Code: code, Error: errText, Attempt: attempt,
 			InputTokens: inTok, OutputTokens: outTok,
+			CacheRead:   cacheRead,
+			CacheCreate: cacheCreate,
 			BackendType: config.BackendOpenAIChat,
 		})
 	}

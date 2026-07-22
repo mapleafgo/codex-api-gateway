@@ -67,8 +67,10 @@ func (c *Client) Stream(ctx context.Context, baseURL, apiKey string, body []byte
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
-		slog.Warn("chatclient: upstream error", "status", resp.Status, "url", url)
-		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, truncForLog(b, 500))
+		snippet := truncForLog(b, 500)
+		slog.Warn("chatclient: upstream error",
+			"status", resp.Status, "url", url, "body", snippet)
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, snippet)
 	}
 	return resp.Body, nil
 }
