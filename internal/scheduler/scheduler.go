@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
@@ -21,15 +19,6 @@ import (
 
 // ErrAllSourcesFailed is returned when no source could serve the request.
 var ErrAllSourcesFailed = errors.New("all upstream sources failed")
-
-// Anthropic SSE 事件类型 wire 字面量，从官方 SDK 常量派生（对齐设计规范）。
-// 观测 usage 时需要区分 message_start（携带 input / cache_* 初值）与
-// message_delta（携带累计 output_tokens 等）。
-var (
-	anMessageStart = string(aconstant.ValueOf[aconstant.MessageStart]())
-	anMessageDelta = string(aconstant.ValueOf[aconstant.MessageDelta]())
-	anMessageStop  = string(aconstant.ValueOf[aconstant.MessageStop]())
-)
 
 // defaultBackoff is the fixed production backoff sequence in seconds.
 var defaultBackoff = []time.Duration{
@@ -54,10 +43,6 @@ type Scheduler struct {
 	ordMu            sync.RWMutex
 	backoff          []time.Duration // injectable for tests; defaults to defaultBackoff
 }
-
-// RequestBuilder builds a source-specific Anthropic request, plus an optional
-// MCPInjection for beta mcp_servers/mcp_toolset injection at the client layer.
-type RequestBuilder func(src config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error)
 
 // UpstreamEvent 描述一次单源上游尝试的观测数据，由 Scheduler 通过
 // OnUpstream 回调上报给观测层（L5 metrics）。Scheduler 自身不依赖 metrics
@@ -413,225 +398,6 @@ func (s *Scheduler) trySourceGeneric(
 	return true, err
 }
 
-// Execute tries sources by runtime priority with failover, and retries the
-// entire round with backoff when all sources fail or are circuit-open.
-// mcp 是可选的 MCPInjection；非空时透传给 client.Stream 注入 beta mcp_servers/mcp_toolset。
-func (s *Scheduler) Execute(ctx context.Context, req *anthropic.MessageNewParams, mcp *anthropicclient.MCPInjection, onEvent func(*anthropic.MessageStreamEventUnion) error, onUpstream OnUpstream) error {
-	_, err := s.ExecutePrepared(ctx, func(_ config.Source) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
-		return req, mcp, nil
-	}, onEvent, onUpstream)
-	return err
-}
-
-// ExecutePrepared tries sources by runtime priority, building the request for
-// each candidate source immediately before it is attempted. It returns the
-// source that locked the stream after the first upstream event.
-func (s *Scheduler) ExecutePrepared(ctx context.Context, build RequestBuilder, onEvent func(*anthropic.MessageStreamEventUnion) error, onUpstream OnUpstream) (string, error) {
-	cur := s.holder.Current()
-	mr := cur.Breaker.MaxRetries
-	start := time.Now()
-	attemptNo := 0 // 全局递增的上游尝试序号，跨 round 连续编号，供 OnUpstream 上报
-	var lastErr error
-	var lastSource string // 最终全失败时返回最后尝试的源，观测台据此展示 source
-	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
-		sourceName, success, err := s.tryRoundPrepared(ctx, build, onEvent, onUpstream, &attemptNo)
-		if sourceName != "" {
-			lastSource = sourceName
-		}
-		if success {
-			slog.Info("上游请求完成", "source", sourceName, "attempts", attempt+1, "elapsed", time.Since(start).String())
-			return sourceName, err // nil for clean success; non-nil for mid-stream error on locked source
-		}
-		if err != nil {
-			lastErr = err
-		}
-		if mr == 0 {
-			break
-		}
-		if mr != -1 && attempt == mr {
-			break
-		}
-		slog.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
-		if werr := s.waitBackoff(ctx, attempt); werr != nil {
-			slog.Warn("退避等待被取消", "attempt", attempt, "error", werr)
-			return lastSource, werr
-		}
-	}
-	if lastErr != nil {
-		slog.Error("全部上游源均失败，无可用源", "attempts", 0, "elapsed", time.Since(start).String(), "last_error", lastErr)
-		return lastSource, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
-	}
-	slog.Error("全部上游源均失败，无可用源", "attempts", 0, "elapsed", time.Since(start).String())
-	return lastSource, ErrAllSourcesFailed
-}
-
-func (s *Scheduler) tryRoundPrepared(ctx context.Context, build RequestBuilder, onEvent func(*anthropic.MessageStreamEventUnion) error, onUpstream OnUpstream, attemptNo *int) (string, bool, error) {
-	var lastErr error
-	var lastSource string // 记录最后一个尝试过的源，失败时让观测台有 source 可展示
-	for _, src := range s.runtimeSeq() {
-		bk := s.breakerFor(&src)
-		if !bk.Allow() {
-			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
-			continue
-		}
-		req, mcp, err := build(src)
-		if err != nil {
-			slog.Warn("构建上游请求失败", "source", src.Name, "error", err)
-			return "", false, err
-		}
-		*attemptNo++
-		locked, err := s.trySource(ctx, &src, bk, req, mcp, onEvent, onUpstream, *attemptNo)
-		if locked {
-			return src.Name, true, err // propagate mid-stream error if any
-		}
-		if err != nil {
-			lastErr = err
-			lastSource = src.Name
-			slog.Warn("上游源请求失败", "source", src.Name, "model", string(req.Model), "error", err)
-		}
-	}
-	return lastSource, false, lastErr
-}
-
-func (s *Scheduler) trySource(ctx context.Context, src *config.Source, bk *breaker.Breaker,
-	req *anthropic.MessageNewParams, mcp *anthropicclient.MCPInjection, onEvent func(*anthropic.MessageStreamEventUnion) error,
-	onUpstream OnUpstream, attemptNo int) (bool, error) {
-
-	clientModel := string(req.Model) // 客户端请求的模型（可能为别名）
-	timeout := time.Duration(s.holder.Current().BreakerFor(src).FirstByteTimeout)
-	fbCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	timer := time.AfterFunc(timeout, cancel)
-	defer timer.Stop()
-
-	// Resolve the model per the selected source's ModelMap before sending upstream.
-	resolvedReq := *req
-	resolvedReq.Model = anthropic.Model(ResolveModel(src, string(req.Model)))
-	sourceStart := time.Now()
-	slog.Info("尝试上游源",
-		"source", src.Name,
-		"endpoint", src.BaseURL,
-		"model", string(req.Model),
-		"resolved_model", string(resolvedReq.Model))
-	body, err := s.client.Stream(fbCtx, src.BaseURL, src.APIKey, &resolvedReq, mcp)
-	if err != nil {
-		slog.Warn("上游源建连失败",
-			"source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", err)
-		if ctx.Err() == nil {
-			oldState := bk.State()
-			newState := bk.RecordFailure()
-			s.adjustOrder(src.Name, oldState, newState)
-			slog.Warn("记录上游源失败", "source", src.Name, "old_state", oldState, "new_state", newState, "error", err)
-		}
-		if onUpstream != nil {
-			onUpstream(UpstreamEvent{
-				SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
-				StartedAt: sourceStart, Duration: time.Since(sourceStart),
-				Status: "failed", Code: statusCodeFromErr(err), Error: errSummary(err), Attempt: attemptNo,
-			})
-		}
-		return false, err
-	}
-	defer body.Close()
-
-	locked := false
-	var ttfb time.Duration // 首字节耗时；未锁定则为 0
-	// 累计当前上游流的 usage，供 onUpstream 汇报。
-	// - message_start 事件：Message.Usage 携带 input / cache_read / cache_creation 初值。
-	// - message_delta 事件：Usage 携带累计 output_tokens（Anthropic 规范：cumulative）
-	//   以及后续可能刷新的 cache_* 字段。
-	// 二者按"取最后一次非零值"合并即可，避免把 delta 的累计值加到 start 上导致翻倍。
-	var usage anthropic.MessageDeltaUsage
-	sawMessageStop := false
-	scanErr := anthropicclient.ScanEvents(body, func(ev *anthropic.MessageStreamEventUnion) error {
-		if !locked {
-			locked = true
-			timer.Stop()
-			ttfb = time.Since(sourceStart)
-			slog.Info("上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
-			oldState := bk.State()
-			newState := bk.RecordSuccess()
-			s.adjustOrder(src.Name, oldState, newState)
-			slog.Info("上游源流已锁定", "source", src.Name, "old_state", oldState, "new_state", newState)
-		}
-		if ev != nil && ev.Type == anMessageStop {
-			sawMessageStop = true
-		}
-		mergeUsage(&usage, ev)
-		if err := onEvent(ev); err != nil {
-			return err
-		}
-		return nil
-	})
-	if !locked {
-		if ctx.Err() == nil {
-			oldState := bk.State()
-			newState := bk.RecordFailure()
-			s.adjustOrder(src.Name, oldState, newState)
-			slog.Warn("上游源未返回事件", "source", src.Name, "old_state", oldState, "new_state", newState, "error", scanErr)
-		}
-		noEventErr := scanErr
-		if noEventErr == nil {
-			noEventErr = errors.New("upstream returned no events")
-		}
-		if onUpstream != nil {
-			onUpstream(UpstreamEvent{
-				SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
-				StartedAt: sourceStart, Duration: time.Since(sourceStart), TTFB: ttfb,
-				Status: "failed", Code: statusCodeFromErr(noEventErr), Error: errSummary(noEventErr), Attempt: attemptNo,
-			})
-		}
-		return false, noEventErr
-	}
-	if scanErr != nil {
-		if isClientCanceled(ctx, scanErr) {
-			// 终态后客户端断开：正常路径，静默。
-			// 流中途断开：INFO 便于排查主动取消，不按上游故障记 WARN。
-			if !sawMessageStop {
-				slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
-			}
-		} else {
-			slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(sourceStart).String(), "error", scanErr)
-		}
-	}
-	if onUpstream != nil {
-		status := "completed"
-		code := 200 // 流已建立，HTTP 层成功
-		if scanErr != nil {
-			if isClientCanceled(ctx, scanErr) {
-				if sawMessageStop {
-					// 终态事件已到，读尾取消不影响业务完成。
-					status = "completed"
-				} else {
-					// 未终态的客户端断开：不计入 failed，避免污染源失败率。
-					status = "canceled"
-				}
-			} else {
-				status = "failed"
-				if sc := statusCodeFromErr(scanErr); sc != 0 {
-					code = sc
-				}
-			}
-		}
-		errText := errSummary(scanErr)
-		if status == "completed" {
-			// completed 不挂读尾取消噪声，避免观测台 tip 误报失败原因。
-			errText = ""
-		}
-		onUpstream(UpstreamEvent{
-			SourceName: src.Name, Model: clientModel, ResolvedModel: string(resolvedReq.Model),
-			StartedAt: sourceStart, Duration: time.Since(sourceStart), TTFB: ttfb,
-			Status: status, Code: code, Error: errText, Attempt: attemptNo,
-			InputTokens:  int(usage.InputTokens),
-			OutputTokens: int(usage.OutputTokens),
-			CacheRead:    int(usage.CacheReadInputTokens),
-			CacheCreate:  int(usage.CacheCreationInputTokens),
-		})
-	}
-	return true, scanErr
-}
-
 // adjustOrder modifies the runtime order based on state transitions.
 // Only move/restore when the state actually changes:
 //   - degraded/circuitOpen (from a less-degraded state) -> moveToEnd
@@ -707,49 +473,4 @@ func statusCodeFromErr(err error) int {
 		return n
 	}
 	return 0
-}
-
-// mergeUsage 合并单个 Anthropic SSE 事件携带的 usage 信息到累计视图。
-//
-// Anthropic 流式协议中 usage 的来源有两处：
-//   - message_start：Message.Usage 携带 input_tokens 与 cache_* 初值；
-//     此时 output_tokens 通常为 0 或很小。
-//   - message_delta：Usage 携带**累计**（cumulative）值，含最终 output_tokens。
-//
-// 采用"取最后一次非零值"策略：既能拿到 message_start 的 input/cache_*，
-// 又不会与 message_delta 的累计输出重复相加，避免 token 翻倍。
-func mergeUsage(acc *anthropic.MessageDeltaUsage, ev *anthropic.MessageStreamEventUnion) {
-	if acc == nil || ev == nil {
-		return
-	}
-	switch ev.Type {
-	case anMessageStart:
-		u := ev.Message.Usage
-		if u.InputTokens > 0 {
-			acc.InputTokens = u.InputTokens
-		}
-		if u.OutputTokens > 0 {
-			acc.OutputTokens = u.OutputTokens
-		}
-		if u.CacheReadInputTokens > 0 {
-			acc.CacheReadInputTokens = u.CacheReadInputTokens
-		}
-		if u.CacheCreationInputTokens > 0 {
-			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
-		}
-	case anMessageDelta:
-		u := ev.Usage
-		if u.InputTokens > 0 {
-			acc.InputTokens = u.InputTokens
-		}
-		if u.OutputTokens > 0 {
-			acc.OutputTokens = u.OutputTokens
-		}
-		if u.CacheReadInputTokens > 0 {
-			acc.CacheReadInputTokens = u.CacheReadInputTokens
-		}
-		if u.CacheCreationInputTokens > 0 {
-			acc.CacheCreationInputTokens = u.CacheCreationInputTokens
-		}
-	}
 }
