@@ -841,14 +841,7 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('srcURL')"></span>
                     <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
                   </label>
-                  <label class="ui-field">
-                    <span class="ui-label" x-text="t('backendType')"></span>
-                    <select class="ui-input ui-input-sm" x-model="src.backend_type" x-init="if(!src.backend_type) src.backend_type='a'">
-                      <option value="a" x-text="t('backendAnthropic')"></option>
-                      <option value="c" x-text="t('backendChat')"></option>
-                    </select>
-                  </label>
-                  <div class="ui-field ui-span-2">
+                  <div class="ui-field">
                     <div style="display:flex; align-items:center; gap:8px">
                       <span class="ui-label" x-text="t('apiKey')"></span>
                       <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
@@ -856,10 +849,26 @@ html[data-theme="dark"] .ui-select {
                               :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
                               x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
                     </div>
-
                     <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
                            x-model="src.api_key" autocomplete="off" spellcheck="false">
                   </div>
+                  <label class="ui-field">
+                    <span class="ui-label" x-text="t('backendType')"></span>
+                    <div class="ui-sel"
+                         x-data="uiSel()"
+                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')}]"
+                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')}]"
+                         @sel-change="src.backend_type = $event.detail">
+                      <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
+                        <span x-text="label"></span>
+                      </button>
+                      <div class="ui-sel-list" :class="open && 'is-open'">
+                        <template x-for="(o,i) in opts" :key="o.v">
+                          <div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div>
+                        </template>
+                      </div>
+                    </div>
+                  </label>
                   <label class="ui-field ui-span-2">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
@@ -1171,7 +1180,7 @@ html[data-theme="dark"] .ui-select {
             <template x-if="f.type === 'select'">
               <span class="ui-field">
                 <span class="ui-label" x-text="f.label"></span>
-                <select class="ui-input ui-input-sm" x-model="f.value">
+                <select class="ui-select ui-select-sm" x-model="f.value">
                   <template x-for="opt in (f.options || [])" :key="opt.v">
                     <option :value="opt.v" x-text="opt.l"></option>
                   </template>
