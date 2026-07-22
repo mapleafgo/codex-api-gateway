@@ -195,7 +195,39 @@ func toInputSchema(schema map[string]any) anthropic.ToolInputSchemaParam {
 			}
 		}
 	}
+	// 解析 $defs 引用，使 schema 自包含。部分 Anthropic 兼容后端（如 Grok）的
+	// schema validator 不支持 $ref / $defs 引用解析，直接返回 400。
+	if defs, ok := schema["$defs"].(map[string]any); ok {
+		props = resolveRefs(props, defs).(map[string]any)
+	}
 	return anthropic.ToolInputSchemaParam{Properties: props, Required: required}
+}
+
+// resolveRefs 递归遍历任意 JSON 结构，将 {"$ref": "#/$defs/<name>"} 替换为
+// $defs 中对应的定义，并使替换后的结果也继续展开，支持嵌套引用。
+func resolveRefs(v any, defs map[string]any) any {
+	switch m := v.(type) {
+	case map[string]any:
+		if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#/$defs/") {
+			name := ref[len("#/$defs/"):]
+			if def, ok := defs[name]; ok && def != nil {
+				return resolveRefs(def, defs)
+			}
+		}
+		out := make(map[string]any, len(m))
+		for k, child := range m {
+			out[k] = resolveRefs(child, defs)
+		}
+		return out
+	case []any:
+		out := make([]any, len(m))
+		for i, child := range m {
+			out[i] = resolveRefs(child, defs)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // SplitToolName splits a namespaced tool name into namespace and base name.
