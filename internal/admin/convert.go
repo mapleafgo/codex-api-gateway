@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"strings"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -37,13 +38,21 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 	}
 	if len(in.Models) > 0 {
 		cfg.ModelOverrides = map[string]config.ModelOverride{}
-		for slug, mv := range in.Models {
-			ov := config.ModelOverride{
+		order := make([]string, 0, len(in.Models))
+		seen := map[string]bool{}
+		for _, mv := range in.Models {
+			slug := strings.TrimSpace(mv.Slug)
+			if slug == "" || seen[slug] {
+				continue
+			}
+			seen[slug] = true
+			order = append(order, slug)
+			cfg.ModelOverrides[slug] = config.ModelOverride{
 				ContextWindow:               mv.ContextWindow,
 				SupportsImageDetailOriginal: mv.SupportsImage,
 			}
-			cfg.ModelOverrides[slug] = ov
 		}
+		cfg.ModelSlugOrder = order
 	}
 	return cfg
 }

@@ -194,7 +194,6 @@ func (h *handler) snapshotJSON() []byte {
 	return b
 }
 
-// writeSSEEvent 写一个 SSE 事件块。
 func writeSSEEvent(w io.Writer, event string, data []byte) {
 	// data 内不含换行即可；snapshot JSON 是单行。
 	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
@@ -301,13 +300,13 @@ func (h *handler) handleModels(w http.ResponseWriter, r *http.Request) {
 // adminConfigView 是 GET /admin/api/config 返回的视图。
 // 仅暴露管理页需要编辑的字段，api_key 明文展示（按用户要求）。
 type adminConfigView struct {
-	Server               serverView           `json:"server"`
-	Logging              loggingView          `json:"logging"`
-	Breaker              breakerView          `json:"breaker"`
-	Cache                cacheView            `json:"cache"`
-	BaseInstructionsFile string               `json:"base_instructions_file"`
-	Sources              []sourceView         `json:"sources"`
-	Models               map[string]modelView `json:"models"`
+	Server               serverView      `json:"server"`
+	Logging              loggingView     `json:"logging"`
+	Breaker              breakerView     `json:"breaker"`
+	Cache                cacheView       `json:"cache"`
+	BaseInstructionsFile string          `json:"base_instructions_file"`
+	Sources              []sourceView    `json:"sources"`
+	Models               []modelViewItem `json:"models"`
 }
 
 type serverView struct {
@@ -339,7 +338,10 @@ type sourceView struct {
 	DefaultModel string            `json:"default_model"`
 	Breaker      *breakerView      `json:"breaker,omitempty"`
 }
-type modelView struct {
+
+// modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
+type modelViewItem struct {
+	Slug          string `json:"slug"`
 	ContextWindow *int64 `json:"context_window,omitempty"`
 	SupportsImage *bool  `json:"supports_image,omitempty"`
 }
@@ -347,13 +349,13 @@ type modelView struct {
 // adminConfigInput 是 POST /admin/api/config 接收的视图，与 adminConfigView 同构。
 // 全量覆盖式更新：前端必须把完整配置 POST 回来（简化语义，避免增量合并）。
 type adminConfigInput struct {
-	Server               serverView           `json:"server"`
-	Logging              loggingView          `json:"logging"`
-	Breaker              breakerView          `json:"breaker"`
-	Cache                cacheView            `json:"cache"`
-	BaseInstructionsFile string               `json:"base_instructions_file"`
-	Sources              []sourceView         `json:"sources"`
-	Models               map[string]modelView `json:"models"`
+	Server               serverView      `json:"server"`
+	Logging              loggingView     `json:"logging"`
+	Breaker              breakerView     `json:"breaker"`
+	Cache                cacheView       `json:"cache"`
+	BaseInstructionsFile string          `json:"base_instructions_file"`
+	Sources              []sourceView    `json:"sources"`
+	Models               []modelViewItem `json:"models"`
 }
 
 func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -384,7 +386,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Cache:                cacheView{TTL: cfg.Cache.TTL},
 		BaseInstructionsFile: cfg.BaseInstructionsFile,
 		Sources:              make([]sourceView, 0, len(cfg.Sources)),
-		Models:               map[string]modelView{},
+		Models:               make([]modelViewItem, 0, len(cfg.ModelOverrides)),
 	}
 	for _, src := range cfg.Sources {
 		bt, _ := config.NormalizeBackendType(src.BackendType)
@@ -405,11 +407,13 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		}
 		view.Sources = append(view.Sources, sv)
 	}
-	for slug, ov := range cfg.ModelOverrides {
-		view.Models[slug] = modelView{
-			ContextWindow: ov.ContextWindow,
-			SupportsImage: ov.SupportsImageDetailOriginal,
-		}
+	for _, slug := range cfg.ConfiguredModelSlugs() {
+		override := cfg.ModelOverrides[slug]
+		view.Models = append(view.Models, modelViewItem{
+			Slug:          slug,
+			ContextWindow: override.ContextWindow,
+			SupportsImage: override.SupportsImageDetailOriginal,
+		})
 	}
 	writeJSON(w, http.StatusOK, view)
 }

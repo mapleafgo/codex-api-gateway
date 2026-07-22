@@ -43,6 +43,11 @@ type Config struct {
 	// 等能力字段，故用此处补充。
 	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models,omitempty"`
 
+	// ModelSlugOrder 保留 YAML/管理页中 models 的声明顺序，供 /v1/models
+	// 分配 Priority（越靠前越高）与末项 additional_speed_tiers=fast。
+	// 不参与 YAML 字段本身；Load 从文档顺序提取，写回时按此顺序序列化。
+	ModelSlugOrder []string `koanf:"-" yaml:"-"`
+
 	// BaseInstructions 是 BaseInstructionsFile 加载后的内容，不参与 YAML 序列化。
 	// 由 Load 一次性读入；为空则 /v1/models 返回空 base_instructions。
 	BaseInstructions string `koanf:"-" yaml:"-"`
@@ -127,11 +132,55 @@ type ModelOverride struct {
 	SupportsImageDetailOriginal *bool `koanf:"supports_image" yaml:"supports_image"`
 }
 
-// MarshalYAML 序列化为 YAML。BaseInstructions 是运行时字段（koanf:"-"），
-// 不参与序列化，写回时只保留 BaseInstructionsFile。
+// MarshalYAML 序列化为 YAML。BaseInstructions / ModelSlugOrder 是运行时字段，
+// 不参与序列化；models 按 ModelSlugOrder（或 ConfiguredModelSlugs）有序输出。
 func (c Config) MarshalYAML() (any, error) {
-	type plain Config // alias 防止递归
-	return plain(c), nil
+	type out struct {
+		Server               ServerCfg    `yaml:"server"`
+		Logging              LoggingCfg   `yaml:"logging,omitempty"`
+		Breaker              BreakerCfg   `yaml:"breaker,omitempty"`
+		Cache                CacheCfg     `yaml:"cache,omitempty"`
+		BaseInstructionsFile string       `yaml:"base_instructions_file,omitempty"`
+		Sources              []Source     `yaml:"sources,omitempty"`
+		Models               *yamlv3.Node `yaml:"models,omitempty"`
+	}
+	o := out{
+		Server:               c.Server,
+		Logging:              c.Logging,
+		Breaker:              c.Breaker,
+		Cache:                c.Cache,
+		BaseInstructionsFile: c.BaseInstructionsFile,
+		Sources:              c.Sources,
+	}
+	if n := orderedModelsYAMLNode(c); n != nil {
+		o.Models = n
+	}
+	return o, nil
+}
+
+// orderedModelsYAMLNode 按 ConfiguredModelSlugs 顺序输出 models mapping。
+func orderedModelsYAMLNode(c Config) *yamlv3.Node {
+	slugs := c.ConfiguredModelSlugs()
+	if len(slugs) == 0 {
+		return nil
+	}
+	n := &yamlv3.Node{Kind: yamlv3.MappingNode, Tag: "!!map"}
+	for _, slug := range slugs {
+		override, ok := c.ModelOverrides[slug]
+		if !ok {
+			continue
+		}
+		var key, val yamlv3.Node
+		key.SetString(slug)
+		if err := val.Encode(override); err != nil {
+			continue
+		}
+		n.Content = append(n.Content, &key, &val)
+	}
+	if len(n.Content) == 0 {
+		return nil
+	}
+	return n
 }
 
 // Duration wraps time.Duration for YAML parsing.
@@ -185,6 +234,7 @@ func Load(path string) (*Config, error) {
 	if err := k.Unmarshal("", &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.ModelSlugOrder = modelSlugOrderFromYAML(data)
 	envCfg := koanf.New(".")
 	if err := envCfg.Load(env.ProviderWithValue(envPrefix, ".", transformEnv), nil); err != nil {
 		return nil, fmt.Errorf("load env config: %w", err)
@@ -534,15 +584,61 @@ func scanDeprecated(m map[string]any) {
 	}
 }
 
-// ConfiguredModelSlugs 返回 config.yaml 中 models.<slug> 显式配置的模型 slug，
-// 按字母序排序。/v1/models 接口只返回这些模型，不再合并上游 model_map 或上游列表。
+// ConfiguredModelSlugs 返回 config.yaml 中 models.<slug> 显式配置的模型 slug。
+// 优先保留 YAML/管理页声明顺序（ModelSlugOrder）；顺序外的 slug 按字母序追加。
+// /v1/models 只返回这些模型，并按此顺序分配 Priority 与末项 fast 标记。
 func (c *Config) ConfiguredModelSlugs() []string {
-	names := make([]string, 0, len(c.ModelOverrides))
-	for name := range c.ModelOverrides {
-		names = append(names, name)
+	if c == nil || len(c.ModelOverrides) == 0 {
+		return nil
 	}
-	sort.Strings(names)
-	return names
+	seen := make(map[string]bool, len(c.ModelOverrides))
+	out := make([]string, 0, len(c.ModelOverrides))
+	for _, name := range c.ModelSlugOrder {
+		if _, ok := c.ModelOverrides[name]; !ok || seen[name] {
+			continue
+		}
+		out = append(out, name)
+		seen[name] = true
+	}
+	extras := make([]string, 0)
+	for name := range c.ModelOverrides {
+		if !seen[name] {
+			extras = append(extras, name)
+		}
+	}
+	sort.Strings(extras)
+	return append(out, extras...)
+}
+
+// modelSlugOrderFromYAML 从原始 YAML 文档中提取 models mapping 的 key 顺序。
+func modelSlugOrderFromYAML(data []byte) []string {
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	root := &doc
+	if doc.Kind == yamlv3.DocumentNode && len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+	if root.Kind != yamlv3.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i]
+		val := root.Content[i+1]
+		if key.Value != "models" || val.Kind != yamlv3.MappingNode {
+			continue
+		}
+		out := make([]string, 0, len(val.Content)/2)
+		for j := 0; j+1 < len(val.Content); j += 2 {
+			slug := val.Content[j].Value
+			if slug != "" {
+				out = append(out, slug)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // defaultConfigYAML 是自动生成的最小配置文件内容。零上游源，仅含必要默认值

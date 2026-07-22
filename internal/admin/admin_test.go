@@ -122,7 +122,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	view.Sources = append(view.Sources, sourceView{
 		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", DefaultModel: "m2",
 	})
-	view.Models = map[string]modelView{"glm-latest": {ContextWindow: ptrInt64(100000)}}
+	view.Models = []modelViewItem{{Slug: "glm-latest", ContextWindow: ptrInt64(100000)}}
 	body, _ := json.Marshal(view)
 	resp2, err := http.Post(srv.URL+"/admin/api/config", "application/json", bytes.NewReader(body))
 	if err != nil {

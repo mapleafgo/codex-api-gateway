@@ -399,6 +399,7 @@ func TestConfiguredModelSlugsSorted(t *testing.T) {
 			"gpt-5":   {ContextWindow: &ctxWindow},
 			"o3":      {ContextWindow: &ctxWindow},
 		},
+		// 无 ModelSlugOrder 时回退字母序
 	}
 	models := c.ConfiguredModelSlugs()
 	want := []string{"gpt-5", "gpt-5.5", "o3"}
@@ -408,6 +409,56 @@ func TestConfiguredModelSlugsSorted(t *testing.T) {
 	for i, m := range models {
 		if m != want[i] {
 			t.Fatalf("models[%d] = %q, want %q (full: %v)", i, m, want[i], models)
+		}
+	}
+}
+
+func TestConfiguredModelSlugsPreservesOrder(t *testing.T) {
+	ctxWindow := int64(200000)
+	c := &Config{
+		ModelOverrides: map[string]ModelOverride{
+			"gpt-5.5": {ContextWindow: &ctxWindow},
+			"gpt-5":   {ContextWindow: &ctxWindow},
+			"o3":      {ContextWindow: &ctxWindow},
+		},
+		ModelSlugOrder: []string{"o3", "gpt-5.5", "gpt-5"},
+	}
+	models := c.ConfiguredModelSlugs()
+	want := []string{"o3", "gpt-5.5", "gpt-5"}
+	for i, m := range models {
+		if m != want[i] {
+			t.Fatalf("models[%d] = %q, want %q (full: %v)", i, m, want[i], models)
+		}
+	}
+}
+
+func TestLoadModelSlugOrderFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+server:
+  listen: ":1"
+sources:
+  - name: s1
+    base_url: https://example.com
+models:
+  z-last:
+    context_window: 1
+  a-first:
+    context_window: 2
+`), 0o600)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.ConfiguredModelSlugs()
+	want := []string{"z-last", "a-first"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v want %v", got, want)
 		}
 	}
 }

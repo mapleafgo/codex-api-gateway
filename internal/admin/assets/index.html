@@ -1018,20 +1018,25 @@ html[data-theme="dark"] .ui-select {
           </button>
         </div>
         <div class="ui-stack">
-          <template x-for="(m, slug) in cfg.models" :key="slug">
+          <template x-for="(m, idx) in (cfg.models || [])" :key="(m.slug || '') + '#' + idx">
             <div class="ui-card">
               <div class="ui-card-body ui-stack">
                 <div class="ui-row">
                   <div style="display:flex; align-items:center; gap:8px; min-width:0">
-                    <span class="ui-badge ui-badge-soft-neutral">model</span>
-                    <strong class="mono truncate" x-text="m._slug || slug"></strong>
+                    <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
+                    <strong class="mono truncate" x-text="m.slug"></strong>
+                    <span class="ui-badge ui-badge-soft-neutral" x-show="idx === (cfg.models.length - 1)" x-text="t('modelFastBadge')"></span>
                   </div>
-                  <button class="ui-text-action is-danger" type="button" @click="removeModel(slug)" x-text="t('delete')"></button>
+                  <div class="ui-src-actions" role="group" :aria-label="t('actions')">
+                    <button class="ui-text-action" type="button" @click="moveModel(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
+                    <button class="ui-text-action" type="button" @click="moveModel(idx, 1)" :disabled="idx===cfg.models.length-1">↓ <span x-text="t('down')"></span></button>
+                    <button class="ui-text-action is-danger" type="button" @click="removeModel(idx)" x-text="t('delete')"></button>
+                  </div>
                 </div>
                 <div class="ui-grid-2">
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('slug')"></span>
-                    <input class="ui-input ui-input-sm mono" x-model="m._slug" @change="renameModel(slug, m._slug)" autocomplete="off" spellcheck="false">
+                    <input class="ui-input ui-input-sm mono" x-model="m.slug" autocomplete="off" spellcheck="false">
                   </label>
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('contextWindow')"></span>
@@ -1045,7 +1050,7 @@ html[data-theme="dark"] .ui-select {
               </div>
             </div>
           </template>
-          <div class="ui-card" x-show="Object.keys(cfg.models || {}).length === 0">
+          <div class="ui-card" x-show="!(cfg.models || []).length">
             <div class="ui-card-body ui-stack">
               <span class="t-soft" x-text="t('noData')"></span>
               <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" style="align-self:flex-start" @click="addModel()" x-text="t('addModel')"></button>
@@ -1299,7 +1304,7 @@ function app() {
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
       alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
       up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
-      addModel: '新增模型', modelHint: '只列出 /v1/models 暴露的 slug',
+      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）；最后一个模型会标 fast，供 Codex 后台轻量任务选用。可上下移动调整费用/选型。', modelFastBadge: 'fast · 轻量任务',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', actions: '操作',
       globalParams: '全局参数', breaker: '断路器',
       listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
@@ -1342,7 +1347,7 @@ function app() {
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
       alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
       up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
-      addModel: 'Add model', modelHint: 'Only slugs exposed via /v1/models',
+      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Last model is marked fast for Codex background/lightweight tasks. Reorder to steer cost/selection.', modelFastBadge: 'fast · lightweight',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', actions: 'Actions',
       globalParams: 'Global Parameters', breaker: 'Breaker',
       listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',
@@ -1396,7 +1401,7 @@ function app() {
     snap: { by_group: [], recent: [] },
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
-    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:{}, base_instructions_file:'' },
+    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:[], base_instructions_file:'' },
     cfgSnapshot: '',
     saving: false,
     guidance: { path: '', content: '', exists: false },
@@ -1598,7 +1603,7 @@ function app() {
       return Array.from(set).sort((a, b) => a - b);
     },
     get modelOptions() {
-      return Object.keys(this.cfg.models || {}).sort();
+      return (this.cfg.models || []).map(m => m.slug).filter(Boolean);
     },
     get sourceOptions() {
       return (this.cfg.sources || []).map(s => s.name).filter(Boolean).sort();
@@ -1635,7 +1640,7 @@ function app() {
         const r = await fetch('/admin/api/config');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
-        Object.keys(data.models || {}).forEach(slug => { data.models[slug]._slug = slug; });
+        if (!Array.isArray(data.models)) data.models = [];
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
         });
@@ -1649,11 +1654,12 @@ function app() {
       this.saving = true;
       try {
         const payload = JSON.parse(JSON.stringify(this.cfg));
-        Object.keys(payload.models || {}).forEach(slug => {
-          delete payload.models[slug]._slug;
-          if (payload.models[slug].supports_image == null) delete payload.models[slug].supports_image;
-          if (payload.models[slug].context_window == null || payload.models[slug].context_window === '') delete payload.models[slug].context_window;
-        });
+        payload.models = (payload.models || []).map(m => {
+          const item = { slug: (m.slug || '').trim() };
+          if (m.supports_image != null) item.supports_image = !!m.supports_image;
+          if (m.context_window != null && m.context_window !== '') item.context_window = Number(m.context_window) || 0;
+          return item;
+        }).filter(m => m.slug);
         (payload.sources || []).forEach(s => {
           if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
         });
@@ -1738,29 +1744,6 @@ function app() {
         });
       });
     },
-    removeSource(idx) {
-      this.openConfirm({
-        title: this.t('delete'),
-        msg: this.locale === 'zh' ? '确认删除该供应商？此操作在保存前可放弃。' : 'Delete this source? You can discard before saving.',
-        danger: true,
-        confirmText: this.t('delete'),
-      }).then((ok) => { if (ok) this.cfg.sources.splice(idx, 1); });
-    },
-    moveSource(idx, delta) {
-      const j = idx + delta;
-      if (j < 0 || j >= this.cfg.sources.length) return;
-      const arr = this.cfg.sources;
-      [arr[idx], arr[j]] = [arr[j], arr[idx]];
-    },
-    toggleKeyVisibility(idx) {
-      this.visibleKeys[idx] = !this.visibleKeys[idx];
-      this.visibleKeys = Object.assign({}, this.visibleKeys);
-    },
-
-    modelMapPairs(src) {
-      const m = src.model_map || {};
-      return Object.keys(m).map(k => ({ key: k, val: m[k] }));
-    },
     addModelMapPair(src) {
       src.model_map = src.model_map || {};
       src.model_map[''] = '';
@@ -1798,30 +1781,30 @@ function app() {
       }).then((v) => {
         if (!v || !v.slug) return;
         const slug = v.slug.trim();
-        this.cfg.models = this.cfg.models || {};
-        if (this.cfg.models[slug]) { this.notify(slug + ' exists', 'error'); return; }
-        this.cfg.models[slug] = {
-          _slug: slug,
+        this.cfg.models = this.cfg.models || [];
+        if (this.cfg.models.some(m => (m.slug || '') === slug)) { this.notify(slug + ' exists', 'error'); return; }
+        this.cfg.models.push({
+          slug,
           context_window: Number(v.context_window) || 0,
           supports_image: !!v.supports_image,
-        };
+        });
       });
     },
-    renameModel(oldSlug, newSlug) {
-      newSlug = (newSlug || '').trim();
-      if (newSlug === oldSlug || !newSlug) return;
-      if (this.cfg.models[newSlug]) { this.notify(newSlug + ' exists', 'error'); return; }
-      const v = this.cfg.models[oldSlug];
-      delete this.cfg.models[oldSlug];
-      this.cfg.models[newSlug] = Object.assign({}, v, { _slug: newSlug });
+    moveModel(idx, delta) {
+      const j = idx + delta;
+      if (!this.cfg.models || j < 0 || j >= this.cfg.models.length) return;
+      const arr = this.cfg.models;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
     },
-    removeModel(slug) {
+    removeModel(idx) {
+      const m = (this.cfg.models || [])[idx];
+      const slug = m && m.slug ? m.slug : String(idx + 1);
       this.openConfirm({
         title: this.t('delete'),
         msg: this.locale === 'zh' ? '删除模型 ' + slug + ' ？此操作在保存前可放弃。' : 'Delete model ' + slug + '? You can discard before saving.',
         danger: true,
         confirmText: this.t('delete'),
-      }).then((ok) => { if (ok) { delete this.cfg.models[slug]; } });
+      }).then((ok) => { if (ok) { this.cfg.models.splice(idx, 1); } });
     },
 
     notify(msg, type) {
