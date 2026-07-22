@@ -2351,3 +2351,88 @@ func TestMetadataAbsentLeavesEmpty(t *testing.T) {
 		t.Fatalf("unexpected metadata.user_id: %q", out.Metadata.UserID.Value)
 	}
 }
+
+func TestToolUseInputJSON(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		ok   bool
+		want string
+	}{
+		{"empty object", `{}`, true, `{}`},
+		{"clean object", `{"cmd":"ls"}`, true, `{"cmd":"ls"}`},
+		{"seed xml tail", "{\"cmd\":\"ls\"}\n</function></seed:tool_call>", true, `{"cmd":"ls"}`},
+		{"only garbage", `</function>`, false, ""},
+		{"array", `[1,2]`, false, ""},
+		{"empty", ``, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := toolUseInputJSON(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v", ok, tc.ok)
+			}
+			if ok && string(got) != tc.want {
+				t.Fatalf("got %s want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFunctionCallArgumentsSeedTailPassthrough(t *testing.T) {
+	// Codex seed 尾部杂质：应透传 JSON 前缀，而不是整段改成 {}。
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":\"pwd\"}\n</function></seed:tool_call>"}
+		],
+		"stream":true
+	}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) == 0 {
+		t.Fatal("expected tool_use message")
+	}
+	// 找到 tool_use
+	found := false
+	for _, m := range out.Messages {
+		for _, b := range m.Content {
+			if b.OfToolUse != nil && b.OfToolUse.Name == "shell" {
+				found = true
+				// Input is any; marshal to check command
+				raw, _ := json.Marshal(b.OfToolUse.Input)
+				if !strings.Contains(string(raw), "pwd") {
+					t.Fatalf("expected command pwd in input, got %s", raw)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("tool_use not found: %+v", out.Messages)
+	}
+}
+
+func TestFunctionCallArgumentsInvalidSkipped(t *testing.T) {
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"not-json"},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+		],
+		"stream":true
+	}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range out.Messages {
+		for _, b := range m.Content {
+			if b.OfToolUse != nil {
+				t.Fatalf("invalid args should skip tool_use, got %+v", b.OfToolUse)
+			}
+		}
+	}
+}

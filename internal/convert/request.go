@@ -769,15 +769,35 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
-	args := orDefault(fc.Arguments, `{}`)
-	// Go 1.26 起 json.RawMessage.MarshalJSON 会对内容做 json.Valid 检查，
-	// 非法的 arguments 会直接引发 marshal 失败，导致上游请求发不出去。
-	if !json.Valid([]byte(args)) {
-		slog.Warn("function_call arguments 非合法 JSON，回退为 {}",
-			"call_id", fc.CallID, "name", fc.Name, "len", len(args))
+	// 上游是 LLM 兼容 API：arguments 尽量原样 JSON 透传，不做强校验改写。
+	// 用 Decoder 取首个 JSON 值（尾部杂质自动丢掉）；解不出 object 则跳过本条，
+	// 不把整段改成 {} 伪装成功，也不让非法 RawMessage 拖垮整请求 marshal。
+	args := strings.TrimSpace(fc.Arguments)
+	if args == "" {
 		args = `{}`
 	}
-	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), json.RawMessage(args))
+	input, ok := toolUseInputJSON(args)
+	if !ok {
+		slog.Debug("function_call arguments 无法透传为 tool_use input，已跳过",
+			"call_id", fc.CallID, "name", fc.Name, "len", len(fc.Arguments))
+		return nil
+	}
+	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name), input)
+}
+
+// toolUseInputJSON 把 function_call.arguments 字符串解成可透传的 JSON object。
+// 成功返回 object 的 RawMessage（保留原始字节，避免二次序列化改写）；失败 ok=false。
+func toolUseInputJSON(s string) (json.RawMessage, bool) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil || len(raw) == 0 {
+		return nil, false
+	}
+	// tool_use.input 需要 JSON object；array/string/number 等直接丢给上游也多半 400，按忽略处理。
+	if raw[0] != '{' {
+		return nil, false
+	}
+	return raw, true
 }
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
