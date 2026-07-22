@@ -109,8 +109,15 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	cur := s.holder.Current()
 	names := cur.ConfiguredModelSlugs()
 	infos := make([]model.CodexModelInfo, 0, len(names))
-	for _, name := range names {
-		infos = append(infos, s.codexModelInfo(name))
+	for i, name := range names {
+		info := s.codexModelInfo(name)
+		// 按配置顺序分配 Priority，越靠前优先级越高（方便 Codex 按序选主模型）。
+		info.Priority = len(names) - i
+		infos = append(infos, info)
+	}
+	// 最后一个模型标记为 fast，供 Codex 后台轻量任务（标题/摘要/压缩）选择。
+	if len(infos) > 0 {
+		infos[len(infos)-1].AdditionalSpeedTiers = []string{"fast"}
 	}
 
 	resp := model.CodexModelsResponse{Models: infos}
@@ -166,14 +173,14 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	responsesLiteOff := false
 	info := model.CodexModelInfo{
 		// —— 必填字段 ——
-		Slug:                       slug,
-		DisplayName:                strings.ToUpper(slug),
-		Description:                &emptyStr,
-		SupportedReasoningLevels:   defaultReasoningLevels(),
-		ShellType:                  "shell_command",
-		Visibility:                 "list",
-		SupportedInAPI:             true,
-		Priority:                   0,
+		Slug:                     slug,
+		DisplayName:              strings.ToUpper(slug),
+		Description:              &emptyStr,
+		SupportedReasoningLevels: defaultReasoningLevels(),
+		ShellType:                "shell_command",
+		Visibility:               "list",
+		SupportedInAPI:           true,
+		// Priority 由 handleModels 按顺序分配，codexModelInfo 不设固定值.
 		AvailabilityNux:            nil,
 		Upgrade:                    nil,
 		BaseInstructions:           s.holder.Current().BaseInstructions,
