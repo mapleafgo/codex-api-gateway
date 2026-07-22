@@ -200,3 +200,71 @@ func TestYamlMarshalOmitsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestUpstreamModelsUnsaved 验证未落盘试拉：POST body 凭证即可拉 models，不依赖已保存源名。
+func TestUpstreamModelsUnsaved(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" && r.URL.Path != "/models" {
+			// chatclient modelsURL: base+/models
+			if !strings.HasSuffix(r.URL.Path, "/models") {
+				t.Errorf("unexpected path %s", r.URL.Path)
+			}
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("auth = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","display_name":"GPT-4o"}]}`))
+	}))
+	defer upstream.Close()
+
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"base_url":     upstream.URL + "/v1",
+		"api_key":      "secret",
+		"backend_type": "c",
+	})
+	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var out struct {
+		Models []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Models) != 1 || out.Models[0].ID != "gpt-4o" {
+		t.Fatalf("models=%+v", out.Models)
+	}
+}
+
+func TestUpstreamModelsRejectsInvalidBackendType(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body := []byte(`{"base_url":"https://x","backend_type":"openai"}`)
+	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+}

@@ -1778,21 +1778,39 @@ function app() {
       window.dispatchEvent(new CustomEvent('notify', { detail: { msg, type } }));
     },
 
+    // 用表单 base_url/api_key/backend_type 试拉；允许未落盘源。
+    // cache key 含 url+类型，改地址后可重新拉取；同时按 name 索引供下拉 opts 使用。
     async fetchUpstreamModels(src) {
-      if (!src || !src.name) return;
-      const name = src.name;
-      if (this.upstreamModels[name] || this.upstreamLoading[name]) return;
-      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [name]: true });
+      if (!src || !(src.base_url || '').trim()) return;
+      const name = src.name || '';
+      const cacheKey = name + '\0' + (src.base_url || '') + '\0' + (src.backend_type || 'a');
+      if (this.upstreamModels[cacheKey] || this.upstreamLoading[cacheKey]) return;
+      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
       try {
-        const r = await fetch('/admin/api/models?source=' + encodeURIComponent(name));
+        const r = await fetch('/admin/api/upstream-models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: (src.base_url || '').trim(),
+            api_key: src.api_key || '',
+            backend_type: src.backend_type || 'a',
+          }),
+        });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
-        this.upstreamModels = Object.assign({}, this.upstreamModels, { [name]: j.models || [] });
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { [name]: '' });
+        const models = j.models || [];
+        const next = Object.assign({}, this.upstreamModels, { [cacheKey]: models });
+        if (name) next[name] = models;
+        this.upstreamModels = next;
+        const errNext = Object.assign({}, this.upstreamErrors, { [cacheKey]: '' });
+        if (name) errNext[name] = '';
+        this.upstreamErrors = errNext;
       } catch (e) {
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { [name]: e.message });
+        const errNext = Object.assign({}, this.upstreamErrors, { [cacheKey]: e.message });
+        if (name) errNext[name] = e.message;
+        this.upstreamErrors = errNext;
       } finally {
-        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [name]: false });
+        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: false });
       }
     },
 
