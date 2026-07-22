@@ -728,11 +728,14 @@ func TestShellCallInputItemConvertsToShellToolUse(t *testing.T) {
 // （"'str' object has no attribute 'get'"）——S4 修复回程产出 tool_search_call
 // 后，请求侧 appendToolSearchCall 这条回灌路径才被触发，暴露本 bug。
 func TestToolSearchArgumentsInputIsObject(t *testing.T) {
-	// string（含空串）→ json.RawMessage，必须以 '{' 开头（object），不是 '"'
+	// string（含空串）→ json.RawMessage object
 	for _, in := range []any{`{"query":"fetch"}`, ""} {
-		got := toolSearchArgumentsInput(in)
-		raw, ok := got.(json.RawMessage)
+		got, ok := toolSearchArgumentsInput(in)
 		if !ok {
+			t.Fatalf("input %v: want ok", in)
+		}
+		raw, isRaw := got.(json.RawMessage)
+		if !isRaw {
 			t.Fatalf("input %v: want json.RawMessage, got %T", in, got)
 		}
 		s := string(raw)
@@ -740,14 +743,28 @@ func TestToolSearchArgumentsInputIsObject(t *testing.T) {
 			t.Fatalf("input %v: must marshal as JSON object, got %q", in, s)
 		}
 	}
+	// seed 尾部杂质：取首个 object
+	got, ok := toolSearchArgumentsInput(`{"q":"x"}</seed>`)
+	if !ok {
+		t.Fatal("seed tail want ok")
+	}
+	if string(got.(json.RawMessage)) != `{"q":"x"}` {
+		t.Fatalf("seed tail got %s", got)
+	}
+	// 非法 → 不 ok
+	if _, ok := toolSearchArgumentsInput(`not-json`); ok {
+		t.Fatal("invalid should not ok")
+	}
 	// nil → {}
-	if s := string(toolSearchArgumentsInput(nil).(json.RawMessage)); s != "{}" {
-		t.Fatalf("nil want {}, got %s", s)
+	got, ok = toolSearchArgumentsInput(nil)
+	if !ok || string(got.(json.RawMessage)) != "{}" {
+		t.Fatalf("nil want {}, got %v ok=%v", got, ok)
 	}
 	// 已是 object/map → 原样透传
 	m := map[string]any{"a": 1}
-	if toolSearchArgumentsInput(m) == nil {
-		t.Fatal("map input should pass through unchanged")
+	got, ok = toolSearchArgumentsInput(m)
+	if !ok || got == nil {
+		t.Fatal("map input should pass through")
 	}
 }
 

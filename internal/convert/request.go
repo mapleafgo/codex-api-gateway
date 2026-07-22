@@ -990,21 +990,35 @@ func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	if callID == "" {
 		callID = call.ID.Value
 	}
-	return appendToolUse(out, callID, "tool_search", toolSearchArgumentsInput(call.Arguments))
+	input, ok := toolSearchArgumentsInput(call.Arguments)
+	if !ok {
+		slog.Debug("tool_search_call arguments 无法透传为 tool_use input，已跳过",
+			"call_id", callID)
+		return nil
+	}
+	return appendToolUse(out, callID, "tool_search", input)
 }
 
-// toolSearchArgumentsInput 把 tool_search_call 的 arguments 转成 Anthropic
-// tool_use input（必须 JSON object）。Codex 回灌历史时 arguments 通常是 JSON
-// 字符串，若直接当 input，上游会收到字符串而非对象 → "'str' object has no
-// attribute 'get'" 500。string/nil → json.RawMessage（保持 object 形态）。
-func toolSearchArgumentsInput(args any) any {
+// toolSearchArgumentsInput 把 tool_search_call 的 arguments 转成可嵌进 tool_use.input 的 JSON object。
+// 与 function_call 一致：尽量透传首个 object；解不出则 ok=false（由调用方忽略）。
+func toolSearchArgumentsInput(args any) (any, bool) {
 	switch v := args.(type) {
 	case string:
-		return json.RawMessage(orDefault(v, `{}`))
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return json.RawMessage(`{}`), true
+		}
+		return toolUseInputJSON(s)
 	case nil:
-		return json.RawMessage(`{}`)
+		return json.RawMessage(`{}`), true
+	case json.RawMessage:
+		if len(v) == 0 {
+			return json.RawMessage(`{}`), true
+		}
+		return toolUseInputJSON(string(v))
 	default:
-		return v // 已是 object/map，原样透传
+		// 已是 object/map 等可直接 marshal 的值，原样透传
+		return v, true
 	}
 }
 
@@ -1065,14 +1079,16 @@ func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseI
 	if call.ID == "" {
 		return false, nil
 	}
-	var input any = map[string]any{}
-	if call.Arguments != "" {
-		var parsed any
-		if err := json.Unmarshal([]byte(call.Arguments), &parsed); err == nil {
-			input = parsed
-		} else {
-			input = map[string]any{"raw": call.Arguments}
+	var input any = json.RawMessage(`{}`)
+	if s := strings.TrimSpace(call.Arguments); s != "" {
+		raw, ok := toolUseInputJSON(s)
+		if !ok {
+			// 与 function_call 一致：解不出 object 则忽略整条 mcp_call，不包 raw 伪装。
+			slog.Debug("mcp_call arguments 无法透传为 mcp_tool_use input，已跳过",
+				"id", call.ID, "name", call.Name, "len", len(call.Arguments))
+			return false, nil
 		}
+		input = raw
 	}
 	useRaw, err := json.Marshal(map[string]any{
 		"type":        "mcp_tool_use",

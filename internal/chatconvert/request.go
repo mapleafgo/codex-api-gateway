@@ -128,6 +128,12 @@ func convertItem(item *oairesponses.ResponseInputItemUnionParam) (ChatMessage, b
 		return convertEasyMessage(item.OfMessage)
 	case item.OfFunctionCall != nil:
 		fc := item.OfFunctionCall
+		args, ok := chatToolArgumentsJSON(fc.Arguments)
+		if !ok {
+			slog.Debug("chatconvert: function_call arguments 无法透传，已跳过",
+				"call_id", fc.CallID, "name", fc.Name, "len", len(fc.Arguments))
+			return ChatMessage{}, false
+		}
 		return ChatMessage{
 			Role: "assistant",
 			ToolCalls: []ChatToolCall{{
@@ -135,7 +141,7 @@ func convertItem(item *oairesponses.ResponseInputItemUnionParam) (ChatMessage, b
 				Type: "function",
 				Function: ChatToolCallFunc{
 					Name:      fc.Name,
-					Arguments: orDefault(fc.Arguments, "{}"),
+					Arguments: args,
 				},
 			}},
 		}, true
@@ -150,6 +156,14 @@ func convertItem(item *oairesponses.ResponseInputItemUnionParam) (ChatMessage, b
 	case item.OfCustomToolCall != nil:
 		// MVP：custom 当 function
 		c := item.OfCustomToolCall
+		// custom.input 可能是纯文本；Chat 侧 arguments 需是 JSON 字符串。
+		// 已是 object JSON 则透传；否则包一层 {"input":...}；空则 {}。
+		args, ok := chatCustomInputAsArguments(c.Input)
+		if !ok {
+			slog.Debug("chatconvert: custom_tool_call input 无法透传，已跳过",
+				"call_id", c.CallID, "name", c.Name)
+			return ChatMessage{}, false
+		}
 		return ChatMessage{
 			Role: "assistant",
 			ToolCalls: []ChatToolCall{{
@@ -157,7 +171,7 @@ func convertItem(item *oairesponses.ResponseInputItemUnionParam) (ChatMessage, b
 				Type: "function",
 				Function: ChatToolCallFunc{
 					Name:      c.Name + "_custom",
-					Arguments: orDefault(c.Input, "{}"),
+					Arguments: args,
 				},
 			}},
 		}, true
@@ -274,6 +288,38 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// chatToolArgumentsJSON 尽量透传 function_call.arguments 为合法 JSON object 字符串。
+// 用 Decoder 取首个 object（丢尾部杂质）；失败 ok=false。
+func chatToolArgumentsJSON(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "{}", true
+	}
+	dec := json.NewDecoder(strings.NewReader(s))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil || len(raw) == 0 || raw[0] != '{' {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// chatCustomInputAsArguments：custom 工具 input 常为自由文本；已是 JSON object 则透传，
+// 否则包成 {"input":"..."} 以便 Chat tool arguments 仍是 object 字符串。
+func chatCustomInputAsArguments(input string) (string, bool) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "{}", true
+	}
+	if args, ok := chatToolArgumentsJSON(s); ok {
+		return args, true
+	}
+	b, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func itemType(item *oairesponses.ResponseInputItemUnionParam) string {

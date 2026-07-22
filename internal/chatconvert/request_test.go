@@ -2,6 +2,7 @@ package chatconvert
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
@@ -105,5 +106,31 @@ func TestToChat_MarshalStreamTrue(t *testing.T) {
 	}
 	if raw["stream"] != true {
 		t.Fatalf("stream field=%v", raw["stream"])
+	}
+}
+
+func TestChatToolArgumentsJSON(t *testing.T) {
+	got, ok := chatToolArgumentsJSON(`{"a":1}
+</x>`)
+	if !ok || got != `{"a":1}` {
+		t.Fatalf("got %q ok=%v", got, ok)
+	}
+	if _, ok := chatToolArgumentsJSON(`not`); ok {
+		t.Fatal("want fail")
+	}
+	got, ok = chatToolArgumentsJSON("")
+	if !ok || got != "{}" {
+		t.Fatalf("empty %q", got)
+	}
+}
+
+func TestChatCustomInputAsArguments(t *testing.T) {
+	got, ok := chatCustomInputAsArguments(`{"x":1}`)
+	if !ok || got != `{"x":1}` {
+		t.Fatalf("object %q", got)
+	}
+	got, ok = chatCustomInputAsArguments(`hello`)
+	if !ok || !strings.Contains(got, "hello") {
+		t.Fatalf("wrap %q", got)
 	}
 }
