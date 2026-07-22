@@ -42,9 +42,8 @@
   --font: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --mono: "IBM Plex Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --topbar-h: 64px;
-  /* 表单控件统一高度：input / select / ui-sel / autocomplete 对齐 */
+  /* 表单控件统一高度（input / select / ui-sel / autocomplete 完全一致） */
   --control-h: 34px;
-  --control-h-sm: 32px;
 }
 
 html[data-theme="dark"] {
@@ -246,11 +245,8 @@ html[data-theme="dark"] .gw-tooltip {
 /* ---------- Autocomplete ---------- */
 .ui-ac { position: relative; width: 100%; }
 .ui-ac input {
-  width: 100%; height: var(--control-h-sm); min-height: var(--control-h-sm);
-  border: 1px solid var(--line); background: var(--surface);
-  border-radius: var(--r-sm); padding: 0 9px; font-size: 12.5px;
-  line-height: calc(var(--control-h-sm) - 2px);
-  transition: border-color .15s ease, box-shadow .15s ease;
+  /* 走 .ui-input 统一高度；此处仅补布局兜底 */
+  width: 100%;
 }
 .ui-ac input:focus {
   outline: none; border-color: var(--focus);
@@ -277,15 +273,24 @@ html[data-theme="dark"] .ui-ac-list {
 }
 
 /* ---------- Custom Select ---------- */
-.ui-sel { position: relative; width: 100%; }
+.ui-sel { position: relative; width: 100%; display: block; }
 .ui-sel-btn {
-  width: 100%; height: var(--control-h-sm); min-height: var(--control-h-sm);
+  /* 与 .ui-input 同高：固定 height + flex 垂直居中，清掉 button UA 样式 */
+  appearance: none; -webkit-appearance: none;
+  display: flex; align-items: center;
+  width: 100%; margin: 0;
+  height: var(--control-h); min-height: var(--control-h); max-height: var(--control-h);
+  box-sizing: border-box;
   border: 1px solid var(--line); background: var(--surface);
-  border-radius: var(--r-sm); padding: 0 24px 0 9px; font-size: 12.5px;
+  border-radius: var(--r-sm); padding: 0 28px 0 10px; font-size: 12.5px;
   text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; position: relative; color: var(--ink);
-  font-family: inherit; line-height: calc(var(--control-h-sm) - 2px);
+  font-family: inherit; line-height: 1.2; font-weight: 400;
   transition: border-color .15s ease, box-shadow .15s ease;
+}
+.ui-sel-btn > span {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1;
 }
 .ui-sel-btn::after {
   content: ''; position: absolute; right: 8px; top: 50%; width: 0; height: 0;
@@ -324,14 +329,18 @@ html[data-theme="dark"] .ui-sel-list {
 .ui-label-row { display:flex; align-items:center; gap:8px; min-height: 18px; }
 .ui-label-row .ui-label { line-height: 18px; }
 .ui-input, .ui-select {
-  width: 100%; height: var(--control-h); min-height: var(--control-h);
+  appearance: none; -webkit-appearance: none;
+  display: block; width: 100%; margin: 0;
+  height: var(--control-h); min-height: var(--control-h); max-height: var(--control-h);
+  box-sizing: border-box;
   border: 1px solid var(--line); background: var(--surface);
-  border-radius: var(--r-sm); padding: 0 10px; font-size: 13px;
-  line-height: calc(var(--control-h) - 2px);
+  border-radius: var(--r-sm); padding: 0 10px; font-size: 12.5px;
+  line-height: normal; /* 不用 line-height 撑高，避免 input/button 计算差 */
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .ui-textarea {
-  width: 100%; border: 1px solid var(--line); background: var(--surface);
+  display: block; width: 100%; margin: 0;
+  border: 1px solid var(--line); background: var(--surface);
   border-radius: var(--r-sm); padding: 8px 10px; font-size: 13px;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
@@ -339,14 +348,23 @@ html[data-theme="dark"] .ui-sel-list {
   outline: none; border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
 }
+/* sm 仅微调字号/左右 padding，高度与常规控件完全相同 */
 .ui-input-sm, .ui-select-sm {
-  height: var(--control-h-sm); min-height: var(--control-h-sm);
-  padding: 0 9px; font-size: 12.5px;
-  line-height: calc(var(--control-h-sm) - 2px);
+  height: var(--control-h); min-height: var(--control-h); max-height: var(--control-h);
+  padding: 0 10px; font-size: 12.5px; line-height: normal;
 }
 .ui-textarea {
-  resize: none; min-height: 0; height: auto; line-height: 1.55;
+  resize: none; min-height: 0; height: auto; max-height: none; line-height: 1.55;
   font-family: var(--mono); font-size: 13px;
+}
+/* 表单内 autocomplete 输入与 input 同款 */
+.ui-ac input.ui-input,
+.ui-ac input {
+  height: var(--control-h); min-height: var(--control-h); max-height: var(--control-h);
+  box-sizing: border-box; margin: 0;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: var(--r-sm); padding: 0 10px; font-size: 12.5px;
+  line-height: normal;
 }
 .ui-grid-2 {
   display: grid; grid-template-columns: 1fr; gap: 14px;
@@ -899,7 +917,7 @@ html[data-theme="dark"] .ui-select {
                         else if(e.key==='Enter'&&this.ai>=0){e.preventDefault();this.pick(o[this.ai]);}
                         else if(e.key==='Escape'){this.open=false;} }
                     }">
-                      <input type="text" x-model="q"
+                      <input type="text" class="ui-input ui-input-sm mono" x-model="q"
                              @input="src.default_model = q; open = true; ai = -1; fetchUpstreamModels(src)"
                              @focus="fetchUpstreamModels(src); open = true"
                              @keydown="kd($event)"
