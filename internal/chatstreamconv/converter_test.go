@@ -749,3 +749,137 @@ func TestFailEmitsResponseFailed(t *testing.T) {
 		t.Fatal("converter should be failed+done")
 	}
 }
+
+// TestReasoningContentBeforeText 验证 DeepSeek 等厂商的 delta.reasoning_content
+// 先于 content 出现时，映射为 Responses reasoning item + reasoning_text 事件链。
+func TestReasoningContentBeforeText(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-reasoner")
+	var types []string
+	var joined string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"role":"assistant","reasoning_content":"先想"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"reasoning_content":"一步"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"答案"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+			joined += string(e.Data)
+		}
+	}
+	has := func(want string) bool {
+		for _, s := range types {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"response.output_item.added",
+		"response.reasoning_text.delta",
+		"response.reasoning_text.done",
+		"response.output_item.done",
+		"response.output_text.delta",
+		"response.completed",
+	} {
+		if !has(want) {
+			t.Fatalf("missing %s in %v", want, types)
+		}
+	}
+	if !strings.Contains(joined, `"type":"reasoning"`) {
+		t.Fatalf("want reasoning item: %s", joined)
+	}
+	if !strings.Contains(joined, `"type":"summary_text"`) || !strings.Contains(joined, "先想一步") {
+		t.Fatalf("want summary_text with full reasoning: %s", joined)
+	}
+	// reasoning 应先于 message 文本
+	rsDelta := -1
+	textDelta := -1
+	for i, s := range types {
+		if s == "response.reasoning_text.delta" && rsDelta < 0 {
+			rsDelta = i
+		}
+		if s == "response.output_text.delta" && textDelta < 0 {
+			textDelta = i
+		}
+	}
+	if rsDelta < 0 || textDelta < 0 || rsDelta >= textDelta {
+		t.Fatalf("reasoning delta should precede text delta: rs=%d text=%d types=%v", rsDelta, textDelta, types)
+	}
+}
+
+// TestReasoningContentAliasField 兼容部分上游用 delta.reasoning 而非 reasoning_content。
+func TestReasoningContentAliasField(t *testing.T) {
+	c := New()
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","reasoning":"alias"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if evTypes(t, e.Data) == "response.reasoning_text.delta" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want reasoning_text.delta for delta.reasoning, got %v", evs)
+	}
+	evs, _ = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`))
+	joined := ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, "alias") {
+		t.Fatalf("want closed reasoning text: %s", joined)
+	}
+}
+
+// TestReasoningThenToolCalls 工具调用前的 reasoning 必须先关闭，再开 function_call。
+func TestReasoningThenToolCalls(t *testing.T) {
+	c := New()
+	var types []string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"role":"assistant","reasoning_content":"要用工具"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+		}
+	}
+	rsDone := -1
+	fnItemIdx := -1
+	addedCount := 0
+	for i, s := range types {
+		if s == "response.reasoning_text.done" && rsDone < 0 {
+			rsDone = i
+		}
+		if s == "response.output_item.added" {
+			addedCount++
+			if addedCount == 2 {
+				fnItemIdx = i
+			}
+		}
+	}
+	if rsDone < 0 {
+		t.Fatalf("missing reasoning_text.done in %v", types)
+	}
+	if fnItemIdx < 0 {
+		t.Fatalf("missing function output_item.added in %v", types)
+	}
+	if rsDone >= fnItemIdx {
+		t.Fatalf("reasoning must close before function item: rsDone=%d fnItem=%d types=%v", rsDone, fnItemIdx, types)
+	}
+}

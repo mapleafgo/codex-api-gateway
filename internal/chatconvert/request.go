@@ -72,10 +72,12 @@ type ChatModerationMode struct {
 
 // ChatMessage 是 Chat 多轮消息。
 type ChatMessage struct {
-	Role       string         `json:"role"`
-	Content    any            `json:"content,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
+	Role    string `json:"role"`
+	Content any    `json:"content,omitempty"`
+	// ReasoningContent 回传厂商推理文本（DeepSeek/Kimi/GLM 工具环常要求同框）。
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
 }
 
 // ChatTool 是 function 工具声明（Chat 无 custom type，freeform 也落 function）。
@@ -245,8 +247,28 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 	}
 
 	var pending *ChatMessage
+	// pendingReasoning 暂存 Responses reasoning，挂到下一条/当前 assistant 的 reasoning_content。
+	var pendingReasoning string
+	takeReasoning := func() string {
+		s := pendingReasoning
+		pendingReasoning = ""
+		return s
+	}
+	attachReasoning := func(msg *ChatMessage) {
+		if msg == nil {
+			return
+		}
+		if rc := takeReasoning(); rc != "" {
+			if msg.ReasoningContent == "" {
+				msg.ReasoningContent = rc
+			} else {
+				msg.ReasoningContent += "\n" + rc
+			}
+		}
+	}
 	flushPending := func() {
 		if pending != nil {
+			attachReasoning(pending)
 			out = append(out, *pending)
 			pending = nil
 		}
@@ -254,6 +276,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 	appendToolCall := func(id, name, args string) {
 		if pending == nil {
 			pending = &ChatMessage{Role: "assistant"}
+			attachReasoning(pending)
 		}
 		pending.ToolCalls = append(pending.ToolCalls, ChatToolCall{
 			ID:   id,
@@ -271,16 +294,23 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		case item.OfMessage != nil:
 			flushPending()
 			if msg, ok := convertEasyMessage(item.OfMessage); ok {
+				if msg.Role == "assistant" {
+					attachReasoning(&msg)
+				}
 				out = append(out, msg)
 			}
 		case item.OfInputMessage != nil:
 			flushPending()
 			if msg, ok := convertInputMessage(item.OfInputMessage); ok {
+				if msg.Role == "assistant" {
+					attachReasoning(&msg)
+				}
 				out = append(out, msg)
 			}
 		case item.OfOutputMessage != nil:
 			flushPending()
 			if msg, ok := convertOutputMessage(item.OfOutputMessage); ok {
+				attachReasoning(&msg)
 				out = append(out, msg)
 			}
 		case item.OfFunctionCall != nil:
@@ -425,7 +455,23 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			flushPending()
 			out = append(out, ChatMessage{Role: "system", Content: "<compaction_trigger />"})
 		case item.OfReasoning != nil:
-			slog.Debug("chatconvert: 跳过 reasoning（Chat 无加密 thinking 回灌）")
+			// 明文 reasoning 折入 assistant.reasoning_content（工具环同框）；encrypted 无 Chat 槽位丢弃。
+			t := reasoningContentText(item.OfReasoning)
+			if t == "" {
+				slog.Debug("chatconvert: 跳过空 reasoning（无 summary/content 文本）")
+				continue
+			}
+			if pending != nil {
+				if pending.ReasoningContent == "" {
+					pending.ReasoningContent = t
+				} else {
+					pending.ReasoningContent += "\n" + t
+				}
+			} else if pendingReasoning == "" {
+				pendingReasoning = t
+			} else {
+				pendingReasoning += "\n" + t
+			}
 		default:
 			typ := itemType(item)
 			if isImportantHistoryDrop(typ) {
@@ -437,6 +483,10 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		}
 	}
 	flushPending()
+	if pendingReasoning != "" {
+		slog.Debug("chatconvert: 孤立 reasoning 无后续 assistant，丢弃",
+			"chars", len(pendingReasoning))
+	}
 	return out, nil
 }
 
@@ -542,6 +592,29 @@ func convertInputMessage(m *oairesponses.ResponseInputItemMessageParam) (ChatMes
 		return ChatMessage{}, false
 	}
 	return ChatMessage{Role: role, Content: text}, true
+}
+
+// reasoningContentText 从 Responses reasoning item 提取明文推理文本。
+// 优先 summary（网关出站约定），空则回退 content[].reasoning_text；忽略 encrypted_content。
+func reasoningContentText(r *oairesponses.ResponseReasoningItemParam) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	for _, s := range r.Summary {
+		if s.Text != "" {
+			parts = append(parts, s.Text)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	for _, c := range r.Content {
+		if c.Text != "" {
+			parts = append(parts, c.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func convertOutputMessage(m *oairesponses.ResponseOutputMessageParam) (ChatMessage, bool) {

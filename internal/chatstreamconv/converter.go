@@ -31,6 +31,8 @@ var (
 	evCustomToolCallInputDone         = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
 	evRefusalDelta                    = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDelta]())
 	evRefusalDone                     = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDone]())
+	evReasoningTextDelta              = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
+	evReasoningTextDone               = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
 	evWebSearchCallInProgress         = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
 	evWebSearchCallSearching          = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
 	evWebSearchCallCompleted          = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
@@ -78,6 +80,12 @@ type Converter struct {
 	// contentLogprobs 累积本条 assistant 文本的 Chat token logprobs（用于 done / content part）。
 	contentLogprobs []model.TokenLogprob
 
+	// reasoning item：厂商 delta.reasoning_content（或 reasoning）→ Responses reasoning
+	reasonOpen   bool
+	reasonItemID string
+	reasonIndex  int
+	reasonBuf    strings.Builder
+
 	// tool_calls 按 index 累积
 	tools map[int]*toolAccum
 }
@@ -110,9 +118,13 @@ type chatChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role      string          `json:"role"`
-			Content   json.RawMessage `json:"content"` // string | content part array | null
-			Refusal   string          `json:"refusal"`
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"` // string | content part array | null
+			// ReasoningContent 是 DeepSeek / 火山 / 阿里 / 智谱 / Kimi 等的推理扩展字段。
+			ReasoningContent string `json:"reasoning_content"`
+			// Reasoning 是部分上游（ollama / OpenRouter）的别名。
+			Reasoning string `json:"reasoning"`
+			Refusal   string `json:"refusal"`
 			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
@@ -296,6 +308,10 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 	if ch.Delta.Refusal != "" {
 		c.refusalBuf.WriteString(ch.Delta.Refusal)
 	}
+	// reasoning 通常先于 content；content/tool 开时在 feed 路径内关闭。
+	if rc := firstNonEmpty(ch.Delta.ReasoningContent, ch.Delta.Reasoning); rc != "" {
+		out = append(out, c.feedReasoning(rc)...)
+	}
 	var lps []model.TokenLogprob
 	if ch.Logprobs != nil {
 		lps = mapChatTokenLogprobs(ch.Logprobs.Content)
@@ -393,6 +409,10 @@ func (c *Converter) ensureMessageOpen() []model.SSEEvent {
 	if c.msgOpen {
 		return nil
 	}
+	var out []model.SSEEvent
+	if c.reasonOpen {
+		out = append(out, c.closeReasoning()...)
+	}
 	c.msgOpen = true
 	c.msgIndex = len(c.outputItems)
 	c.msgItemID = fmt.Sprintf("msg_%s_%d", c.respID, c.msgIndex)
@@ -403,7 +423,6 @@ func (c *Converter) ensureMessageOpen() []model.SSEEvent {
 		Role:   "assistant",
 	}
 	c.outputItems = append(c.outputItems, item)
-	var out []model.SSEEvent
 	out = append(out, model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
 		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(), OutputIndex: c.msgIndex, Item: item,
 	}))
@@ -443,8 +462,79 @@ func (c *Converter) feedText(delta string, logprobs []model.TokenLogprob) []mode
 	return out
 }
 
+// feedReasoning 把 Chat delta.reasoning_content 映射为 Responses reasoning item + reasoning_text 事件。
+// Chat 无 encrypted/signature；出站 summary 用完整文本，encrypted_content 留空（lossy）。
+func (c *Converter) feedReasoning(delta string) []model.SSEEvent {
+	if delta == "" {
+		return nil
+	}
+	var out []model.SSEEvent
+	// 正文已开时再来 reasoning：先关 message，再开新 reasoning（少见交错上游）
+	if c.msgOpen {
+		out = append(out, c.closeMessage()...)
+	}
+	if !c.reasonOpen {
+		c.reasonOpen = true
+		c.reasonIndex = len(c.outputItems)
+		c.reasonItemID = fmt.Sprintf("rs_%s_%d", c.respID, c.reasonIndex)
+		c.reasonBuf.Reset()
+		item := model.OutputItem{
+			Type:    model.ItemTypeReasoning,
+			ID:      c.reasonItemID,
+			Status:  model.ResponseStatusInProgress,
+			Summary: []model.OutputText{},
+		}
+		c.outputItems = append(c.outputItems, item)
+		out = append(out, model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
+			Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
+			OutputIndex: c.reasonIndex, Item: item,
+		}))
+	}
+	c.reasonBuf.WriteString(delta)
+	out = append(out, model.MarshalEvent(evReasoningTextDelta, model.ReasoningTextDeltaEvent{
+		Type: evReasoningTextDelta, SequenceNumber: c.nextSeq(),
+		OutputIndex: c.reasonIndex, ContentIndex: 0,
+		ItemID: c.reasonItemID, Delta: delta,
+	}))
+	return out
+}
+
+func (c *Converter) closeReasoning() []model.SSEEvent {
+	if !c.reasonOpen {
+		return nil
+	}
+	text := c.reasonBuf.String()
+	item := model.OutputItem{
+		Type:   model.ItemTypeReasoning,
+		ID:     c.reasonItemID,
+		Status: model.ResponseStatusCompleted,
+		Summary: []model.OutputText{
+			{Type: model.ContentTypeSummaryText, Text: text},
+		},
+	}
+	if c.reasonIndex < len(c.outputItems) {
+		c.outputItems[c.reasonIndex] = item
+	}
+	out := []model.SSEEvent{
+		model.MarshalEvent(evReasoningTextDone, model.ReasoningTextDoneEvent{
+			Type: evReasoningTextDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: c.reasonIndex, ItemID: c.reasonItemID, Text: text,
+		}),
+		model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: c.reasonIndex, Item: item,
+		}),
+	}
+	c.reasonOpen = false
+	c.reasonBuf.Reset()
+	return out
+}
+
 func (c *Converter) feedToolCall(index int, id, name, args string) []model.SSEEvent {
 	var out []model.SSEEvent
+	if c.reasonOpen {
+		out = append(out, c.closeReasoning()...)
+	}
 	if c.msgOpen {
 		out = append(out, c.closeMessage()...)
 	}
@@ -657,6 +747,9 @@ func (c *Converter) closeMessage() []model.SSEEvent {
 
 func (c *Converter) closeOpenItems() []model.SSEEvent {
 	var out []model.SSEEvent
+	if c.reasonOpen {
+		out = append(out, c.closeReasoning()...)
+	}
 	if c.msgOpen {
 		out = append(out, c.closeMessage()...)
 	}
@@ -901,11 +994,13 @@ func hasRefusalOutput(items []model.OutputItem) bool {
 
 // prepareRefusalOutput 清空半截输出并产出 refusal 事件链（对齐 streamconv.emitRefusalEvents）。
 func (c *Converter) prepareRefusalOutput() []model.SSEEvent {
-	// 丢弃未完成文本 / tool
+	// 丢弃未完成文本 / tool / reasoning
 	c.msgOpen = false
 	c.contentOpen = false
 	c.contentBuf.Reset()
 	c.contentLogprobs = nil
+	c.reasonOpen = false
+	c.reasonBuf.Reset()
 	c.tools = map[int]*toolAccum{}
 	c.outputItems = nil
 
@@ -982,6 +1077,16 @@ func jsonStringField(raw, key string) string {
 }
 
 // Fail 标记失败并产出 response.failed（流中断时由 Backend 调用）。
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (c *Converter) Fail(msg string) []model.SSEEvent {
 	if c.completed {
 		return nil

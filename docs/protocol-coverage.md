@@ -28,8 +28,8 @@
 
 详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
 
-- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`/`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key/options`、usage（含 details）、`finish_reason` 终态。
-- **明确降级**：reasoning **出站 item/thinking 回灌** / 多模态 image/file；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；compaction system marker。
+- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key/options`、usage（含 details）、`finish_reason` 终态。
+- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）/ 多模态 image/file；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；compaction system marker。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
@@ -238,8 +238,9 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | Codex 文本 + 客户端 function / freeform agent 工具环 | 对外 `/v1/chat/completions` |
 | 流式 SSE only（固定 `stream:true` + `include_usage`） | 非流式 Chat 完成体 |
 | 与 a 源混排 failover / 熔断 | hosted **真实** server 执行（Chat 仅 shape） |
-| `finish_reason` 终态对齐（stop/tool_calls/length/content_filter） | reasoning / thinking 与 Chat `reasoning_content` 完整等价 |
-| | structured output / 多模态 image / OpenAI Files |
+| `finish_reason` 终态对齐（stop/tool_calls/length/content_filter） | Chat `reasoning_content` 与 a 路径 thinking **完整等价**（无 encrypted/signature） |
+| 出站 `reasoning_content` → Responses reasoning（有损） + 入站回灌 `reasoning_content` | Anthropic 式 `citations_delta` 完整等价（五家 Chat 无官方字段） |
+| structured output / 文本工具环 | 多模态 image / OpenAI Files |
 
 ### Request 参数（c）
 
@@ -256,7 +257,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice 忽略 |
 | `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
-| `reasoning.*` | none | `unsupported_by_backend` | 跳过；不映射 Chat thinking 扩展 |
+| `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
 | `text.format` structured | `response_format` | `supported` | `json_schema`/`json_object`/`text` 原生透传 Chat；含 `strict`；不做 a 路径 synthetic tool |
 | `text.verbosity` | `verbosity` | `supported` | low/medium/high 透传；a 路径仍忽略 |
 | `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |
@@ -289,7 +290,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `apply_patch_call_output` | role=tool | `lossy_supported` | |
 | `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
-| `reasoning` | none | `dropped` | DEBUG 跳过（Chat 无加密 thinking 回灌） |
+| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；与 `tool_calls` 同框；`encrypted_content` 丢弃（DEBUG）；孤立无后续 assistant 时 DEBUG 丢弃 |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
 | `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) | `lossy_supported` | image 丢弃 |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
@@ -316,6 +317,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | Chat 流 | Responses 事件 | 状态 | 说明 |
 |---|---|---|---|
 | 首 chunk | `response.created` / `in_progress` | `supported` | |
+| `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name） |
@@ -336,7 +338,8 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | 项 | 说明 |
 |---|---|
 | 多模态 image/file 输入 | content 仅文本（image/file part DEBUG 跳过） |
-| 厂商 `reasoning_content` | 忽略，不映射 Responses reasoning |
+| 厂商 `reasoning_content` 无 encrypted/signature | 明文 reasoning 有损（summary 承载全文）；a 路径 signature/encrypted 不在 c 复现 |
+| Chat 原生 Anthropic 式 `citations_delta` | 五家主路径无官方等价；联网多走 tool_calls；非标 annotations 本期不做 |
 | hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
 | Chat 原生 `tools[].type=custom` + grammar | freeform 统一 function 化以兼容通用上游；grammar 丢失 |
 | 出站 logprobs `bytes` 字段 | Chat TokenLogprob.bytes 不映射到 Responses（官方 delta logprobs 无 bytes） |
@@ -348,6 +351,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | 项 | 行为 |
 |---|---|
+| Chat `reasoning_content` 出站 + 入站回灌 | 出站→Responses reasoning + `reasoning_text.*`；入站折 `assistant.reasoning_content`（工具环同框）；无 encrypted |
 | computer/file_search/image_generation 等历史 | 显式 WARN + drop（非 unknown 静默） |
 | compaction 历史 | system marker 回灌 |
 | tool_calls 分片 name 晚到 | 有 name 再 `output_item.added`，避免误判 function |

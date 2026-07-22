@@ -724,6 +724,7 @@ func TestToChat_FileSearchToolDeclSkipped(t *testing.T) {
 }
 
 func TestToChat_ReasoningHistorySkipped(t *testing.T) {
+	// 兼容旧名：reasoning 不得变成独立 role=reasoning 消息，而是挂到 assistant.reasoning_content。
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -734,20 +735,18 @@ func TestToChat_ReasoningHistorySkipped(t *testing.T) {
 	}`
 	out := mustChat(t, body, "gpt-4o")
 	for _, m := range out.Messages {
-		if s, ok := m.Content.(string); ok && strings.Contains(s, "think") && m.Role != "assistant" {
-			// reasoning must not become a chat message body alone as reasoning role
-		}
 		if m.Role == "reasoning" {
 			t.Fatal("reasoning role must not appear in Chat messages")
 		}
 	}
-	// still have user + assistant
-	roles := []string{}
+	found := false
 	for _, m := range out.Messages {
-		roles = append(roles, m.Role)
+		if m.Role == "assistant" && m.ReasoningContent == "think" {
+			found = true
+		}
 	}
-	if len(roles) < 2 {
-		t.Fatalf("roles=%v", roles)
+	if !found {
+		t.Fatalf("want assistant.reasoning_content=think: %+v", out.Messages)
 	}
 }
 
@@ -802,5 +801,88 @@ func TestToChat_CompactionTrigger(t *testing.T) {
 func TestToChat_NilRequest(t *testing.T) {
 	if _, err := ToChat(nil, "m"); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+// TestToChat_ReasoningContentOnAssistant 历史 reasoning 必须折入同轮/下一条 assistant 的 reasoning_content，
+// 并与 tool_calls 同框（DeepSeek/Kimi/GLM 工具环要求）。
+func TestToChat_ReasoningContentOnAssistant(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"weather?"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"}],"content":[{"type":"reasoning_text","text":"need tool"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Paris\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"sunny"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sunny in Paris"}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	var assistantWithTools *ChatMessage
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			assistantWithTools = m
+			break
+		}
+	}
+	if assistantWithTools == nil {
+		t.Fatalf("want assistant with tool_calls: %+v", out.Messages)
+	}
+	if assistantWithTools.ReasoningContent != "need tool" {
+		t.Fatalf("reasoning_content=%q want need tool; msg=%+v", assistantWithTools.ReasoningContent, assistantWithTools)
+	}
+	// 终局 assistant 文本消息不应被 reasoning role 污染
+	for _, m := range out.Messages {
+		if m.Role == "reasoning" {
+			t.Fatal("reasoning role must not appear")
+		}
+	}
+}
+
+// TestToChat_ReasoningBeforeAssistantText 无 tool 时 reasoning 挂到下一条 assistant 文本消息。
+func TestToChat_ReasoningBeforeAssistantText(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"think hard"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := false
+	for _, m := range out.Messages {
+		if m.Role == "assistant" && m.ReasoningContent == "think hard" {
+			if s, ok := m.Content.(string); !ok || s != "ok" {
+				t.Fatalf("content=%v", m.Content)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want assistant with reasoning_content: %+v", out.Messages)
+	}
+}
+
+// TestToChat_ReasoningContentFromContentFallback summary 空时回退 content[].reasoning_text。
+func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"reasoning","id":"r1","summary":[],"content":[{"type":"reasoning_text","text":"from content"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := false
+	for _, m := range out.Messages {
+		if m.Role == "assistant" && m.ReasoningContent == "from content" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want fallback reasoning_content: %+v", out.Messages)
 	}
 }
