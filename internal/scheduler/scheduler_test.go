@@ -783,3 +783,66 @@ func TestResolveModel(t *testing.T) {
 		t.Fatal("passthrough")
 	}
 }
+
+func TestSourceHealthAndPromote(t *testing.T) {
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(time.Second),
+			Cooldown:         config.Duration(time.Minute),
+			DegradeThreshold: 1,
+			RecoverThreshold: 1,
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+			Recovery:         "normal",
+		},
+		Sources: []config.Source{
+			{Name: "a", BaseURL: "https://a.example", APIKey: "k", DefaultModel: "m"},
+			{Name: "b", BaseURL: "https://b.example", APIKey: "k", DefaultModel: "m"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg)
+	// 强制 a 进入 degraded
+	srcA, ok := s.sourceByName("a")
+	if !ok {
+		t.Fatal("missing a")
+	}
+	bk := s.breakerFor(&srcA)
+	bk.RecordFailure() // threshold=1 -> degraded
+	if bk.State() != breaker.Degraded {
+		t.Fatalf("want degraded, got %v", bk.State())
+	}
+	s.adjustOrder("a", breaker.Normal, breaker.Degraded)
+
+	hs := s.SourceHealth()
+	if len(hs) != 2 {
+		t.Fatalf("health len=%d", len(hs))
+	}
+	var aHealth SourceHealth
+	for _, h := range hs {
+		if h.Name == "a" {
+			aHealth = h
+		}
+	}
+	if aHealth.State != "degraded" || aHealth.DegradeCount != 1 {
+		t.Fatalf("a health=%+v", aHealth)
+	}
+
+	if err := s.PromoteSource("a"); err != nil {
+		t.Fatal(err)
+	}
+	if bk.State() != breaker.Normal {
+		t.Fatalf("after promote state=%v", bk.State())
+	}
+	hs2 := s.SourceHealth()
+	for _, h := range hs2 {
+		if h.Name == "a" && h.State != "normal" {
+			t.Fatalf("after promote health=%+v", h)
+		}
+	}
+	if err := s.PromoteSource("missing"); err == nil {
+		t.Fatal("want error for unknown source")
+	}
+}

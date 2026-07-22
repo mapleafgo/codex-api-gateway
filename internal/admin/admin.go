@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,14 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 )
+
+// SourceHealthView 是管理页展示的单源运行时回退等级。
+type SourceHealthView struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`         // normal | degraded | circuitOpen | halfOpen
+	DegradeCount int    `json:"degrade_count"` // 0/1/2 量级
+	Priority     int    `json:"priority"`      // 运行时优先级，1=最高
+}
 
 // Deps 是 Mount 需要的依赖。main 组装时传入。
 type Deps struct {
@@ -35,6 +44,10 @@ type Deps struct {
 	// ModelsFetcher 按源名拉取上游 /v1/models 列表，供管理页编辑模型映射时选用。
 	// 若未提供（nil），对应接口返回 501。
 	ModelsFetcher func(ctx context.Context, sourceName string) ([]anthropic.ModelInfo, error)
+	// SourceHealth 返回各源运行时健康态。nil 时 snapshot 不附带 sources_health。
+	SourceHealth func() []SourceHealthView
+	// PromoteSource 手动将源提升回 normal。nil 时 promote 接口 501。
+	PromoteSource func(name string) error
 }
 
 type handler struct {
@@ -60,6 +73,7 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/events", wrap("events", h.handleEvents))
 	mux.HandleFunc("/admin/api/models", wrap("models", h.handleModels))
 	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
+	mux.HandleFunc("/admin/api/sources/promote", wrap("promote-source", h.handlePromoteSource))
 }
 
 // recoverMiddleware 捕获 handler panic，记录日志后返回 500。
@@ -138,10 +152,14 @@ func (h *handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.deps.Metrics == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"disabled": true})
+		body := map[string]any{"disabled": true}
+		if hs := h.sourcesHealth(); hs != nil {
+			body["sources_health"] = hs
+		}
+		writeJSON(w, http.StatusOK, body)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.deps.Metrics.Snapshot())
+	writeJSON(w, http.StatusOK, h.metricsSnapshotBody())
 }
 
 // handleEvents 是 SSE 推送端点：每 3s 推送一次 metrics snapshot。
@@ -182,16 +200,81 @@ func (h *handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// snapshotJSON 返回 metrics snapshot 的 JSON 字节。metrics 关闭时返回 disabled 视图。
+// snapshotJSON 返回 metrics snapshot 的 JSON 字节，附带 sources_health。
 func (h *handler) snapshotJSON() []byte {
-	if h.deps.Metrics == nil {
-		return []byte(`{"disabled":true}`)
-	}
-	b, err := json.Marshal(h.deps.Metrics.Snapshot())
+	b, err := json.Marshal(h.metricsSnapshotBody())
 	if err != nil {
 		return []byte(`{"error":"marshal"}`)
 	}
 	return b
+}
+
+func (h *handler) metricsSnapshotBody() map[string]any {
+	body := map[string]any{}
+	if h.deps.Metrics == nil {
+		body["disabled"] = true
+	} else {
+		snap := h.deps.Metrics.Snapshot()
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			body["error"] = "marshal"
+			return body
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			body["error"] = "unmarshal"
+			return body
+		}
+	}
+	if hs := h.sourcesHealth(); hs != nil {
+		body["sources_health"] = hs
+	}
+	return body
+}
+
+func (h *handler) sourcesHealth() []SourceHealthView {
+	if h.deps.SourceHealth == nil {
+		return nil
+	}
+	hs := h.deps.SourceHealth()
+	if hs == nil {
+		return []SourceHealthView{}
+	}
+	return hs
+}
+
+// handlePromoteSource POST {name} 手动将源提升回 normal。
+func (h *handler) handlePromoteSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	if h.deps.PromoteSource == nil {
+		writeJSON(w, http.StatusNotImplemented, errorBody{Error: "promote not available"})
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name"})
+		return
+	}
+	if err := h.deps.PromoteSource(name); err != nil {
+		slog.Warn("管理页手动提升源失败", "source", name, "error", err)
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "promote failed", Detail: err.Error()})
+		return
+	}
+	// 成功：scheduler.PromoteSource 已记 Info；此处补管理入口维度
+	slog.Info("管理页手动提升源成功", "source", name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "name": name,
+		"health": h.sourcesHealth(),
+	})
 }
 
 func writeSSEEvent(w io.Writer, event string, data []byte) {

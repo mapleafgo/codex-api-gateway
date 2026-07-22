@@ -361,3 +361,42 @@ func TestRecordFailureOnCircuitOpenNoSideEffects(t *testing.T) {
 			b.degradeCount, degradeCountBefore)
 	}
 }
+
+// TestForceNormal 手动提升：任意状态重置为 normal，清零计数。
+func TestForceNormal(t *testing.T) {
+	b := New(cfg(2, 1, "normal"))
+	b.RecordFailure()
+	b.RecordFailure() // -> degraded
+	if b.State() != Degraded {
+		t.Fatalf("setup: want degraded, got %v", b.State())
+	}
+	st := b.ForceNormal()
+	if st != Normal {
+		t.Fatalf("ForceNormal state=%v", st)
+	}
+	if b.State() != Normal || b.DegradeCount() != 0 {
+		t.Fatalf("state=%v degrade=%d", b.State(), b.DegradeCount())
+	}
+	// 再次失败应从 0 计数，不会立刻 degraded
+	b.RecordFailure()
+	if b.State() != Normal {
+		t.Fatalf("fail streak should have reset, got %v", b.State())
+	}
+}
+
+// TestForceNormalFromCircuitOpen 熔断态也可手动提升。
+func TestForceNormalFromCircuitOpen(t *testing.T) {
+	b := New(cfg(2, 1, "normal"))
+	for i := 0; i < 4; i++ {
+		b.RecordFailure()
+	}
+	if b.State() != CircuitOpen {
+		t.Fatalf("setup: want circuitOpen, got %v", b.State())
+	}
+	if st := b.ForceNormal(); st != Normal {
+		t.Fatalf("ForceNormal=%v", st)
+	}
+	if !b.Allow() {
+		t.Fatal("after ForceNormal should allow")
+	}
+}

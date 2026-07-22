@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -266,5 +267,84 @@ func TestUpstreamModelsRejectsInvalidBackendType(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 400 {
 		t.Fatalf("status=%d want 400", resp.StatusCode)
+	}
+}
+
+func TestSourcesHealthInMetrics(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	deps.SourceHealth = func() []SourceHealthView {
+		return []SourceHealthView{
+			{Name: "s1", State: "degraded", DegradeCount: 1, Priority: 1},
+		}
+	}
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/admin/api/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	hs, ok := body["sources_health"].([]any)
+	if !ok || len(hs) != 1 {
+		t.Fatalf("sources_health=%v", body["sources_health"])
+	}
+	row := hs[0].(map[string]any)
+	if row["name"] != "s1" || row["state"] != "degraded" {
+		t.Fatalf("row=%v", row)
+	}
+}
+
+func TestPromoteSource(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	called := ""
+	deps.PromoteSource = func(name string) error {
+		called = name
+		if name == "missing" {
+			return fmt.Errorf("unknown")
+		}
+		return nil
+	}
+	deps.SourceHealth = func() []SourceHealthView {
+		return []SourceHealthView{}
+	}
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/sources/promote", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Post(srv.URL+"/admin/api/sources/promote", "application/json",
+		strings.NewReader(`{"name":"s1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if called != "s1" {
+		t.Fatalf("called=%q", called)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true {
+		t.Fatalf("body=%v", body)
 	}
 }

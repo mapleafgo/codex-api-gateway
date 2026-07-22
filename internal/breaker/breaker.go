@@ -164,3 +164,17 @@ func (b *Breaker) RecordSuccess() State {
 	}
 	return b.st
 }
+
+// ForceNormal 手动将源提升回 normal：清零失败/成功 streak、degradeCount，
+// 并重置 halfOpen 探测计数。用于管理页人工干预。
+func (b *Breaker) ForceNormal() State {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.st = Normal
+	b.failStreak = 0
+	b.successStreak = 0
+	b.degradeCount = 0
+	b.halfOpenInflight = 0
+	b.openedAt = time.Time{}
+	return b.st
+}

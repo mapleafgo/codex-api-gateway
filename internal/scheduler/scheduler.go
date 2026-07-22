@@ -72,6 +72,14 @@ type UpstreamEvent struct {
 // Scheduler 在 trySource 返回前调用：成功一条 completed，失败一条 failed。
 type OnUpstream func(UpstreamEvent)
 
+// SourceHealth 是单源运行时健康快照（管理页展示 / 人工提升）。
+type SourceHealth struct {
+	Name         string `json:"name"`
+	State        string `json:"state"`         // normal | degraded | circuitOpen | halfOpen
+	DegradeCount int    `json:"degrade_count"` // 0 normal, 1 degraded, 2 circuitOpen 量级
+	Priority     int    `json:"priority"`      // 运行时优先级，1=最高
+}
+
 // New builds a Scheduler.
 // cfg 可为 *config.Config 或 *config.Holder（后者用于热重载场景）。
 // 为兼容现有调用，若传入 *Config，内部包装为不可替换的 holder。
@@ -130,6 +138,37 @@ func (s *Scheduler) Reload() {
 	}
 	s.bkMu.Unlock()
 	slog.Info("调度器配置已重载", "sources", len(newOrder))
+}
+
+// SourceHealth 返回当前配置中各源的运行时健康态，按运行时优先级排序。
+func (s *Scheduler) SourceHealth() []SourceHealth {
+	seq := s.runtimeSeq()
+	out := make([]SourceHealth, 0, len(seq))
+	for i, src := range seq {
+		src := src
+		bk := s.breakerFor(&src)
+		out = append(out, SourceHealth{
+			Name:         src.Name,
+			State:        bk.State().String(),
+			DegradeCount: bk.DegradeCount(),
+			Priority:     i + 1,
+		})
+	}
+	return out
+}
+
+// PromoteSource 手动将指定源提升回 normal，并恢复其配置顺序中的运行时优先级。
+func (s *Scheduler) PromoteSource(name string) error {
+	src, ok := s.sourceByName(name)
+	if !ok {
+		return fmt.Errorf("scheduler: 未知源 %q", name)
+	}
+	bk := s.breakerFor(&src)
+	old := bk.State()
+	newSt := bk.ForceNormal()
+	s.adjustOrder(name, old, newSt)
+	slog.Info("上游源手动提升为 normal", "source", name, "old_state", old, "new_state", newSt)
+	return nil
 }
 
 func (s *Scheduler) breakerFor(src *config.Source) *breaker.Breaker {

@@ -283,6 +283,18 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 		CfgPath:        cfgPath,
 		ReloadFromDisk: reload,
 		ModelsFetcher:  srv.Scheduler().ListUpstreamModels,
+		SourceHealth: func() []admin.SourceHealthView {
+			hs := srv.Scheduler().SourceHealth()
+			out := make([]admin.SourceHealthView, 0, len(hs))
+			for _, h := range hs {
+				out = append(out, admin.SourceHealthView{
+					Name: h.Name, State: h.State,
+					DegradeCount: h.DegradeCount, Priority: h.Priority,
+				})
+			}
+			return out
+		},
+		PromoteSource: srv.Scheduler().PromoteSource,
 	})
 }
 
