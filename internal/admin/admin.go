@@ -341,9 +341,10 @@ type sourceView struct {
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
 type modelViewItem struct {
-	Slug          string `json:"slug"`
-	ContextWindow *int64 `json:"context_window,omitempty"`
-	SupportsImage *bool  `json:"supports_image,omitempty"`
+	Slug           string `json:"slug"`
+	ContextWindow  *int64 `json:"context_window,omitempty"`
+	SupportsImage  *bool  `json:"supports_image,omitempty"`
+	SupportsSearch *bool  `json:"supports_search,omitempty"`
 }
 
 // adminConfigInput 是 POST /admin/api/config 接收的视图，与 adminConfigView 同构。
@@ -410,9 +411,10 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	for _, slug := range cfg.ConfiguredModelSlugs() {
 		override := cfg.ModelOverrides[slug]
 		view.Models = append(view.Models, modelViewItem{
-			Slug:          slug,
-			ContextWindow: override.ContextWindow,
-			SupportsImage: override.SupportsImageDetailOriginal,
+			Slug:           slug,
+			ContextWindow:  override.ContextWindow,
+			SupportsImage:  override.SupportsImageDetailOriginal,
+			SupportsSearch: override.SupportsSearchTool,
 		})
 	}
 	writeJSON(w, http.StatusOK, view)

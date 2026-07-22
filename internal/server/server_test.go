@@ -1085,3 +1085,41 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 		t.Fatalf("missing content in body: %s", s)
 	}
 }
+
+func TestModelsEndpointSupportsSearchOverride(t *testing.T) {
+	off := false
+	ctxWindow := int64(100000)
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:0"}},
+		ModelOverrides: map[string]config.ModelOverride{
+			"no-search": {
+				ContextWindow:      &ctxWindow,
+				SupportsSearchTool: &off,
+			},
+		},
+		ModelSlugOrder: []string{"no-search"},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var ml model.CodexModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ml); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(ml.Models) != 1 {
+		t.Fatalf("models=%d", len(ml.Models))
+	}
+	m0 := ml.Models[0]
+	if m0.SupportsSearchTool {
+		t.Fatalf("supports_search_tool should be false when override false")
+	}
+	if m0.WebSearchToolType != "" {
+		t.Fatalf("web_search_tool_type should clear when search disabled, got %q", m0.WebSearchToolType)
+	}
+}

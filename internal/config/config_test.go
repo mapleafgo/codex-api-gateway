@@ -506,6 +506,34 @@ models:
 	}
 }
 
+func TestLoadModelOverridesParsesSupportsSearch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+server: {listen: ":9090"}
+sources:
+  - name: official
+    base_url: https://api.anthropic.com
+    api_key: yaml-secret
+models:
+  cheap:
+    context_window: 100000
+    supports_search: false
+`), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	override, ok := cfg.ModelOverrides["cheap"]
+	if !ok {
+		t.Fatalf("models.cheap 未被解析")
+	}
+	if override.SupportsSearchTool == nil || *override.SupportsSearchTool {
+		t.Fatalf("supports_search=false 未解析: %v", override.SupportsSearchTool)
+	}
+}
+
 // TestLoadBaseInstructionsFile 验证 base_instructions_file 文件加载：
 // 相对路径基于 config 文件目录解析，内容写入 cfg.BaseInstructions。
 func TestLoadBaseInstructionsFile(t *testing.T) {

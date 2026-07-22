@@ -50,6 +50,7 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 			cfg.ModelOverrides[slug] = config.ModelOverride{
 				ContextWindow:               mv.ContextWindow,
 				SupportsImageDetailOriginal: mv.SupportsImage,
+				SupportsSearchTool:          mv.SupportsSearch,
 			}
 		}
 		cfg.ModelSlugOrder = order

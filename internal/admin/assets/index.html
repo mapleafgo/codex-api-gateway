@@ -1042,9 +1042,13 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('contextWindow')"></span>
                     <input type="number" class="ui-input ui-input-sm mono" x-model.number="m.context_window" autocomplete="off" inputmode="numeric">
                   </label>
-                  <label class="ui-field ui-span-2" style="flex-direction:row; align-items:center; gap:10px">
+                  <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
                     <input type="checkbox" x-model="m.supports_image">
                     <span class="ui-label" style="margin:0" x-text="t('supportsImage')"></span>
+                  </label>
+                  <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
+                    <input type="checkbox" x-model="m.supports_search">
+                    <span class="ui-label" style="margin:0" x-text="t('supportsSearch')"></span>
                   </label>
                 </div>
               </div>
@@ -1305,7 +1309,7 @@ function app() {
       alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
       up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
       addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）；最后一个模型会标 fast，供 Codex 后台轻量任务选用。可上下移动调整费用/选型。', modelFastBadge: 'fast · 轻量任务',
-      slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', actions: '操作',
+      slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
       globalParams: '全局参数', breaker: '断路器',
       listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
       logLevel: '日志级别', logFormat: '日志格式', logFile: '日志文件（空则写 stderr）',
@@ -1348,7 +1352,7 @@ function app() {
       alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
       up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
       addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Last model is marked fast for Codex background/lightweight tasks. Reorder to steer cost/selection.', modelFastBadge: 'fast · lightweight',
-      slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', actions: 'Actions',
+      slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
       globalParams: 'Global Parameters', breaker: 'Breaker',
       listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',
       logLevel: 'Log level', logFormat: 'Log format', logFile: 'Log file (empty = stderr)',
@@ -1641,6 +1645,10 @@ function app() {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
         if (!Array.isArray(data.models)) data.models = [];
+        data.models.forEach(m => {
+          // 未配置时默认开启搜索（对齐 codexModelInfo 默认 true）
+          if (m.supports_search == null) m.supports_search = true;
+        });
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
         });
@@ -1657,6 +1665,7 @@ function app() {
         payload.models = (payload.models || []).map(m => {
           const item = { slug: (m.slug || '').trim() };
           if (m.supports_image != null) item.supports_image = !!m.supports_image;
+          if (m.supports_search != null) item.supports_search = !!m.supports_search;
           if (m.context_window != null && m.context_window !== '') item.context_window = Number(m.context_window) || 0;
           return item;
         }).filter(m => m.slug);
@@ -1777,6 +1786,7 @@ function app() {
           { key: 'slug', label: this.t('slug'), type: 'text', value: '', placeholder: 'glm-latest' },
           { key: 'context_window', label: this.t('contextWindow'), type: 'number', value: 200000, placeholder: '200000' },
           { key: 'supports_image', label: this.t('supportsImage'), type: 'checkbox', value: false },
+          { key: 'supports_search', label: this.t('supportsSearch'), type: 'checkbox', value: true },
         ],
       }).then((v) => {
         if (!v || !v.slug) return;
@@ -1787,6 +1797,7 @@ function app() {
           slug,
           context_window: Number(v.context_window) || 0,
           supports_image: !!v.supports_image,
+          supports_search: v.supports_search !== false,
         });
       });
     },

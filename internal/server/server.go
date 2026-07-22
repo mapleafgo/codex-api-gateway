@@ -161,8 +161,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	  - model_messages
 //	  - default_reasoning_level / service_tiers / default_service_tier 等
 //
-// config.yaml models.<slug> 仅可覆盖 context_window / supports_image；
-// 其余字段硬编码统一注入，不开放 per-slug 覆盖。
+// config.yaml models.<slug> 可覆盖 context_window / supports_image / supports_search；
+// 其余字段硬编码统一注入。
 func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	emptyStr := ""
 	freeformApplyPatch := "freeform"
@@ -265,8 +265,7 @@ func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) 
 }
 
 // applyModelOverride 把 ModelOverride 覆盖到 CodexModelInfo（仅覆盖非 nil 字段）。
-// ModelOverride 只暴露 per-model 真实差异（context_window / supports_image），
-// 其余能力由 codexModelInfo 硬编码统一注入。
+// 开放 context_window / supports_image / supports_search；其余能力由 codexModelInfo 默认注入。
 func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 	// context_window 同时应用到 ContextWindow 与 MaxContextWindow：Codex ModelInfo 协议
 	// 要求两个字段，网关场景二者相等，config 只暴露一个 context_window 输入。
@@ -276,6 +275,13 @@ func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 	}
 	if ov.SupportsImageDetailOriginal != nil {
 		info.SupportsImageDetailOriginal = *ov.SupportsImageDetailOriginal
+	}
+	if ov.SupportsSearchTool != nil {
+		info.SupportsSearchTool = *ov.SupportsSearchTool
+		// 关闭搜索时一并清空 web_search 工具类型，避免 Codex 仍声明 web 搜索。
+		if !*ov.SupportsSearchTool {
+			info.WebSearchToolType = ""
+		}
 	}
 }
 

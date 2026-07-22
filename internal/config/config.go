@@ -116,11 +116,10 @@ func NormalizeBackendType(s string) (string, error) {
 }
 
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
-// 仅保留真正存在 per-model 差异的字段（context_window / supports_image）；其余能力
-// （search_tool / parallel_tool_calls / reasoning_summaries / web_search_tool_type /
-// input_modalities / use_responses_lite 等）由 codexModelInfo 硬编码统一注入，不开放
-// per-slug 覆盖。上游 /v1/models 无 context_window 等能力，需在 models.<slug> 下显式补充。
-// 所有字段均为指针（nil = 不覆盖）。
+// 开放 per-model 差异：context_window / supports_image / supports_search。
+// 其余能力（parallel_tool_calls / reasoning_summaries / input_modalities /
+// use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
+// 所有字段均为指针（nil = 不覆盖，沿用 codexModelInfo 默认）。
 type ModelOverride struct {
 	// ContextWindow 最大上下文 token 数。同时应用到 CodexModelInfo 的 ContextWindow 与
 	// MaxContextWindow（Codex ModelInfo 协议要求两个字段，网关场景二者相等，故 config
@@ -130,6 +129,10 @@ type ModelOverride struct {
 	// 配置 yaml key 用 supports_image（更简洁），输出给 Codex 的 JSON 仍为
 	// supports_image_detail_original（对齐 codex ModelInfo 字段名）。
 	SupportsImageDetailOriginal *bool `koanf:"supports_image" yaml:"supports_image"`
+	// SupportsSearchTool 是否启用 tool_search / 延迟加载工具与 web 搜索声明。
+	// yaml/json 用 supports_search；输出给 Codex 为 supports_search_tool。
+	// nil 时沿用 codexModelInfo 默认 true；显式 false 时关闭搜索能力。
+	SupportsSearchTool *bool `koanf:"supports_search" yaml:"supports_search"`
 }
 
 // MarshalYAML 序列化为 YAML。BaseInstructions / ModelSlugOrder 是运行时字段，
