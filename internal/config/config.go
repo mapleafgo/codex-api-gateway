@@ -76,6 +76,7 @@ type BreakerCfg struct {
 	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries,omitempty"`
 	Recovery         string   `koanf:"recovery" yaml:"recovery,omitempty"`
 }
+
 // Source configures one upstream.
 // backend_type: 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming)
 const (

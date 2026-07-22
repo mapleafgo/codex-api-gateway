@@ -3,9 +3,9 @@ package config
 import "testing"
 
 func TestNormalizeBackendType(t *testing.T) {
-	cases := []struct{
+	cases := []struct {
 		in, want string
-		ok bool
+		ok       bool
 	}{
 		{"", "a", true},
 		{"a", "a", true},
@@ -33,8 +33,8 @@ func TestNormalizeBackendType(t *testing.T) {
 func TestValidateRejectsUnknownBackendType(t *testing.T) {
 	cfg := Config{
 		Sources: []Source{{
-			Name: "test",
-			BaseURL: "https://example.com",
+			Name:        "test",
+			BaseURL:     "https://example.com",
 			BackendType: "invalid",
 		}},
 	}
@@ -48,8 +48,8 @@ func TestValidateAcceptsBoth(t *testing.T) {
 	for _, bt := range cases {
 		cfg := Config{
 			Sources: []Source{{
-				Name: "test",
-				BaseURL: "https://example.com",
+				Name:        "test",
+				BaseURL:     "https://example.com",
 				BackendType: bt,
 			}},
 		}

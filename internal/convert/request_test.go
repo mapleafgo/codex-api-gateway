@@ -2345,5 +2345,3 @@ func TestMetadataAbsentLeavesEmpty(t *testing.T) {
 		t.Fatalf("unexpected metadata.user_id: %q", out.Metadata.UserID.Value)
 	}
 }
-
-

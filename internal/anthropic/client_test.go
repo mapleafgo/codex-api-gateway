@@ -172,7 +172,6 @@ func TestMessagesURL(t *testing.T) {
 	}
 }
 
-
 // TestStreamExtendedCacheTTLBetaOn1h 验证 cache_control TTL=1h 时
 // anthropic-beta 自动包含 extended-cache-ttl-2025-04-11。
 func TestStreamExtendedCacheTTLBetaOn1h(t *testing.T) {

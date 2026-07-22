@@ -6,7 +6,8 @@ import (
 )
 
 func typesOf(t *testing.T, evs []interface { /* placeholder */
-}) {}
+}) {
+}
 
 func evTypes(t *testing.T, data []byte) string {
 	t.Helper()
