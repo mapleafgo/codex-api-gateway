@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-21-openai-chat-backend-design.md`
 
+> **完成度收口（2026-07-22）**：Task 1–10 主路径已落地；调度双轨已删除，测试迁 `ExecuteGeneric`；管理页未落盘试拉改走 `POST /admin/api/upstream-models`；混排与 chatclient mock 单测已补。
+
 ## Global Constraints
 
 - 客户端仅 `/v1/responses` + `/v1/models`；不新增对外 `/v1/chat/completions`

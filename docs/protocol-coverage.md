@@ -21,6 +21,15 @@
 
 - 客户端**自带完整 `input`** 回灌，网关不做 session store；`previous_response_id` 非空时 WARN + 忽略。
 - Responses ↔ Anthropic Messages **直转**，不走 Chat Completions 中枢，避免损失 Codex 专有形态。
+
+### OpenAI Chat Completions 上游（`backend_type: c`）
+
+客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: c` 时，网关经 `chatconvert` → Chat Completions 流式上游 → `chatstreamconv` 回写 Responses SSE。
+
+- **MVP 覆盖**：文本多轮、function tools / tool_calls 分片、`max_tokens`、采样参数、usage（有则填）。
+- **明确降级**：reasoning / MCP / hosted tools / 多模态 / structured output 等不映射到 Chat；重要丢弃 WARN，已知缺口 DEBUG。
+- **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
+
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
 
 ## 收口策略（产品 + 技术）
