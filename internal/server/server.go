@@ -115,11 +115,6 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		info.Priority = len(names) - i
 		infos = append(infos, info)
 	}
-	// 最后一个模型标记为 fast，供 Codex 后台轻量任务（标题/摘要/压缩）选择。
-	if len(infos) > 0 {
-		infos[len(infos)-1].AdditionalSpeedTiers = []string{"fast"}
-	}
-
 	resp := model.CodexModelsResponse{Models: infos}
 	w.Header().Set("content-type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {

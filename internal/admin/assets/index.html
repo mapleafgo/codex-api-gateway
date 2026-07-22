@@ -1025,7 +1025,6 @@ html[data-theme="dark"] .ui-select {
                   <div style="display:flex; align-items:center; gap:8px; min-width:0">
                     <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
                     <strong class="mono truncate" x-text="m.slug"></strong>
-                    <span class="ui-badge ui-badge-soft-neutral" x-show="idx === (cfg.models.length - 1)" x-text="t('modelFastBadge')"></span>
                   </div>
                   <div class="ui-src-actions" role="group" :aria-label="t('actions')">
                     <button class="ui-text-action" type="button" @click="moveModel(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
@@ -1308,7 +1307,7 @@ function app() {
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
       alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
       up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
-      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）；最后一个模型会标 fast，供 Codex 后台轻量任务选用。可上下移动调整费用/选型。', modelFastBadge: 'fast · 轻量任务',
+      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
       globalParams: '全局参数', breaker: '断路器',
       listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
@@ -1351,7 +1350,7 @@ function app() {
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
       alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
       up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
-      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Last model is marked fast for Codex background/lightweight tasks. Reorder to steer cost/selection.', modelFastBadge: 'fast · lightweight',
+      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
       globalParams: 'Global Parameters', breaker: 'Breaker',
       listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',

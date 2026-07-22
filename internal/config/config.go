@@ -44,7 +44,7 @@ type Config struct {
 	ModelOverrides map[string]ModelOverride `koanf:"models" yaml:"models,omitempty"`
 
 	// ModelSlugOrder 保留 YAML/管理页中 models 的声明顺序，供 /v1/models
-	// 分配 Priority（越靠前越高）与末项 additional_speed_tiers=fast。
+	// 分配 Priority（越靠前越高）。
 	// 不参与 YAML 字段本身；Load 从文档顺序提取，写回时按此顺序序列化。
 	ModelSlugOrder []string `koanf:"-" yaml:"-"`
 
@@ -589,7 +589,7 @@ func scanDeprecated(m map[string]any) {
 
 // ConfiguredModelSlugs 返回 config.yaml 中 models.<slug> 显式配置的模型 slug。
 // 优先保留 YAML/管理页声明顺序（ModelSlugOrder）；顺序外的 slug 按字母序追加。
-// /v1/models 只返回这些模型，并按此顺序分配 Priority 与末项 fast 标记。
+// /v1/models 只返回这些模型，并按此顺序分配 Priority。
 func (c *Config) ConfiguredModelSlugs() []string {
 	if c == nil || len(c.ModelOverrides) == 0 {
 		return nil
