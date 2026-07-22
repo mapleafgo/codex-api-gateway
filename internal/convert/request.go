@@ -1590,10 +1590,31 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 	tc := req.ToolChoice
 	switch {
 	case tc.OfHostedTool != nil:
+		if out.ToolChoice.OfTool != nil {
+			// structured output 已强制 schema 工具：忽略不兼容的 hosted tool_choice，继续转发。
+			slog.Warn("structured output 与 hosted tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
+				"structured_tool", out.ToolChoice.OfTool.Name,
+				"tool_choice_type", *tc.GetType())
+			applyParallelToolChoice(out, req)
+			return nil
+		}
 		return fmt.Errorf("unsupported tool_choice %q: hosted tools are not supported by this Anthropic backend", *tc.GetType())
 	case tc.OfMcpTool != nil:
+		if out.ToolChoice.OfTool != nil {
+			slog.Warn("structured output 与 MCP tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
+				"structured_tool", out.ToolChoice.OfTool.Name,
+				"tool_choice_type", *tc.GetType())
+			applyParallelToolChoice(out, req)
+			return nil
+		}
 		return fmt.Errorf("unsupported tool_choice %q: MCP tool choice is not supported by this Anthropic backend", *tc.GetType())
 	case tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
+		if out.ToolChoice.OfTool != nil {
+			slog.Warn("structured output 与 programmatic tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
+				"structured_tool", out.ToolChoice.OfTool.Name)
+			applyParallelToolChoice(out, req)
+			return nil
+		}
 		return fmt.Errorf("unsupported tool_choice %q: programmatic tool calling is not supported by this Anthropic backend", *tc.GetType())
 	}
 	if tc.OfAllowedTools != nil {
@@ -1602,7 +1623,11 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 			if err != nil {
 				return err
 			}
-			return fmt.Errorf("structured output cannot be combined with allowed_tools: Anthropic has no equivalent constrained forced-tool mode")
+			// Anthropic 无法同时表达 schema 强制工具 + allowed_tools：优先保留 structured output。
+			slog.Warn("structured output 与 allowed_tools 冲突，保留 schema 强制工具并忽略 allowed_tools",
+				"structured_tool", out.ToolChoice.OfTool.Name)
+			applyParallelToolChoice(out, req)
+			return nil
 		}
 		if err := applyAllowedTools(out, req.Tools, tc.OfAllowedTools); err != nil {
 			return err
@@ -1617,7 +1642,11 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 		if structuredToolChoiceEquivalent(out.ToolChoice.OfTool.Name, tc) {
 			return nil
 		}
-		return fmt.Errorf("structured output cannot be combined with explicit tool_choice: Anthropic has no equivalent forced-tool mode")
+		// Anthropic 无法同时表达 schema 强制工具与其它显式 tool_choice：优先保留 structured output，保证可转发。
+		slog.Warn("structured output 与显式 tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
+			"structured_tool", out.ToolChoice.OfTool.Name)
+		applyParallelToolChoice(out, req)
+		return nil
 	}
 	defer applyParallelToolChoice(out, req)
 	if tc.OfFunctionTool != nil {

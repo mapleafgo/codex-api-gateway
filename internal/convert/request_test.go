@@ -1431,7 +1431,7 @@ func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
 	}
 }
 
-func TestStructuredOutputRejectsAllowedToolsWithoutEquivalent(t *testing.T) {
+func TestStructuredOutputPrefersSchemaOverAllowedTools(t *testing.T) {
 	for _, mode := range []string{"auto", "required"} {
 		t.Run(mode, func(t *testing.T) {
 			req := mustReq(t, `{
@@ -1442,15 +1442,18 @@ func TestStructuredOutputRejectsAllowedToolsWithoutEquivalent(t *testing.T) {
 				"tool_choice":{"type":"allowed_tools","mode":"`+mode+`","tools":[{"type":"function","name":"lookup"}]}
 			}`)
 
-			_, _, err := ToAnthropic(req, &config.Config{})
-			if err == nil || !strings.Contains(err.Error(), "structured output cannot be combined with allowed_tools") {
-				t.Fatalf("expected structured-output allowed_tools error, got %v", err)
+			out, _, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatalf("expected degrade success, got %v", err)
+			}
+			if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "result" {
+				t.Fatalf("want forced schema tool result, got %+v", out.ToolChoice)
 			}
 		})
 	}
 }
 
-func TestStructuredOutputRejectsIncompatibleExplicitToolChoice(t *testing.T) {
+func TestStructuredOutputPrefersSchemaOverIncompatibleExplicitToolChoice(t *testing.T) {
 	tests := []struct {
 		name       string
 		tools      string
@@ -1478,9 +1481,12 @@ func TestStructuredOutputRejectsIncompatibleExplicitToolChoice(t *testing.T) {
 				"tool_choice":`+tt.toolChoice+`
 			}`)
 
-			_, _, err := ToAnthropic(req, &config.Config{})
-			if err == nil {
-				t.Fatal("structured output must reject an explicit incompatible tool_choice")
+			out, _, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatalf("expected degrade success, got %v", err)
+			}
+			if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "result" {
+				t.Fatalf("want forced schema tool result, got %+v", out.ToolChoice)
 			}
 		})
 	}
