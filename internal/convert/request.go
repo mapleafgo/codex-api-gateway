@@ -1496,13 +1496,20 @@ func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 	}
 }
 
-// reasoningEffortToOutputConfig 把 OpenAI reasoning effort 透传到 Anthropic output_config.effort。
+// reasoningEffortToOutputConfig 把 OpenAI reasoning.effort 映射到 Anthropic
+// output_config.effort。覆盖 Anthropic 全部五档：
+//
+//	none → thinking disabled（不走本表）
+//	low/medium/high/xhigh/max → 同名透传
+//
+// 键与值均从官方 SDK 常量派生，禁止裸字符串。
+// OpenAI 的 minimal 不单独映射（按产品要求不补）。
 var reasoningEffortToOutputConfig = map[string]anthropic.OutputConfigEffort{
-	"low":    anthropic.OutputConfigEffortLow,
-	"medium": anthropic.OutputConfigEffortMedium,
-	"high":   anthropic.OutputConfigEffortHigh,
-	"xhigh":  anthropic.OutputConfigEffortXhigh,
-	"max":    anthropic.OutputConfigEffortMax,
+	model.ReasoningEffortLow:    anthropic.OutputConfigEffortLow,
+	model.ReasoningEffortMedium: anthropic.OutputConfigEffortMedium,
+	model.ReasoningEffortHigh:   anthropic.OutputConfigEffortHigh,
+	model.ReasoningEffortXhigh:  anthropic.OutputConfigEffortXhigh,
+	model.ReasoningEffortMax:    anthropic.OutputConfigEffortMax,
 }
 
 func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
@@ -1531,7 +1538,12 @@ func applyReasoning(out *anthropic.MessageNewParams, req *oairesponses.ResponseN
 	// 映射 output_config.effort：语义级别让模型自行决定 thinking 深度。
 	if mapped, ok := reasoningEffortToOutputConfig[effort]; ok {
 		out.OutputConfig.Effort = mapped
+		return
 	}
+	// 未知档位仍开 thinking，但不伪造 output_config.effort，交上游决定。
+	slog.Debug("未知 reasoning.effort，仅启用 thinking，不写 output_config.effort",
+		"effort", effort,
+		"impact", "Anthropic 按默认 effort 处理；兼容后端可能静默忽略")
 }
 
 func convertTools(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {

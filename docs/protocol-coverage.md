@@ -396,7 +396,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `temperature` | `temperature` | `supported` | 直接映射 |
 | `top_p` | `top_p` | `supported` | 直接映射 |
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |
-| `reasoning.effort` | `output_config.effort` + `thinking` | `lossy_supported` | 映射到 Anthropic `output_config.effort`（low/medium/high/xhigh），模型自行决定 thinking 深度；兼容后端对不支持的值静默降级 |
+| `reasoning.effort` | `output_config.effort` + `thinking` | `lossy_supported` | `none`→thinking disabled；`low`/`medium`/`high`/`xhigh`/`max`→同名 Anthropic `output_config.effort`（覆盖官方全部五档）；未知档仅开 thinking 不伪造 effort。兼容后端对不支持的值可静默降级 |
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
 | `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |

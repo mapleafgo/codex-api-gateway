@@ -59,6 +59,11 @@ const (
 
 	ReasoningSummaryConcise = string(oairesponses.ReasoningSummaryConcise)
 	ReasoningEffortNone     = string(oairesponses.ReasoningEffortNone)
+	ReasoningEffortLow      = string(oairesponses.ReasoningEffortLow)
+	ReasoningEffortMedium   = string(oairesponses.ReasoningEffortMedium)
+	ReasoningEffortHigh     = string(oairesponses.ReasoningEffortHigh)
+	ReasoningEffortXhigh    = string(oairesponses.ReasoningEffortXhigh)
+	ReasoningEffortMax      = string(oairesponses.ReasoningEffortMax)
 
 	AssistantPhaseCommentary  = string(oairesponses.EasyInputMessagePhaseCommentary)
 	AssistantPhaseFinalAnswer = string(oairesponses.EasyInputMessagePhaseFinalAnswer)

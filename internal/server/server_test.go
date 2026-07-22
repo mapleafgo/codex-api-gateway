@@ -818,9 +818,16 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	if im, ok := m0["input_modalities"]; !ok || !strings.Contains(string(im), "image") {
 		t.Fatalf("input_modalities 应含 image, got: %v (present=%v)", string(m0["input_modalities"]), ok)
 	}
-	// supported_reasoning_levels 非空，含 medium
-	if srl, ok := m0["supported_reasoning_levels"]; !ok || !strings.Contains(string(srl), "medium") {
-		t.Fatalf("supported_reasoning_levels 应含 medium, got: %v (present=%v)", string(m0["supported_reasoning_levels"]), ok)
+	// supported_reasoning_levels 覆盖 Anthropic 全档：none/low/medium/high/xhigh/max
+	if srl, ok := m0["supported_reasoning_levels"]; !ok {
+		t.Fatal("supported_reasoning_levels 缺失")
+	} else {
+		s := string(srl)
+		for _, e := range []string{"none", "low", "medium", "high", "xhigh", "max"} {
+			if !strings.Contains(s, e) {
+				t.Fatalf("supported_reasoning_levels 应含 %s, got: %v", e, s)
+			}
+		}
 	}
 	// truncation_policy.limit 对齐官方固定 10000（工具输出截断阈值，不随 context_window 变化）
 	if tp, ok := m0["truncation_policy"]; !ok || !strings.Contains(string(tp), "10000") {

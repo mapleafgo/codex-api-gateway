@@ -219,13 +219,16 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 }
 
 // defaultReasoningLevels 返回网关默认注入的 reasoning effort 预设列表。
-// 空 [] 合法但表示模型不支持 reasoning；这里给出常规档位，不开放 per-slug 覆盖。
+// 覆盖 Anthropic output_config.effort 全部档位，并保留 none 关闭思考。
+// 空 [] 合法但表示模型不支持 reasoning；不开放 per-slug 覆盖。
 func defaultReasoningLevels() []model.CodexReasoningLevel {
 	return []model.CodexReasoningLevel{
-		{Effort: "low", Description: "快速响应，轻量推理"},
-		{Effort: "medium", Description: "平衡模式，常规推理"},
-		{Effort: "high", Description: "深入推理，适合复杂任务"},
-		{Effort: "xhigh", Description: "超高强度推理"},
+		{Effort: model.ReasoningEffortNone, Description: "关闭推理"},
+		{Effort: model.ReasoningEffortLow, Description: "快速响应，轻量推理"},
+		{Effort: model.ReasoningEffortMedium, Description: "平衡模式，常规推理"},
+		{Effort: model.ReasoningEffortHigh, Description: "深入推理，适合复杂任务"},
+		{Effort: model.ReasoningEffortXhigh, Description: "超高强度推理"},
+		{Effort: model.ReasoningEffortMax, Description: "最大强度推理"},
 	}
 }
 

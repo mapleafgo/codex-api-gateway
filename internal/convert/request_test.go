@@ -84,6 +84,58 @@ func TestReasoningEffortMaxMapsToOutputConfigMax(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortXhighMapsToOutputConfigXhigh(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"xhigh"},"stream":true}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OutputConfig.Effort != anthropic.OutputConfigEffortXhigh {
+		t.Fatalf("expected output_config.effort=xhigh, got %q", out.OutputConfig.Effort)
+	}
+}
+
+func TestReasoningEffortAllAnthropicLevels(t *testing.T) {
+	// Anthropic OutputConfigEffort 官方五档 + none 关闭，须全部覆盖。
+	cases := []struct {
+		effort string
+		want   anthropic.OutputConfigEffort
+		off    bool
+	}{
+		{"none", "", true},
+		{"low", anthropic.OutputConfigEffortLow, false},
+		{"medium", anthropic.OutputConfigEffortMedium, false},
+		{"high", anthropic.OutputConfigEffortHigh, false},
+		{"xhigh", anthropic.OutputConfigEffortXhigh, false},
+		{"max", anthropic.OutputConfigEffortMax, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.effort, func(t *testing.T) {
+			body := `{"model":"gpt-5","input":"hi","reasoning":{"effort":"` + tc.effort + `"},"stream":true}`
+			req := mustReq(t, body)
+			out, _, err := ToAnthropic(req, &config.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.off {
+				if out.Thinking.OfDisabled == nil {
+					t.Fatal("none should disable thinking")
+				}
+				if out.OutputConfig.Effort != "" {
+					t.Fatalf("none must not set effort, got %q", out.OutputConfig.Effort)
+				}
+				return
+			}
+			if out.OutputConfig.Effort != tc.want {
+				t.Fatalf("effort=%s got %q want %q", tc.effort, out.OutputConfig.Effort, tc.want)
+			}
+			if out.Thinking.OfDisabled != nil {
+				t.Fatalf("effort=%s should enable thinking", tc.effort)
+			}
+		})
+	}
+}
+
 func TestReasoningEffortNoneDisablesThinking(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none"},"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
