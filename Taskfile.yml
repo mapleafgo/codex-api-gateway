@@ -28,32 +28,38 @@ tasks:
   cli-linux-amd64:
     desc: Build cli binary for linux amd64
     cmds:
-      - GOOS=linux GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-linux-amd64 ./cmd/server
+      - mkdir -p bin
+      - GOOS=linux GOARCH=amd64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-linux-amd64 ./cmd/server
 
   cli-linux-arm64:
     desc: Build cli binary for linux arm64
     cmds:
-      - GOOS=linux GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-linux-arm64 ./cmd/server
+      - mkdir -p bin
+      - GOOS=linux GOARCH=arm64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-linux-arm64 ./cmd/server
 
   cli-darwin-amd64:
     desc: Build cli binary for darwin amd64
     cmds:
-      - GOOS=darwin GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-darwin-amd64 ./cmd/server
+      - mkdir -p bin
+      - GOOS=darwin GOARCH=amd64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-darwin-amd64 ./cmd/server
 
   cli-darwin-arm64:
     desc: Build cli binary for darwin arm64
     cmds:
-      - GOOS=darwin GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-darwin-arm64 ./cmd/server
+      - mkdir -p bin
+      - GOOS=darwin GOARCH=arm64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-darwin-arm64 ./cmd/server
 
   cli-windows-amd64:
     desc: Build cli binary for windows amd64
     cmds:
-      - GOOS=windows GOARCH=amd64 go build -ldflags '-w -s' -o {{.BINARY}}-windows-amd64.exe ./cmd/server
+      - mkdir -p bin
+      - GOOS=windows GOARCH=amd64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-windows-amd64.exe ./cmd/server
 
   cli-windows-arm64:
     desc: Build cli binary for windows arm64
     cmds:
-      - GOOS=windows GOARCH=arm64 go build -ldflags '-w -s' -o {{.BINARY}}-windows-arm64.exe ./cmd/server
+      - mkdir -p bin
+      - GOOS=windows GOARCH=arm64 go build -ldflags '-w -s' -o bin/{{.BINARY}}-windows-arm64.exe ./cmd/server
 
   cli-all:
     desc: Build all cli binaries
