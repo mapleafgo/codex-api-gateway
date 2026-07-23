@@ -73,7 +73,7 @@ func (b *Breaker) DegradeCount() int {
 }
 
 // Allow reports whether a request may proceed. In circuitOpen state it
-// transitions to halfOpen after the cooldown elapses.
+// transitions to halfOpen after the circuit_interval elapses.
 func (b *Breaker) Allow() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -100,7 +100,7 @@ func (b *Breaker) Allow() bool {
 // RecordFailure records a failure and returns the new State.
 // normal -> degraded (after degradeThreshold consecutive failures)
 // degraded -> circuitOpen (after degradeThreshold more consecutive failures)
-// halfOpen probe failure -> circuitOpen (cooldown reset)
+// halfOpen probe failure -> circuitOpen (circuit_interval reset)
 func (b *Breaker) RecordFailure() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
