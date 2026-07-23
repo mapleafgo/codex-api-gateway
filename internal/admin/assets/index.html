@@ -215,18 +215,34 @@ html[data-theme="dark"] .ui-btn-primary { background: var(--signal); border-colo
 }
 .ui-filters {
   margin-left: auto;
-  display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
-  min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  min-width: 0; max-width: 100%;
 }
+/* 筛选栏内的自定义 select 不得继承全局 .ui-sel { width:100% }，否则窄屏会一行一个撑满 */
+.ui-filters .ui-sel,
 .ui-filters .ui-input,
 .ui-filters .ui-select {
-  width: 132px; min-width: 0; flex: 0 1 auto;
+  width: 132px; min-width: 0; flex: 0 0 auto;
 }
 .ui-filters .ui-select.ui-code-filter { width: 96px; }
 @media (max-width: 1100px) {
-  .ui-filters { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+  .ui-filters {
+    margin-left: 0;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .ui-filters .ui-sel,
   .ui-filters .ui-input,
-  .ui-filters .ui-select { width: 120px; }
+  .ui-filters .ui-select {
+    width: auto; min-width: 0; max-width: none; flex: none;
+  }
+}
+@media (min-width: 640px) and (max-width: 1100px) {
+  .ui-filters {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 .ui-tip { position: relative; display: inline-flex; }
 .gw-tooltip {
