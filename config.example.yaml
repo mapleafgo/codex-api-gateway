@@ -106,4 +106,3 @@ sources:
   #  backend_type: r
   #  model_map: { gpt-5: gpt-5 }
   #  default_model: gpt-5
-      circuit_interval: 10s

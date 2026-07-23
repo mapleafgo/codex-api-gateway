@@ -127,7 +127,7 @@ type Source struct {
 }
 
 // NormalizeBackendType normalizes and validates the backend_type value.
-// Returns normalized a/c or error if invalid.
+// Returns normalized a/c/r or error if invalid.
 func NormalizeBackendType(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	switch s {

@@ -886,3 +886,50 @@ func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
 		t.Fatalf("want fallback reasoning_content: %+v", out.Messages)
 	}
 }
+
+func TestChatFunctionArgumentsNonJSONWrapped(t *testing.T) {
+	// 非 JSON arguments 不得原样透传：MiMo prefill 会再 parse，报 unexpected end of data。
+	out := mustChat(t, `{
+		"model":"gpt-5",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"shell","arguments":"not-json"}
+		],
+		"stream":true
+	}`, "m")
+	found := false
+	for _, m := range out.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name != "shell" {
+				continue
+			}
+			found = true
+			if !json.Valid([]byte(tc.Function.Arguments)) {
+				t.Fatalf("arguments not valid JSON: %q", tc.Function.Arguments)
+			}
+			var wrap map[string]string
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &wrap); err != nil || wrap["raw"] != "not-json" {
+				t.Fatalf("want {\"raw\":\"not-json\"}, got %s", tc.Function.Arguments)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("tool_call not found")
+	}
+}
+
+func TestChatFunctionArgumentsValidJSONPassthrough(t *testing.T) {
+	out := mustChat(t, `{
+		"model":"gpt-5",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"get","arguments":"{\"city\":\"x\"}"}
+		],
+		"stream":true
+	}`, "m")
+	for _, m := range out.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name == "get" && tc.Function.Arguments != `{"city":"x"}` {
+				t.Fatalf("want passthrough object string, got %s", tc.Function.Arguments)
+			}
+		}
+	}
+}

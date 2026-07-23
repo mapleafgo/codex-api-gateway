@@ -2483,7 +2483,8 @@ func TestFunctionCallArgumentsSeedTailPassthrough(t *testing.T) {
 }
 
 func TestFunctionCallArgumentsNonObjectAsString(t *testing.T) {
-	// 解不出 object 时原串当 string 塞进 input，不跳过、不改 {}。
+	// 解不出 object 时包成 {"raw":...}，避免 Grok 等兼容端 400
+	// （messages[N].content[M] 缺少有效 id、name 或 object input）。
 	req := mustReq(t, `{
 		"model":"gpt-5",
 		"input":[
@@ -2500,14 +2501,102 @@ func TestFunctionCallArgumentsNonObjectAsString(t *testing.T) {
 		for _, b := range m.Content {
 			if b.OfToolUse != nil && b.OfToolUse.Name == "shell" {
 				found = true
-				if s, ok := b.OfToolUse.Input.(string); !ok || s != "not-json" {
-					t.Fatalf("want string input not-json, got %#v", b.OfToolUse.Input)
+				raw, err := json.Marshal(b.OfToolUse.Input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var wrap map[string]string
+				if err := json.Unmarshal(raw, &wrap); err != nil || wrap["raw"] != "not-json" {
+					t.Fatalf("want {\"raw\":\"not-json\"}, got %s", raw)
 				}
 			}
 		}
 	}
 	if !found {
 		t.Fatal("expected tool_use")
+	}
+}
+
+
+func TestAppendToolUseSkipsEmptyIDOrName(t *testing.T) {
+	out := &anthropic.MessageNewParams{}
+	if err := appendToolUse(out, "", "shell", map[string]any{"x": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendToolUse(out, "c1", "", map[string]any{"x": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 0 {
+		t.Fatalf("expected skip empty id/name, got %+v", out.Messages)
+	}
+	if err := appendToolUse(out, "c1", "shell", "not-json"); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Messages) != 1 || len(out.Messages[0].Content) != 1 {
+		t.Fatalf("expected one tool_use: %+v", out.Messages)
+	}
+	tu := out.Messages[0].Content[0].OfToolUse
+	if tu == nil {
+		t.Fatal("nil tool_use")
+	}
+	raw, _ := json.Marshal(tu.Input)
+	var wrap map[string]string
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap["raw"] != "not-json" {
+		t.Fatalf("want object wrap, got %s", raw)
+	}
+}
+
+func TestToolUseInputAlwaysObjectOnWire(t *testing.T) {
+	// 模拟 Grok 校验：序列化后 tool_use.input 必须是 object。
+	req := mustReq(t, `{
+		"model":"gpt-5",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"[1,2,3]"},
+			{"type":"function_call_output","call_id":"c1","output":"ok"},
+			{"type":"function_call","call_id":"c2","name":"exec_command","arguments":"plain text"},
+			{"type":"function_call_output","call_id":"c2","output":"ok"}
+		],
+		"stream":true
+	}`)
+	out, _, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type  string          `json:"type"`
+				ID    string          `json:"id"`
+				Name  string          `json:"name"`
+				Input json.RawMessage `json:"input"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for mi, m := range wire.Messages {
+		for ci, c := range m.Content {
+			if c.Type != "tool_use" {
+				continue
+			}
+			n++
+			if c.ID == "" || c.Name == "" {
+				t.Fatalf("messages[%d].content[%d] empty id/name", mi, ci)
+			}
+			if len(c.Input) == 0 || c.Input[0] != '{' {
+				t.Fatalf("messages[%d].content[%d] input not object: %s", mi, ci, c.Input)
+			}
+		}
+	}
+	if n != 2 {
+		t.Fatalf("tool_use count=%d want 2", n)
 	}
 }
 
