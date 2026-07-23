@@ -124,7 +124,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // 网关默认值策略（逐项确认后的结论）：
 //
 //	必填字段：
-//	  - base_instructions：来自 config base_instructions_file（非空时整体替换 Codex
+//	  - base_instructions：来自 config 同级 base_instructions.md（非空时整体替换 Codex
 //	    内置 BASE_INSTRUCTIONS，用于注入网关级指令补强）；为空则沿用 Codex 内置指令。
 //	  - apply_patch_tool_type="freeform"：启用 apply_patch 工具，否则只能靠 shell 改文件。
 //	  - supports_reasoning_summaries=true：接受 reasoning.summary 参数。
@@ -283,8 +283,20 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reqStart := time.Now()
+	// 防误伤：限制请求体大小，避免超大 body 撑爆本机内存。
+	maxBody := s.holder.Current().Server.MaxBodyBytes()
+	if maxBody > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// MaxBytesReader 超限时返回 *http.MaxBytesError
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			slog.Warn("响应请求体超过上限", "max_body_bytes", maxBody, "error", err)
+			http.Error(w, fmt.Sprintf("request body too large (max %d MiB)", maxBody>>20), http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Warn("读取响应请求体失败", "error", err)
 		http.Error(w, "read request: "+err.Error(), http.StatusBadRequest)
 		return

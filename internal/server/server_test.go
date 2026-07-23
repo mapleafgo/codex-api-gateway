@@ -452,8 +452,8 @@ func TestResponsesCompletedEmittedOnce(t *testing.T) {
 	}
 }
 
-// TestModelsEndpointBaseInstructionsFromConfig 锁定 base_instructions_file 加载链路：
-// config.yaml 配置 base_instructions_file 后，Load 读取文件内容写入 cfg.BaseInstructions，
+// TestModelsEndpointBaseInstructionsFromConfig 锁定基线指令链路：
+// Load 读取 config 同级 base_instructions.md 写入 cfg.BaseInstructions，
 // /v1/models 返回的每个 ModelInfo.base_instructions 应等于文件内容。
 // 取代旧 TestResponsesAppendsGlobalSystemSuffix：base_instructions 经客户端注入，
 // 不再在转换层追加 system block。
@@ -837,7 +837,7 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	if dn, ok := m0["display_name"]; !ok || strings.TrimSpace(string(dn)) != `"GPT-5"` {
 		t.Fatalf(`display_name 应为 "GPT-5", got: %v (present=%v)`, string(m0["display_name"]), ok)
 	}
-	// base_instructions 默认为空（未配置 base_instructions_file 时，沿用 Codex 内置指令）
+	// base_instructions 默认为空（config 同级无 base_instructions.md 时，沿用 Codex 内置指令）
 	if bi, ok := m0["base_instructions"]; !ok || strings.TrimSpace(string(bi)) != `""` {
 		t.Fatalf("base_instructions 应为空串, got: %v (present=%v)", string(m0["base_instructions"]), ok)
 	}
@@ -1120,5 +1120,36 @@ func TestModelsEndpointSupportsSearchOverride(t *testing.T) {
 	}
 	if m0.WebSearchToolType != "" {
 		t.Fatalf("web_search_tool_type should clear when search disabled, got %q", m0.WebSearchToolType)
+	}
+}
+
+func TestResponsesRejectsOversizedBody(t *testing.T) {
+	cfg := &config.Config{
+		Server:  config.ServerCfg{MaxBodyMB: 1}, // 1 MiB
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:1"}},
+	}
+	// 补默认，对齐生产 Load 路径。
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// Validate 会把 MaxBodyMB=1 保留；若写 0 会变 32。这里强制 1。
+	cfg.Server.MaxBodyMB = 1
+
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 构造略大于 1 MiB 的 JSON body
+	big := strings.Repeat("x", 1<<20+64)
+	payload := `{"model":"gpt-5","input":"` + big + `","stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 413; body=%s", resp.StatusCode, body)
 	}
 }

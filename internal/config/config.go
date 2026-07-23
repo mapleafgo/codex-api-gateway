@@ -18,7 +18,13 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-const envPrefix = "CODEX_API_GATEWAY_"
+const (
+	envPrefix = "CODEX_API_GATEWAY_"
+
+	// BaseInstructionsFileName 是与 config.yaml 同级的基线指令文件名。
+	// 不走配置项；管理页与 Load 均固定读写此文件。
+	BaseInstructionsFileName = "base_instructions.md"
+)
 
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
@@ -28,14 +34,7 @@ type Config struct {
 	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
 	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker,omitempty"`
 	Cache   CacheCfg   `koanf:"cache" yaml:"cache,omitempty"`
-	// BaseInstructionsFile 指向一个文本文件，其内容作为 Codex ModelInfo 的
-	// base_instructions 返回给客户端（非空时整体替换 Codex 内置 BASE_INSTRUCTIONS）。
-	// 用于注入网关级指令补强（如 skill 加载纪律）。相对路径基于 config 文件所在目录解析。
-	// 为空则 base_instructions 返回空串，沿用 Codex 内置指令。
-	// 取代已废弃的 system_suffix：后者在转换层追加 system block，需要每个上游请求都
-	// 重传指令；base_instructions 由 Codex 客户端缓存并在 system 中复用，prompt cache 更友好。
-	BaseInstructionsFile string   `koanf:"base_instructions_file" yaml:"base_instructions_file,omitempty"`
-	Sources              []Source `koanf:"sources" yaml:"sources,omitempty"`
+	Sources []Source   `koanf:"sources" yaml:"sources,omitempty"`
 
 	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
 	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
@@ -48,14 +47,22 @@ type Config struct {
 	// 不参与 YAML 字段本身；Load 从文档顺序提取，写回时按此顺序序列化。
 	ModelSlugOrder []string `koanf:"-" yaml:"-"`
 
-	// BaseInstructions 是 BaseInstructionsFile 加载后的内容，不参与 YAML 序列化。
-	// 由 Load 一次性读入；为空则 /v1/models 返回空 base_instructions。
+	// BaseInstructions 是与 config.yaml 同级的 base_instructions.md 加载内容，
+	// 不参与 YAML 序列化。由 Load 一次性读入；为空则 /v1/models 返回空 base_instructions。
+	// 非空时整体替换 Codex 内置 BASE_INSTRUCTIONS（由客户端注入，prompt cache 友好）。
+	// 取代已废弃的 system_suffix / base_instructions_file 配置项。
 	BaseInstructions string `koanf:"-" yaml:"-"`
 }
 
 // ServerCfg configures the HTTP listener.
 type ServerCfg struct {
 	Listen string `koanf:"listen" yaml:"listen"`
+	// MaxBodyMB 是 /v1/responses 请求体大小上限（MiB）。0 表示走默认值。
+	// 本机场景用于防止超大历史/图片 base64 把进程内存打爆，不是公网限流。
+	MaxBodyMB int `koanf:"max_body_mb" yaml:"max_body_mb,omitempty"`
+	// ReadHeaderTimeout 读完请求头的最长时间。防止慢连/半开连接长期占用。
+	// 不影响已建立的 SSE 长流写超时（写超时仍刻意不设）。
+	ReadHeaderTimeout Duration `koanf:"read_header_timeout" yaml:"read_header_timeout,omitempty"`
 }
 
 // LoggingCfg 配置进程级结构化日志。
@@ -64,6 +71,19 @@ type LoggingCfg struct {
 	Format string `koanf:"format" yaml:"format,omitempty"`
 	// File 非空时日志写入该文件（追加，进程生命周期常开）；为空则写 stderr。
 	File string `koanf:"file" yaml:"file,omitempty"`
+	// MaxSizeMB 单日志文件滚动阈值（MiB）。仅 File 非空时生效；0 表示走默认值。
+	// 超过后将当前文件轮转为 .1/.2…，避免本机 gateway.log 无限膨胀。
+	MaxSizeMB int `koanf:"max_size_mb" yaml:"max_size_mb,omitempty"`
+	// MaxBackups 滚动后保留的历史文件个数（不含当前写入文件）。0 表示走默认值。
+	MaxBackups int `koanf:"max_backups" yaml:"max_backups,omitempty"`
+}
+
+// MaxBodyBytes 返回请求体上限字节数。调用方应在 validate 之后使用。
+func (s ServerCfg) MaxBodyBytes() int64 {
+	if s.MaxBodyMB <= 0 {
+		return 0
+	}
+	return int64(s.MaxBodyMB) << 20
 }
 
 // CacheCfg 配置 Anthropic prompt cache 的 TTL。
@@ -142,21 +162,19 @@ type ModelOverride struct {
 // 不参与序列化；models 按 ModelSlugOrder（或 ConfiguredModelSlugs）有序输出。
 func (c Config) MarshalYAML() (any, error) {
 	type out struct {
-		Server               ServerCfg    `yaml:"server"`
-		Logging              LoggingCfg   `yaml:"logging,omitempty"`
-		Breaker              BreakerCfg   `yaml:"breaker,omitempty"`
-		Cache                CacheCfg     `yaml:"cache,omitempty"`
-		BaseInstructionsFile string       `yaml:"base_instructions_file,omitempty"`
-		Sources              []Source     `yaml:"sources,omitempty"`
-		Models               *yamlv3.Node `yaml:"models,omitempty"`
+		Server  ServerCfg    `yaml:"server"`
+		Logging LoggingCfg   `yaml:"logging,omitempty"`
+		Breaker BreakerCfg   `yaml:"breaker,omitempty"`
+		Cache   CacheCfg     `yaml:"cache,omitempty"`
+		Sources []Source     `yaml:"sources,omitempty"`
+		Models  *yamlv3.Node `yaml:"models,omitempty"`
 	}
 	o := out{
-		Server:               c.Server,
-		Logging:              c.Logging,
-		Breaker:              c.Breaker,
-		Cache:                c.Cache,
-		BaseInstructionsFile: c.BaseInstructionsFile,
-		Sources:              c.Sources,
+		Server:  c.Server,
+		Logging: c.Logging,
+		Breaker: c.Breaker,
+		Cache:   c.Cache,
+		Sources: c.Sources,
 	}
 	if n := orderedModelsYAMLNode(c); n != nil {
 		o.Models = n
@@ -253,22 +271,19 @@ func Load(path string) (*Config, error) {
 	}
 	// 以下日志应在调用方完成 logging.Configure 后输出，否则会走 Go 默认
 	// handler 直接打到终端（见 cmd/server/main.go 的两阶段初始化）。
-	if cfg.BaseInstructionsFile != "" {
-		p := cfg.BaseInstructionsFile
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(filepath.Dir(path), p)
-		}
+	// 基线指令：固定读取与 config.yaml 同级的 base_instructions.md。
+	// 不在配置项中声明路径；文件缺失时降级为空串（沿用 Codex 内置指令）。
+	{
+		p := filepath.Join(filepath.Dir(path), BaseInstructionsFileName)
 		b, err := os.ReadFile(p)
 		if err != nil {
-			// 降级策略：base_instructions_file 读取失败不阻断启动，
-			// BaseInstructions 保持空串（沿用 Codex 内置指令）。
-			slog.Info("base_instructions_file 读取失败，降级为空串（沿用 Codex 内置指令）",
-				"path", p,
-				"base_instructions_file", cfg.BaseInstructionsFile,
-				"error", err)
+			if !os.IsNotExist(err) {
+				slog.Info("base_instructions.md 读取失败，降级为空串（沿用 Codex 内置指令）",
+					"path", p, "error", err)
+			}
 		} else {
 			cfg.BaseInstructions = string(b)
-			slog.Info("加载 base_instructions 文件", "path", p, "bytes", len(cfg.BaseInstructions))
+			slog.Info("加载基线指令文件", "path", p, "bytes", len(cfg.BaseInstructions))
 		}
 	}
 	slog.Info("配置加载完成",
@@ -312,12 +327,29 @@ func defaultLoggingCfg() LoggingCfg {
 }
 
 // applyLoggingDefaults 补齐 logging 段的默认值（与 validate 共用，避免分叉）。
+// applyServerDefaults 补齐 server 段防误伤默认值（本机场景）。
+func applyServerDefaults(s *ServerCfg) {
+	if s.MaxBodyMB == 0 {
+		s.MaxBodyMB = 32 // 32 MiB：覆盖长历史 + 少量图片；仍能挡住误传巨型 body
+	}
+	if s.ReadHeaderTimeout == 0 {
+		s.ReadHeaderTimeout = Duration(10 * time.Second)
+	}
+}
+
 func applyLoggingDefaults(l *LoggingCfg) {
 	if l.Level == "" {
 		l.Level = "info"
 	}
 	if l.Format == "" {
 		l.Format = "text"
+	}
+	// 仅文件日志需要滚动参数；stderr 模式忽略。
+	if l.MaxSizeMB == 0 {
+		l.MaxSizeMB = 50
+	}
+	if l.MaxBackups == 0 {
+		l.MaxBackups = 3
 	}
 }
 
@@ -334,9 +366,13 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		target any
 	}{
 		{"server.listen", &cfg.Server.Listen},
+		{"server.max_body_mb", &cfg.Server.MaxBodyMB},
+		{"server.read_header_timeout", &cfg.Server.ReadHeaderTimeout},
 		{"logging.level", &cfg.Logging.Level},
 		{"logging.format", &cfg.Logging.Format},
 		{"logging.file", &cfg.Logging.File},
+		{"logging.max_size_mb", &cfg.Logging.MaxSizeMB},
+		{"logging.max_backups", &cfg.Logging.MaxBackups},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
 		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
@@ -433,6 +469,7 @@ func (c *Config) validate() error {
 		slog.Warn("配置未配置任何上游源，转发请求将返回 503；请在管理页添加 source")
 	}
 	applyLoggingDefaults(&c.Logging)
+	applyServerDefaults(&c.Server)
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -442,6 +479,18 @@ func (c *Config) validate() error {
 	case "text", "json":
 	default:
 		return fmt.Errorf("config: logging.format must be text or json, got %q", c.Logging.Format)
+	}
+	if c.Logging.MaxSizeMB < 0 {
+		return fmt.Errorf("config: logging.max_size_mb must be >= 0, got %d", c.Logging.MaxSizeMB)
+	}
+	if c.Logging.MaxBackups < 0 {
+		return fmt.Errorf("config: logging.max_backups must be >= 0, got %d", c.Logging.MaxBackups)
+	}
+	if c.Server.MaxBodyMB < 0 {
+		return fmt.Errorf("config: server.max_body_mb must be >= 0, got %d", c.Server.MaxBodyMB)
+	}
+	if c.Server.ReadHeaderTimeout < 0 {
+		return fmt.Errorf("config: server.read_header_timeout must be >= 0")
 	}
 	if c.Cache.TTL == "" {
 		c.Cache.TTL = "5m"
@@ -585,7 +634,9 @@ func scanDeprecated(m map[string]any) {
 		case "failure_threshold":
 			slog.Warn("忽略已废弃配置字段", "field", "failure_threshold", "replacement", "degrade_threshold")
 		case "system_suffix":
-			slog.Warn("忽略已废弃配置字段", "field", "system_suffix", "replacement", "base_instructions_file")
+			slog.Warn("忽略已废弃配置字段", "field", "system_suffix", "replacement", "base_instructions.md（与 config 同级）")
+		case "base_instructions_file":
+			slog.Warn("忽略已废弃配置字段", "field", "base_instructions_file", "replacement", "将文件移到 config.yaml 同级目录，自动读取 base_instructions.md")
 		}
 		switch sub := v.(type) {
 		case map[string]any:
@@ -666,11 +717,15 @@ const defaultConfigYAML = `# codex-api-gateway 自动生成的默认配置
 # 管理页地址：http://localhost:8383/  （listen 改动后同步）
 server:
   listen: ":8383"
+  # max_body_mb: 32              # /v1/responses 请求体上限（MiB）
+  # read_header_timeout: 10s     # 读完请求头超时；不影响 SSE 长流
 
 logging:
   level: info
   format: text
   # file: gateway.log
+  # max_size_mb: 50              # 单日志文件滚动阈值（MiB，仅 file 模式）
+  # max_backups: 3               # 保留历史日志个数
 `
 
 // WriteDefault 写入最小默认配置到 path。目录不存在时创建。

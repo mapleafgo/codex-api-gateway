@@ -1097,6 +1097,16 @@ html[data-theme="dark"] .ui-select {
                 </div>
               </label>
               <label class="ui-field">
+                <span class="ui-label" x-text="t('maxBodyMb')"></span>
+                <input class="ui-input ui-input-sm mono" type="number" min="1" step="1" x-model.number="cfg.server.max_body_mb" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('maxBodyMbHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('readHeaderTimeout')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.server.read_header_timeout" autocomplete="off" spellcheck="false" placeholder="10s">
+                <span class="ui-hint" x-text="t('readHeaderTimeoutHint')"></span>
+              </label>
+              <label class="ui-field">
                 <span class="ui-label" x-text="t('logLevel')"></span>
                 <div class="ui-sel" x-data="uiSel()" data-field="cfg.logging.level" x-init="model=cfg.logging.level||'info'" x-effect="const v=cfg.logging.level||'info'; if(v!==model) model=v; opts=[{v:'debug',l:t('levelDebug')},{v:'info',l:t('levelInfo')},{v:'warn',l:t('levelWarn')},{v:'error',l:t('levelError')}]">
                   <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
@@ -1117,6 +1127,17 @@ html[data-theme="dark"] .ui-select {
               <label class="ui-field ui-span-2">
                 <span class="ui-label" x-text="t('logFile')"></span>
                 <input class="ui-input ui-input-sm mono" x-model="cfg.logging.file" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('logFileHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('logMaxSizeMb')"></span>
+                <input class="ui-input ui-input-sm mono" type="number" min="1" step="1" x-model.number="cfg.logging.max_size_mb" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('logMaxSizeMbHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('logMaxBackups')"></span>
+                <input class="ui-input ui-input-sm mono" type="number" min="0" step="1" x-model.number="cfg.logging.max_backups" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('logMaxBackupsHint')"></span>
               </label>
             </div>
           </fieldset>
@@ -1172,7 +1193,7 @@ html[data-theme="dark"] .ui-select {
         </div>
       </div>
 
-      <!-- Guidance -->
+      <!-- Base instructions -->
       <div class="ui-config-scroll full" x-show="cfgTab==='guidance'">
         <div class="ui-row">
           <p class="ui-hint" x-text="t('guidanceHint')"></p>
@@ -1320,7 +1341,7 @@ function app() {
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '引导语',
+      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '基线指令',
       addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
       srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
@@ -1331,7 +1352,12 @@ function app() {
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
       globalParams: '全局参数', breaker: '断路器',
       listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
+      maxBodyMb: '请求体上限（MiB）', maxBodyMbHint: '限制 /v1/responses 请求体，防止超大历史/图片撑爆内存',
+      readHeaderTimeout: '读头超时', readHeaderTimeoutHint: '读完请求头的最长时间；不影响 SSE 长流',
       logLevel: '日志级别', logFormat: '日志格式', logFile: '日志文件（空则写 stderr）',
+      logFileHint: '填写路径后写文件；可配合下方滚动参数防止无限膨胀',
+      logMaxSizeMb: '日志滚动大小（MiB）', logMaxSizeMbHint: '仅文件模式生效；单文件超过后滚动',
+      logMaxBackups: '日志备份个数', logMaxBackupsHint: '仅文件模式生效；保留历史 .1/.2… 个数',
       levelDebug: '调试', levelInfo: '信息', levelWarn: '警告', levelError: '错误',
       fmtText: '文本', fmtJson: 'JSON',
       promote: '提升为正常', promoting: '提升中…', runtimePri: '运行优先级',
@@ -1353,9 +1379,9 @@ function app() {
       degradeIntervalHint: '降级后自动恢复为正常的等待时间',
       degradeThresholdHint: '连续失败次数触发熔断', recoverThresholdHint: '半开状态下允许通过的请求数',
       halfOpenProbesHint: '半开状态探测请求数', maxRetriesHint: '失败后最大重试次数（0=不重试）',
-      guidanceHint: '非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，保存后自动热重载。',
-      guidancePlaceholder: '在此编辑引导语…',
-      reload: '重新载入', saving: '保存中…', saveGuidance: '保存引导语',
+      guidanceHint: '固定读取与 config.yaml 同级的 base_instructions.md；非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，保存后自动热重载。',
+      guidancePlaceholder: '在此编辑基线指令…',
+      reload: '重新载入', saving: '保存中…', saveGuidance: '保存基线指令',
       cfgSynced: '配置已同步', cfgDirty: '有未保存的修改', discard: '放弃修改', saveReload: '保存并热重载',
       cancel: '取消', confirm: '确认',
       cardReq: '请求量', cardIn: '总输入', cardOut: '总输出',
@@ -1375,7 +1401,7 @@ function app() {
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Guidance',
+      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Base instructions',
       addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
       srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
@@ -1386,7 +1412,12 @@ function app() {
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
       globalParams: 'Global Parameters', breaker: 'Breaker',
       listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',
+      maxBodyMb: 'Max body (MiB)', maxBodyMbHint: 'Cap /v1/responses body size to avoid huge history/images blowing memory',
+      readHeaderTimeout: 'Read header timeout', readHeaderTimeoutHint: 'Max time to finish reading request headers; does not cut SSE streams',
       logLevel: 'Log level', logFormat: 'Log format', logFile: 'Log file (empty = stderr)',
+      logFileHint: 'When set, logs go to this file; use rotation below to cap growth',
+      logMaxSizeMb: 'Log rotate size (MiB)', logMaxSizeMbHint: 'File mode only; rotate when current file exceeds this',
+      logMaxBackups: 'Log backups', logMaxBackupsHint: 'File mode only; number of rotated history files to keep',
       levelDebug: 'Debug', levelInfo: 'Info', levelWarn: 'Warn', levelError: 'Error',
       fmtText: 'Text', fmtJson: 'JSON',
       promote: 'Promote to normal', promoting: 'Promoting…', runtimePri: 'Runtime priority',
@@ -1409,9 +1440,9 @@ function app() {
       degradeIntervalHint: 'Wait before degraded→normal auto-recovery',
       degradeThresholdHint: 'Consecutive failures to trigger breaker', recoverThresholdHint: 'Requests allowed in half-open state',
       halfOpenProbesHint: 'Half-open probe count', maxRetriesHint: 'Max retries on failure (0=none)',
-      guidanceHint: 'Replaces Codex BASE_INSTRUCTIONS when non-empty. Auto-reloads on save.',
-      guidancePlaceholder: 'Edit guidance here…',
-      reload: 'Reload', saving: 'Saving…', saveGuidance: 'Save guidance',
+      guidanceHint: 'Always uses base_instructions.md next to config.yaml; non-empty content replaces Codex BASE_INSTRUCTIONS. Auto-reloads on save.',
+      guidancePlaceholder: 'Edit base instructions here…',
+      reload: 'Reload', saving: 'Saving…', saveGuidance: 'Save base instructions',
       cfgSynced: 'Config synced', cfgDirty: 'Unsaved changes', discard: 'Discard', saveReload: 'Save & reload',
       cancel: 'Cancel', confirm: 'Confirm',
       cardReq: 'Requests', cardIn: 'Total input', cardOut: 'Total output',
@@ -1449,7 +1480,7 @@ function app() {
     snap: { by_group: [], recent: [] },
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
-    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:[], base_instructions_file:'' },
+    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:[] },
     promoting: '',
     togglingDisabled: '',
     cfgSnapshot: '',
@@ -1698,6 +1729,12 @@ function app() {
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
         });
+        data.server = data.server || {};
+        if (data.server.max_body_mb == null || data.server.max_body_mb === 0) data.server.max_body_mb = 32;
+        if (!data.server.read_header_timeout) data.server.read_header_timeout = '10s';
+        data.logging = data.logging || {};
+        if (data.logging.max_size_mb == null || data.logging.max_size_mb === 0) data.logging.max_size_mb = 50;
+        if (data.logging.max_backups == null) data.logging.max_backups = 3;
         this.cfg = data;
         this.cfgSnapshot = JSON.stringify(this.cfg);
       } catch (e) {
@@ -1718,6 +1755,12 @@ function app() {
         (payload.sources || []).forEach(s => {
           if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
         });
+        payload.server = payload.server || {};
+        payload.server.max_body_mb = Number(payload.server.max_body_mb) || 32;
+        payload.server.read_header_timeout = (payload.server.read_header_timeout || '10s').trim() || '10s';
+        payload.logging = payload.logging || {};
+        payload.logging.max_size_mb = Number(payload.logging.max_size_mb) || 50;
+        payload.logging.max_backups = Math.max(0, Number(payload.logging.max_backups) || 0);
         const r = await fetch('/admin/api/config', {
           method: 'POST', headers: {'content-type':'application/json'},
           body: JSON.stringify(payload),
@@ -1738,7 +1781,7 @@ function app() {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         this.guidance = await r.json();
       } catch (e) {
-        this.notify(this.locale === 'zh' ? '加载引导语失败：' + e.message : 'Load failed: ' + e.message, 'error');
+        this.notify(this.locale === 'zh' ? '加载基线指令失败：' + e.message : 'Load failed: ' + e.message, 'error');
       }
     },
     async saveGuidance() {
@@ -1750,7 +1793,7 @@ function app() {
         });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
-        this.notify(this.locale === 'zh' ? '引导语已保存' : 'Saved', 'success');
+        this.notify(this.locale === 'zh' ? '基线指令已保存' : 'Saved', 'success');
       } catch (e) {
         this.notify(this.locale === 'zh' ? '保存失败：' + e.message : 'Save failed: ' + e.message, 'error');
       } finally {

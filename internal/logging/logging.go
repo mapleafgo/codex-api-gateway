@@ -24,16 +24,16 @@ import (
 func Configure(cfg config.LoggingCfg) error {
 	out := io.Writer(os.Stderr)
 	if cfg.File != "" {
-		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		rf, err := openRotatingFile(cfg.File, cfg.MaxSizeMB, cfg.MaxBackups)
 		if err != nil {
-			return fmt.Errorf("logging: 无法打开日志文件 %s: %w", cfg.File, err)
+			return err
 		}
-		// 先关闭旧文件句柄（若存在且不同于新文件），再切换，避免 fd 泄漏。
-		closeCurrentLogFile(f)
-		out = f
+		// 先关闭旧 writer，再切换，避免 fd 泄漏。
+		closeCurrentLogWriter(rf)
+		out = rf
 	} else {
 		// 退回 stderr：关闭已打开的日志文件。
-		closeCurrentLogFile(nil)
+		closeCurrentLogWriter(nil)
 	}
 	handler := NewHandler(out, cfg)
 	slog.SetDefault(slog.New(handler))
@@ -41,25 +41,24 @@ func Configure(cfg config.LoggingCfg) error {
 	return nil
 }
 
-// currentLogFile 保存当前打开的日志文件句柄，供热重载时关闭旧的，避免 fd 泄漏。
+// currentLogWriter 保存当前文件日志 writer（可能是 *rotatingFile），供热重载关闭旧句柄。
 // 仅由 Configure 在持有锁时读写。
 var (
-	currentLogFileMu sync.Mutex
-	currentLogFile   *os.File
+	currentLogWriterMu sync.Mutex
+	currentLogWriter   io.Closer
 )
 
-// closeCurrentLogFile 关闭当前日志文件句柄（若 next 为 nil 或指向不同文件）。
-// next 非空且等于当前文件时保留，不重复关闭。
-func closeCurrentLogFile(next *os.File) {
-	currentLogFileMu.Lock()
-	defer currentLogFileMu.Unlock()
-	if currentLogFile != nil && (next == nil || next != currentLogFile) {
-		_ = currentLogFile.Close()
+// closeCurrentLogWriter 关闭当前日志 writer（若 next 为 nil 或指向不同对象）。
+func closeCurrentLogWriter(next io.Closer) {
+	currentLogWriterMu.Lock()
+	defer currentLogWriterMu.Unlock()
+	if currentLogWriter != nil && (next == nil || next != currentLogWriter) {
+		_ = currentLogWriter.Close()
 	}
 	if next != nil {
-		currentLogFile = next
+		currentLogWriter = next
 	} else {
-		currentLogFile = nil
+		currentLogWriter = nil
 	}
 }
 

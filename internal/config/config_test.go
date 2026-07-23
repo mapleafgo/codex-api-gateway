@@ -543,26 +543,21 @@ models:
 	}
 }
 
-// TestLoadBaseInstructionsFile 验证 base_instructions_file 文件加载：
-// 相对路径基于 config 文件目录解析，内容写入 cfg.BaseInstructions。
-func TestLoadBaseInstructionsFile(t *testing.T) {
+// TestLoadBaseInstructionsSiblingFile 验证与 config 同级的 base_instructions.md 自动加载。
+func TestLoadBaseInstructionsSiblingFile(t *testing.T) {
 	dir := t.TempDir()
 	const content = "You are a test agent with gateway_guidance."
-	biPath := filepath.Join(dir, "bi.txt")
-	if err := os.WriteFile(biPath, []byte(content), 0644); err != nil {
-		t.Fatalf("write bi file: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, BaseInstructionsFileName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
 server: {listen: ":9090"}
-breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
-base_instructions_file: bi.txt
 sources:
   - name: official
     base_url: https://api.anthropic.com
     api_key: k
-`), 0644)
-
+`), 0o644)
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -570,28 +565,22 @@ sources:
 	if cfg.BaseInstructions != content {
 		t.Fatalf("BaseInstructions = %q, want %q", cfg.BaseInstructions, content)
 	}
-	if cfg.BaseInstructionsFile != "bi.txt" {
-		t.Fatalf("BaseInstructionsFile = %q, want bi.txt", cfg.BaseInstructionsFile)
-	}
 }
 
-// TestLoadBaseInstructionsFileMissing 验证降级策略：文件缺失不阻断启动，
-// BaseInstructions 保持空串（沿用 Codex 内置指令），仅在日志输出 WARN。
-func TestLoadBaseInstructionsFileMissing(t *testing.T) {
+// TestLoadBaseInstructionsMissingSibling 验证文件缺失时降级为空串。
+func TestLoadBaseInstructionsMissingSibling(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
-breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
-base_instructions_file: nope.txt
+server: {listen: ":9090"}
 sources:
   - name: official
     base_url: https://api.anthropic.com
     api_key: k
-`), 0644)
-
+`), 0o644)
 	cfg, err := Load(cfgPath)
 	if err != nil {
-		t.Fatalf("文件缺失应降级而非报错, got: %v", err)
+		t.Fatalf("load: %v", err)
 	}
 	if cfg.BaseInstructions != "" {
 		t.Fatalf("BaseInstructions 应降级为空串, got len=%d", len(cfg.BaseInstructions))
@@ -641,5 +630,68 @@ func TestWriteDefault(t *testing.T) {
 	}
 	if len(cfg.Sources) != 0 {
 		t.Errorf("默认配置应零源，实际 %d", len(cfg.Sources))
+	}
+}
+
+// TestServerAndLoggingSafetyDefaults 验证本机防误伤字段的默认值。
+func TestServerAndLoggingSafetyDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+server:
+  listen: ":9090"
+sources:
+  - name: s1
+    base_url: https://example.com
+`), 0o644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.MaxBodyMB != 32 {
+		t.Fatalf("MaxBodyMB = %d, want 32", cfg.Server.MaxBodyMB)
+	}
+	if time.Duration(cfg.Server.ReadHeaderTimeout) != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 10s", time.Duration(cfg.Server.ReadHeaderTimeout))
+	}
+	if cfg.Server.MaxBodyBytes() != 32<<20 {
+		t.Fatalf("MaxBodyBytes = %d, want %d", cfg.Server.MaxBodyBytes(), 32<<20)
+	}
+	if cfg.Logging.MaxSizeMB != 50 || cfg.Logging.MaxBackups != 3 {
+		t.Fatalf("logging roll defaults = %d/%d, want 50/3", cfg.Logging.MaxSizeMB, cfg.Logging.MaxBackups)
+	}
+}
+
+// TestServerSafetyConfigExplicitValues 验证显式配置不被默认值覆盖。
+func TestServerSafetyConfigExplicitValues(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+server:
+  listen: ":9090"
+  max_body_mb: 8
+  read_header_timeout: 3s
+logging:
+  level: info
+  max_size_mb: 1
+  max_backups: 2
+sources:
+  - name: s1
+    base_url: https://example.com
+`), 0o644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.MaxBodyMB != 8 {
+		t.Fatalf("MaxBodyMB = %d, want 8", cfg.Server.MaxBodyMB)
+	}
+	if time.Duration(cfg.Server.ReadHeaderTimeout) != 3*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 3s", time.Duration(cfg.Server.ReadHeaderTimeout))
+	}
+	if cfg.Logging.MaxSizeMB != 1 || cfg.Logging.MaxBackups != 2 {
+		t.Fatalf("logging roll = %d/%d, want 1/2", cfg.Logging.MaxSizeMB, cfg.Logging.MaxBackups)
 	}
 }

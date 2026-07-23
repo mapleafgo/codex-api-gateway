@@ -160,8 +160,9 @@ func main() {
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 	httpSrv := &http.Server{
-		Addr:    cfg.Server.Listen,
-		Handler: mux,
+		Addr:              cfg.Server.Listen,
+		Handler:           mux,
+		ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout),
 		BaseContext: func(net.Listener) context.Context {
 			return appCtx
 		},

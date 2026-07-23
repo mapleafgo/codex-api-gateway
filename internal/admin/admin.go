@@ -386,22 +386,25 @@ func (h *handler) handleModels(w http.ResponseWriter, r *http.Request) {
 // adminConfigView 是 GET /admin/api/config 返回的视图。
 // 仅暴露管理页需要编辑的字段，api_key 明文展示（按用户要求）。
 type adminConfigView struct {
-	Server               serverView      `json:"server"`
-	Logging              loggingView     `json:"logging"`
-	Breaker              breakerView     `json:"breaker"`
-	Cache                cacheView       `json:"cache"`
-	BaseInstructionsFile string          `json:"base_instructions_file"`
-	Sources              []sourceView    `json:"sources"`
-	Models               []modelViewItem `json:"models"`
+	Server  serverView      `json:"server"`
+	Logging loggingView     `json:"logging"`
+	Breaker breakerView     `json:"breaker"`
+	Cache   cacheView       `json:"cache"`
+	Sources []sourceView    `json:"sources"`
+	Models  []modelViewItem `json:"models"`
 }
 
 type serverView struct {
-	Listen string `json:"listen"`
+	Listen            string `json:"listen"`
+	MaxBodyMB         int    `json:"max_body_mb"`
+	ReadHeaderTimeout string `json:"read_header_timeout"`
 }
 type loggingView struct {
-	Level  string `json:"level"`
-	Format string `json:"format"`
-	File   string `json:"file"`
+	Level      string `json:"level"`
+	Format     string `json:"format"`
+	File       string `json:"file"`
+	MaxSizeMB  int    `json:"max_size_mb"`
+	MaxBackups int    `json:"max_backups"`
 }
 type breakerView struct {
 	FirstByteTimeout string `json:"first_byte_timeout"`
@@ -438,13 +441,12 @@ type modelViewItem struct {
 // adminConfigInput 是 POST /admin/api/config 接收的视图，与 adminConfigView 同构。
 // 全量覆盖式更新：前端必须把完整配置 POST 回来（简化语义，避免增量合并）。
 type adminConfigInput struct {
-	Server               serverView      `json:"server"`
-	Logging              loggingView     `json:"logging"`
-	Breaker              breakerView     `json:"breaker"`
-	Cache                cacheView       `json:"cache"`
-	BaseInstructionsFile string          `json:"base_instructions_file"`
-	Sources              []sourceView    `json:"sources"`
-	Models               []modelViewItem `json:"models"`
+	Server  serverView      `json:"server"`
+	Logging loggingView     `json:"logging"`
+	Breaker breakerView     `json:"breaker"`
+	Cache   cacheView       `json:"cache"`
+	Sources []sourceView    `json:"sources"`
+	Models  []modelViewItem `json:"models"`
 }
 
 func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -461,8 +463,15 @@ func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	cfg := h.deps.Holder.Current()
 	view := adminConfigView{
-		Server:  serverView{Listen: cfg.Server.Listen},
-		Logging: loggingView{Level: cfg.Logging.Level, Format: cfg.Logging.Format, File: cfg.Logging.File},
+		Server: serverView{
+			Listen:            cfg.Server.Listen,
+			MaxBodyMB:         cfg.Server.MaxBodyMB,
+			ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout).String(),
+		},
+		Logging: loggingView{
+			Level: cfg.Logging.Level, Format: cfg.Logging.Format, File: cfg.Logging.File,
+			MaxSizeMB: cfg.Logging.MaxSizeMB, MaxBackups: cfg.Logging.MaxBackups,
+		},
 		Breaker: breakerView{
 			FirstByteTimeout: time.Duration(cfg.Breaker.FirstByteTimeout).String(),
 			CircuitInterval:  time.Duration(cfg.Breaker.CircuitInterval).String(),
@@ -473,10 +482,9 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			MaxRetries:       cfg.Breaker.MaxRetries,
 			Recovery:         cfg.Breaker.Recovery,
 		},
-		Cache:                cacheView{TTL: cfg.Cache.TTL},
-		BaseInstructionsFile: cfg.BaseInstructionsFile,
-		Sources:              make([]sourceView, 0, len(cfg.Sources)),
-		Models:               make([]modelViewItem, 0, len(cfg.ModelOverrides)),
+		Cache:   cacheView{TTL: cfg.Cache.TTL},
+		Sources: make([]sourceView, 0, len(cfg.Sources)),
+		Models:  make([]modelViewItem, 0, len(cfg.ModelOverrides)),
 	}
 	for _, src := range cfg.Sources {
 		bt, _ := config.NormalizeBackendType(src.BackendType)
@@ -630,7 +638,7 @@ func (h *handler) writeConfigYAMLLocked(cfg *config.Config) error {
 	return nil
 }
 
-// handleGuidance GET 返回引导语文本，POST 保存。
+// handleGuidance GET 返回基线指令文本，POST 保存。
 // GET 返回 { path, content, exists }
 func (h *handler) handleGuidance(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -688,29 +696,19 @@ func (h *handler) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		if h.deps.ReloadFromDisk != nil {
 			h.deps.ReloadFromDisk()
 		}
-		slog.Info("管理页保存引导语成功", "path", p, "bytes", len(in.Content))
+		slog.Info("管理页保存基线指令成功", "path", p, "bytes", len(in.Content))
 		writeJSON(w, http.StatusOK, okBody{OK: true})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
 	}
 }
 
-// resolveGuidancePath 返回引导语文件路径：取 cfg.BaseInstructionsFile，
-// 为空则默认 base_instructions.md（相对于 config.yaml 所在目录）。
+// resolveGuidancePath 返回基线指令文件路径：固定与 config.yaml 同级的 base_instructions.md。
 func (h *handler) resolveGuidancePath() string {
-	cfg := h.deps.Holder.Current()
-	name := cfg.BaseInstructionsFile
-	if name == "" {
-		name = "base_instructions.md"
-	}
-	p := name
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(filepath.Dir(h.deps.CfgPath), name)
-	}
-	return p
+	return filepath.Join(filepath.Dir(h.deps.CfgPath), config.BaseInstructionsFileName)
 }
 
-// readFileOrNil 读文件失败时返回空串（不报错给前端，引导语未启用时为空即可）。
+// readFileOrNil 读文件失败时返回空串（不报错给前端，基线指令文件缺失时为空即可）。
 func readFileOrNil(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -12,16 +12,22 @@
 # HTTP 服务
 server:
   listen: ":8383"        # 监听地址；Codex 的 base_url 指向 http://<host>:8383/v1
+  # 本机防误伤（非公网高并发限流）：
+  max_body_mb: 32              # /v1/responses 请求体上限（MiB），超限返回 413
+  read_header_timeout: 10s     # 读完请求头超时；不影响已建立的 SSE 长流
 
 # 日志配置
 # level: debug | info | warn | error
 # format: text | json
 # file: 非空时日志写入该文件（追加），为空写 stderr。排查时配合 level: debug。
 # debug 会输出输入项、流式事件、SSE 转换等细粒度诊断日志。
+# max_size_mb / max_backups：仅 file 模式生效，防止 gateway.log 无限膨胀。
 logging:
   level: info
   format: text
   # file: gateway.log
+  # max_size_mb: 50
+  # max_backups: 3
 
 # 全局断路器（所有后端源共享，可被单源 breaker 覆盖）
 # 状态机：
@@ -44,13 +50,10 @@ cache:
   ttl: 5m
 
 #
-# 网关级指令补强：内容来自一个文本文件（base_instructions_file），作为 Codex
-# ModelInfo 的 base_instructions 返回。非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，
-# 由 Codex 客户端注入到 system 前缀（prompt cache 友好，无需每个上游请求重传）。
-# 文件内容通常 = 官方 base_instructions + 网关 gateway_guidance 段（如 skill 加载纪律）。
-# 取代已废弃的 system_suffix（转换层追加 system block，每请求重传，cache 不友好）。
-# 解开下面注释即可启用：
-# base_instructions_file: base_instructions.md
+# 基线指令（base_instructions.md）：与本配置文件同级放置，不在 YAML 中配置路径。
+# 文件非空时作为 Codex ModelInfo.base_instructions 返回，整体替换内置 BASE_INSTRUCTIONS
+# （客户端注入 system 前缀，prompt cache 友好）。缺失则沿用 Codex 内置指令。
+# 管理页「基线指令」标签即编辑该文件。
 
 # /v1/models 暴露的模型表。key 是模型 slug（即客户端可用的模型名），value 是
 # per-slug 能力覆盖；只返回在此显式列出的模型，不合并上游 /v1/models 列表，

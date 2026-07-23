@@ -216,7 +216,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 - 流式 `mid_conversation_system` 块 WARN + 跳过，不中断流。
 - 移除 `service_tier_passthrough` 配置与 `applyServiceTier` 逻辑（`service_tier` 不再透传）。
 - 移除 `additional_tools` input item 转换分支（网关统一 `use_responses_lite=false`）。
-- 网关级指令注入从 `system_suffix` 改为 `base_instructions_file`（经 `/v1/models` 由 Codex 客户端注入，prompt cache 更友好）。
+- 网关级指令注入从 `system_suffix` 改为 config 同级 `base_instructions.md`（经 `/v1/models` 由 Codex 客户端注入，prompt cache 更友好）。
 
 ## Chat 后端覆盖矩阵（backend_type: c）
 

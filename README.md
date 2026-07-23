@@ -159,7 +159,7 @@ go build -o codex-api-gateway ./cmd/server
 
 - **观测台**：6 张指标卡（请求量 / 输入 / 输出 / 缓存创建 / 缓存命中 / 命中率）+ `供应商 × 模型` 用量聚合表 + 最近 1000 条请求历史（按模型/供应商/Code 过滤，耗时渐变色条）。
 - **实时推送**：指标经 SSE（`/admin/api/events`）每 3 秒推送，无需手动刷新。
-- **配置管理**：图形化编辑供应商（含 `model_map` 列表式编辑、单源断路器、停用/启用、上移/下移排序）、模型白名单、全局参数、引导语文件。
+- **配置管理**：图形化编辑供应商（含 `model_map` 列表式编辑、单源断路器、停用/启用、上移/下移排序）、模型白名单、全局参数、基线指令文件（config 同级 base_instructions.md）。
 - **个性化**：中英文切换、亮/暗主题，均记忆在 localStorage。
 - **性能隔离**：指标采集走独立 goroutine + 带缓冲 channel，请求路径只做一次非阻塞投递，channel 满即丢弃，绝不拖慢转发；管理端异常不影响 `/v1/*`。
 
@@ -170,8 +170,8 @@ JSON 接口（前端调用，也可独立集成）：
 | GET | `/admin/api/metrics` | 当前指标快照 |
 | GET | `/admin/api/config` | 读取配置视图 |
 | POST | `/admin/api/config` | 全量覆盖写回并热重载 |
-| GET | `/admin/api/guidance` | 读取引导语文件内容 |
-| POST | `/admin/api/guidance` | 保存引导语文件 |
+| GET | `/admin/api/guidance` | 读取基线指令文件（config 同级 base_instructions.md）内容 |
+| POST | `/admin/api/guidance` | 保存基线指令文件（config 同级 base_instructions.md） |
 | POST | `/admin/api/config/reload` | 手动触发从磁盘 reload |
 | POST | `/admin/api/sources/promote` | 手动将源提升回 normal |
 | POST | `/admin/api/sources/disabled` | 即时停用/启用单源（写盘 + 热重载） |
@@ -186,7 +186,11 @@ JSON 接口（前端调用，也可独立集成）：
 ```yaml
 server:
   listen: ":8383"
+  max_body_mb: 32              # /v1/responses 请求体上限（MiB），超限 413
+  read_header_timeout: 10s     # 读完请求头超时；不影响 SSE 长流
 ```
+
+本机防误伤：限制超大 body，避免长历史/大图 base64 撑爆内存；`read_header_timeout` 防止半开连接挂住，**不**设置全局写超时以免掐断长 SSE。
 
 ### 日志
 
@@ -194,6 +198,9 @@ server:
 logging:
   level: info   # debug | info | warn | error
   format: text  # text | json
+  # file: gateway.log
+  # max_size_mb: 50   # 单文件滚动阈值（仅 file 模式）
+  # max_backups: 3    # 保留历史文件个数
 ```
 
 | 等级 | 内容 |

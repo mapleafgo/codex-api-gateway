@@ -13,13 +13,17 @@ import (
 // 这是用户接受的语义（管理页即权威配置）。
 func buildConfigFromInput(in adminConfigInput) *config.Config {
 	cfg := &config.Config{
-		Server: config.ServerCfg{Listen: in.Server.Listen},
+		Server: config.ServerCfg{
+			Listen:            in.Server.Listen,
+			MaxBodyMB:         in.Server.MaxBodyMB,
+			ReadHeaderTimeout: config.Duration(parseDur(in.Server.ReadHeaderTimeout, 10*time.Second)),
+		},
 		Logging: config.LoggingCfg{
 			Level: in.Logging.Level, Format: in.Logging.Format, File: in.Logging.File,
+			MaxSizeMB: in.Logging.MaxSizeMB, MaxBackups: in.Logging.MaxBackups,
 		},
-		Breaker:              breakerViewToCfg(in.Breaker),
-		Cache:                config.CacheCfg{TTL: in.Cache.TTL},
-		BaseInstructionsFile: in.BaseInstructionsFile,
+		Breaker: breakerViewToCfg(in.Breaker),
+		Cache:   config.CacheCfg{TTL: in.Cache.TTL},
 	}
 	for _, sv := range in.Sources {
 		bt := sv.BackendType

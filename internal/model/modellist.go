@@ -24,7 +24,7 @@ type CodexModelsResponse struct {
 //   - priority: 排序优先级（数字越小越靠前）
 //   - availability_nux / upgrade: Option，null 即可
 //   - base_instructions: 基础 system prompt（**非空时会整体替换 Codex 内置 BASE_INSTRUCTIONS**，
-//     网关经 base_instructions_file 配置注入；为空则沿用 Codex 内置指令）
+//     网关经 config 同级 base_instructions.md 注入；为空则沿用 Codex 内置指令）
 //   - supports_reasoning_summaries: 是否接受 Responses API reasoning.summary 参数
 //   - support_verbosity / default_verbosity: verbosity 开关与默认值
 //   - apply_patch_tool_type: Option<ApplyPatchToolType>，"freeform" 启用 apply_patch 工具，
