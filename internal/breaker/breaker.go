@@ -80,7 +80,7 @@ func (b *Breaker) Allow() bool {
 	case Normal, Degraded:
 		return true
 	case CircuitOpen:
-		if b.now().Sub(b.openedAt) >= time.Duration(b.cfg.Cooldown) {
+		if b.now().Sub(b.openedAt) >= time.Duration(b.cfg.CircuitInterval) {
 			b.st = HalfOpen
 			b.halfOpenInflight = 1 // count this probe
 			return true

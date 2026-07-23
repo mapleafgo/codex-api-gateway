@@ -402,7 +402,8 @@ type loggingView struct {
 }
 type breakerView struct {
 	FirstByteTimeout string `json:"first_byte_timeout"`
-	Cooldown         string `json:"cooldown"`
+	CircuitInterval  string `json:"circuit_interval"`
+	DegradeInterval  string `json:"degrade_interval"`
 	DegradeThreshold int    `json:"degrade_threshold"`
 	RecoverThreshold int    `json:"recover_threshold"`
 	HalfOpenProbes   int    `json:"half_open_probes"`
@@ -460,7 +461,8 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Logging: loggingView{Level: cfg.Logging.Level, Format: cfg.Logging.Format, File: cfg.Logging.File},
 		Breaker: breakerView{
 			FirstByteTimeout: time.Duration(cfg.Breaker.FirstByteTimeout).String(),
-			Cooldown:         time.Duration(cfg.Breaker.Cooldown).String(),
+			CircuitInterval:  time.Duration(cfg.Breaker.CircuitInterval).String(),
+			DegradeInterval:  time.Duration(cfg.Breaker.DegradeInterval).String(),
 			DegradeThreshold: cfg.Breaker.DegradeThreshold,
 			RecoverThreshold: cfg.Breaker.RecoverThreshold,
 			HalfOpenProbes:   cfg.Breaker.HalfOpenProbes,
@@ -482,7 +484,8 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
 				FirstByteTimeout: time.Duration(src.Breaker.FirstByteTimeout).String(),
-				Cooldown:         time.Duration(src.Breaker.Cooldown).String(),
+				CircuitInterval:  time.Duration(src.Breaker.CircuitInterval).String(),
+				DegradeInterval:  time.Duration(src.Breaker.DegradeInterval).String(),
 				DegradeThreshold: src.Breaker.DegradeThreshold,
 				RecoverThreshold: src.Breaker.RecoverThreshold,
 				HalfOpenProbes:   src.Breaker.HalfOpenProbes,

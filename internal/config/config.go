@@ -74,7 +74,8 @@ type CacheCfg struct {
 // BreakerCfg configures upstream failover and circuit breaking.
 type BreakerCfg struct {
 	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout,omitempty"`
-	Cooldown         Duration `koanf:"cooldown" yaml:"cooldown,omitempty"`
+	CircuitInterval  Duration `koanf:"circuit_interval" yaml:"circuit_interval,omitempty"`
+	DegradeInterval  Duration `koanf:"degrade_interval" yaml:"degrade_interval,omitempty"`
 	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold,omitempty"`
 	RecoverThreshold int      `koanf:"recover_threshold" yaml:"recover_threshold,omitempty"`
 	HalfOpenProbes   int      `koanf:"half_open_probes" yaml:"half_open_probes,omitempty"`
@@ -335,7 +336,8 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.format", &cfg.Logging.Format},
 		{"logging.file", &cfg.Logging.File},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
-		{"breaker.cooldown", &cfg.Breaker.Cooldown},
+		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
+		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
 		{"breaker.degrade_threshold", &cfg.Breaker.DegradeThreshold},
 		{"breaker.recover_threshold", &cfg.Breaker.RecoverThreshold},
 		{"breaker.half_open_probes", &cfg.Breaker.HalfOpenProbes},
@@ -372,7 +374,8 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 	}
 	breakerPrefix := prefix + ".breaker"
 	if !hasAnyEnv(k, breakerPrefix,
-		"first_byte_timeout", "cooldown", "degrade_threshold", "recover_threshold",
+		"first_byte_timeout", "circuit_interval", "degrade_interval",
+		"degrade_threshold", "recover_threshold",
 		"half_open_probes", "recovery") {
 		return nil
 	}
@@ -384,7 +387,8 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 		target any
 	}{
 		{breakerPrefix + ".first_byte_timeout", &src.Breaker.FirstByteTimeout},
-		{breakerPrefix + ".cooldown", &src.Breaker.Cooldown},
+		{breakerPrefix + ".circuit_interval", &src.Breaker.CircuitInterval},
+		{breakerPrefix + ".degrade_interval", &src.Breaker.DegradeInterval},
 		{breakerPrefix + ".degrade_threshold", &src.Breaker.DegradeThreshold},
 		{breakerPrefix + ".recover_threshold", &src.Breaker.RecoverThreshold},
 		{breakerPrefix + ".half_open_probes", &src.Breaker.HalfOpenProbes},
@@ -445,7 +449,8 @@ func (c *Config) validate() error {
 	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
-		Cooldown:         Duration(30 * time.Second),
+		CircuitInterval:  Duration(1 * time.Minute),
+		DegradeInterval:  Duration(30 * time.Second),
 		DegradeThreshold: 3,
 		RecoverThreshold: 1,
 		HalfOpenProbes:   1,
@@ -480,8 +485,11 @@ func applyDefaults(b, def BreakerCfg) BreakerCfg {
 	if b.FirstByteTimeout == 0 {
 		b.FirstByteTimeout = def.FirstByteTimeout
 	}
-	if b.Cooldown == 0 {
-		b.Cooldown = def.Cooldown
+	if b.CircuitInterval == 0 {
+		b.CircuitInterval = def.CircuitInterval
+	}
+	if b.DegradeInterval == 0 {
+		b.DegradeInterval = def.DegradeInterval
 	}
 	if b.DegradeThreshold == 0 {
 		b.DegradeThreshold = def.DegradeThreshold
@@ -535,8 +543,11 @@ func (c *Config) BreakerFor(s *Source) BreakerCfg {
 	if m.FirstByteTimeout != 0 {
 		merged.FirstByteTimeout = m.FirstByteTimeout
 	}
-	if m.Cooldown != 0 {
-		merged.Cooldown = m.Cooldown
+	if m.CircuitInterval != 0 {
+		merged.CircuitInterval = m.CircuitInterval
+	}
+	if m.DegradeInterval != 0 {
+		merged.DegradeInterval = m.DegradeInterval
 	}
 	if m.DegradeThreshold != 0 {
 		merged.DegradeThreshold = m.DegradeThreshold

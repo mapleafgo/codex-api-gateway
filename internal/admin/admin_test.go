@@ -192,7 +192,7 @@ func TestYamlMarshalOmitsEmpty(t *testing.T) {
 	// 空值字段不应出现
 	mustNotContain := []string{
 		"format:", "file:", "ttl:", "api_key:", "default_model:", "model_map:",
-		"first_byte_timeout:", "cooldown:", "degrade_threshold:",
+		"first_byte_timeout:", "degrade_threshold:",
 		"breaker:", "cache:", "models:", "base_instructions_file:",
 	}
 	for _, unwanted := range mustNotContain {
