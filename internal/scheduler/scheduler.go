@@ -33,8 +33,9 @@ type orderEntry struct {
 type Scheduler struct {
 	holder           *config.Holder
 	client           *anthropicclient.Client
-	anthropicBackend *backend.AnthropicBackend
-	chatBackend      *backend.ChatBackend
+	anthropicBackend  *backend.AnthropicBackend
+	chatBackend       *backend.ChatBackend
+	responsesBackend  *backend.ResponsesBackend
 	breakers         map[string]*breaker.Breaker
 	order            []orderEntry // runtimeOrder: runtime priority sequence
 	bkMu             sync.Mutex
@@ -63,7 +64,7 @@ type UpstreamEvent struct {
 	CacheCreate  int
 	Error        string // 失败原因摘要
 	Attempt      int    // 该次尝试在客户端请求内的序号（从 1 开始）
-	BackendType  string // a | c
+	BackendType  string // a | c | r
 }
 
 // OnUpstream 是单次上游尝试结束时的回调。nil 时不上报。
@@ -104,8 +105,9 @@ func New(cfg any) *Scheduler {
 	return &Scheduler{
 		holder:           holder,
 		client:           anthropicclient.New(),
-		anthropicBackend: backend.NewAnthropic(),
-		chatBackend:      backend.NewChat(),
+		anthropicBackend:  backend.NewAnthropic(),
+		chatBackend:       backend.NewChat(),
+		responsesBackend:  backend.NewResponses(),
 		breakers:         map[string]*breaker.Breaker{},
 		order:            order,
 		backoff:          defaultBackoff,
@@ -249,7 +251,7 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 }
 
 // ListUpstreamModels 拉取指定源的上游模型列表，供管理页编辑模型映射时选用。
-// 按 backend_type 分发：a → anthropic ListModels；c → chatclient ListModels。
+// 按 backend_type 分发：a → anthropic ListModels；c/r → Bearer ListModels。
 // 返回统一 anthropicclient.ModelInfo 形状供管理页复用。
 func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) ([]anthropicclient.ModelInfo, error) {
 	src, ok := s.sourceByName(sourceName)
@@ -260,7 +262,8 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 	if err != nil {
 		return nil, err
 	}
-	if bt == config.BackendOpenAIChat {
+	switch bt {
+	case config.BackendOpenAIChat:
 		ms, err := s.chatBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey)
 		if err != nil {
 			return nil, err
@@ -270,8 +273,19 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
 		}
 		return out, nil
+	case config.BackendOpenAIResponses:
+		ms, err := s.responsesBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]anthropicclient.ModelInfo, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+		return out, nil
+	default:
+		return s.client.ListModels(ctx, src.BaseURL, src.APIKey)
 	}
-	return s.client.ListModels(ctx, src.BaseURL, src.APIKey)
 }
 
 // waitBackoff sleeps a fixed backoff before the next whole-round retry,
@@ -375,10 +389,17 @@ func (s *Scheduler) tryRoundGeneric(
 
 func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
 	bt, err := config.NormalizeBackendType(src.BackendType)
-	if err == nil && bt == config.BackendOpenAIChat {
-		return s.chatBackend
+	if err != nil {
+		return s.anthropicBackend
 	}
-	return s.anthropicBackend
+	switch bt {
+	case config.BackendOpenAIChat:
+		return s.chatBackend
+	case config.BackendOpenAIResponses:
+		return s.responsesBackend
+	default:
+		return s.anthropicBackend
+	}
 }
 
 // autoRecoverDegraded checks whether src's breaker has been in Degraded state
