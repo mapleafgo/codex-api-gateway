@@ -13,8 +13,9 @@
 |---|---|---|
 | `a`（默认） | Anthropic Messages | Responses → Messages → Responses SSE |
 | `c` | OpenAI Chat Completions（仅流式） | Responses → Chat → Responses SSE |
+| `r` | OpenAI Responses 透传（仅流式） | 最小改写透传 + T2 model 回写 |
 
-Chat 后端设计已预留「第 3 种 backend 实现」。本设计补全该空缺：当上游本身就是 **OpenAI Responses API 兼容端点** 时，网关不再做协议语义转换，只做 **最小改写后的形状透传**，让官方 OpenAI Responses、以及任意兼容 `/v1/responses` 的代理可与 a/c 源混排调度。
+Chat 后端设计预留的「第 3 种 backend」由本设计落地：当上游本身提供 **OpenAI Responses API**（官方或任意实现 `/v1/responses` 的代理）时，网关不做协议语义转换，只做 **最小改写后的形状透传**，可与 a/c 源混排调度。
 
 ### 1.1 目标
 

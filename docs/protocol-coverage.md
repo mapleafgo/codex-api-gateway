@@ -38,7 +38,7 @@
 
 ### OpenAI Responses 透传上游（`backend_type: r`）
 
-客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 兼容上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
+客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
 - **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；其余键原样保留（含 `previous_response_id`、tools、include 等）
 - **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`

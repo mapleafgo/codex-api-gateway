@@ -4,7 +4,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在现有 Responses 客户端路径上，新增 `backend_type: r` 的 OpenAI Responses 兼容上游（仅流式、最小改写透传），与 `a`/`c` 混排故障转移；含 T2 出站 model 别名回写与 r 源 WARN 收口。
+**Goal:** 在现有 Responses 客户端路径上，新增 `backend_type: r` 的 OpenAI Responses 透传上游（仅流式、最小改写透传），与 `a`/`c` 混排故障转移；含 T2 出站 model 别名回写与 r 源 WARN 收口。
 
 **Architecture:** `scheduler.ExecuteGeneric` 按源选择 `backend.Backend`；新增 `ResponsesBackend`：`PrepareUpstreamBody`（map 改 model + `stream=true`）→ `responsesclient.Stream` → `ScanSSE` → 可选 T2 model 回写 → `model.SSEEvent`。配置 wire 短码 `r`；管理页/观测/试拉 models 对齐 Chat 路径。
 

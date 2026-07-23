@@ -12,7 +12,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
 
-// ResponsesBackend 将 Responses 请求透传到 OpenAI Responses 兼容上游（仅流式）。
+// ResponsesBackend 将 Responses 请求透传到 OpenAI Responses 上游（仅流式）。
 type ResponsesBackend struct {
 	Client *responsesclient.Client
 }
