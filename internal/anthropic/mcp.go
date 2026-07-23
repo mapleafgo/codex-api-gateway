@@ -10,6 +10,8 @@ import (
 
 // MCPBetaHeader 是 MCP managed connector 所需的 anthropic-beta 值。
 const MCPBetaHeader = "mcp-client-2025-11-20"
+
+// ExtendedCacheTTLBetaHeader 是 Anthropic 扩展缓存 TTL 的 beta header 值。
 const ExtendedCacheTTLBetaHeader = "extended-cache-ttl-2025-04-11"
 
 // appendBeta 把 beta 值合并到现有列表，去重后逗号分隔。

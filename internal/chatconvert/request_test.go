@@ -541,7 +541,7 @@ func TestToChat_ParallelToolCallsAndPromptCacheOptions(t *testing.T) {
 	if out.ParallelToolCalls == nil || *out.ParallelToolCalls {
 		t.Fatalf("parallel_tool_calls=%v", out.ParallelToolCalls)
 	}
-	if out.PromptCacheOptions == nil || out.PromptCacheOptions.Mode != "explicit" || out.PromptCacheOptions.Ttl != "30m" {
+	if out.PromptCacheOptions == nil || out.PromptCacheOptions.Mode != "explicit" || out.PromptCacheOptions.TTL != "30m" {
 		t.Fatalf("prompt_cache_options=%+v", out.PromptCacheOptions)
 	}
 }

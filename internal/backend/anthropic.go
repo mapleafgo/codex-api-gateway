@@ -83,7 +83,7 @@ func (b *AnthropicBackend) Execute(
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: statusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
+				Status: "failed", Code: StatusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendAnthropic,
 			})
 		}
@@ -160,7 +160,7 @@ func (b *AnthropicBackend) Execute(
 		}
 		status = "failed"
 		// 未出流：有 HTTP 码用 HTTP 码，否则 0（旧 trySource 语义）
-		code = statusCodeFromErr(scanErr)
+		code = StatusCodeFromErr(scanErr)
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
@@ -171,7 +171,7 @@ func (b *AnthropicBackend) Execute(
 			}
 		} else {
 			status = "failed"
-			if sc := statusCodeFromErr(scanErr); sc != 0 {
+			if sc := StatusCodeFromErr(scanErr); sc != 0 {
 				code = sc
 			}
 			errText = errSummary(scanErr)

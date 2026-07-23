@@ -44,7 +44,7 @@ type ChatRequest struct {
 // PromptCacheOptions 对齐 OpenAI Chat prompt_cache_options 子集。
 type PromptCacheOptions struct {
 	Mode string `json:"mode,omitempty"`
-	Ttl  string `json:"ttl,omitempty"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 // StreamOptions 控制流式 usage / obfuscation。
@@ -142,7 +142,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		out.PromptCacheOptions = &PromptCacheOptions{
 			Mode: req.PromptCacheOptions.Mode,
-			Ttl:  req.PromptCacheOptions.Ttl,
+			TTL:  req.PromptCacheOptions.Ttl,
 		}
 	}
 	if rf := convertResponseFormat(req); rf != nil {

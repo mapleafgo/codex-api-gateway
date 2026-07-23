@@ -4,5 +4,7 @@ package assets
 
 import _ "embed"
 
+// Logo 是内嵌的 logo.png 二进制数据，供托盘和管理页共用。
+//
 //go:embed logo.png
 var Logo []byte

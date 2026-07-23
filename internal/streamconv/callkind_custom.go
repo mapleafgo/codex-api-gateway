@@ -59,9 +59,3 @@ func (customCallKind) finish(c *Converter, st *callState, args string) (model.Ou
 func (customCallKind) handleResult(_ *Converter, _ *anthropic.MessageStreamEventUnion, _ int) []model.SSEEvent {
 	return nil
 }
-
-// customToolInput 保留给测试：等价于 freeform 解包（不带 name 特化）。
-// 生产路径请走 toolcatalog.SanitizeClientToolInput。
-func customToolInput(raw string) string {
-	return toolcatalog.SanitizeClientToolInput("", true, raw)
-}

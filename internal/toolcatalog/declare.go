@@ -167,6 +167,7 @@ func schemaFromAny(v any) map[string]any {
 	return s
 }
 
+// FreeformInputSchema 返回 freeform 工具（shell/apply_patch/custom）的通用 input schema。
 func FreeformInputSchema() map[string]any {
 	return freeformInputSchema()
 }

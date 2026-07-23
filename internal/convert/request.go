@@ -111,8 +111,8 @@ func restoreAssistantOutputTextFromRaw(data []byte, req *oairesponses.ResponseNe
 		return
 	}
 	if len(rawItems) != len(req.Input.OfInputItemList) {
-		// 不严格长度匹配，因为 phase/metadata 等额外字段可能导致 SDK 解析后条目数对不上(raw 有而 req 无)
-		// 能恢复一条是一条，避免 commentary 等特殊 phase 的正文丢了
+		slog.Debug("rawItems 与 SDK 解析条目数不一致（phase/metadata 等额外字段），按最小长度恢复",
+			"raw_count", len(rawItems), "sdk_count", len(req.Input.OfInputItemList))
 	}
 	restored := 0
 	for i, rawItem := range rawItems {

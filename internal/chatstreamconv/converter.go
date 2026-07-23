@@ -954,7 +954,7 @@ func (c *Converter) emitTerminal() []model.SSEEvent {
 	c.completed = true
 	status, incompleteReason := statusForFinish(c.stopReason)
 	if c.stopReason == "content_filter" {
-		slog.Info("chatstreamconv: content_filter → incomplete + refusal",
+		slog.Warn("chatstreamconv: content_filter → incomplete + refusal",
 			"response_id", c.respID)
 	}
 	resp := model.NewResponseObject(c.respID, status, c.model, c.createdAt, c.echo)
@@ -1087,6 +1087,7 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// Fail 标记失败并产出 response.failed 事件（流中断时由 Backend 调用）。
 func (c *Converter) Fail(msg string) []model.SSEEvent {
 	if c.completed {
 		return nil

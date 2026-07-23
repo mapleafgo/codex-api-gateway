@@ -25,9 +25,9 @@ func errSummary(err error) string {
 	return err.Error()
 }
 
-// statusCodeFromErr 从 client 错误串解析上游 HTTP 状态码。
+// StatusCodeFromErr 从 client 错误串解析上游 HTTP 状态码。
 // 支持 "anthropic upstream %d: ..." 与 chatclient "upstream %d: ..."。
-func statusCodeFromErr(err error) int {
+func StatusCodeFromErr(err error) int {
 	if err == nil {
 		return 0
 	}
@@ -50,11 +50,4 @@ func statusCodeFromErr(err error) int {
 		}
 	}
 	return 0
-}
-
-func failCode(err error) int {
-	if sc := statusCodeFromErr(err); sc != 0 {
-		return sc
-	}
-	return 500
 }

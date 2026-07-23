@@ -78,6 +78,7 @@ func maybeDaemonize(enabled bool) {
 	}
 	// 子进程已独立会话运行；不再阻塞 Wait，后台 goroutine 会回收状态。
 	// 父进程退出后子进程由 init 收养，不会成僵尸。
+	// 此时 logging 尚未初始化（父进程即将退出），用 fmt 写 stdout 前台提示用户。
 	fmt.Printf("codex-api-gateway 已后台启动 pid=%d log=%s\n", cmd.Process.Pid, logPath)
 	os.Exit(0)
 }

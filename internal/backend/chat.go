@@ -29,7 +29,7 @@ func (b *ChatBackend) Execute(
 	ctx context.Context,
 	rawBody []byte,
 	src config.Source,
-	cfg *config.Config,
+	_ *config.Config,
 	onEvent func(model.SSEEvent) error,
 	onUpstream func(UpstreamEvent),
 	attempt int,
@@ -64,7 +64,7 @@ func (b *ChatBackend) Execute(
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: statusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
+				Status: "failed", Code: StatusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendOpenAIChat,
 			})
 		}
@@ -125,7 +125,7 @@ func (b *ChatBackend) Execute(
 			scanErr = fmt.Errorf("upstream returned no events")
 		}
 		status = "failed"
-		code = statusCodeFromErr(scanErr)
+		code = StatusCodeFromErr(scanErr)
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
@@ -136,7 +136,7 @@ func (b *ChatBackend) Execute(
 			}
 		} else {
 			status = "failed"
-			if sc := statusCodeFromErr(scanErr); sc != 0 {
+			if sc := StatusCodeFromErr(scanErr); sc != 0 {
 				code = sc
 			}
 			errText = errSummary(scanErr)

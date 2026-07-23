@@ -12,9 +12,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
@@ -24,17 +24,13 @@ import (
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
 )
 
-var (
-	anContentBlockStart = string(aconstant.ValueOf[aconstant.ContentBlockStart]())
-	anMessageStop       = string(aconstant.ValueOf[aconstant.MessageStop]())
-)
-
 // Server wires config, scheduler, and HTTP handlers.
 type Server struct {
 	holder    *config.Holder
 	sch       *scheduler.Scheduler
 	metrics   *metrics.Collector
 	startedAt int64
+	handlerWg sync.WaitGroup // 追踪 handleResponses goroutine 生命周期，供测试同步
 }
 
 // New builds a Server.
@@ -58,6 +54,9 @@ func (s *Server) Metrics() *metrics.Collector { return s.metrics }
 // Scheduler 返回内部的 Scheduler，供 admin 包触发 Reload。
 func (s *Server) Scheduler() *scheduler.Scheduler { return s.sch }
 
+// WaitForHandlers 等待所有 handleResponses goroutine 完成（供测试使用）。
+func (s *Server) WaitForHandlers() { s.handlerWg.Wait() }
+
 // ReloadScheduler 让外层（configwatch）通知 scheduler 重建运行时优先级。
 func (s *Server) ReloadScheduler() {
 	func() {
@@ -75,17 +74,11 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// Handler returns the HTTP handler.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/responses", s.handleResponses)
-	mux.HandleFunc("/v1/models", s.handleModels)
-	return mux
-}
+// Handler 返回 http.Handler（委托 Mux），供测试直接创建 httptest.Server。
+func (s *Server) Handler() http.Handler { return s.Mux() }
 
-// Mux 返回内部 mux 供 main 挂载额外路由（admin 等）。
-// 与 Handler() 的区别：返回 *http.ServeMux，便于外部追加路由。
-// 多次调用会创建多个独立的 mux，建议只调用一次。
+// Mux 返回 *http.ServeMux 供 main 挂载额外路由（admin 等）。
+// 返回值同时满足 http.Handler 接口；多次调用创建多个独立 mux，建议只调用一次。
 func (s *Server) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/responses", s.handleResponses)
@@ -281,6 +274,9 @@ func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 }
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	s.handlerWg.Add(1)
+	defer s.handlerWg.Done()
+
 	if r.Method != http.MethodPost {
 		slog.Warn("拒绝响应请求", "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
