@@ -12,13 +12,14 @@ func cfg(degrade, recover int, recovery string) config.BreakerCfg {
 	return config.BreakerCfg{
 		DegradeThreshold: degrade,
 		RecoverThreshold: recover,
-		Cooldown:         config.Duration(30 * time.Second),
+		CircuitInterval:  config.Duration(30 * time.Second),
+		DegradeInterval:  config.Duration(30 * time.Second),
 		HalfOpenProbes:   1,
 		Recovery:         recovery,
 	}
 }
 
-// advanceTime injects a future clock into the breaker for cooldown testing.
+// advanceTime injects a future clock into the breaker for circuit_interval testing.
 func advanceTime(b *Breaker, d time.Duration) {
 	base := b.now()
 	b.now = func() time.Time { return base.Add(d) }
@@ -108,7 +109,7 @@ func TestDegradedToCircuitOpen(t *testing.T) {
 		t.Fatalf("expected degradeCount=2, got %d", b.DegradeCount())
 	}
 	if b.Allow() {
-		t.Fatal("circuitOpen should not allow before cooldown")
+		t.Fatal("circuitOpen should not allow before circuit_interval")
 	}
 }
 
@@ -119,9 +120,9 @@ func TestCircuitOpenHalfOpenRecoveryNormal(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		b.RecordFailure() // -> degraded -> circuitOpen
 	}
-	advanceTime(b, 31*time.Second) // past cooldown
+	advanceTime(b, 31*time.Second) // past circuit_interval
 	if !b.Allow() {
-		t.Fatal("should halfOpen after cooldown")
+		t.Fatal("should halfOpen after circuit_interval")
 	}
 	if b.State() != HalfOpen {
 		t.Fatalf("expected halfOpen, got %v", b.State())
@@ -142,7 +143,7 @@ func TestCircuitOpenHalfOpenRecoveryDegraded(t *testing.T) {
 	}
 	advanceTime(b, 31*time.Second)
 	if !b.Allow() {
-		t.Fatal("should halfOpen after cooldown")
+		t.Fatal("should halfOpen after circuit_interval")
 	}
 	st := b.RecordSuccess() // recovery=degraded -> degraded
 	if st != Degraded {
@@ -153,27 +154,27 @@ func TestCircuitOpenHalfOpenRecoveryDegraded(t *testing.T) {
 	}
 }
 
-// --- halfOpen probe failure resets cooldown ---
+// --- halfOpen probe failure resets circuit_interval ---
 
 func TestHalfOpenFailResets(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
 	for i := 0; i < 6; i++ {
 		b.RecordFailure() // -> circuitOpen
 	}
-	advanceTime(b, 31*time.Second) // past cooldown
+	advanceTime(b, 31*time.Second) // past circuit_interval
 	b.Allow()                      // -> halfOpen
 	st := b.RecordFailure()        // probe fail -> circuitOpen, openedAt reset
 	if st != CircuitOpen {
 		t.Fatalf("expected circuitOpen after probe failure, got %v", st)
 	}
-	// Should not allow immediately (cooldown reset)
+	// Should not allow immediately (circuit_interval reset)
 	if b.Allow() {
-		t.Fatal("should not allow immediately after probe failure (cooldown reset)")
+		t.Fatal("should not allow immediately after probe failure (circuit_interval reset)")
 	}
-	// After another cooldown period, should allow again
+	// After another circuit_interval period, should allow again
 	advanceTime(b, 31*time.Second)
 	if !b.Allow() {
-		t.Fatal("should allow after second cooldown period")
+		t.Fatal("should allow after second circuit_interval period")
 	}
 }
 
@@ -224,7 +225,8 @@ func TestHalfOpenProbesLimit(t *testing.T) {
 	b := New(config.BreakerCfg{
 		DegradeThreshold: 1,
 		RecoverThreshold: 1,
-		Cooldown:         config.Duration(30 * time.Second),
+		CircuitInterval:  config.Duration(30 * time.Second),
+		DegradeInterval:  config.Duration(30 * time.Second),
 		HalfOpenProbes:   1,
 		Recovery:         "normal",
 	})
@@ -245,7 +247,8 @@ func TestHalfOpenProbesLimitMultiple(t *testing.T) {
 	b := New(config.BreakerCfg{
 		DegradeThreshold: 1,
 		RecoverThreshold: 1,
-		Cooldown:         config.Duration(30 * time.Second),
+		CircuitInterval:  config.Duration(30 * time.Second),
+		DegradeInterval:  config.Duration(30 * time.Second),
 		HalfOpenProbes:   2,
 		Recovery:         "normal",
 	})
@@ -331,7 +334,7 @@ func TestRecordFailureOnCircuitOpenStaysCircuitOpen(t *testing.T) {
 
 // TestRecordFailureOnCircuitOpenNoSideEffects (M4) verifies the defensive
 // early-return: when already circuitOpen, RecordFailure must not accumulate
-// failStreak/degradeCount or reset openedAt (which would extend cooldown).
+// failStreak/degradeCount or reset openedAt (which would extend circuit_interval).
 func TestRecordFailureOnCircuitOpenNoSideEffects(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
 	for i := 0; i < 6; i++ {
@@ -398,5 +401,131 @@ func TestForceNormalFromCircuitOpen(t *testing.T) {
 	}
 	if !b.Allow() {
 		t.Fatal("after ForceNormal should allow")
+	}
+}
+
+// --- AutoRecover (time-based degraded recovery) ---
+
+func TestAutoRecoverDegradedElapsed(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	b.RecordFailure() // -> degraded
+	if b.State() != Degraded {
+		t.Fatalf("setup: want degraded, got %v", b.State())
+	}
+	// degradedAt is set when entering Degraded
+	b.mu.Lock()
+	start := b.degradedAt
+	b.mu.Unlock()
+	if start.IsZero() {
+		t.Fatal("degradedAt should be set after entering Degraded")
+	}
+
+	// Advance past degrade_interval (cfg uses 30s)
+	b.now = func() time.Time { return start.Add(31 * time.Second) }
+
+	old, new, recovered := b.AutoRecover()
+	if !recovered {
+		t.Fatal("AutoRecover should return true after degrade_interval")
+	}
+	if old != Degraded {
+		t.Fatalf("old state: want Degraded, got %v", old)
+	}
+	if new != Normal {
+		t.Fatalf("new state: want Normal, got %v", new)
+	}
+	if b.State() != Normal {
+		t.Fatalf("state after AutoRecover: want Normal, got %v", b.State())
+	}
+}
+
+func TestAutoRecoverDegradedNotElapsed(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	b.RecordFailure() // -> degraded
+	b.mu.Lock()
+	start := b.degradedAt
+	b.mu.Unlock()
+
+	// Only advance 5s (less than 30s degrade_interval)
+	b.now = func() time.Time { return start.Add(5 * time.Second) }
+
+	_, _, recovered := b.AutoRecover()
+	if recovered {
+		t.Fatal("AutoRecover should return false before degrade_interval elapses")
+	}
+	if b.State() != Degraded {
+		t.Fatalf("state should stay Degraded, got %v", b.State())
+	}
+}
+
+func TestAutoRecoverSkipsNormal(t *testing.T) {
+	b := New(cfg(3, 1, "normal"))
+	_, _, recovered := b.AutoRecover()
+	if recovered {
+		t.Fatal("AutoRecover on Normal should return false")
+	}
+}
+
+func TestAutoRecoverSkipsCircuitOpen(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	b.RecordFailure() // -> degraded
+	b.RecordFailure() // -> circuitOpen
+	_, _, recovered := b.AutoRecover()
+	if recovered {
+		t.Fatal("AutoRecover on CircuitOpen should return false")
+	}
+}
+
+func TestAutoRecoverResetsDegradeCount(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	b.RecordFailure() // -> degraded (degradeCount=1)
+	if b.DegradeCount() != 1 {
+		t.Fatalf("setup: degradeCount=1, got %d", b.DegradeCount())
+	}
+
+	b.mu.Lock()
+	start := b.degradedAt
+	b.mu.Unlock()
+	b.now = func() time.Time { return start.Add(31 * time.Second) }
+
+	b.AutoRecover()
+	if b.DegradeCount() != 0 {
+		t.Fatalf("degradeCount should be 0 after AutoRecover, got %d", b.DegradeCount())
+	}
+}
+
+func TestAutoRecoverFailureResetsDegradedAt(t *testing.T) {
+	b := New(cfg(3, 1, "normal"))
+	for i := 0; i < 3; i++ {
+		b.RecordFailure() // -> degraded
+	}
+	b.mu.Lock()
+	firstDegradedAt := b.degradedAt
+	b.mu.Unlock()
+
+	// Advance 25s (less than 30s degrade_interval)
+	b.now = func() time.Time { return firstDegradedAt.Add(25 * time.Second) }
+
+	b.RecordFailure() // failure in degraded resets degradedAt
+
+	b.mu.Lock()
+	afterFailure := b.degradedAt
+	b.mu.Unlock()
+
+	if !afterFailure.After(firstDegradedAt) {
+		t.Fatal("degradedAt should be reset after failure in Degraded state")
+	}
+
+	// AutoRecover at 25s from the new degradedAt should not yet recover
+	b.now = func() time.Time { return afterFailure.Add(25 * time.Second) }
+	_, _, recovered := b.AutoRecover()
+	if recovered {
+		t.Fatal("AutoRecover should not recover 25s after the new degradedAt")
+	}
+
+	// But after 31s from the new degradedAt it should
+	b.now = func() time.Time { return afterFailure.Add(31 * time.Second) }
+	_, _, recovered = b.AutoRecover()
+	if !recovered {
+		t.Fatal("AutoRecover should recover 31s after the new degradedAt")
 	}
 }

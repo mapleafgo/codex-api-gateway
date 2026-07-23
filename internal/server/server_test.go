@@ -927,8 +927,8 @@ func TestResponsesPostTerminalClientCancelTreatedAsCompleted(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	// 给 handler 一点时间收尾写日志/记指标。
-	time.Sleep(200 * time.Millisecond)
+	// 等待 handleResponses goroutine 结束写日志。
+	srv.WaitForHandlers()
 
 	got := logs.String()
 	if strings.Contains(got, "响应请求失败") {
@@ -1019,15 +1019,14 @@ func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
 	cancel()
 
 	res := <-ch
-	if res.err != nil {
-		// 客户端在建连后取消也可能直接报错，允许。
-		time.Sleep(300 * time.Millisecond)
-	} else {
+	if res.err == nil {
 		// 尽量读一点再关，触发服务端写路径感知断开。
 		_, _ = io.CopyN(io.Discard, res.resp.Body, 256)
 		_ = res.resp.Body.Close()
-		time.Sleep(300 * time.Millisecond)
 	}
+
+	// 等待 handleResponses goroutine 完成所有 slog 写入，消除与 logs.String() 的竞争。
+	srv.WaitForHandlers()
 
 	got := logs.String()
 	if strings.Contains(got, `"level":"ERROR"`) && strings.Contains(got, "响应请求失败") {
@@ -1054,7 +1053,7 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, Cooldown: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
 		Sources: []config.Source{{
 			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
 		}},

@@ -15,7 +15,7 @@ func TestLoadOverridesWithEnvProvider(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
 server: {listen: ":9090"}
-breaker: {first_byte_timeout: 8s, degrade_threshold: 3, recover_threshold: 1, cooldown: 20s, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, degrade_threshold: 3, recover_threshold: 1, circuit_interval: 20s, half_open_probes: 1, recovery: normal}
 sources:
   - name: official
     base_url: https://api.anthropic.com
@@ -92,8 +92,11 @@ sources:
 	if cfg.Breaker.FirstByteTimeout != Duration(12*time.Second) {
 		t.Fatalf("default first_byte_timeout: got %v, want 12s", cfg.Breaker.FirstByteTimeout)
 	}
-	if cfg.Breaker.Cooldown != Duration(30*time.Second) {
-		t.Fatalf("default cooldown: got %v, want 30s", cfg.Breaker.Cooldown)
+	if cfg.Breaker.CircuitInterval != Duration(1*time.Minute) {
+		t.Fatalf("default circuit_interval: got %v, want 1m", cfg.Breaker.CircuitInterval)
+	}
+	if cfg.Breaker.DegradeInterval != Duration(30*time.Second) {
+		t.Fatalf("default degrade_interval: got %v, want 30s", cfg.Breaker.DegradeInterval)
 	}
 	if cfg.Breaker.DegradeThreshold != 3 {
 		t.Fatalf("default degrade_threshold: got %d, want 3", cfg.Breaker.DegradeThreshold)
@@ -277,7 +280,8 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	c := &Config{
 		Breaker: BreakerCfg{
 			FirstByteTimeout: Duration(12 * time.Second),
-			Cooldown:         Duration(60 * time.Second),
+			CircuitInterval:  Duration(60 * time.Second),
+			DegradeInterval:  Duration(30 * time.Second),
 			DegradeThreshold: 3,
 			RecoverThreshold: 1,
 			HalfOpenProbes:   1,
@@ -287,14 +291,18 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	}
 	src := &Source{
 		Breaker: &BreakerCfg{
-			Cooldown:         Duration(10 * time.Second),
+			CircuitInterval:  Duration(10 * time.Second),
 			DegradeThreshold: 5,
 		},
 	}
 	merged := c.BreakerFor(src)
 	// Overridden by per-source
-	if merged.Cooldown != Duration(10*time.Second) {
-		t.Fatalf("per-source cooldown not merged: got %v", merged.Cooldown)
+	if merged.CircuitInterval != Duration(10*time.Second) {
+		t.Fatalf("per-source circuit_interval not merged: got %v", merged.CircuitInterval)
+	}
+	// DegradeInterval inherited from global (per-source zero = inherit)
+	if merged.DegradeInterval != Duration(30*time.Second) {
+		t.Fatalf("global degrade_interval not inherited: got %v", merged.DegradeInterval)
 	}
 	if merged.DegradeThreshold != 5 {
 		t.Fatalf("per-source degrade_threshold not merged: got %d", merged.DegradeThreshold)
@@ -318,14 +326,15 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 func TestBreakerForNilPerSource(t *testing.T) {
 	c := &Config{
 		Breaker: BreakerCfg{
-			Cooldown:         Duration(60 * time.Second),
+			CircuitInterval:  Duration(60 * time.Second),
+			DegradeInterval:  Duration(30 * time.Second),
 			DegradeThreshold: 3,
 		},
 	}
 	src := &Source{}
 	merged := c.BreakerFor(src)
-	if merged.Cooldown != Duration(60*time.Second) {
-		t.Fatalf("should return global when no per-source breaker: got %v", merged.Cooldown)
+	if merged.CircuitInterval != Duration(60*time.Second) {
+		t.Fatalf("should return global circuit_interval when no per-source breaker: got %v", merged.CircuitInterval)
 	}
 }
 
@@ -546,7 +555,7 @@ func TestLoadBaseInstructionsFile(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
 server: {listen: ":9090"}
-breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
 base_instructions_file: bi.txt
 sources:
   - name: official
@@ -572,7 +581,7 @@ func TestLoadBaseInstructionsFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
-breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
 base_instructions_file: nope.txt
 sources:
   - name: official
@@ -594,7 +603,7 @@ func TestLoadWarnsDeprecatedSystemSuffix(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
-breaker: {first_byte_timeout: 8s, cooldown: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
 system_suffix: "legacy"
 sources:
   - name: official

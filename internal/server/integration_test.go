@@ -695,7 +695,7 @@ func TestIntegrationFailover(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100, // high so A doesn't degrade in this test
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 		},
 		Sources: []config.Source{
@@ -740,7 +740,7 @@ func TestIntegrationFailoverUsesSuccessfulSourceID(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -784,7 +784,7 @@ func TestIntegrationServerSideFailureAdvancesSequenceNumber(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -823,7 +823,7 @@ func TestIntegrationDegradeReorder(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 3,
 			RecoverThreshold: 1,
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -880,7 +880,7 @@ func TestIntegrationRetry(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100, // high so it doesn't circuit-open
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       1, // initial + 1 retry = 2 rounds
 		},
@@ -912,7 +912,7 @@ func TestIntegrationRetryMaxZero(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			Cooldown:         config.Duration(time.Minute),
+			CircuitInterval:         config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0, // no retry
 		},
@@ -935,7 +935,7 @@ func TestIntegrationRetryMaxZero(t *testing.T) {
 //  1. Sources A and B both fail initially. A reaches degraded then circuitOpen
 //     across two requests (DegradeThreshold=1).
 //  2. Once A is circuitOpen, only B is attempted.
-//  3. After cooldown, A transitions to halfOpen on the next request.
+//  3. After circuit_interval, A transitions to halfOpen on the next request.
 //  4. If the halfOpen probe succeeds (A flips to healthy), A recovers to normal
 //     and is restored to its original priority position.
 //  5. After recovery, A is tried first again on subsequent requests.
@@ -976,7 +976,7 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
 			RecoverThreshold: 1,
-			Cooldown:         config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
+			CircuitInterval:         config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -1019,7 +1019,7 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 	aCalls.Store(0)
 	bCalls.Store(0)
 
-	// Request 3: A is circuitOpen (cooldown=500ms, not yet elapsed) -> skipped.
+	// Request 3: A is circuitOpen (circuit_interval=500ms, not yet elapsed) -> skipped.
 	// B serves the request.
 	events3 := postResponses(t, ts, textStreamBody)
 	requireEvent(t, events3, "response.completed")
@@ -1030,22 +1030,22 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 		t.Fatalf("B should serve request 3, got %d calls", got)
 	}
 
-	// Phase 1: Flip A to healthy and wait for cooldown.
+	// Phase 1: Flip A to healthy and wait for circuit_interval.
 	aPhase.Store(1)
-	time.Sleep(600 * time.Millisecond) // > Cooldown (500ms)
+	time.Sleep(600 * time.Millisecond) // > CircuitInterval (500ms)
 
 	// Reset counters.
 	aCalls.Store(0)
 	bCalls.Store(0)
 
-	// Request 4: A's cooldown elapsed -> Allow() transitions to halfOpen.
+	// Request 4: A's circuit_interval elapsed -> Allow() transitions to halfOpen.
 	// A is probed and succeeds -> A recovers to normal, restored to position 0.
 	events4 := postResponses(t, ts, textStreamBody)
 	requireEvent(t, events4, "response.completed")
 
 	// A should have been called at least once (the halfOpen probe).
 	if got := aCalls.Load(); got < 1 {
-		t.Fatalf("after cooldown, A should be probed via halfOpen, got %d calls", got)
+		t.Fatalf("after circuit_interval, A should be probed via halfOpen, got %d calls", got)
 	}
 
 	// Reset counters.
@@ -1067,7 +1067,7 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 // TestIntegrationCircuitOpenSourceSkipped verifies that after A reaches
 // circuitOpen through real HTTP traffic (with B also initially failing so A
 // gets called on both requests), subsequent requests skip A entirely because
-// Allow() returns false while circuitOpen and cooldown hasn't elapsed.
+// Allow() returns false while circuitOpen and circuit_interval hasn't elapsed.
 func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 	var aCalls atomic.Int64
 	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1097,7 +1097,7 @@ func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
 			RecoverThreshold: 1,
-			Cooldown:         config.Duration(time.Minute), // long cooldown: A stays open
+			CircuitInterval:         config.Duration(time.Minute), // long circuit_interval: A stays open
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -1129,7 +1129,7 @@ func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 	aCalls.Store(0)
 	bCalls.Store(0)
 
-	// Request 3: A is circuitOpen (cooldown=1min) -> Allow()=false -> skipped.
+	// Request 3: A is circuitOpen (circuit_interval=1min) -> Allow()=false -> skipped.
 	// B serves the request.
 	events3 := postResponses(t, ts, textStreamBody)
 	requireEvent(t, events3, "response.completed")

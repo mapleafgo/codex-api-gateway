@@ -195,6 +195,13 @@ func (b *Breaker) AutoRecover() (State, State, bool) {
 	return b.st, b.st, false
 }
 
+// SetDegradedAt 设置 degradedAt 时间戳，供 scheduler 测试使用。
+func (b *Breaker) SetDegradedAt(t time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.degradedAt = t
+}
+
 // ForceNormal 手动将源提升回 normal：清零失败/成功 streak、degradeCount，
 // 并重置 halfOpen 探测计数。用于管理页人工干预。
 func (b *Breaker) ForceNormal() State {
