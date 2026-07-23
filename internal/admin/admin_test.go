@@ -263,6 +263,51 @@ func TestUpstreamModelsUnsaved(t *testing.T) {
 	}
 }
 
+
+func TestUpstreamModelsAcceptsResponsesBackend(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("auth=%s", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5","display_name":"GPT-5"}]}`))
+	}))
+	defer upstream.Close()
+
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"base_url":     upstream.URL + "/v1",
+		"api_key":      "secret",
+		"backend_type": "r",
+	})
+	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var out struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Models) != 1 || out.Models[0].ID != "gpt-5" {
+		t.Fatalf("models=%+v", out.Models)
+	}
+}
+
 func TestUpstreamModelsRejectsInvalidBackendType(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	mux := http.NewServeMux()

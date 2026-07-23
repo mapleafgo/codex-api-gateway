@@ -21,6 +21,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 )
@@ -331,7 +332,8 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	var models []anthropic.ModelInfo
-	if bt == config.BackendOpenAIChat {
+	switch bt {
+	case config.BackendOpenAIChat:
 		ms, err := chatclient.New().ListModels(ctx, in.BaseURL, in.APIKey)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
@@ -340,7 +342,16 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 		for _, m := range ms {
 			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
 		}
-	} else {
+	case config.BackendOpenAIResponses:
+		ms, err := responsesclient.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
+			return
+		}
+		for _, m := range ms {
+			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+	default:
 		ms, err := anthropic.New().ListModels(ctx, in.BaseURL, in.APIKey)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})

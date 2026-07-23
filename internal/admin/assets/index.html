@@ -895,8 +895,8 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('backendType')"></span>
                     <div class="ui-sel"
                          x-data="uiSel()"
-                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')}]"
-                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')}]"
+                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')}]"
+                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')}]"
                          @sel-change="src.backend_type = $event.detail">
                       <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
                         <span x-text="label"></span>
@@ -1341,7 +1341,7 @@ function app() {
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: '模型', global: '全局参数', guidance: '基线指令',
+      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: '模型', global: '全局参数', guidance: '基线指令',
       addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
       srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
@@ -1401,7 +1401,7 @@ function app() {
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', models: 'Models', global: 'Global', guidance: 'Base instructions',
+      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: 'Models', global: 'Global', guidance: 'Base instructions',
       addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
       srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
@@ -1599,14 +1599,17 @@ function app() {
 
     backendTypeLabel(v) {
       const x = String(v || '').trim();
-      // 请求列表用大写 A/C 区分：a=Anthropic，c=OpenAI Chat
+      // 请求列表用大写 A/C/R 区分：a=Anthropic，c=OpenAI Chat，r=OpenAI Responses
       if (x === 'c') return 'C';
+      if (x === 'r') return 'R';
       // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
       return 'A';
     },
     backendTypeTitle(v) {
       const x = String(v || '').trim() || 'a';
-      const full = x === 'c' ? this.t('backendChat') : this.t('backendAnthropic');
+      let full = this.t('backendAnthropic');
+      if (x === 'c') full = this.t('backendChat');
+      else if (x === 'r') full = this.t('backendResponses');
       return this.t('colBackendType') + ': ' + this.backendTypeLabel(x) + ' · ' + full;
     },
     isOk(row) {
@@ -1810,6 +1813,7 @@ function app() {
           { key: 'backend_type', label: this.t('backendType'), type: 'select', value: 'a', options: [
             { v: 'a', l: this.t('backendAnthropic') },
             { v: 'c', l: this.t('backendChat') },
+            { v: 'r', l: this.t('backendResponses') },
           ]},
           { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
