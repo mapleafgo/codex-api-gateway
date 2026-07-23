@@ -796,16 +796,16 @@ func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
 }
 
 func appendFunctionCall(out *anthropic.MessageNewParams, fc *oairesponses.ResponseFunctionToolCallParam) error {
-	// tool_use.input：优先嵌 JSON object（Decoder 取首值，丢尾部杂质）；
-	// 解不出 object 时把原串当 JSON string 原样塞入（能塞字符串就不丢、不改 {}）。
+	// tool_use.input 必须是 JSON object：Anthropic 与多数兼容后端（含 Grok）会拒绝
+	// string / array 形态的 input（400: "缺少有效 id、name 或 object input"）。
 	return appendToolUse(out, fc.CallID, toolcatalog.ToolName(fc.Namespace.Value, fc.Name),
 		toolUseInputPassthrough(fc.Arguments))
 }
 
-// toolUseInputPassthrough 产出可 marshal 进 tool_use.input 的值：
+// toolUseInputPassthrough 产出可 marshal 进 Anthropic tool_use.input 的值：
 //   - 空 → {}
 //   - 首个 JSON object → RawMessage 原样字节
-//   - 否则 → 原字符串（JSON 里成为 string，不二次改写内容）
+//   - 否则 → {"raw":"<原串>"}（不塞裸 string/array；Grok 等兼容端硬性要求 object）
 func toolUseInputPassthrough(s string) any {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -814,7 +814,12 @@ func toolUseInputPassthrough(s string) any {
 	if raw, ok := toolUseInputJSON(s); ok {
 		return raw
 	}
-	return s
+	// 非 object：包装为 object，保留原串内容供模型阅读，避免上游 400。
+	wrapped, err := json.Marshal(map[string]string{"raw": s})
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(wrapped)
 }
 
 // toolUseInputJSON 尝试从 s 开头解出一个 JSON object（保留原始字节）。
@@ -974,6 +979,15 @@ func localShellOutputText(out *oairesponses.ResponseInputItemLocalShellCallOutpu
 }
 
 func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) error {
+	if id == "" || name == "" {
+		slog.Warn("跳过缺少 id 或 name 的 tool_use（上游会 400 拒绝）",
+			"id", id,
+			"name", name,
+			"impact", "该 tool call 不进入上游 messages")
+		return nil
+	}
+	// 兜底：任何非 object 的 input 都会触发 Grok 类后端 400。
+	input = ensureToolUseInputObject(input)
 	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
 		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
 	}
@@ -988,6 +1002,43 @@ func appendToolUse(out *anthropic.MessageNewParams, id, name string, input any) 
 	return nil
 }
 
+// ensureToolUseInputObject 保证 tool_use.input 序列化为 JSON object。
+// Anthropic 官方与 Grok 等兼容后端要求 input 为 object；string/array/null 会 400。
+func ensureToolUseInputObject(input any) any {
+	switch v := input.(type) {
+	case nil:
+		return json.RawMessage(`{}`)
+	case json.RawMessage:
+		if len(v) == 0 || v[0] != '{' {
+			return wrapNonObjectToolUseInput(string(v))
+		}
+		return v
+	case map[string]any:
+		return v
+	case string:
+		// 再走一遍透传：可能是 JSON object 字符串。
+		return toolUseInputPassthrough(v)
+	default:
+		// 已是 struct 等可序列化类型：检查序列化后是否以 { 开头。
+		raw, err := json.Marshal(v)
+		if err != nil || len(raw) == 0 || raw[0] != '{' {
+			return wrapNonObjectToolUseInput(fmt.Sprint(v))
+		}
+		return json.RawMessage(raw)
+	}
+}
+
+func wrapNonObjectToolUseInput(s string) json.RawMessage {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return json.RawMessage(`{}`)
+	}
+	wrapped, err := json.Marshal(map[string]string{"raw": s})
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(wrapped)
+}
 func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses.ResponseInputItemFunctionCallOutputParam) error {
 	// function_call_output.output 是 union：string 或 [{input_text|input_image|input_file}...]。
 	// 只读 OfString 会把 content list 静默变空 tool_result，参见协议覆盖表 Input Item 说明。
@@ -1023,7 +1074,7 @@ func appendToolSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 	return appendToolUse(out, callID, "tool_search", toolSearchArgumentsInput(call.Arguments))
 }
 
-// toolSearchArgumentsInput 与 function_call 一致：优先 object，否则字符串原样（含 nil/空 → {}）。
+// toolSearchArgumentsInput 与 function_call 一致：优先 object；非 object 包成 {"raw":...}。
 func toolSearchArgumentsInput(args any) any {
 	switch v := args.(type) {
 	case string:
@@ -1036,7 +1087,7 @@ func toolSearchArgumentsInput(args any) any {
 		}
 		return toolUseInputPassthrough(string(v))
 	default:
-		return v
+		return ensureToolUseInputObject(v)
 	}
 }
 

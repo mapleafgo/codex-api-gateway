@@ -797,8 +797,13 @@ func TestToolSearchArgumentsInputPassthrough(t *testing.T) {
 	}
 	// 非 object 字符串原样
 	got = toolSearchArgumentsInput(`not-json`)
-	if s, ok := got.(string); !ok || s != "not-json" {
-		t.Fatalf("want string not-json, got %#v", got)
+	raw, ok := got.(json.RawMessage)
+	if !ok {
+		t.Fatalf("want json.RawMessage, got %#v", got)
+	}
+	var wrap map[string]string
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap["raw"] != "not-json" {
+		t.Fatalf("want {\"raw\":\"not-json\"}, got %s", raw)
 	}
 	if s := string(toolSearchArgumentsInput(nil).(json.RawMessage)); s != "{}" {
 		t.Fatalf("nil want {}, got %s", s)
