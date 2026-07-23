@@ -1,7 +1,7 @@
 # OpenAI Responses 上游透传后端设计
 
 > 日期：2026-07-23
-> 状态：已批准（待实现；2026-07-23 自审修订：T2 model 回写 / r 源 WARN 收口 / ScanSSE 硬化）
+> 状态：已实现（2026-07-23；含 T2 model 回写 / r 源 WARN 收口 / ScanSSE 硬化）
 > 方案：完整 Backend 适配器 + 最小改写透传（方案 A + wire 短码 `r`）
 > 对齐：`docs/superpowers/specs/2026-07-21-openai-chat-backend-design.md`（Chat 后端方案 A 的第三后端补全）
 

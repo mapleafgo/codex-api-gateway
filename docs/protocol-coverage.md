@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-22（Chat 全面透传 + 出站 token logprobs；structured / usage details 已支持）
+日期: 2026-07-23（Chat 全面透传 + Responses 透传 backend_type:r；structured / usage details 已支持）
 
 本文是 OpenAI Responses API 到 Anthropic Messages API 的覆盖矩阵。它记录协议项是否被语义级翻译、损耗翻译、raw 保真、后端无等价能力或延期专项设计。后续任何协议补齐都必须同步更新本文。
 
@@ -33,6 +33,19 @@
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
+
+
+### OpenAI Responses 透传上游（`backend_type: r`）
+
+客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 兼容上游做**最小改写透传**：
+
+- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；其余键原样保留（含 `previous_response_id`、tools、include 等）
+- **出站 SSE**：上游事件 Type + Data 转发；**T2** 仅回写顶层/`response` 内 `model` 为客户端请求 model；不合成空流终态；中途失败不强制补 `response.failed`
+- **观测**：尽力解析 `response.completed|incomplete|failed` 的 `usage` 写入 metrics；`backend_type` 恒为 `r`
+- **产品边界**：网关仍无 session store（不代补历史）；WARN 收口：配置含启用中 r 源时，不对 r 可透传字段误报「数据被丢弃」
+- **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat 中枢，也不做 Anthropic 转换
+
+字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准，协议不可映射才 WARN/丢弃。
 
 ## 架构基础（与 AGENTS.md 对齐）
 
@@ -164,6 +177,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 ### 2026-07-22
 
+- **Responses 透传（`backend_type: r`）**：最小改写透传 + T2 model 回写 + warn 收口。
 - **Chat 后端（`backend_type: c`）专节**：补全 Request / Input Item / Tool / 出站 SSE 矩阵；批次 A+B（合并 tool_calls、Codex freeform 工具环、output_text 回灌、`parallel_tool_calls`、`finish_reason` 终态）。
   - **usage 末包时序**：finish_reason 后仍接收空 choices usage；终态延后到 FeedDone，避免 `include_usage` 下 terminal usage 恒 0。
   - **DRY**：`toolcatalog.FreeformInputSchema` / `SplitToolName` 供 a/c 共用。

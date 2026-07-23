@@ -34,6 +34,21 @@ sources:
 
 `base_url` 示例：OpenAI `…/v1`、DeepSeek `https://api.deepseek.com`、智谱 `https://open.bigmodel.cn/api/paas/v4`、火山 `https://ark.cn-beijing.volces.com/api/v3`、百炼 `https://dashscope.aliyuncs.com/compatible-mode/v1`。客户端仍只访问网关的 `/v1/responses`。
 
+### OpenAI Responses 透传上游（backend_type: r）
+
+当上游本身提供 OpenAI Responses API 时，配置 `backend_type: r`：网关映射 model、强制 stream，
+并将上游 SSE 转回客户端（出站 `response.model` 回写为客户端模型别名）。可与 a/c 混排故障转移。
+
+```yaml
+sources:
+  - name: openai-responses
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+    backend_type: r
+    model_map: { gpt-5: gpt-5 }
+    default_model: gpt-5
+```
+
 ## 功能
 
 - **协议转换**：OpenAI Responses API ⇄ Anthropic Messages API，流式 SSE 双向转换。
@@ -378,7 +393,7 @@ rm -f ~/.codex/models_cache.json
 - **无等价历史 item**（`file_search_call` / `computer_call*` / `image_generation_call` / `program*` / `item_reference` / `additional_tools`）：WARN + 丢弃，不进 system context。
 - **无等价请求参数**：`background` / `conversation` / `moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / deprecated `user` 等按 WARN + 忽略；`service_tier` 非空时 WARN 且不透传。
 
-完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)（含 Anthropic `a` 与 Chat Completions `c` 专节）。
+完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)（含 Anthropic `a`、Chat Completions `c` 与 Responses 透传 `r` 专节）。
 
 ## 设计文档
 
