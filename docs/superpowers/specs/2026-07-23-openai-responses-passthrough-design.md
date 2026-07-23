@@ -1,7 +1,7 @@
 # OpenAI Responses 上游透传后端设计
 
 > 日期：2026-07-23
-> 状态：已批准（待实现）
+> 状态：已批准（待实现；2026-07-23 自审修订：T2 model 回写 / r 源 WARN 收口 / ScanSSE 硬化）
 > 方案：完整 Backend 适配器 + 最小改写透传（方案 A + wire 短码 `r`）
 > 对齐：`docs/superpowers/specs/2026-07-21-openai-chat-backend-design.md`（Chat 后端方案 A 的第三后端补全）
 
@@ -30,11 +30,13 @@ Chat 后端设计已预留「第 3 种 backend 实现」。本设计补全该空
 
 | 项 | 行为 |
 |---|---|
-| 请求 body | 解析为 JSON object；改写 `model`（`model_map` / `default_model`）；强制 `stream: true`；**其余字段原样保留** |
+| 请求 body | 解析为 JSON object；改写 `model`（`model_map` / `default_model`）；强制 `stream: true`；**其余键语义保留**（map 再 Marshal，**非**请求字节透传） |
 | 上游 URL | `base_url` 拼接 `/responses`（已含则不重复） |
 | 鉴权 | `Authorization: Bearer <api_key>` |
-| 响应 SSE | 解析 `event:` + `data:`，以 `model.SSEEvent` 写出；**`Data` 不改写 JSON 语义** |
+| 响应 SSE | 解析 `event:` + `data:`，以 `model.SSEEvent` 写出；**默认 Data 原样** |
+| 出站 model 别名（**T2，已定**） | 与 a/c 的 `SetClientModel` 对齐：仅把事件 JSON 中面向客户端的 `model` / `response.model` **回写为客户端请求 model**；不改 response id、output、usage 等其它字段 |
 | 非目标改写 | 不重写 response id、不补 echo 字段、不归一 item 形状、不做 usage 编造 |
+| 客户端契约 | 网关对客户端**始终**写 Responses SSE（与 a/c 相同）；强制上游 `stream: true`，不提供同步 JSON 完成体 |
 
 ### 1.3 非目标
 
@@ -185,9 +187,13 @@ modelsURL(base): 与 chatclient 相同逻辑（suffix "/models" 则不重复）
 - 空行结束一帧；调用 `onEvent(eventType string, data []byte)`
 - 行以 `:` 开头视为注释，忽略
 - 若出现 `data: [DONE]`（部分代理兼容），结束扫描，不把 `[DONE]` 当业务事件
-- `event` 缺省时：尝试从 data JSON 顶层 `"type"` 字段取值；仍无则 `eventType=""`（写出侧与 `writeSSE` 对齐：空 type 时仅写 `data:` 行或按现有 server 行为——实现时以 `server.writeSSE` 为准，保证客户端可解析）
+- **`eventType` 解析顺序（必须非空才 `onEvent`）**：
+  1. SSE 行 `event:` 非空 → 用之
+  2. 否则从 data JSON 顶层 `"type"` 取值
+  3. 仍无 → **DEBUG 跳过该帧**，禁止把空 `Type` 交给 `writeSSE`（现实现固定写 `event: %s`，空串会破坏 SSE）
+- **Scanner 缓冲**：默认 `bufio.Scanner` 64KiB 不够承载 `response.completed` 全量 output。实现须 `Buffer` 放大，**起始 1MiB**，上限至少 8–16MiB（与仓内 SSE 经验一致）；超限帧记错误并失败本源，不截断 silently 当成功
 
-不在 client 内做 JSON 语义修改。
+client 层不做业务 JSON 改写（model 回写在 Backend，见 §6.5）。
 
 ## 6. `ResponsesBackend`
 
@@ -236,6 +242,23 @@ modelsURL(base): 与 chatclient 相同逻辑（suffix "/models" 则不重复）
 
 实现可在 Scan 循环中轻量 `json.Unmarshal` 仅用于观测，**不得**因观测失败中断流。
 
+Usage 字段名对齐 OpenAI Responses wire（常见：`input_tokens` / `output_tokens`；cache 细节若存在再映射到 `CacheRead`/`CacheCreate`），映射不到则 0。
+
+### 6.5 出站 model 别名回写（T2）
+
+目标：与 a/c 一致，Codex 看到的始终是**客户端请求 model**（映射前别名），而非上游真实 model id。
+
+规则：
+
+1. `clientModel` = 请求改写前的客户端 model 字符串（空则用 resolve 后值，再空则不回写）
+2. 每个将要 `onEvent` 的 data 帧：若 JSON object 含顶层 `model` 字符串，改为 `clientModel`
+3. 若含 `response` object 且其中有 `model` 字符串，改为 `clientModel`
+4. 仅当至少改动一处时才 `json.Marshal` 替换 `Data`；未含 model 的帧（如纯 delta）**保持原 data 字节**
+5. 不修改 `id` / `response.id` / `usage` / `output` / 其它字段
+6. Marshal 失败 → DEBUG，**保留原 Data 继续转发**（可观测优先于别名完美）
+
+成功标准中的「data 一致」以本节约定为准：允许 model 回写；其余字段不改语义。
+
 ## 7. Scheduler / Server
 
 ### 7.1 backendFor
@@ -265,15 +288,30 @@ Scheduler 持有三个无状态（或仅含 HTTP client）Backend 实例：`anth
 
 ### 7.3 Server 首源预检
 
-现有逻辑对首源为 a 时可能预跑 ToAnthropic。扩展规则：
+与现网代码对齐后扩展（**现网 c 路径没有 ToChat 预检**）：
 
-| 首源类型 | 预检 |
+| 首源类型 | 预检（写 SSE 头之前） |
 |---|---|
-| `a` | 保持现有 ToAnthropic 预检（若有） |
-| `c` | 保持现有 ToChat 预检（若有） |
-| `r` | 仅 `PrepareUpstreamBody` / decode map 成功与否；失败 400；**不做** a/c 转换 |
+| `a` | 保持现有 `ToAnthropic` dry-run；失败 400 |
+| `c` | **无**转换预检（保持现状） |
+| `r` | 可选：`PrepareUpstreamBody` dry-run；失败 400；**不做** ToAnthropic/ToChat |
 
-禁止「全局必须能 ToAnthropic」误杀纯 r 部署。
+禁止「全局必须能 ToAnthropic」误杀纯 r / 纯 c 部署。
+
+### 7.3.1 `warnDroppedOrIgnoredParams` 与 r（已定）
+
+现状函数按 a/c 能力输出「丢弃/仅 Chat 透传」类 WARN。对 **r** 许多字段会原样进上游，假 WARN 会误导排障。
+
+**规则（推荐实现，已定）：**
+
+1. 扫描当前配置 `sources`（与现函数已接收的 `sources` 参数一致）。
+2. 若存在至少一个 **启用且** `backend_type=r` 的源（`disabled!=true`）：
+   - 对 **r 可形状透传** 的字段，**不再**按 a 路径「WARN + 丢弃」叙事输出（包括但不限于：`previous_response_id`、`prompt_cache_*`、`service_tier`、`text.verbosity`、`metadata` 整表、`store`、`moderation`、`top_logprobs`、`stream_options`、多数 `include` 项——一律视为可能由 r 上游消化）。
+   - 仍可对 **网关产品明确不做** 的能力保留说明性 DEBUG/INFO（例如网关自身无 session store：**不**承诺按 `previous_response_id` 补历史；字段仍透传，由上游决定）。文案必须写清「透传上游，网关不代补会话」，禁止写「对应数据被丢弃」。
+3. 若配置中 **没有** r 源：保持现有 a/c 分支 WARN 逻辑不变。
+4. 混排（a+c+r）：以「是否存在 r」为准做收口（有 r 则按上条放宽），避免 failover 到 r 时日志仍说字段已丢弃。
+
+实现时可抽 `hasResponsesBackend(sources) bool`，避免散落判断。
 
 ### 7.4 Failover
 
@@ -306,9 +344,9 @@ Scheduler 持有三个无状态（或仅含 HTTP client）Backend 实例：`anth
 ### 8.4 protocol-coverage 专节要点
 
 - 客户端路径仍为 `/v1/responses`
-- 网关仅保证：`model` 映射、`stream=true`、SSE 帧原样转发、Bearer 鉴权
+- 网关保证：`model` 映射、`stream=true`、Bearer、SSE 转发、**出站 model 别名回写（T2）**
 - 几乎全部 Responses 请求/事件字段对网关而言为 **`supported`（passthrough）**——语义由上游决定
-- 网关产品边界（无 session store、无 background 排队实现等）不变：字段若客户端发送则透传，网关不代为实现
+- 网关产品边界（无 session store、无 background 排队实现等）不变：字段若客户端发送则透传，网关不代为实现；文档不得写成「网关丢弃」
 - 与 a/c 矩阵 **不共享** 状态行；三路径并列
 
 ## 9. 错误矩阵
@@ -330,9 +368,9 @@ Scheduler 持有三个无状态（或仅含 HTTP client）Backend 实例：`anth
 |---|---|
 | `config` | `r` 规范化；非法值拒绝；validate 写回 |
 | `responsesclient` | URL join（含/不含 `/responses`）；mock 200 流；mock 4xx 错误串含 status |
-| `backend` | model_map 生效；stream 强制 true；其余字段保留；SSE 顺序原样；空流不合成 completed；usage 解析（有则填） |
+| `backend` | model_map 生效；stream 强制 true；其余字段保留；SSE 顺序；**T2 model 回写**；空流不合成 completed；usage 解析（有则填）；>64KiB 单帧可扫 |
 | `scheduler` | `backendFor` 返回 responsesBackend；ListUpstreamModels r 分支 |
-| `server` | r 源集成：客户端收齐上游事件 type/data；可选 a/c/r 混排一测 |
+| `server` | r 源集成；含 r 时 warn 不误报丢弃 previous_response_id 等；可选 a/c/r 混排一测 |
 | `admin` | Normalize/view 含 r；upstream-models 接受 r |
 
 质量门禁：`task check`（或 `go test ./...` + 格式/vet）；涉及 scheduler 并发处按需 `task test-race`。
@@ -343,7 +381,7 @@ Scheduler 持有三个无状态（或仅含 HTTP client）Backend 实例：`anth
 2. `responsesclient`：URL / Stream / ScanSSE / ListModels + 测试
 3. `backend.ResponsesBackend` + PrepareUpstreamBody + 测试
 4. `scheduler`：三实例 + backendFor + ListUpstreamModels
-5. `server`：首源预检分支 + 集成测
+5. `server`：首源预检分支 + `warnDroppedOrIgnoredParams` r 收口 + 集成测
 6. `admin` / metrics / i18n 文案
 7. `README` + `protocol-coverage` 专节
 8. 全量 `task check`；本 spec 状态改为已实现
@@ -370,19 +408,25 @@ Scheduler 持有三个无状态（或仅含 HTTP client）Backend 实例：`anth
 
 | 风险 | 决策 |
 |---|---|
-| SDK 往返丢失扩展字段 | 请求侧用 map 透传，不用完整 ResponseNewParams 再 Marshal |
+| SDK 往返丢失扩展字段 | 请求侧用 map 语义透传，不用完整 ResponseNewParams 再 Marshal |
+| 请求非字节保真 | 接受；成功标准按语义键保留，不宣称请求 body 字节级一致 |
 | 半截流无 failed 事件 | 接受；透传不代写终态（与纯代理一致） |
-| 部分上游无 event 行 | 从 data.`type` 回填 SSE event 名 |
+| 部分上游无 event 行 | 从 data.`type` 回填；仍无则跳过帧，禁止空 Type |
+| 大包 completed | Scanner 缓冲 ≥1MiB（上限 8–16MiB） |
+| 出站 model 与 a/c 不一致 | **T2**：回写客户端 model（§6.5） |
+| a/c 风格 WARN 误杀 r 可透传字段 | 配置含启用中的 r 源时放宽 WARN（§7.3.1） |
 | `[DONE]` 非官方 | 兼容结束扫描，不当业务事件 |
-| 与 c 的 ListModels 重复 | 允许两 client 各有一份简单实现（YAGNI）；不强制立刻抽公共 HTTP 包 |
+| 与 c 的 ListModels 重复 | 允许两 client 各有一份简单实现（YAGNI） |
 | wire 短码 | 固定 `r`（responses），与 `a`/`c` 一致单字母 |
 
 ## 14. 成功标准
 
 - 配置 `backend_type: r` 的源可被调度，观测显示 `r`/`R`
-- 上游收到的 JSON：除 `model` 与 `stream` 外与客户端语义一致（map 键保留）
-- 客户端收到的 SSE data 与上游 data 字节级一致（允许 transport 层换行规范化，不允许改 JSON）
+- 上游收到的 JSON：除 `model` 与 `stream` 外与客户端**语义**一致（map 键保留；允许 Marshal 重排/数字形态变化）
+- 客户端 SSE：除 **T2 model 别名回写** 外，data 与上游一致；`event` Type 非空且可被 `writeSSE` 合法写出
+- 配置含 r 时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」
 - 空流不锁定源为「假成功」
+- 大包 `response.completed`（>64KiB）可完整扫描，不因默认 Scanner 限制失败
 - a/c/r 混排时，首字节前失败可跨类型 failover
 - `task check` 通过
 
