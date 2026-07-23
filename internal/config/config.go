@@ -104,10 +104,12 @@ type BreakerCfg struct {
 }
 
 // Source configures one upstream.
-// backend_type: 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming)
+// backend_type: 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming),
+// 'r' = OpenAI Responses (passthrough, only streaming)
 const (
-	BackendAnthropic  = "a"
-	BackendOpenAIChat = "c"
+	BackendAnthropic       = "a"
+	BackendOpenAIChat      = "c"
+	BackendOpenAIResponses = "r"
 )
 
 // Source configures one Anthropic-compatible upstream.
@@ -133,8 +135,10 @@ func NormalizeBackendType(s string) (string, error) {
 		return BackendAnthropic, nil
 	case BackendOpenAIChat:
 		return BackendOpenAIChat, nil
+	case BackendOpenAIResponses:
+		return BackendOpenAIResponses, nil
 	default:
-		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c)", s)
+		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, r)", s)
 	}
 }
 

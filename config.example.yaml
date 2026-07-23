@@ -98,4 +98,12 @@ sources:
   #  backend_type: c
   #  model_map: { gpt-5: gpt-4o }
   #  default_model: gpt-4o
+
+  # 备用源：演示 OpenAI Responses 透传上游（取消注释使用）
+  #- name: openai-responses
+  #  base_url: https://api.openai.com/v1
+  #  api_key: ${OPENAI_API_KEY}
+  #  backend_type: r
+  #  model_map: { gpt-5: gpt-5 }
+  #  default_model: gpt-5
       circuit_interval: 10s
