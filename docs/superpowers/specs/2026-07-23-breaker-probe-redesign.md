@@ -18,8 +18,8 @@
 ## 2. 目标与非目标
 
 **目标**
-- Degraded 源在 `degrade_probe_interval` 内无新失败后自动恢复为 Normal
-- CircuitOpen 源的 cooldown 默认改为 1m（作为探测间隔），现有 HalfOpen 机制不变
+- Degraded 源在 `degrade_interval` 内无新失败后自动恢复为 Normal
+- `cooldown` 更名为 `circuit_interval`（默认 1m），作为 CircuitOpen→HalfOpen 探针间隔，现有 HalfOpen 机制不变
 - 去掉 429 特判逻辑，429 走正常 RecordFailure 流程
 - Degraded 时的 `moveToEnd` 保留（避免影响正常源延迟），auto-recovery 保证恢复
 - 新配置项闭环：config 定义、默认值、校验、merge、env override
@@ -55,16 +55,16 @@ Normal ── failStreak≥degrade_threshold ──→ Degraded (moveToEnd)
 Degraded ── failStreak≥degrade_threshold ──→ CircuitOpen
 　　　　　　│
 　　　　　　── successStreak≥recover_threshold ──→ Normal (restoreOriginal)
-　　　　　　── ★ degrade_probe_interval 内无新失败 ──→ Normal (restoreOriginal)
+　　　　　　── ★ degrade_interval 内无新失败 ──→ Normal (restoreOriginal)
 
-CircuitOpen ── cooldown到期(默认1m) ──→ HalfOpen
+CircuitOpen ── circuit_interval到期(默认1m) ──→ HalfOpen
 　　　　　　　　　　　　　　　　　　　│
 HalfOpen ── recover_threshold次成功 ──→ Normal/Degraded(按recovery)
 　　　　　　── 失败 ──→ CircuitOpen(计时重置)
 ```
 
 **关键行为**：
-- Degraded 自动恢复不要求源被成功尝试——只要 degrade_probe_interval 内没有 `RecordFailure` 调用，自动恢复为 Normal
+- Degraded 自动恢复不要求源被成功尝试——只要 `degrade_interval` 内没有 `RecordFailure` 调用，自动恢复为 Normal
 - 恢复后 `restoreOriginal()` 回到配置原始顺序位置，下个请求自然经过它（就是探测）
   - 请求成功 → 保持 Normal
   - 请求失败 → 重新 degrade + restart 计时器
@@ -76,17 +76,17 @@ HalfOpen ── recover_threshold次成功 ──→ Normal/Degraded(按recovery
 
 ```yaml
 breaker:
-  degrade_probe_interval: 30s  # 新增，默认 30s。Degraded 自动恢复间隔
-  cooldown: 1m                  # 改为 1m。CircuitOpen→HalfOpen 的探测间隔
-  degrade_threshold: 3          # 不变
-  recover_threshold: 1          # 不变。HalfOpen 需要连续成功次数
-  recovery: "normal"            # 不变
-  first_byte_timeout: 12s       # 不变
-  half_open_probes: 1           # 不变
-  max_retries: 0                # 不变
+  degrade_interval: 30s       # 新增，默认 30s。Degraded 自动恢复为 Normal 的间隔
+  circuit_interval: 1m        # 默认 1m。CircuitOpen→HalfOpen 探针间隔（替代原 cooldown）
+  degrade_threshold: 3        # 不变
+  recover_threshold: 1        # 不变。HalfOpen 需要连续成功次数
+  recovery: "normal"          # 不变
+  first_byte_timeout: 12s     # 不变
+  half_open_probes: 1         # 不变
+  max_retries: 0              # 不变
 ```
 
-`DegradeProbeInterval`（config YAML/key 为 `degrade_probe_interval`）以 Duration 类型存储，0 值在 `applyDefaults` 中覆盖为默认 30s。per-source 级别同样支持配置覆盖。
+`DegradeInterval`（YAML key `degrade_interval`）以 Duration 类型存储，0 值在 `applyDefaults` 中覆盖为默认 30s。`CircuitInterval`（YAML key `circuit_interval`）同理，默认 1m。per-source 级别均支持配置覆盖。
 
 ### Breaker 新增字段
 
@@ -100,9 +100,9 @@ type Breaker struct {
 ### 新增方法
 
 ```go
-// AutoRecover 检查 Degraded 状态是否已超过 degrade_probe_interval。
+// AutoRecover 检查 Degraded 状态是否已超过 degrade_interval。
 // 若超过且无新失败（degradedAt 未被 RecordFailure 重置），自动升回 Normal。
-// 返回 (oldState, newState, recovered)，scheduler 据此调用 restorOriginal。
+// 返回 (oldState, newState, recovered)，scheduler 据此调用 restoreOriginal。
 func (b *Breaker) AutoRecover() (State, State, bool)
 ```
 
@@ -173,13 +173,13 @@ func (s *Scheduler) autoRecoverDegraded() {
 
 ## 7. 实现步骤
 
-1. Config: BreakerCfg 新增 `DegradeProbeInterval`（YAML key `degrade_probe_interval`），设默认值 30s，补充 `applyDefaults`、`BreakerFor` merge、env override
+1. Config: BreakerCfg `cooldown` 改为 `CircuitInterval`（YAML key `circuit_interval`），新增 `DegradeInterval`（YAML key `degrade_interval`）；设默认值 `degrade_interval=30s`、`circuit_interval=1m`；更新 `applyDefaults`、`BreakerFor` merge、env override
 2. Breaker: 新增 `degradedAt` 字段、`AutoRecover()` 方法；`RecordFailure()` 在 Degraded 态时重置 `degradedAt`
 3. Scheduler: 新增 `autoRecoverDegraded()`；在 `tryRoundGeneric` 开头调用；去掉 429 特判逻辑和 `rateLimitRetryDelay`
-4. Cooldown 默认值改为 1m
+4. `Cooldown` 字段替换为 `CircuitInterval`（YAML key `circuit_interval`），默认 1m
 5. 更新 `config.example.yaml`
 6. 更新 breaker 和 scheduler 测试
 
 ## 8. 遗留问题
 
-- `recover_threshold` 当前同时用于 Degraded→Normal（请求成功恢复）和 HalfOpen→Normal（探测恢复）。新设计中两者的语义略有不同：Degraded 层用 `degrade_probe_interval` 超时恢复而非成功计数。但 HalfOpen 仍需要 `recover_threshold`。该字段含义在实现时仅保留 HalfOpen 用途，不再影响 Degraded。
+- `recover_threshold` 当前同时用于 Degraded→Normal（请求成功恢复）和 HalfOpen→Normal（探测恢复）。新设计中 Degraded 层用 `degrade_interval` 超时恢复而非成功计数，因此 `recover_threshold` 在实现时仅保留 HalfOpen 用途，不再影响 Degraded 自动恢复。
