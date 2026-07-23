@@ -2505,3 +2505,43 @@ func TestFunctionCallArgumentsNonObjectAsString(t *testing.T) {
 		t.Fatal("expected tool_use")
 	}
 }
+
+// TestRestoreAssistantOutputTextWhenSDKListEmptyDoesNotPanic 回归：
+// raw input 有条目但 SDK OfInputItemList 为空时，不得 panic，并尽量从 raw 重建。
+func TestRestoreAssistantOutputTextWhenSDKListEmptyDoesNotPanic(t *testing.T) {
+	body := []byte(`{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"u1"}]},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]}
+	],"stream":true}`)
+	req, err := DecodeResponseNewParams(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	req.Input.OfInputItemList = nil
+	// 不得 panic
+	restoreAssistantOutputTextFromRaw(body, req)
+	if len(req.Input.OfInputItemList) == 0 {
+		t.Fatalf("expected rebuild from raw when SDK list empty")
+	}
+}
+
+// TestRestoreAssistantOutputTextUsesMinLength 当 raw 比 SDK 列表更长时只处理重叠前缀，不 panic。
+func TestRestoreAssistantOutputTextUsesMinLength(t *testing.T) {
+	body := []byte(`{"model":"gpt-5","input":[
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
+	],"stream":true}`)
+	req, err := DecodeResponseNewParams(body)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(req.Input.OfInputItemList) < 2 {
+		t.Fatalf("expected 2 parsed items, got %d", len(req.Input.OfInputItemList))
+	}
+	// 截断 SDK 列表模拟不一致（raw 仍为 2 条）
+	req.Input.OfInputItemList = req.Input.OfInputItemList[:1]
+	restoreAssistantOutputTextFromRaw(body, req) // must not panic
+	if len(req.Input.OfInputItemList) != 1 {
+		t.Fatalf("min-length path should keep truncated list length, got %d", len(req.Input.OfInputItemList))
+	}
+}

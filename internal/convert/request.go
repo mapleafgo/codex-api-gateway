@@ -110,20 +110,47 @@ func restoreAssistantOutputTextFromRaw(data []byte, req *oairesponses.ResponseNe
 	if err := json.Unmarshal(raw.Input, &rawItems); err != nil {
 		return
 	}
-	if len(rawItems) != len(req.Input.OfInputItemList) {
-		slog.Debug("rawItems 与 SDK 解析条目数不一致（phase/metadata 等额外字段），按最小长度恢复",
-			"raw_count", len(rawItems), "sdk_count", len(req.Input.OfInputItemList))
+	sdkN := len(req.Input.OfInputItemList)
+	rawN := len(rawItems)
+	// 常见：SDK 丢弃无法识别的 item 后列表变短；极端：sdk_count=0 而 raw 仍有条目。
+	// 旧实现按 raw 全长索引 SDK 切片，sdk_count=0 时会 panic，主对话 500 无法继续。
+	// 整表丢光时从 raw 重建；普通长度不一致只按最小长度处理。每次请求只打一条日志。
+	if sdkN == 0 && rawN > 0 {
+		rebuilt := make([]oairesponses.ResponseInputItemUnionParam, 0, rawN)
+		for _, rawItem := range rawItems {
+			var item oairesponses.ResponseInputItemUnionParam
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			rebuilt = append(rebuilt, item)
+		}
+		if len(rebuilt) > 0 {
+			req.Input.OfInputItemList = rebuilt
+			sdkN = len(rebuilt)
+			slog.Warn("SDK input 列表为空，已从 raw 重建历史条目",
+				"raw_count", rawN, "rebuilt_count", sdkN)
+		} else {
+			slog.Warn("SDK input 列表为空且无法从 raw 重建",
+				"raw_count", rawN, "sdk_count", 0)
+		}
+	} else if rawN != sdkN {
+		slog.Debug("rawItems 与 SDK 解析条目数不一致，按最小长度恢复",
+			"raw_count", rawN, "sdk_count", sdkN)
+	}
+	n := rawN
+	if sdkN < n {
+		n = sdkN
 	}
 	restored := 0
-	for i, rawItem := range rawItems {
-		if restoreOneAssistantOutputText(rawItem, &req.Input.OfInputItemList[i]) {
+	for i := 0; i < n; i++ {
+		if restoreOneAssistantOutputText(rawItems[i], &req.Input.OfInputItemList[i]) {
 			restored++
 		}
 	}
 	if restored > 0 {
 		slog.Debug("恢复历史 assistant output_text 为 input_text",
 			"restored_messages", restored,
-			"input_items", len(rawItems))
+			"input_items", n)
 	}
 }
 
