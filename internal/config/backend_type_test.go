@@ -10,8 +10,10 @@ func TestNormalizeBackendType(t *testing.T) {
 		{"", "a", true},
 		{"a", "a", true},
 		{"c", "c", true},
+		{"r", "r", true},
 		{" a ", "a", true},
 		{" c ", "c", true},
+		{" r ", "r", true},
 		{"anthropic", "", false},
 		{"openai_chat", "", false},
 		{"x", "", false},
@@ -44,7 +46,7 @@ func TestValidateRejectsUnknownBackendType(t *testing.T) {
 }
 
 func TestValidateAcceptsBoth(t *testing.T) {
-	cases := []string{"a", "c", ""}
+	cases := []string{"a", "c", "r", ""}
 	for _, bt := range cases {
 		cfg := Config{
 			Sources: []Source{{
