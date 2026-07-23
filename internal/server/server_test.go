@@ -1040,6 +1040,76 @@ func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
 	}
 }
 
+
+func TestResponsesPassthroughBackend(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		if m["stream"] != true {
+			t.Fatalf("stream=%v", m["stream"])
+		}
+		if m["model"] != "upstream-m" {
+			t.Fatalf("model=%v", m["model"])
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","model":"upstream-m","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{{
+			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
+			BackendType: config.BackendOpenAIResponses,
+			ModelMap:    map[string]string{"gpt-5": "upstream-m"},
+		}},
+	}
+	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sources[0].BackendType = bt
+
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	s := string(raw)
+	if !strings.Contains(s, "response.completed") {
+		t.Fatalf("unexpected SSE body: %s", s)
+	}
+	if !strings.Contains(s, `"model":"gpt-5"`) {
+		t.Fatalf("T2 model rewrite missing: %s", s)
+	}
+}
+
+func TestHasEnabledResponsesBackend(t *testing.T) {
+	if hasEnabledResponsesBackend(nil) {
+		t.Fatal("nil should be false")
+	}
+	if hasEnabledResponsesBackend([]config.Source{{BackendType: "c"}}) {
+		t.Fatal("c should be false")
+	}
+	if !hasEnabledResponsesBackend([]config.Source{{BackendType: "r"}}) {
+		t.Fatal("r should be true")
+	}
+	if hasEnabledResponsesBackend([]config.Source{{BackendType: "r", Disabled: true}}) {
+		t.Fatal("disabled r should be false")
+	}
+}
+
 func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

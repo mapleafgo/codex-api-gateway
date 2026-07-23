@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
@@ -337,17 +338,24 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	warnDroppedOrIgnoredParams(req, ordered)
 
-	// 预检：首源为 Anthropic 时 dry-run ToAnthropic，在写 SSE 头前返回 400（对齐旧行为）。
-	// 首源为 Chat 时不做 Anthropic 预检，避免纯 Chat 部署被误杀。
+	// 预检：首源为 Anthropic 时 dry-run ToAnthropic；首源为 r 时 PrepareUpstreamBody dry-run。
+	// 首源为 Chat 时不做转换预检，避免纯 Chat 部署被误杀。
 	first := ordered[0]
 	bt, _ := config.NormalizeBackendType(first.BackendType)
-	if bt == config.BackendAnthropic {
+	switch bt {
+	case config.BackendAnthropic:
 		if _, err := convert.DecodeResponseNewParams(body); err != nil {
 			slog.Warn("预解析响应请求失败", "source", first.Name, "error", err)
 			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if _, _, err := convert.ToAnthropic(req, s.holder.Current()); err != nil {
+			slog.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	case config.BackendOpenAIResponses:
+		if _, _, _, err := backend.PrepareUpstreamBody(body, &first); err != nil {
 			slog.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
@@ -471,10 +479,35 @@ func writeSSE(w io.Writer, e model.SSEEvent) {
 	}
 }
 
+
+// hasEnabledResponsesBackend 判断当前配置是否含启用中的 Responses 透传源。
+func hasEnabledResponsesBackend(sources []config.Source) bool {
+	for _, src := range sources {
+		if src.Disabled {
+			continue
+		}
+		bt, err := config.NormalizeBackendType(src.BackendType)
+		if err == nil && bt == config.BackendOpenAIResponses {
+			return true
+		}
+	}
+	return false
+}
+
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
 // 或 deprecated 的请求字段统一输出 WARN 级别结构化日志，避免静默丢弃。
 // 约定见 AGENTS.md「静默跳过与降级处理约定」。
 func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []config.Source) {
+	// r 源可形状透传：跳过 a/c 路径「WARN + 丢弃」叙事，避免误报。
+	if hasEnabledResponsesBackend(sources) {
+		if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
+			slog.Info("previous_response_id 将透传上游；网关不代补会话历史",
+				"field", "previous_response_id",
+				"previous_response_id", req.PreviousResponseID.Value,
+				"impact", "backend_type=r 时原样转发；网关无 session store")
+		}
+		return
+	}
 	// deprecated reasoning.generate_summary：被 reasoning.summary 取代。
 	//nolint:staticcheck // 字段被 OpenAI 标记 deprecated，但我们正是要检测它以输出 WARN
 	if req.Reasoning.GenerateSummary != "" {
