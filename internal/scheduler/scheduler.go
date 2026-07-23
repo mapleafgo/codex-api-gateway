@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,13 +102,13 @@ func New(cfg any) *Scheduler {
 		"max_retries", cur.Breaker.MaxRetries,
 		"first_byte_timeout", time.Duration(cur.Breaker.FirstByteTimeout).String())
 	return &Scheduler{
-		holder:           holder,
-		client:           anthropicclient.New(),
-		anthropicBackend: backend.NewAnthropic(),
-		chatBackend:      backend.NewChat(),
-		breakers:         map[string]*breaker.Breaker{},
-		order:            order,
-		backoff:          defaultBackoff,
+		holder:              holder,
+		client:              anthropicclient.New(),
+		anthropicBackend:    backend.NewAnthropic(),
+		chatBackend:         backend.NewChat(),
+		breakers:            map[string]*breaker.Breaker{},
+		order:               order,
+		backoff: defaultBackoff,
 	}
 }
 
@@ -348,7 +347,11 @@ func (s *Scheduler) tryRoundGeneric(
 ) (string, bool, error) {
 	var lastErr error
 	var lastSource string
+
 	for _, src := range s.runtimeSeq() {
+		// Auto-recover degraded sources that have exceeded degrade_interval.
+		s.autoRecoverDegraded(&src)
+
 		bk := s.breakerFor(&src)
 		if !bk.Allow() {
 			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
@@ -360,12 +363,13 @@ func (s *Scheduler) tryRoundGeneric(
 			return src.Name, true, err
 		}
 		if err != nil {
+			bt, _ := config.NormalizeBackendType(src.BackendType)
 			lastErr = err
 			lastSource = src.Name
-			bt, _ := config.NormalizeBackendType(src.BackendType)
 			slog.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "error", err)
 		}
 	}
+
 	return lastSource, false, lastErr
 }
 
@@ -375,6 +379,17 @@ func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
 		return s.chatBackend
 	}
 	return s.anthropicBackend
+}
+
+// autoRecoverDegraded checks whether src's breaker has been in Degraded state
+// long enough to auto-recover. If so, it adjusts the runtime order accordingly.
+func (s *Scheduler) autoRecoverDegraded(src *config.Source) {
+	bk := s.breakerFor(src)
+	oldSt, newSt, recovered := bk.AutoRecover()
+	if recovered {
+		s.adjustOrder(src.Name, oldSt, newSt)
+		slog.Info("上游源 degrade 超时自动恢复", "source", src.Name, "old_state", oldSt, "new_state", newSt)
+	}
 }
 
 func (s *Scheduler) trySourceGeneric(
@@ -464,52 +479,4 @@ func ResolveModel(src *config.Source, reqModel string) string {
 		return src.DefaultModel
 	}
 	return reqModel
-}
-
-// isClientCanceled 判断 err 是否由请求 ctx 取消引起（客户端断开）。
-// 首字节超时会取消子 ctx，但父 ctx 仍有效，故须同时检查父 ctx.Err()。
-func isClientCanceled(ctx context.Context, err error) bool {
-	if err == nil || ctx == nil {
-		return false
-	}
-	if ctx.Err() == nil {
-		return false
-	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ctx.Err())
-}
-
-// errSummary 返回上游错误全文，供观测台 tip 展示。
-// 与 server.errSummary 同语义；scheduler 不依赖 server 包，故在此独立实现。
-func errSummary(err error) string {
-	if err == nil {
-		return ""
-	}
-	// 保留上游完整返回（含 JSON body），观测台 tip 需要全量信息。
-	return err.Error()
-}
-
-// statusCodeFromErr 从 anthropic client 错误串解析上游 HTTP 状态码。
-// 错误格式固定为 "anthropic upstream %d: ..."；解析失败返回 0（网络/取消等无状态码）。
-func statusCodeFromErr(err error) int {
-	if err == nil {
-		return 0
-	}
-	const prefix = "anthropic upstream "
-	s := err.Error()
-	i := strings.Index(s, prefix)
-	if i < 0 {
-		return 0
-	}
-	rest := s[i+len(prefix):]
-	n := 0
-	for _, ch := range rest {
-		if ch < '0' || ch > '9' {
-			break
-		}
-		n = n*10 + int(ch-'0')
-	}
-	if n >= 100 && n <= 599 {
-		return n
-	}
-	return 0
 }
