@@ -2,15 +2,17 @@
 
 ## Project Structure & Module Organization
 
-本仓库是 Go 服务 `codex-api-gateway`，用于把 OpenAI Responses API 请求转换并转发到 Anthropic 兼容后端。
+本仓库是 Go 服务 `codex-api-gateway`，把客户端 OpenAI Responses 请求适配到多类上游（`backend_type`：`a` Anthropic / `c` Chat Completions / `r` Responses 透传）。
 
 - `cmd/server/`：服务入口、HTTP 路由和启动逻辑。
-- `internal/convert/`：Responses 请求到 Anthropic 请求的转换。
-- `internal/streamconv/`：Anthropic SSE 到 Responses SSE 的流式转换。
+- `internal/backend/`：上游适配器（Anthropic / Chat / ResponsesBackend）。
+- `internal/convert/` + `internal/streamconv/`：Responses ↔ Anthropic（`a`）。
+- `internal/chatconvert/` + `internal/chatstreamconv/` + `internal/chatclient/`：Responses ↔ Chat（`c`）。
+- `internal/responsesclient/`：Responses 上游 HTTP/SSE（`r`）。
 - `internal/server/`、`internal/scheduler/`、`internal/breaker/`：服务编排、源选择与熔断。
 - `internal/model/`：协议模型与事件类型。
 - `internal/config/`：YAML 配置加载与校验。
-- `docs/`：协议说明、设计文档和实施计划。
+- `docs/`：协议说明、设计文档和实施计划；`docs/protocol-coverage.md` 为覆盖矩阵 SoT。
 - `config.example.yaml`：可提交的配置模板；`config.yaml` 是本地运行配置，避免写入真实密钥。
 
 测试文件与被测包放在同一目录，命名为 `*_test.go`。
@@ -21,11 +23,12 @@
 
 分层与职责（从下到上）：
 
-- L0 基础层：`internal/config`（YAML 加载与校验）、`internal/logging`（结构化日志 handler）、`internal/model`（OpenAI Responses 协议 wire 类型，常量对齐官方 SDK）、`internal/breaker`（单源健康状态与熔断）、`internal/toolcatalog`（OpenAI Tool → Anthropic tool 声明映射）。这一层不依赖本仓其它 internal 包。
-- L1 客户端层：`internal/anthropic`，Anthropic 兼容后端的低层 HTTP 客户端。
-- L2 转换层：`internal/convert`（Responses 请求 → Anthropic 请求）、`internal/streamconv`（Anthropic SSE → Responses SSE）。依赖 `model`、`anthropic`、`toolcatalog`。
-- L3 运行时层：`internal/scheduler`（多源路由 + 优先级重建），依赖 `breaker`、`anthropic`、`config`。
-- L4 编排层：`internal/server`，唯一的 `/v1/responses` 与 `/v1/models` 入口，串联 holder → scheduler → convert → anthropic → streamconv。是唯一允许跨层组装的包。
+- L0 基础层：`internal/config`、`internal/logging`、`internal/model`、`internal/breaker`、`internal/toolcatalog`。不依赖本仓其它 internal 包。
+- L1 客户端层：`internal/anthropic`、`internal/chatclient`、`internal/responsesclient`（各上游低层 HTTP）。
+- L2 转换层：`convert`/`streamconv`（a）、`chatconvert`/`chatstreamconv`（c）。r 路径无语义转换层，由 Backend 最小改写 + SSE 透传。
+- L2.5 适配层：`internal/backend`（`AnthropicBackend` / `ChatBackend` / `ResponsesBackend`），统一 `Execute` 产出 Responses SSE。
+- L3 运行时层：`internal/scheduler`（多源路由 + `backendFor` 分发 + 优先级重建）。
+- L4 编排层：`internal/server`，唯一的 `/v1/responses` 与 `/v1/models` 入口，串联 holder → scheduler → Backend。是唯一允许跨层组装的包。
 - L5 管理/观测层（旁路）：`internal/admin`（H5 管理页 + `/admin/api/*` JSON 接口）、`internal/metrics`（指标聚合）。这一层**绝对不得**进入 `/v1/*` 转发路径。
 - L6 配置热重载：`internal/configwatch`，监听 `config.yaml` 变化并通过 Holder 注入新配置。
 - `cmd/server`：唯一组装入口，负责两阶段初始化、挂载管理页、启动 HTTP server。
@@ -33,11 +36,11 @@
 两条贯穿全局的关键路径：
 
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml` → `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑（vim 等）都走写盘 → fsnotify → 这条链路，不允许存在第二条直接改运行时配置的入口。
-- **请求转发路径**：`/v1/responses` → `server.handleResponses` → `convert` → `scheduler.Pick` → `anthropic` 上游 → `streamconv` 回程 SSE。这条路径上的任何失败都必须以 error / SSE 错误事件形式返回客户端，不得 panic 逃逸。
+- **请求转发路径**：`/v1/responses` → `server.handleResponses` → `scheduler.ExecuteGeneric` → 按源 `backend_type` 选 Backend（a/c/r）→ 上游 → Responses SSE。失败必须以 error / SSE 错误事件返回客户端，不得 panic 逃逸。
 
 ## 协议转换职责边界（架构基础）
 
-本网关的定位是 **OpenAI Responses ↔ 上游协议** 的纯协议转换与转发层，不是上游能力裁判，也不是工具运行时。下列边界适用于 **全部后端**（Anthropic `backend_type: a`、Chat Completions `backend_type: c`，以及未来新增 Backend），是架构级硬约束，与下文「设计规范」同等优先级。
+本网关的定位是 **OpenAI Responses ↔ 上游协议** 的纯协议转换与转发层，不是上游能力裁判，也不是工具运行时。下列边界适用于 **全部后端**（Anthropic `a`、Chat Completions `c`、Responses 透传 `r`，以及未来新增 Backend），是架构级硬约束，与下文「设计规范」同等优先级。
 
 ### 核心原则：形状透传，结果归上游
 
@@ -51,6 +54,7 @@
 | 场景 | 正确做法 | 错误做法 |
 |---|---|---|
 | Chat 路径把 `web_search` 变成 function 发给上游 | 形状透传，上游 400/忽略/执行均随上游 | 网关因「Chat 无真 hosted」主动 400 或出站改 failed |
+| r 路径透传 `previous_response_id` / tools 等 | map 语义透传；上游决定是否支持 | 网关因「无 session store」改写为丢弃或编造 failed |
 | 上游 tool 调用后无 sources/logs | 按上游返回映射（空则空） | 网关编造失败文案或强制 incomplete/failed |
 | a 路径 Anthropic 无等价字段 | 矩阵登记：映射 / WARN 忽略 / fail-fast（**仅**协议原因） | 以「某厂商可能不支持」为由全局禁止字段 |
 | 熔断 / 选源 / 5xx 重试 | 传输与可用性（scheduler/breaker） | 与「协议能力裁判」混为一谈 |

@@ -1,26 +1,34 @@
 # CodexApiGateway
 
-让 Codex CLI 用上 Anthropic 兼容后端的本地网关。
+让 Codex CLI 接上多种上游后端的本地网关。
 
 ![logo](docs/design/logo.svg)
 
-Codex CLI 只能走 OpenAI Responses API。本网关在本地起一个 OpenAI Responses 兼容端点，把请求转换成 Anthropic Messages 协议转发到任意 Anthropic 兼容后端（官方 Anthropic、DeepSeek、火山、智谱等），再把上游 SSE 流转换回 Responses SSE 返回给 Codex。Codex 全程无感——它以为自己在跟 OpenAI 说话。
+Codex CLI 只能走 OpenAI Responses API。本网关在本地提供 Responses 兼容端点（`/v1/responses`、`/v1/models`），按源配置把请求转到不同上游，再以 Responses SSE 回给 Codex。Codex 全程无感。
+
+支持三类上游（可混排故障转移）：
+
+| `backend_type` | 上游 | 路径 |
+|---|---|---|
+| `a`（默认） | Anthropic Messages | Responses → Messages → Responses SSE |
+| `c` | OpenAI Chat Completions（仅流式） | Responses → Chat → Responses SSE |
+| `r` | OpenAI Responses 兼容（仅流式） | 最小改写透传 + 出站 model 别名回写 |
 
 ```text
 Codex CLI
    │  POST /v1/responses  (OpenAI Responses 格式)
    ▼
-codex-api-gateway  ── 协议转换 + 多源路由 + 熔断
-   │  POST /v1/messages  (Anthropic Messages 格式, SSE)
-   ▼
-Anthropic 兼容后端 (官方 Anthropic、DeepSeek、火山 …)
+codex-api-gateway  ── 协议适配 / 透传 + 多源路由 + 熔断
+   ├─ a → Anthropic Messages (/v1/messages, SSE)
+   ├─ c → OpenAI Chat Completions (/chat/completions, SSE)
+   └─ r → OpenAI Responses (/responses, SSE)
 ```
 
 
 
 ### OpenAI Chat 兼容上游（backend_type: c）
 
-除 Anthropic Messages（`backend_type: a`，默认）外，源可配置为 OpenAI Chat Completions 兼容后端（**仅流式**）：
+除默认 Anthropic（`a`）外，源可配置为 OpenAI Chat Completions 兼容后端（`c`，**仅流式**）。Responses 透传见下一节 `r`：
 
 ```yaml
 sources:
@@ -51,8 +59,8 @@ sources:
 
 ## 功能
 
-- **协议转换**：OpenAI Responses API ⇄ Anthropic Messages API，流式 SSE 双向转换。
-- **多源路由**：多个 Anthropic 兼容后端，按配置顺序作为优先级，运行时重建。
+- **多后端协议适配**：`a` Anthropic Messages 直转、`c` Chat Completions 转换、`r` Responses 透传；客户端始终只走 `/v1/responses` SSE。
+- **多源路由**：多源按配置顺序优先级，运行时重建；a/c/r 可混排。
 - **手动停用源**：管理页一键停用/启用单源，即时写盘并热重载；停用源不参与调度，仍保留在配置与观测中。
 - **首字节前故障转移**：上游未开始流式输出前可切换到下一个源；一旦出流即锁定该源。
 - **断路器**：失败降级 → 熔断 → 冷却 → 半开探测 → 恢复，逐源可覆盖参数。
@@ -302,7 +310,7 @@ sources:
 
 ### `POST /v1/responses`
 
-核心转发入口。请求体为 OpenAI Responses API 格式，服务转换为 Anthropic Messages 流式请求，响应为 OpenAI Responses SSE 流。
+核心转发入口。请求体为 OpenAI Responses API 格式；按命中源的 `backend_type` 走 a/c/r 适配或透传，响应始终为 OpenAI Responses SSE 流。
 
 ### `GET /v1/models`
 
@@ -313,18 +321,18 @@ sources:
 分层、单向依赖的 Go 服务，禁止反向引用：
 
 ```text
-L5 观测/管理  internal/admin  internal/metrics        （绝不进入 /v1/* 转发路径）
-L4 编排      internal/server                        （唯一跨层组装入口）
-L3 运行时    internal/scheduler                    （多源路由 + 优先级重建）
-L2 转换      internal/convert  internal/streamconv （请求/流式协议转换）
-L1 客户端    internal/anthropic                   （上游低层 HTTP 客户端）
-L0 基础      internal/config internal/logging internal/model internal/breaker internal/toolcatalog
+L5 观测/管理  internal/admin  internal/metrics
+L4 编排      internal/server
+L3 运行时    internal/scheduler  internal/backend（a/c/r 适配器）
+L2 转换      convert/streamconv（a）  chatconvert/chatstreamconv（c）  透传无 L2（r）
+L1 客户端    anthropic  chatclient  responsesclient
+L0 基础      config  logging  model  breaker  toolcatalog
 ```
 
 两条贯穿路径：
 
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml`（及同级 `base_instructions.md`）→ `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑都走写盘 → fsnotify → 这条链路。
-- **请求转发路径**：`/v1/responses` → `server` → `convert` → `scheduler.Pick` → `anthropic` 上游 → `streamconv` 回程 SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
+- **请求转发路径**：`/v1/responses` → `server` → `scheduler.ExecuteGeneric` → 按源选 `backend`（a/c/r）→ 上游 SSE → 回写 Responses SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
 
 ## 开发
 
@@ -374,12 +382,17 @@ rm -f ~/.codex/models_cache.json
 
 ## 产品边界
 
-本网关是 **Codex CLI → Anthropic 兼容后端** 的协议适配器，不是 OpenAI 全量 Responses 平台：
+本网关是 **Codex CLI → 多上游** 的协议适配 / 透传层，不是 OpenAI 全量 Responses 平台，也不是 session 运行时：
 
-- 客户端**自带完整 `input`** 回灌：不做 `previous_response_id` / `store` enrich，非空 `previous_response_id` WARN + 忽略。通用 AI SDK（`store:true` + `item_reference`）需自带完整 input，或改用带 session 库的网关。
-- **Responses ↔ Anthropic Messages 直转**：不走 Chat Completions 中枢，保留 Codex 专有 item / reasoning / hosted tool 形态。
+- 客户端**自带完整 `input`** 回灌：网关**无 session store**，不按 `previous_response_id` 补历史。
+  - 仅 **a** 源：非空 `previous_response_id` 通常 WARN + 忽略（字段不进 Anthropic）。
+  - 配置含启用中的 **r** 源时：字段**透传上游**，日志说明「网关不代补会话」，不写「数据被丢弃」。
+- **a 路径**：Responses ↔ Anthropic Messages **直转**，不经 Chat 中枢。
+- **c / r**：并行 Backend；c 做 Chat 形状转换，r 做 Responses 最小改写透传（model 映射、强制 `stream`、出站 model 别名回写）。
 
 ## 已知限制
+
+下列限制主要针对 **a（Anthropic）** 路径的协议映射天花板。**c / r** 见 [协议覆盖矩阵](docs/protocol-coverage.md) 专节；r 以形状透传为主，能力由上游决定。
 
 - **多模态**：`input_image.file_id` 不支持（网关无 OpenAI 凭据拉取文件；仅接受 base64 / URL）。
 - **web_search**：出站完整（事件链 + `url_citation`，流式与终态 item annotations 都写）；历史回灌为 `server_tool_use` + 空 `web_search_tool_result` + sources 可见文本——OpenAI wire 无 Anthropic required 的 `encrypted_content`，无法做官方级 result round-trip。
@@ -401,4 +414,6 @@ rm -f ~/.codex/models_cache.json
 - [故障转移重构设计](docs/superpowers/specs/2026-07-15-failover-redesign-design.md)
 - [SDK 迁移设计](docs/superpowers/specs/2026-07-15-sdk-migration-design.md)
 - [协议覆盖矩阵](docs/protocol-coverage.md)
+- [OpenAI Chat 后端设计](docs/superpowers/specs/2026-07-21-openai-chat-backend-design.md)
+- [OpenAI Responses 透传设计](docs/superpowers/specs/2026-07-23-openai-responses-passthrough-design.md)
 - [logo 设计哲学](docs/design/logo-philosophy.md)

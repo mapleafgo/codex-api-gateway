@@ -228,7 +228,7 @@ client 层不做业务 JSON 改写（model 回写在 Backend，见 §6.5）。
 - **从未收到 data 帧**（`!locked`）：`scanErr = upstream returned no events`（若尚无 err），`onUpstream` status=failed，**禁止**合成 `response.created`/`completed`
 - **已 lock**：
   - 正常 EOF → completed（Code 默认 200）
-  - 客户端取消 → canceled 或 completed（若已自然结束），对齐 `isClientCanceled`
+  - 客户端取消 → 若已见 `response.completed`/`incomplete`（`naturalDone`）则 completed，否则 canceled；对齐 Chat 终态后读尾
   - 读错误 → failed，Code 能解析则带上
 - **中途失败不强制补 `response.failed`**：上游已发出的事件原样；透传代理不代写终态。文档与 protocol-coverage 注明：半截流由上游/网络决定。
 

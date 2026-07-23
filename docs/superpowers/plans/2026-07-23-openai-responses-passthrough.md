@@ -1,5 +1,7 @@
 # OpenAI Responses 上游透传后端 Implementation Plan
 
+> **Status:** 已实现并合入 main（2026-07-23，`fa873d8`）。下列 checkbox 为执行期模板，以代码与 spec 状态为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在现有 Responses 客户端路径上，新增 `backend_type: r` 的 OpenAI Responses 兼容上游（仅流式、最小改写透传），与 `a`/`c` 混排故障转移；含 T2 出站 model 别名回写与 r 源 WARN 收口。

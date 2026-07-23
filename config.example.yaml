@@ -1,9 +1,9 @@
 # =============================================================================
 # CodexApiGateway 配置示例
 # -----------------------------------------------------------------------------
-# 作用：把 Codex CLI 发来的 OpenAI Responses API 请求，转换为 Anthropic
-#       Messages API 请求，转发给任一 Anthropic 兼容后端（官方 Claude /
-#       智谱 / Kimi / 方舟等），并做主备故障转移 + 断路器保护。
+# 作用：把 Codex CLI 的 OpenAI Responses 请求，按源 backend_type 适配到：
+#       a = Anthropic Messages（默认）、c = OpenAI Chat Completions（仅流式）、
+#       r = OpenAI Responses 透传（仅流式）；多源主备故障转移 + 断路器。
 # 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
 # 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖配置，层级分隔符用双下划线。
 # 例如：CODEX_API_GATEWAY_SOURCES__0__API_KEY=sk-ant-...

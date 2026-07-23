@@ -1,8 +1,8 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-23（Chat 全面透传 + Responses 透传 backend_type:r；structured / usage details 已支持）
+日期: 2026-07-23（a Anthropic + c Chat + r Responses 透传；structured / usage details 已支持）
 
-本文是 OpenAI Responses API 到 Anthropic Messages API 的覆盖矩阵。它记录协议项是否被语义级翻译、损耗翻译、raw 保真、后端无等价能力或延期专项设计。后续任何协议补齐都必须同步更新本文。
+本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `r` 见专节，**三路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
 ## 状态定义
 
@@ -17,10 +17,11 @@
 
 ## 关注面与产品边界
 
-本网关面向 **Codex CLI → Anthropic 兼容后端**，不做 OpenAI 全量 Responses 平台：
+本网关面向 **Codex CLI → 多上游**（`a` / `c` / `r`），不做 OpenAI 全量 Responses 平台，无 session 运行时：
 
-- 客户端**自带完整 `input`** 回灌，网关不做 session store；`previous_response_id` 非空时 WARN + 忽略。
-- Responses ↔ Anthropic Messages **直转**，不走 Chat Completions 中枢，避免损失 Codex 专有形态。
+- 客户端**自带完整 `input`** 回灌；网关不做 session store。
+- **a**：`previous_response_id` 非空时 WARN + 忽略；Responses ↔ Anthropic **直转**。
+- **c / r**：见下列专节；r 可透传 `previous_response_id`，网关仍不代补历史。
 
 ### OpenAI Chat Completions 上游（`backend_type: c`）
 
@@ -37,15 +38,16 @@
 
 ### OpenAI Responses 透传上游（`backend_type: r`）
 
-客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 兼容上游做**最小改写透传**：
+客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 兼容上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
 - **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；其余键原样保留（含 `previous_response_id`、tools、include 等）
-- **出站 SSE**：上游事件 Type + Data 转发；**T2** 仅回写顶层/`response` 内 `model` 为客户端请求 model；不合成空流终态；中途失败不强制补 `response.failed`
-- **观测**：尽力解析 `response.completed|incomplete|failed` 的 `usage` 写入 metrics；`backend_type` 恒为 `r`
-- **产品边界**：网关仍无 session store（不代补历史）；WARN 收口：配置含启用中 r 源时，不对 r 可透传字段误报「数据被丢弃」
-- **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat 中枢，也不做 Anthropic 转换
+- **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
+- **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
+- **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
+- **WARN 收口**：配置含**启用中** r 源时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」；`previous_response_id` 打 INFO「透传上游，网关不代补会话」
+- **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat/Anthropic 转换
 
-字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准，协议不可映射才 WARN/丢弃。
+字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准；几乎全部请求/事件字段对网关为 passthrough，语义由上游决定。
 
 ## 架构基础（与 AGENTS.md 对齐）
 

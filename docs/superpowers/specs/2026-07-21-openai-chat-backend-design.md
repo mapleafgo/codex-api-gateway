@@ -4,6 +4,7 @@
 > 状态：已实现（MVP + 批次 A/B：Codex freeform 工具环与终态对齐）
 > 方案：完整 Backend 适配器（方案 A）
 > 取代：`docs/superpowers/specs/2026-07-19-chat-backend-design.md`（该文状态改为已取代）
+> 后续：第 3 种 backend（OpenAI Responses 透传 `r`）见 `2026-07-23-openai-responses-passthrough-design.md`（已实现）
 
 ## 1. 背景与目标
 
@@ -25,7 +26,7 @@
 | 基础采样参数（temperature / top_p / max tokens） | 完整多模态 / structured output |
 | 流式 SSE + usage（能拿到则填） | Responses reasoning 与 Chat thinking 的完整等价映射 |
 | 混排故障转移 / 熔断 | Codex hosted tools 在 Chat 上游上的真实能力 |
-| 管理页 `backend_type` + 观测列 + 试拉 models | 第 3 种 backend 实现（接口预留） |
+| 管理页 `backend_type` + 观测列 + 试拉 models | 第 3 种 backend（`r`）已由 2026-07-23 透传设计落地 |
 
 ### 1.2 非目标
 
@@ -453,7 +454,7 @@ BackendType string `json:"backend_type"` // 必填语义：始终 "a" 或 "c"
 | 客户端协议 | 仅 Responses；不新增对外 Chat 入口 |
 | 上游形态 | OpenAI Chat Completions 兼容，**仅流式** |
 | 架构 | 完整 Backend 适配器（方案 A） |
-| `backend_type` wire | `a` / `c`；UI 反显 |
+| `backend_type` wire | 本文落地 `a` / `c`；后续补 `r`（见 2026-07-23 透传设计，已实现） |
 | 混排 failover | 允许 |
 | 管理页 | 第一版支持类型 + 未落盘试拉 models |
 | 观测/metrics | `backend_type` 必有值（`a`\|`c`） |

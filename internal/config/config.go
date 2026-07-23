@@ -112,7 +112,7 @@ const (
 	BackendOpenAIResponses = "r"
 )
 
-// Source configures one Anthropic-compatible upstream.
+// Source configures one upstream (backend_type a | c | r).
 type Source struct {
 	Name         string            `koanf:"name" yaml:"name"`
 	BaseURL      string            `koanf:"base_url" yaml:"base_url"`
