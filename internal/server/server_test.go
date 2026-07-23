@@ -1109,6 +1109,55 @@ func TestHasEnabledResponsesBackend(t *testing.T) {
 	}
 }
 
+func TestPreviousResponseIDNoDiscardWarnWithResponsesSource(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	// 捕获 WARN：r 路径不得再打「对应数据被丢弃」
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","model":"upstream-m","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{{
+			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
+			BackendType: config.BackendOpenAIResponses,
+			ModelMap:    map[string]string{"gpt-5": "upstream-m"},
+		}},
+	}
+	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sources[0].BackendType = bt
+
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body := `{"model":"gpt-5","previous_response_id":"resp_hist_r","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	got := logs.String()
+	if strings.Contains(got, "对应数据被丢弃") {
+		t.Fatalf("r source must not WARN discard previous_response_id, logs:\n%s", got)
+	}
+	if strings.Contains(got, `"level":"WARN"`) && strings.Contains(got, "previous_response_id") {
+		t.Fatalf("unexpected WARN for previous_response_id with r source, logs:\n%s", got)
+	}
+}
+
 func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

@@ -124,3 +124,53 @@ func TestResponsesBackend_PassthroughSSE(t *testing.T) {
 		t.Fatalf("up=%+v", up)
 	}
 }
+
+func TestResponsesBackend_CancelAfterTerminalIsCompleted(t *testing.T) {
+	released := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		fl := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r1","model":"o3","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+		fl.Flush()
+		// 保持连接，直到客户端取消或测试结束
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer ts.Close()
+	defer close(released)
+
+	b := NewResponses()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var up UpstreamEvent
+	var sawEvent bool
+	err := b.Execute(ctx,
+		[]byte(`{"model":"gpt-5","input":[]}`),
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k",
+			ModelMap: map[string]string{"gpt-5": "o3"}},
+		nil,
+		func(e model.SSEEvent) error {
+			sawEvent = true
+			cancel()
+			// 返回 ctx 错误，保证 isClientCanceled 可识别（不依赖 body 关闭形态）
+			return ctx.Err()
+		},
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if !sawEvent {
+		t.Fatal("expected at least one event")
+	}
+	// 可能返回 ctx 取消错误；Upstream 状态必须 completed
+	_ = err
+	if up.Status != "completed" {
+		t.Fatalf("status=%s want completed (err=%v)", up.Status, err)
+	}
+	if up.BackendType != "r" {
+		t.Fatalf("backend_type=%s", up.BackendType)
+	}
+}

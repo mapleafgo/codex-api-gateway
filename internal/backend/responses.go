@@ -168,6 +168,9 @@ func (b *ResponsesBackend) Execute(
 
 	var ttfb time.Duration
 	locked := false
+	// naturalDone：已收到上游终态事件（对齐 ChatBackend.conv.Done）。
+	// 客户端在终态后取消/读尾噪声时，UpstreamEvent 记 completed 而非 canceled。
+	naturalDone := false
 	var inTok, outTok, cacheRead, cacheCreate int
 
 	scanErr := responsesclient.ScanSSE(stream, func(et string, data []byte) error {
@@ -175,6 +178,11 @@ func (b *ResponsesBackend) Execute(
 			locked = true
 			ttfb = time.Since(start)
 			slog.Info("Responses 上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
+		}
+		// 先记终态再写出，避免 onEvent 内 cancel 时 naturalDone 尚未置位。
+		switch et {
+		case "response.completed", "response.incomplete":
+			naturalDone = true
 		}
 		data = rewriteClientModel(data, clientModel)
 		if err := onEvent(model.SSEEvent{Type: et, Data: data}); err != nil {
@@ -199,7 +207,11 @@ func (b *ResponsesBackend) Execute(
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
-			status = "canceled"
+			if naturalDone {
+				status = "completed"
+			} else {
+				status = "canceled"
+			}
 		} else {
 			status = "failed"
 			if sc := StatusCodeFromErr(scanErr); sc != 0 {

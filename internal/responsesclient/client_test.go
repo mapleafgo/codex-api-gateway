@@ -98,3 +98,26 @@ func TestListModelsParsesData(t *testing.T) {
 		t.Fatalf("models=%+v", ms)
 	}
 }
+
+func TestScanSSE_LargeFrame(t *testing.T) {
+	// 远超默认 Scanner 64KiB，验证 1MiB 缓冲可扫完整帧
+	payload := `{"type":"response.completed","response":{"id":"big","model":"m","output":[{"content":[{"text":"` + strings.Repeat("x", 100*1024) + `"}]}]}}`
+	raw := "event: response.completed\ndata: " + payload + "\n\n"
+	var got []byte
+	err := ScanSSE(strings.NewReader(raw), func(et string, data []byte) error {
+		if et != "response.completed" {
+			t.Fatalf("et=%s", et)
+		}
+		got = append([]byte(nil), data...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 100*1024 {
+		t.Fatalf("frame too small: %d", len(got))
+	}
+	if !json.Valid(got) {
+		t.Fatal("invalid json")
+	}
+}

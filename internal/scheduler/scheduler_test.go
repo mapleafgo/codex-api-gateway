@@ -1003,3 +1003,31 @@ func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
 		t.Fatal("AutoRecover should not recover immediately")
 	}
 }
+
+func TestListUpstreamModels_Responses(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer k" {
+			t.Fatalf("auth=%s", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5"}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Sources: []config.Source{{
+			Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k",
+			BackendType: config.BackendOpenAIResponses, OriginalIndex: 0,
+		}},
+	}
+	s := New(cfg)
+	ms, err := s.ListUpstreamModels(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 1 || ms[0].ID != "gpt-5" {
+		t.Fatalf("models=%+v", ms)
+	}
+}
