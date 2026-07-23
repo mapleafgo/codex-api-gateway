@@ -263,7 +263,6 @@ func TestUpstreamModelsUnsaved(t *testing.T) {
 	}
 }
 
-
 func TestUpstreamModelsAcceptsResponsesBackend(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {

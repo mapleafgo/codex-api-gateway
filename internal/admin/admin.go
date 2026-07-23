@@ -21,9 +21,9 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
-	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
+	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
 
 // SourceHealthView 是管理页展示的单源运行时回退等级。

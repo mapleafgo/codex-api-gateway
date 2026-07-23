@@ -479,7 +479,6 @@ func writeSSE(w io.Writer, e model.SSEEvent) {
 	}
 }
 
-
 // hasEnabledResponsesBackend 判断当前配置是否含启用中的 Responses 透传源。
 func hasEnabledResponsesBackend(sources []config.Source) bool {
 	for _, src := range sources {

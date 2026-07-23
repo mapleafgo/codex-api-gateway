@@ -104,9 +104,9 @@ func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRea
 	var envelope struct {
 		Response struct {
 			Usage *struct {
-				InputTokens              int `json:"input_tokens"`
-				OutputTokens             int `json:"output_tokens"`
-				InputTokensDetails       *struct {
+				InputTokens        int `json:"input_tokens"`
+				OutputTokens       int `json:"output_tokens"`
+				InputTokensDetails *struct {
 					CachedTokens int `json:"cached_tokens"`
 				} `json:"input_tokens_details"`
 				// 兼容部分上游可能暴露的 cache 字段

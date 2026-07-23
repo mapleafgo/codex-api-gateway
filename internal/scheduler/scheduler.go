@@ -33,9 +33,9 @@ type orderEntry struct {
 type Scheduler struct {
 	holder           *config.Holder
 	client           *anthropicclient.Client
-	anthropicBackend  *backend.AnthropicBackend
-	chatBackend       *backend.ChatBackend
-	responsesBackend  *backend.ResponsesBackend
+	anthropicBackend *backend.AnthropicBackend
+	chatBackend      *backend.ChatBackend
+	responsesBackend *backend.ResponsesBackend
 	breakers         map[string]*breaker.Breaker
 	order            []orderEntry // runtimeOrder: runtime priority sequence
 	bkMu             sync.Mutex
@@ -105,9 +105,9 @@ func New(cfg any) *Scheduler {
 	return &Scheduler{
 		holder:           holder,
 		client:           anthropicclient.New(),
-		anthropicBackend:  backend.NewAnthropic(),
-		chatBackend:       backend.NewChat(),
-		responsesBackend:  backend.NewResponses(),
+		anthropicBackend: backend.NewAnthropic(),
+		chatBackend:      backend.NewChat(),
+		responsesBackend: backend.NewResponses(),
 		breakers:         map[string]*breaker.Breaker{},
 		order:            order,
 		backoff:          defaultBackoff,

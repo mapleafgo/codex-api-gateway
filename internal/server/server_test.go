@@ -1040,7 +1040,6 @@ func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
 	}
 }
 
-
 func TestResponsesPassthroughBackend(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
