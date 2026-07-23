@@ -43,7 +43,7 @@ sources:
 - **断路器**：失败降级 → 熔断 → 冷却 → 半开探测 → 恢复，逐源可覆盖参数。
 - **模型白名单**：`/v1/models` 只返回 `models` 段显式声明的模型，不暴露上游别名。
 - **结构化日志**：等级过滤 + text/json 输出，全走 `slog`。
-- **配置热重载**：管理页保存或编辑 `config.yaml` 后 `fsnotify` 自动生效，无需重启。
+- **配置热重载**：管理页保存，或编辑 `config.yaml` / 同级 `base_instructions.md` 后 `fsnotify` 自动生效，无需重启。
 - **H5 管理页**：观测台、配置编辑、中英文/明暗主题，挂载在根路径 `/`。**所有配置都在网页里完成**，无需手动写 YAML。
 - **系统托盘**：启动即常驻，点开即用；headless 环境自动降级为信号模式。
 - **双击即用**：打包为单文件后双击运行即可，首次启动自动生成默认配置，无需命令行、无需提前准备配置文件。
@@ -308,7 +308,7 @@ L0 基础      internal/config internal/logging internal/model internal/breaker 
 
 两条贯穿路径：
 
-- **配置生效路径（单一真相源）**：磁盘 `config.yaml` → `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑都走写盘 → fsnotify → 这条链路。
+- **配置生效路径（单一真相源）**：磁盘 `config.yaml`（及同级 `base_instructions.md`）→ `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑都走写盘 → fsnotify → 这条链路。
 - **请求转发路径**：`/v1/responses` → `server` → `convert` → `scheduler.Pick` → `anthropic` 上游 → `streamconv` 回程 SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
 
 ## 开发

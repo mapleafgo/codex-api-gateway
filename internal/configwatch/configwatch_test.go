@@ -175,3 +175,66 @@ func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
 		t.Fatalf("日志回调收到的 level = %v, want debug", gotLevel.Load())
 	}
 }
+
+// TestWatcherReloadsOnBaseInstructionsChange 验证本地编辑 base_instructions.md
+// （与 config 同级）也会触发热重载，内存 BaseInstructions 更新。
+func TestWatcherReloadsOnBaseInstructionsChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	// 初始无基线指令文件：BaseInstructions 为空
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.BaseInstructions != "" {
+		t.Fatalf("初始 BaseInstructions 应为空")
+	}
+	holder := config.NewHolder(cfg)
+
+	w, err := New(path, holder, nil, nil)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// 本地编辑器创建/写入同级 base_instructions.md
+	biPath := filepath.Join(dir, config.BaseInstructionsFileName)
+	const content = "You are a hot-reloaded base instruction."
+	writeFile(t, biPath, []byte(content))
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if holder.Current().BaseInstructions == content {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("BaseInstructions = %q, want %q", holder.Current().BaseInstructions, content)
+}
+
+// TestWatcherIgnoresUnrelatedSiblingFile 验证同目录无关文件变化不触发 reload。
+func TestWatcherIgnoresUnrelatedSiblingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+
+	var reloads atomic.Int32
+	w, err := New(path, holder, func() { reloads.Add(1) }, nil)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// 写无关文件
+	writeFile(t, filepath.Join(dir, "notes.txt"), []byte("noise"))
+	time.Sleep(600 * time.Millisecond)
+	if reloads.Load() != 0 {
+		t.Fatalf("无关文件不应触发 reload, reloads=%d", reloads.Load())
+	}
+	if holder.Current().Server.Listen != ":9999" {
+		t.Fatalf("配置被意外改动")
+	}
+}

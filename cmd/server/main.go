@@ -138,7 +138,7 @@ func main() {
 	srv := server.New(cfg)
 	defer srv.Close()
 
-	// 配置热重载：fsnotify 监听 config.yaml 变化，自动 Load 并替换 holder；
+	// 配置热重载：fsnotify 监听 config.yaml 与同级 base_instructions.md，自动 Load 并替换 holder；
 	// scheduler.Reload 由 srv.ReloadScheduler 触发，重建运行时优先级；
 	// 日志系统（logging.level/format/file）通过 applyLogging 同步重配置，
 	// 使管理页修改日志配置即时生效。
