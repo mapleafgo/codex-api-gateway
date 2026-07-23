@@ -373,7 +373,7 @@ func TestDegradeMovesSourceToEnd(t *testing.T) {
 			FirstByteTimeout: config.Duration(2 * time.Second),
 			DegradeThreshold: 3,
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -416,7 +416,7 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 			FirstByteTimeout: config.Duration(2 * time.Second),
 			DegradeThreshold: 3,
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -468,7 +468,7 @@ func TestCircuitOpenSourceSkipped(t *testing.T) {
 			FirstByteTimeout: config.Duration(2 * time.Second),
 			DegradeThreshold: 1,
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -508,7 +508,7 @@ func TestAllCircuitOpenTriggersRetry(t *testing.T) {
 			FirstByteTimeout: config.Duration(2 * time.Second),
 			DegradeThreshold: 1,
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(3 * time.Millisecond),
+			CircuitInterval:  config.Duration(3 * time.Millisecond),
 			HalfOpenProbes:   1,
 			MaxRetries:       3,
 		},
@@ -670,7 +670,7 @@ func TestLockedStreamClientCancelNotRecordedAsFailed(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second),
 			DegradeThreshold: 100,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 		},
 		Sources: []config.Source{makeSource("up", upstream.URL, 0)},
@@ -766,7 +766,7 @@ func TestSourceHealthAndPromote(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(time.Second),
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			DegradeThreshold: 1,
 			RecoverThreshold: 1,
 			HalfOpenProbes:   1,
@@ -822,6 +822,106 @@ func TestSourceHealthAndPromote(t *testing.T) {
 	}
 	if err := s.PromoteSource("missing"); err == nil {
 		t.Fatal("want error for unknown source")
+	}
+}
+
+// TestDisabledSourceSkipped 验证 disabled 源不参与调度，且健康快照带 disabled 标记。
+func TestDisabledSourceSkipped(t *testing.T) {
+	disabledHits := atomic.Int32{}
+	disabledSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		disabledHits.Add(1)
+		goodAnthropicSSE(w)
+	}))
+	defer disabledSrv.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer good.Close()
+
+	dis := makeSource("disabled-src", disabledSrv.URL, 0)
+	dis.Disabled = true
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 5,
+			CircuitInterval:  config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+		},
+		Sources: []config.Source{
+			dis,
+			makeSource("good", good.URL, 1),
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg)
+
+	hs := s.SourceHealth()
+	if len(hs) != 2 {
+		t.Fatalf("health len=%d", len(hs))
+	}
+	var foundDisabled bool
+	for _, h := range hs {
+		if h.Name == "disabled-src" {
+			foundDisabled = true
+			if !h.Disabled {
+				t.Fatalf("disabled-src health should mark Disabled=true: %+v", h)
+			}
+		}
+	}
+	if !foundDisabled {
+		t.Fatal("SourceHealth missing disabled-src")
+	}
+
+	name, err := runGeneric(s, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if name != "good" {
+		t.Fatalf("source=%q want good", name)
+	}
+	if disabledHits.Load() != 0 {
+		t.Fatalf("disabled source was hit %d times", disabledHits.Load())
+	}
+}
+
+// TestAllSourcesDisabled 验证全部源停用时返回 ErrAllSourcesFailed，且不命中上游。
+func TestAllSourcesDisabled(t *testing.T) {
+	hits := atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		goodAnthropicSSE(w)
+	}))
+	defer srv.Close()
+
+	a := makeSource("a", srv.URL, 0)
+	a.Disabled = true
+	b := makeSource("b", srv.URL, 1)
+	b.Disabled = true
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 5,
+			CircuitInterval:  config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+		},
+		Sources: []config.Source{a, b},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg)
+	s.backoff = testBackoff
+
+	_, err := runGeneric(s, nil, nil)
+	if !errors.Is(err, ErrAllSourcesFailed) {
+		t.Fatalf("err=%v want ErrAllSourcesFailed", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("disabled sources were hit %d times", hits.Load())
 	}
 }
 

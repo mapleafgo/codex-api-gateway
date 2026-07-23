@@ -290,6 +290,7 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 				out = append(out, admin.SourceHealthView{
 					Name: h.Name, State: h.State,
 					DegradeCount: h.DegradeCount, Priority: h.Priority,
+					Disabled: h.Disabled,
 				})
 			}
 			return out

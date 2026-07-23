@@ -38,6 +38,7 @@ sources:
 
 - **协议转换**：OpenAI Responses API ⇄ Anthropic Messages API，流式 SSE 双向转换。
 - **多源路由**：多个 Anthropic 兼容后端，按配置顺序作为优先级，运行时重建。
+- **手动停用源**：管理页一键停用/启用单源，即时写盘并热重载；停用源不参与调度，仍保留在配置与观测中。
 - **首字节前故障转移**：上游未开始流式输出前可切换到下一个源；一旦出流即锁定该源。
 - **断路器**：失败降级 → 熔断 → 冷却 → 半开探测 → 恢复，逐源可覆盖参数。
 - **模型白名单**：`/v1/models` 只返回 `models` 段显式声明的模型，不暴露上游别名。
@@ -158,7 +159,7 @@ go build -o codex-api-gateway ./cmd/server
 
 - **观测台**：6 张指标卡（请求量 / 输入 / 输出 / 缓存创建 / 缓存命中 / 命中率）+ `供应商 × 模型` 用量聚合表 + 最近 1000 条请求历史（按模型/供应商/Code 过滤，耗时渐变色条）。
 - **实时推送**：指标经 SSE（`/admin/api/events`）每 3 秒推送，无需手动刷新。
-- **配置管理**：图形化编辑供应商（含 `model_map` 列表式编辑、单源断路器、上移/下移排序）、模型白名单、全局参数、引导语文件。
+- **配置管理**：图形化编辑供应商（含 `model_map` 列表式编辑、单源断路器、停用/启用、上移/下移排序）、模型白名单、全局参数、引导语文件。
 - **个性化**：中英文切换、亮/暗主题，均记忆在 localStorage。
 - **性能隔离**：指标采集走独立 goroutine + 带缓冲 channel，请求路径只做一次非阻塞投递，channel 满即丢弃，绝不拖慢转发；管理端异常不影响 `/v1/*`。
 
@@ -172,6 +173,8 @@ JSON 接口（前端调用，也可独立集成）：
 | GET | `/admin/api/guidance` | 读取引导语文件内容 |
 | POST | `/admin/api/guidance` | 保存引导语文件 |
 | POST | `/admin/api/config/reload` | 手动触发从磁盘 reload |
+| POST | `/admin/api/sources/promote` | 手动将源提升回 normal |
+| POST | `/admin/api/sources/disabled` | 即时停用/启用单源（写盘 + 热重载） |
 | GET | `/admin/api/events` | SSE 推送 metrics 快照（每 3s 一次） |
 
 ## 配置
@@ -233,6 +236,7 @@ sources:
 - `base_url` 写上游根地址，不含 `/v1/messages`。
 - `model_map` 把 Codex/OpenAI 侧别名映射到上游真实模型名。
 - `default_model` 用于请求模型未命中 `model_map` 时兜底。
+- `disabled: true` 人工停用该源（不参与调度）；管理页可即时切换，也可直接改 YAML。
 
 建议让 Codex 使用 `gpt-5`、`gpt-5.5` 这类别名，再经 `model_map` 映射到上游专有模型（如 `glm-5.2`）。直接把 Codex 模型名设成上游专有名，Codex 可能缺本地元数据。
 
@@ -343,7 +347,7 @@ rm -f ~/.codex/models_cache.json
 | --- | --- | --- |
 | Codex 报 404 | `base_url` 写成 `…/v1/responses` | 改成 `…/v1`，Codex 自己拼 `/responses` 和 `/models` |
 | Codex 报 unauthorized | `requires_openai_auth` 没设 `true` 或 `wire_api` 没设 `responses` | 见「配置 Codex CLI 指向网关」 |
-| 转发返回 503 | 网关未配置任何上游源 | 管理页「配置管理」加源并保存 |
+| 转发返回 503 | 网关未配置任何上游源，或全部源被停用 | 管理页「配置管理」加源/启用源并保存 |
 | Codex 拉不到新模型 | `models_cache.json` 旧缓存 | 删 `~/.codex/models_cache.json` 重启 Codex |
 
 ## 产品边界

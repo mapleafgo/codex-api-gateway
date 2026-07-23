@@ -77,6 +77,7 @@ type SourceHealth struct {
 	State        string `json:"state"`         // normal | degraded | circuitOpen | halfOpen
 	DegradeCount int    `json:"degrade_count"` // 0 normal, 1 degraded, 2 circuitOpen 量级
 	Priority     int    `json:"priority"`      // 运行时优先级，1=最高
+	Disabled     bool   `json:"disabled"`      // 配置级人工停用，不参与调度
 }
 
 // New builds a Scheduler.
@@ -102,13 +103,13 @@ func New(cfg any) *Scheduler {
 		"max_retries", cur.Breaker.MaxRetries,
 		"first_byte_timeout", time.Duration(cur.Breaker.FirstByteTimeout).String())
 	return &Scheduler{
-		holder:              holder,
-		client:              anthropicclient.New(),
-		anthropicBackend:    backend.NewAnthropic(),
-		chatBackend:         backend.NewChat(),
-		breakers:            map[string]*breaker.Breaker{},
-		order:               order,
-		backoff: defaultBackoff,
+		holder:           holder,
+		client:           anthropicclient.New(),
+		anthropicBackend: backend.NewAnthropic(),
+		chatBackend:      backend.NewChat(),
+		breakers:         map[string]*breaker.Breaker{},
+		order:            order,
+		backoff:          defaultBackoff,
 	}
 }
 
@@ -151,6 +152,7 @@ func (s *Scheduler) SourceHealth() []SourceHealth {
 			State:        bk.State().String(),
 			DegradeCount: bk.DegradeCount(),
 			Priority:     i + 1,
+			Disabled:     src.Disabled,
 		})
 	}
 	return out
@@ -349,6 +351,10 @@ func (s *Scheduler) tryRoundGeneric(
 	var lastSource string
 
 	for _, src := range s.runtimeSeq() {
+		if src.Disabled {
+			slog.Debug("跳过上游源", "source", src.Name, "reason", "disabled")
+			continue
+		}
 		// Auto-recover degraded sources that have exceeded degrade_interval.
 		s.autoRecoverDegraded(&src)
 

@@ -92,14 +92,16 @@ const (
 
 // Source configures one Anthropic-compatible upstream.
 type Source struct {
-	Name          string            `koanf:"name" yaml:"name"`
-	BaseURL       string            `koanf:"base_url" yaml:"base_url"`
-	APIKey        string            `koanf:"api_key" yaml:"api_key,omitempty"`
-	BackendType   string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
-	ModelMap      map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
-	DefaultModel  string            `koanf:"default_model" yaml:"default_model,omitempty"`
-	Breaker       *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
-	OriginalIndex int               `koanf:"-" yaml:"-"`
+	Name         string            `koanf:"name" yaml:"name"`
+	BaseURL      string            `koanf:"base_url" yaml:"base_url"`
+	APIKey       string            `koanf:"api_key" yaml:"api_key,omitempty"`
+	BackendType  string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
+	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
+	Breaker      *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
+	// Disabled 为 true 时该源不参与调度（人工停用），仍保留在配置与管理页中。
+	Disabled      bool `koanf:"disabled" yaml:"disabled,omitempty"`
+	OriginalIndex int  `koanf:"-" yaml:"-"`
 }
 
 // NormalizeBackendType normalizes and validates the backend_type value.

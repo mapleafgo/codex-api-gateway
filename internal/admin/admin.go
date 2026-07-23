@@ -31,6 +31,7 @@ type SourceHealthView struct {
 	State        string `json:"state"`         // normal | degraded | circuitOpen | halfOpen
 	DegradeCount int    `json:"degrade_count"` // 0/1/2 量级
 	Priority     int    `json:"priority"`      // 运行时优先级，1=最高
+	Disabled     bool   `json:"disabled"`      // 配置级人工停用
 }
 
 // Deps 是 Mount 需要的依赖。main 组装时传入。
@@ -39,6 +40,7 @@ type Deps struct {
 	Metrics *metrics.Collector
 	CfgPath string // config.yaml 的绝对路径（用于写回）
 	// ReloadFromDisk 在写回 config.yaml 后调用：让 configwatch 重新 Load。
+	// 必须同步完成——调用方（如 handleSetSourceDisabled）依赖 reload 后 holder 已更新。
 	// 若 configwatch 未启用，传 nil 即可（写回不立即生效，需重启）。
 	ReloadFromDisk func()
 	// ModelsFetcher 按源名拉取上游 /v1/models 列表，供管理页编辑模型映射时选用。
@@ -74,6 +76,7 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/models", wrap("models", h.handleModels))
 	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
 	mux.HandleFunc("/admin/api/sources/promote", wrap("promote-source", h.handlePromoteSource))
+	mux.HandleFunc("/admin/api/sources/disabled", wrap("source-disabled", h.handleSetSourceDisabled))
 }
 
 // recoverMiddleware 捕获 handler panic，记录日志后返回 500。
@@ -421,6 +424,7 @@ type sourceView struct {
 	ModelMap     map[string]string `json:"model_map"`
 	DefaultModel string            `json:"default_model"`
 	Breaker      *breakerView      `json:"breaker,omitempty"`
+	Disabled     bool              `json:"disabled"`
 }
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
@@ -480,6 +484,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
 			BackendType: bt,
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
+			Disabled: src.Disabled,
 		}
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
@@ -522,42 +527,107 @@ func (h *handler) postConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
 		return
 	}
-	// 序列化为 YAML 写回磁盘
-	out, err := yamlMarshal(cfg)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "marshal yaml", Detail: err.Error()})
+	if err := h.writeConfigYAML(cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
 		return
 	}
+	slog.Info("管理页保存配置成功", "path", h.deps.CfgPath)
+	writeJSON(w, http.StatusOK, okBody{OK: true})
+}
+
+// handleSetSourceDisabled POST {name, disabled}：即时写盘并热重载，切换单源停用态。
+// 只改目标源的 disabled，其余配置保持 holder 当前快照，避免管理页脏编辑被意外覆盖。
+func (h *handler) handleSetSourceDisabled(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		Name     string `json:"name"`
+		Disabled bool   `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name"})
+		return
+	}
+
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
-	// 原子写：临时文件 + rename
+
+	cur := h.deps.Holder.Current()
+	// 浅拷贝 Config：Sources 做深拷贝（逐元素值拷贝），其余引用字段（ModelOverrides
+	// map、ModelSlugOrder slice）共享但本方法仅修改 Sources[i].Disabled，不触碰它们。
+	// 若未来 Validate() 增加修改 ModelOverrides 的逻辑，需对 map 做显式拷贝。
+	next := *cur
+	next.Sources = make([]config.Source, len(cur.Sources))
+	copy(next.Sources, cur.Sources)
+	found := false
+	for i := range next.Sources {
+		if next.Sources[i].Name == name {
+			next.Sources[i].Disabled = in.Disabled
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "unknown source", Detail: name})
+		return
+	}
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页切换源停用态", "source", name, "disabled", in.Disabled)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "name": name, "disabled": in.Disabled,
+		"health": h.sourcesHealth(),
+	})
+}
+
+// writeConfigYAML 序列化配置并原子写盘，成功后触发热重载。内部加 writeMu。
+func (h *handler) writeConfigYAML(cfg *config.Config) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+	return h.writeConfigYAMLLocked(cfg)
+}
+
+// writeConfigYAMLLocked 假定调用方已持有 writeMu。
+func (h *handler) writeConfigYAMLLocked(cfg *config.Config) error {
+	out, err := yamlMarshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal yaml: %w", err)
+	}
 	dir := filepath.Dir(h.deps.CfgPath)
 	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "create temp", Detail: err.Error()})
-		return
+		return fmt.Errorf("create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // 失败时清理临时文件
+	// 失败路径清理临时文件；rename 成功后源路径已不存在，Remove 是 no-op。
+	defer os.Remove(tmpName)
 	if _, err := tmp.Write(out); err != nil {
 		_ = tmp.Close()
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write temp", Detail: err.Error()})
-		return
+		return fmt.Errorf("write temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "close temp", Detail: err.Error()})
-		return
+		return fmt.Errorf("close temp: %w", err)
 	}
 	if err := os.Rename(tmpName, h.deps.CfgPath); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "rename", Detail: err.Error()})
-		return
+		return fmt.Errorf("rename: %w", err)
 	}
-	// 触发热重载（configwatch 监听会自动 reload，这里也手动调用确保即时生效）
 	if h.deps.ReloadFromDisk != nil {
 		h.deps.ReloadFromDisk()
 	}
-	slog.Info("管理页保存配置成功", "path", h.deps.CfgPath, "bytes", len(out))
-	writeJSON(w, http.StatusOK, okBody{OK: true})
+	return nil
 }
 
 // handleGuidance GET 返回引导语文本，POST 保存。

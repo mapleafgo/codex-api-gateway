@@ -122,6 +122,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	// POST：加一个 source
 	view.Sources = append(view.Sources, sourceView{
 		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", DefaultModel: "m2",
+		Disabled: true,
 	})
 	view.Models = []modelViewItem{{Slug: "glm-latest", ContextWindow: ptrInt64(100000)}}
 	body, _ := json.Marshal(view)
@@ -137,6 +138,16 @@ func TestConfigRoundTrip(t *testing.T) {
 	cur := deps.Holder.Current()
 	if len(cur.Sources) != 2 {
 		t.Errorf("after save: sources = %d", len(cur.Sources))
+	}
+	var s2 *config.Source
+	for i := range cur.Sources {
+		if cur.Sources[i].Name == "s2" {
+			s2 = &cur.Sources[i]
+			break
+		}
+	}
+	if s2 == nil || !s2.Disabled {
+		t.Errorf("s2 disabled not preserved: %+v", s2)
 	}
 	if len(cur.ModelOverrides) != 1 {
 		t.Errorf("models = %v", cur.ModelOverrides)
@@ -346,5 +357,79 @@ func TestPromoteSource(t *testing.T) {
 	}
 	if body["ok"] != true {
 		t.Fatalf("body=%v", body)
+	}
+}
+
+func TestSetSourceDisabled(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	deps.SourceHealth = func() []SourceHealthView {
+		cur := deps.Holder.Current()
+		out := make([]SourceHealthView, 0, len(cur.Sources))
+		for i, s := range cur.Sources {
+			out = append(out, SourceHealthView{
+				Name: s.Name, State: "normal", Priority: i + 1, Disabled: s.Disabled,
+			})
+		}
+		return out
+	}
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// missing name
+	resp, err := http.Post(srv.URL+"/admin/api/sources/disabled", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// unknown source
+	resp, err = http.Post(srv.URL+"/admin/api/sources/disabled", "application/json",
+		strings.NewReader(`{"name":"missing","disabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// disable s1
+	resp, err = http.Post(srv.URL+"/admin/api/sources/disabled", "application/json",
+		strings.NewReader(`{"name":"s1","disabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true || body["disabled"] != true || body["name"] != "s1" {
+		t.Fatalf("body=%v", body)
+	}
+	if !deps.Holder.Current().Sources[0].Disabled {
+		t.Fatal("holder not updated")
+	}
+
+	// re-enable
+	resp2, err := http.Post(srv.URL+"/admin/api/sources/disabled", "application/json",
+		strings.NewReader(`{"name":"s1","disabled":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("status=%d", resp2.StatusCode)
+	}
+	if deps.Holder.Current().Sources[0].Disabled {
+		t.Fatal("holder still disabled")
 	}
 }

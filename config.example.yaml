@@ -76,6 +76,7 @@ sources:
     api_key: ${ANTHROPIC_KEY}               # 密钥，支持 ${ENV_VAR} 展开
     model_map: { gpt-5: claude-sonnet-4-20250514 }  # 请求 model → 后端 model 映射
     default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
+    # disabled: true                        # 人工停用：true 时不参与调度；管理页可即时切换
 
   # 备用源：演示 per-source 断路器覆盖（整个 breaker 块可选，省略即用全局）
   # 单源 breaker 中为零值的字段会继承全局；max_retries 始终取全局、不被覆盖。

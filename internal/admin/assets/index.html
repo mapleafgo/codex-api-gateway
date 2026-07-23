@@ -858,25 +858,29 @@ html[data-theme="dark"] .ui-select {
         </div>
         <div class="ui-stack">
           <template x-for="(src, idx) in cfg.sources" :key="idx">
-            <div class="ui-card">
+            <div class="ui-card" :style="src.disabled ? 'opacity:.72' : ''">
               <div class="ui-card-body ui-stack">
                 <div class="ui-row">
                   <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
                     <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
                     <strong x-text="src.name || t('newSource')"></strong>
-                    <span class="ui-badge" :class="healthBadgeClass(src.name)"
-                          :title="healthHint(src.name)"
-                          x-text="healthLabel(src.name)"></span>
+                    <span class="ui-badge" :class="src.disabled ? 'ui-badge-soft-neutral' : healthBadgeClass(src.name)"
+                          :title="src.disabled ? t('healthHintDisabled') : healthHint(src.name)"
+                          x-text="src.disabled ? t('healthDisabled') : healthLabel(src.name)"></span>
                     <span class="ui-hint mono" style="font-size:11px"
-                          x-show="healthOf(src.name) && healthOf(src.name).priority"
+                          x-show="!src.disabled && healthOf(src.name) && healthOf(src.name).priority"
                           x-text="t('runtimePri') + ' #' + (healthOf(src.name)||{}).priority"></span>
                   </div>
                   <div class="ui-src-actions" role="group" :aria-label="t('actions')">
                     <button class="ui-text-action" type="button"
-                            x-show="canPromote(src.name)"
+                            x-show="canPromote(src.name) && !src.disabled"
                             :disabled="promoting===src.name"
                             @click="promoteSource(src.name)"
                             x-text="promoting===src.name ? t('promoting') : t('promote')"></button>
+                    <button class="ui-text-action" type="button"
+                            :disabled="!src.name || togglingDisabled===src.name"
+                            @click="toggleSourceDisabled(idx)"
+                            x-text="togglingDisabled===src.name ? t('togglingSrc') : (src.disabled ? t('enableSrc') : t('disableSrc'))"></button>
                     <button class="ui-text-action" type="button" @click="moveSource(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
                     <button class="ui-text-action" type="button" @click="moveSource(idx, 1)" :disabled="idx===cfg.sources.length-1">↓ <span x-text="t('down')"></span></button>
                     <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
@@ -1331,12 +1335,15 @@ function app() {
       levelDebug: '调试', levelInfo: '信息', levelWarn: '警告', levelError: '错误',
       fmtText: '文本', fmtJson: 'JSON',
       promote: '提升为正常', promoting: '提升中…', runtimePri: '运行优先级',
-      healthNormal: '正常', healthDegraded: '已降级', healthCircuitOpen: '熔断中', healthHalfOpen: '半开探测', healthUnknown: '未知',
+      disableSrc: '停用', enableSrc: '启用', togglingSrc: '切换中…',
+      disableOk: '已停用', enableOk: '已启用', disableFail: '切换停用失败',
+      healthNormal: '正常', healthDegraded: '已降级', healthCircuitOpen: '熔断中', healthHalfOpen: '半开探测', healthUnknown: '未知', healthDisabled: '已停用',
       promoteOk: '已提升为正常', promoteFail: '提升失败',
       healthHintNormal: '源健康，保持配置优先级',
       healthHintDegraded: '连续失败后已降级，请求仍可用但运行优先级后移',
       healthHintCircuitOpen: '熔断中，探测间隔结束前不会选中该源',
       healthHintHalfOpen: '冷却结束，正在放行探测请求',
+      healthHintDisabled: '已人工停用，不参与调度',
       fbt: '首字节超时', circuitInterval: '熔断探测间隔', degradeInterval: '降级恢复间隔',
       degradeThreshold: '降级阈值',
       recoverThreshold: '恢复阈值', halfOpenProbes: '半开探测数',
@@ -1383,12 +1390,15 @@ function app() {
       levelDebug: 'Debug', levelInfo: 'Info', levelWarn: 'Warn', levelError: 'Error',
       fmtText: 'Text', fmtJson: 'JSON',
       promote: 'Promote to normal', promoting: 'Promoting…', runtimePri: 'Runtime priority',
-      healthNormal: 'Normal', healthDegraded: 'Degraded', healthCircuitOpen: 'Circuit open', healthHalfOpen: 'Half-open', healthUnknown: 'Unknown',
+      disableSrc: 'Disable', enableSrc: 'Enable', togglingSrc: 'Switching…',
+      disableOk: 'Disabled', enableOk: 'Enabled', disableFail: 'Toggle disable failed',
+      healthNormal: 'Normal', healthDegraded: 'Degraded', healthCircuitOpen: 'Circuit open', healthHalfOpen: 'Half-open', healthUnknown: 'Unknown', healthDisabled: 'Disabled',
       promoteOk: 'Promoted to normal', promoteFail: 'Promote failed',
       healthHintNormal: 'Healthy; keeps configured priority',
       healthHintDegraded: 'Degraded after failures; still usable but moved behind healthier sources',
       healthHintCircuitOpen: 'Circuit open; skipped until probe interval elapses',
       healthHintHalfOpen: 'Circuit interval elapsed; probe requests allowed',
+      healthHintDisabled: 'Manually disabled; excluded from scheduling',
       fbt: 'First byte timeout', circuitInterval: 'Circuit probe interval',
       degradeInterval: 'Degrade recovery interval',
       degradeThreshold: 'Degrade threshold',
@@ -1441,6 +1451,7 @@ function app() {
 
     cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:[], base_instructions_file:'' },
     promoting: '',
+    togglingDisabled: '',
     cfgSnapshot: '',
     saving: false,
     guidance: { path: '', content: '', exists: false },
@@ -1781,6 +1792,7 @@ function app() {
           api_key: (v.api_key || '').trim(),
           model_map: {},
           default_model: (v.default_model || '').trim(),
+          disabled: false,
         });
         this.$nextTick(() => {
           const el = this.$refs.srcScroll;
@@ -1829,6 +1841,47 @@ function app() {
       if (!name) return false;
       const st = this.healthState(name);
       return st && st !== 'normal';
+    },
+    async toggleSourceDisabled(idx) {
+      if (!this.cfg.sources || !this.cfg.sources[idx]) return;
+      const src = this.cfg.sources[idx];
+      const name = (src.name || '').trim();
+      if (!name) {
+        this.notify(this.locale === 'zh' ? '请先填写源名称并保存' : 'Save source name first', 'error');
+        return;
+      }
+      if (this.togglingDisabled) return;
+      const next = !src.disabled;
+      this.togglingDisabled = name;
+      try {
+        const r = await fetch('/admin/api/sources/disabled', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, disabled: next }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+        if (Array.isArray(j.health)) {
+          this.snap = Object.assign({}, this.snap || {}, { sources_health: j.health });
+        }
+        // 只同步 disabled，保留其它未保存编辑；同步 patch cfgSnapshot 避免误报 dirty
+        src.disabled = !!j.disabled;
+        this.cfg.sources = this.cfg.sources.slice();
+        try {
+          const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+          if (snap && Array.isArray(snap.sources)) {
+            for (const s of snap.sources) {
+              if (s && s.name === name) s.disabled = !!j.disabled;
+            }
+            this.cfgSnapshot = JSON.stringify(snap);
+          }
+        } catch (e) {}
+        this.notify((next ? this.t('disableOk') : this.t('enableOk')) + ': ' + name, 'success');
+      } catch (e) {
+        this.notify(this.t('disableFail') + ': ' + e.message, 'error');
+      } finally {
+        this.togglingDisabled = '';
+      }
     },
     async promoteSource(name) {
       if (!name || this.promoting) return;
