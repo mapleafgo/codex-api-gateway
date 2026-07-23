@@ -17,9 +17,9 @@ const (
 	Normal State = iota
 	// Degraded means the source is still usable but moved behind healthier sources.
 	Degraded
-	// CircuitOpen means the source is temporarily skipped until cooldown elapses.
+	// CircuitOpen means the source is temporarily skipped until circuit_interval elapses.
 	CircuitOpen
-	// HalfOpen means limited probe requests are allowed after cooldown.
+	// HalfOpen means limited probe requests are allowed after circuit_interval.
 	HalfOpen
 )
 
@@ -48,6 +48,7 @@ type Breaker struct {
 	successStreak    int
 	degradeCount     int // 0 normal, 1 degraded, 2 circuitOpen
 	openedAt         time.Time
+	degradedAt       time.Time // set when entering Degraded; reset by RecordFailure/RecordSuccess
 	halfOpenInflight int
 	now              func() time.Time // injectable for testing
 }
@@ -129,7 +130,12 @@ func (b *Breaker) RecordFailure() State {
 			b.openedAt = b.now()
 		} else {
 			b.st = Degraded
+			b.degradedAt = b.now()
 		}
+	} else if b.st == Degraded {
+		// Remained degraded but didn't cross threshold: still a failure,
+		// reset the auto-recovery timer.
+		b.degradedAt = b.now()
 	}
 	return b.st
 }
@@ -161,8 +167,32 @@ func (b *Breaker) RecordSuccess() State {
 		b.st = Normal
 		b.degradeCount = 0
 		b.successStreak = 0
+		b.degradedAt = time.Time{}
 	}
 	return b.st
+}
+
+// AutoRecover 检查 degraded 源是否已超过 degrade_interval 无新失败。
+// 若超时且无新失败（degradedAt 未被 RecordFailure 重置），自动升回 Normal。
+// 返回 (oldState, newState, true) 表示已恢复，否则 (st, st, false)。
+func (b *Breaker) AutoRecover() (State, State, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.st != Degraded {
+		return b.st, b.st, false
+	}
+	interval := time.Duration(b.cfg.DegradeInterval)
+	if interval <= 0 {
+		return b.st, b.st, false
+	}
+	if b.now().Sub(b.degradedAt) >= interval {
+		b.st = Normal
+		b.degradeCount = 0
+		b.successStreak = 0
+		b.degradedAt = time.Time{}
+		return Degraded, Normal, true
+	}
+	return b.st, b.st, false
 }
 
 // ForceNormal 手动将源提升回 normal：清零失败/成功 streak、degradeCount，
@@ -176,5 +206,6 @@ func (b *Breaker) ForceNormal() State {
 	b.degradeCount = 0
 	b.halfOpenInflight = 0
 	b.openedAt = time.Time{}
+	b.degradedAt = time.Time{}
 	return b.st
 }
