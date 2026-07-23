@@ -19,10 +19,9 @@ import (
 // ErrAllSourcesFailed is returned when no source could serve the request.
 var ErrAllSourcesFailed = errors.New("all upstream sources failed")
 
-// defaultBackoff is the fixed production backoff sequence in seconds.
-var defaultBackoff = []time.Duration{
-	2 * time.Second, 4 * time.Second, 6 * time.Second, 8 * time.Second, 10 * time.Second,
-}
+// defaultBackoff is the fixed wait between whole-round retries after all
+// sources fail in a round. Not configurable; tests may override Scheduler.backoff.
+const defaultBackoff = 10 * time.Second
 
 // orderEntry tracks a source's runtime position and its original config index.
 type orderEntry struct {
@@ -40,7 +39,7 @@ type Scheduler struct {
 	order            []orderEntry // runtimeOrder: runtime priority sequence
 	bkMu             sync.Mutex
 	ordMu            sync.RWMutex
-	backoff          []time.Duration // injectable for tests; defaults to defaultBackoff
+	backoff          time.Duration // injectable for tests; defaults to defaultBackoff
 }
 
 // UpstreamEvent 描述一次单源上游尝试的观测数据，由 Scheduler 通过
@@ -239,8 +238,6 @@ func (s *Scheduler) restoreOriginal(name string) {
 	s.order[pos] = entry
 }
 
-// waitBackoff sleeps for the backoff duration corresponding to the attempt,
-// honoring context cancellation. attempt >= len(backoff) clamps to the last value.
 // sourceByName 在当前配置的源列表中按 name 查找，未找到返回 ok=false。
 func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 	for _, src := range s.holder.Current().OrderedSources() {
@@ -277,14 +274,11 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 	return s.client.ListModels(ctx, src.BaseURL, src.APIKey)
 }
 
+// waitBackoff sleeps a fixed backoff before the next whole-round retry,
+// honoring context cancellation (client disconnect aborts the wait).
 func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
-	bk := s.backoff
-	if attempt >= len(bk) {
-		attempt = len(bk) - 1
-	}
-	d := bk[attempt]
-	slog.Info("开始退避等待", "attempt", attempt, "wait", d.String())
-	t := time.NewTimer(d)
+	slog.Info("开始退避等待", "attempt", attempt, "wait", s.backoff.String())
+	t := time.NewTimer(s.backoff)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():

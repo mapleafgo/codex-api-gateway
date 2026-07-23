@@ -53,9 +53,7 @@ func err500(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"boom"}}`))
 }
 
-var testBackoff = []time.Duration{
-	1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond,
-}
+var testBackoff = 1 * time.Millisecond
 
 const minimalResponsesBody = `{"model":"x","input":"hi","stream":true}`
 
@@ -348,7 +346,7 @@ func TestRetryCtxCancel(t *testing.T) {
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
 	s := New(cfg)
-	s.backoff = []time.Duration{time.Hour} // long wait so cancel wins
+	s.backoff = time.Hour // long wait so cancel wins
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -518,9 +516,7 @@ func TestAllCircuitOpenTriggersRetry(t *testing.T) {
 		},
 	}
 	s := New(cfg)
-	s.backoff = []time.Duration{
-		5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond,
-	}
+	s.backoff = 5 * time.Millisecond
 	bkA := s.breakerFor(&cfg.Sources[0])
 	bkB := s.breakerFor(&cfg.Sources[1])
 	bkA.RecordFailure()

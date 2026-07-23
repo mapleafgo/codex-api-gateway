@@ -871,7 +871,7 @@ func TestIntegrationDegradeReorder(t *testing.T) {
 // TestIntegrationRetry verifies that with max_retries=1, the gateway retries
 // the entire round after all sources fail. Uses a single source that always
 // returns 500; with max_retries=1, total calls = 2 (initial + 1 retry).
-// The default backoff (2s) means this test takes ~2 seconds.
+// The default backoff (10s) means this test takes ~10 seconds.
 func TestIntegrationRetry(t *testing.T) {
 	bad, calls := mockBackend([]mockResp{{status: 500}})
 	defer bad.Close()
