@@ -283,7 +283,9 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			Type: "function",
 			Function: ChatToolCallFunc{
 				Name:      name,
-				Arguments: orDefault(args, "{}"),
+				// Chat Completions 要求 arguments 是合法 JSON 字符串；上游
+				// （如 MiMo prefill）会对内容再 parse，截断/非 JSON 会 400。
+				Arguments: chatFunctionArguments(args),
 			},
 		})
 	}
@@ -752,6 +754,25 @@ func freeformArgsJSON(input string) string {
 	return string(b)
 }
 
+// chatFunctionArguments 保证 Chat tool_calls[].function.arguments 是合法 JSON。
+//   - 空 → {}
+//   - 已是合法 JSON → 原样
+//   - 否则 → {"raw":"<原串>"}（避免 MiMo prefill "unexpected end of data"）
+func chatFunctionArguments(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	b, err := json.Marshal(map[string]string{"raw": s})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func toolSearchArgsJSON(args any) string {
 	switch v := args.(type) {
 	case string:
@@ -1110,13 +1131,6 @@ func optString(v oparam.Opt[string]) string {
 		return v.Value
 	}
 	return ""
-}
-
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 func itemType(item *oairesponses.ResponseInputItemUnionParam) string {
