@@ -1125,9 +1125,14 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-hint" x-text="t('fbtHint')"></span>
               </label>
               <label class="ui-field">
-                <span class="ui-label" x-text="t('cooldown')"></span>
-                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.cooldown" autocomplete="off" spellcheck="false">
-                <span class="ui-hint" x-text="t('cooldownHint')"></span>
+                <span class="ui-label" x-text="t('circuitInterval')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.circuit_interval" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('circuitIntervalHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('degradeInterval')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.degrade_interval" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('degradeIntervalHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('degradeThreshold')"></span>
@@ -1330,13 +1335,15 @@ function app() {
       promoteOk: '已提升为正常', promoteFail: '提升失败',
       healthHintNormal: '源健康，保持配置优先级',
       healthHintDegraded: '连续失败后已降级，请求仍可用但运行优先级后移',
-      healthHintCircuitOpen: '熔断中，冷却结束前不会选中该源',
+      healthHintCircuitOpen: '熔断中，探测间隔结束前不会选中该源',
       healthHintHalfOpen: '冷却结束，正在放行探测请求',
-      fbt: '首字节超时', cooldown: '冷却时间', degradeThreshold: '降级阈值',
+      fbt: '首字节超时', circuitInterval: '熔断探测间隔', degradeInterval: '降级恢复间隔',
+      degradeThreshold: '降级阈值',
       recoverThreshold: '恢复阈值', halfOpenProbes: '半开探测数',
       maxRetries: '最大重试', recovery: '恢复策略',
       recoveryNormal: '正常（恢复全部能力）', recoveryDegraded: '降级（保持低流量）',
-      fbtHint: '上游响应首字节超时时间', cooldownHint: '熔断后冷却等待时间',
+      fbtHint: '上游响应首字节超时时间', circuitIntervalHint: '熔断后转为半开探测的等待时间',
+      degradeIntervalHint: '降级后自动恢复为正常的等待时间',
       degradeThresholdHint: '连续失败次数触发熔断', recoverThresholdHint: '半开状态下允许通过的请求数',
       halfOpenProbesHint: '半开状态探测请求数', maxRetriesHint: '失败后最大重试次数（0=不重试）',
       guidanceHint: '非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，保存后自动热重载。',
@@ -1380,13 +1387,16 @@ function app() {
       promoteOk: 'Promoted to normal', promoteFail: 'Promote failed',
       healthHintNormal: 'Healthy; keeps configured priority',
       healthHintDegraded: 'Degraded after failures; still usable but moved behind healthier sources',
-      healthHintCircuitOpen: 'Circuit open; skipped until cooldown elapses',
+      healthHintCircuitOpen: 'Circuit open; skipped until probe interval elapses',
       healthHintHalfOpen: 'Cooldown elapsed; probe requests allowed',
-      fbt: 'First byte timeout', cooldown: 'Cooldown', degradeThreshold: 'Degrade threshold',
+      fbt: 'First byte timeout', circuitInterval: 'Circuit probe interval',
+      degradeInterval: 'Degrade recovery interval',
+      degradeThreshold: 'Degrade threshold',
       recoverThreshold: 'Recover threshold', halfOpenProbes: 'Half-open probes',
       maxRetries: 'Max retries', recovery: 'Recovery',
       recoveryNormal: 'Normal (full recovery)', recoveryDegraded: 'Degraded (low traffic)',
-      fbtHint: 'Upstream first byte timeout', cooldownHint: 'Cooldown after breaker trips',
+      fbtHint: 'Upstream first byte timeout', circuitIntervalHint: 'Wait before circuit→half-open probe',
+      degradeIntervalHint: 'Wait before degraded→normal auto-recovery',
       degradeThresholdHint: 'Consecutive failures to trigger breaker', recoverThresholdHint: 'Requests allowed in half-open state',
       halfOpenProbesHint: 'Half-open probe count', maxRetriesHint: 'Max retries on failure (0=none)',
       guidanceHint: 'Replaces Codex BASE_INSTRUCTIONS when non-empty. Auto-reloads on save.',
