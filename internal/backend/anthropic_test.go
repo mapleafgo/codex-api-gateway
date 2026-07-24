@@ -1,21 +1,29 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
 // TestAnthropicBackend_ReportsCacheUsage 回归：message_start 带 cache_read/create，
 // message_delta 只刷新 output 时，观测事件仍应保留 cache_*。
 func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, `data: {"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`+"\n\n")
@@ -29,7 +37,7 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 
 	b := NewAnthropic()
 	var up UpstreamEvent
-	err := b.Execute(context.Background(),
+	err := b.Execute(logging.WithRequestID(context.Background(), "req-anthropic-usage"),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
 		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
 		&config.Config{},
@@ -45,6 +53,27 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	}
 	if up.InputTokens != 100 || up.OutputTokens != 5 {
 		t.Fatalf("token usage: in=%d out=%d", up.InputTokens, up.OutputTokens)
+	}
+	logLine := ""
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, `"msg":"Anthropic 上游流结束"`) {
+			logLine = line
+			break
+		}
+	}
+	if logLine == "" {
+		t.Fatal("missing Anthropic final stream log")
+	}
+	for _, want := range []string{
+		`"request_id":"req-anthropic-usage"`,
+		`"input_tokens":100`,
+		`"output_tokens":5`,
+		`"cache_read":80`,
+		`"cache_create":20`,
+	} {
+		if !strings.Contains(logLine, want) {
+			t.Errorf("final stream log missing %s: %s", want, logLine)
+		}
 	}
 }
 

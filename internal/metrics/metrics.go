@@ -222,6 +222,7 @@ func (c *Collector) apply(ev RequestEvent) {
 	defer c.mu.Unlock()
 
 	// 上游事件会同时更新总量、分组和历史；先校验分组存储，避免 panic 时只写入部分聚合。
+	// 维护约束：今后新增任何可能 panic 的校验，也必须放在下方聚合写入之前。
 	if ev.Kind == KindUpstream && c.groups == nil {
 		panic("metrics groups map is nil")
 	}

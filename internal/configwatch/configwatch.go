@@ -206,7 +206,7 @@ func (w *Watcher) Reload() { w.reload() }
 func (w *Watcher) Close() error {
 	// 幂等：shutdownHandler 与 main 的 defer 都会调用 Close。
 	// close 已关闭的 channel 会 panic，用 stopOnce 保证仅真正执行一次；
-	// 后续调用直接返回首次的 err（或 nil）。
+	// 后续调用不再执行关闭流程，并安全返回 nil。
 	var err error
 	w.stopOnce.Do(func() {
 		close(w.stop)

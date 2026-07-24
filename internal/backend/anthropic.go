@@ -184,32 +184,37 @@ func (b *AnthropicBackend) Execute(
 	if status == "failed" {
 		level = slog.LevelWarn
 	}
+	// 优先用 streamconv.Usage（含 cache），与旧 server 成功路径一致；
+	// 若 converter 尚未记 usage，回退 mergeAnthropicUsage。
+	inTok, outTok := int(usage.InputTokens), int(usage.OutputTokens)
+	cacheRead, cacheCreate := int(usage.CacheReadInputTokens), int(usage.CacheCreationInputTokens)
+	if u := conv.Usage(); u != nil {
+		if u.InputTokens > 0 {
+			inTok = u.InputTokens
+		}
+		if u.OutputTokens > 0 {
+			outTok = u.OutputTokens
+		}
+		if u.CacheReadInputTokens > 0 {
+			cacheRead = u.CacheReadInputTokens
+		}
+		if u.CacheCreationInputTokens > 0 {
+			cacheCreate = u.CacheCreationInputTokens
+		}
+	}
 	log.Log(ctx, level, "Anthropic 上游流结束",
 		"status", status,
 		"code", code,
 		"error", errText,
 		"elapsed", time.Since(start).String(),
-		"ttfb", ttfb.String())
+		"ttfb", ttfb.String(),
+		"input_tokens", inTok,
+		"output_tokens", outTok,
+		"cache_read", cacheRead,
+		"cache_create", cacheCreate)
 	if onUpstream != nil {
 		if status == "completed" {
 			errText = ""
-		}
-		// 优先用 streamconv.Usage（含 cache），与旧 server 成功路径一致；
-		// 若 converter 尚未记 usage，回退 mergeAnthropicUsage。
-		inTok, outTok, cacheRead, cacheCreate := int(usage.InputTokens), int(usage.OutputTokens), int(usage.CacheReadInputTokens), int(usage.CacheCreationInputTokens)
-		if u := conv.Usage(); u != nil {
-			if u.InputTokens > 0 {
-				inTok = u.InputTokens
-			}
-			if u.OutputTokens > 0 {
-				outTok = u.OutputTokens
-			}
-			if u.CacheReadInputTokens > 0 {
-				cacheRead = u.CacheReadInputTokens
-			}
-			if u.CacheCreationInputTokens > 0 {
-				cacheCreate = u.CacheCreationInputTokens
-			}
 		}
 		onUpstream(UpstreamEvent{
 			SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,

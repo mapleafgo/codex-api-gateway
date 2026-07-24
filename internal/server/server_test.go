@@ -1201,79 +1201,127 @@ func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
 	t.Fatal("client metrics record not found")
 }
 
-func TestResponsesRequestLogsShareRequestIDAndAttempt(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "text/event-stream")
-		_, _ = io.WriteString(w, "event: response.completed\n")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5"}}`+"\n\n")
-	}))
-	defer upstream.Close()
-
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0},
-		Sources: []config.Source{{
-			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
-			BackendType: config.BackendOpenAIResponses,
-		}},
+func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
+	tests := []struct {
+		name           string
+		sourceName     string
+		backendType    string
+		baseURLSuffix  string
+		convertedLog   string
+		finalLog       string
+		upstreamStream string
+	}{
+		{
+			name:          "Responses",
+			sourceName:    "resp",
+			backendType:   config.BackendOpenAIResponses,
+			baseURLSuffix: "/v1",
+			convertedLog:  "Responses 透传请求准备完成",
+			finalLog:      "Responses 上游流结束",
+			upstreamStream: "event: response.completed\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5"}}` + "\n\n",
+		},
+		{
+			name:          "Chat",
+			sourceName:    "chat",
+			backendType:   config.BackendOpenAIChat,
+			baseURLSuffix: "/v1",
+			convertedLog:  "Chat 请求转换完成",
+			finalLog:      "Chat 上游流结束",
+			upstreamStream: `data: {"id":"chatcmpl-1","choices":[{"delta":{"role":"assistant","content":"ok"}}]}` + "\n\n" +
+				`data: {"id":"chatcmpl-1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}` + "\n\n" +
+				"data: [DONE]\n\n",
+		},
+		{
+			name:         "Anthropic",
+			sourceName:   "anthropic",
+			backendType:  config.BackendAnthropic,
+			convertedLog: "请求转换完成",
+			finalLog:     "Anthropic 上游流结束",
+			upstreamStream: `data: {"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+				`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+				`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1}}` + "\n\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		},
 	}
-	srv := New(cfg)
-	t.Cleanup(func() { _ = srv.Close() })
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
-		strings.NewReader(`{"model":"gpt-5","input":"hi","stream":true}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			defer slog.SetDefault(previous)
 
-	wanted := map[string]bool{
-		"收到响应请求":             false,
-		"尝试上游源":              false,
-		"Responses 透传请求准备完成": false,
-		"Responses 上游流结束":    false,
-		"响应请求完成":             false,
-	}
-	requestID := ""
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) != nil {
-			continue
-		}
-		message, _ := record["msg"].(string)
-		if _, ok := wanted[message]; !ok {
-			continue
-		}
-		wanted[message] = true
-		gotID, _ := record["request_id"].(string)
-		if gotID == "" {
-			t.Fatalf("message %q missing request_id: %s", message, line)
-		}
-		if requestID == "" {
-			requestID = gotID
-		} else if gotID != requestID {
-			t.Fatalf("message %q request_id=%q want %q", message, gotID, requestID)
-		}
-		if message == "尝试上游源" || strings.HasPrefix(message, "Responses ") {
-			if record["attempt"] != float64(1) {
-				t.Fatalf("message %q attempt=%v want 1", message, record["attempt"])
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "text/event-stream")
+				_, _ = io.WriteString(w, tt.upstreamStream)
+			}))
+			defer upstream.Close()
+
+			cfg := &config.Config{
+				Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0},
+				Sources: []config.Source{{
+					Name: tt.sourceName, BaseURL: upstream.URL + tt.baseURLSuffix, APIKey: "k",
+					BackendType: tt.backendType,
+				}},
 			}
-			if record["source"] != "resp" || record["backend_type"] != config.BackendOpenAIResponses {
-				t.Fatalf("message %q missing source/backend: %s", message, line)
+			srv := New(cfg)
+			defer func() { _ = srv.Close() }()
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+
+			resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+				strings.NewReader(`{"model":"gpt-5","input":"hi","stream":true}`))
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-	for message, found := range wanted {
-		if !found {
-			t.Errorf("missing correlated log %q", message)
-		}
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+
+			wanted := map[string]bool{
+				"收到响应请求":        false,
+				"尝试上游源":         false,
+				tt.convertedLog: false,
+				tt.finalLog:     false,
+				"响应请求完成":        false,
+			}
+			requestID := ""
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				var record map[string]any
+				if json.Unmarshal([]byte(line), &record) != nil {
+					continue
+				}
+				message, _ := record["msg"].(string)
+				if _, ok := wanted[message]; !ok {
+					continue
+				}
+				wanted[message] = true
+				gotID, _ := record["request_id"].(string)
+				if gotID == "" {
+					t.Fatalf("message %q missing request_id: %s", message, line)
+				}
+				if requestID == "" {
+					requestID = gotID
+				} else if gotID != requestID {
+					t.Fatalf("message %q request_id=%q want %q", message, gotID, requestID)
+				}
+				if message == "尝试上游源" || message == tt.convertedLog || message == tt.finalLog {
+					if record["attempt"] != float64(1) {
+						t.Fatalf("message %q attempt=%v want 1", message, record["attempt"])
+					}
+					if record["source"] != tt.sourceName || record["backend_type"] != tt.backendType {
+						t.Fatalf("message %q missing source/backend: %s", message, line)
+					}
+				}
+			}
+			for message, found := range wanted {
+				if !found {
+					t.Errorf("missing correlated log %q", message)
+				}
+			}
+		})
 	}
 }
 
