@@ -74,6 +74,14 @@
 - **测试靠近实现**：被测包同目录 `*_test.go`，跨包行为用表驱动测试；涉及共享状态或 goroutine 的改动必须通过 `task test-race`。
 - **配置项闭环**：新增配置项必须同时更新 `config.example.yaml`、`internal/config` 的校验与测试，并评估是否需要触发 `scheduler.Reload`。`config.yaml` 是本地运行配置，不得提交真实凭据。
 
+## 基线指令编辑规范
+
+- **最小增量**：`base_instructions.md` 是直接注入模型的基线指令，不是设计文档。只保留模型执行所需的规则，禁止写入背景说明、长示例、实现过程或重复解释。
+- **表述一致**：新增或修改条目必须保持与所在章节相邻条目一致的长度、句式和抽象层级，禁止因单个场景扩成长段或另起重复规则。
+- **强制语气**：英文必须使用 `must` / `must never`，中文必须使用“必须”/“禁止”；禁止使用 `should`、`prefer`、“建议”、“尽量”等会留下自由解释空间的弱语气。
+- **规则归位**：约束应落在其真正作用的通用行为层。适用于所有工具或所有 `exec_command` 的规则必须写入通用工具约束，禁止只在 Skill 等具体场景中打补丁。
+- **中英文同步**：`base_instructions.md` 与 `base_instructions_cn.md` 必须成对修改，语义、强度和边界保持一致；任一版本不得增加另一版本没有的例外或扩展。
+
 ## Build, Test, and Development Commands
 
 优先使用 `Taskfile.yml` 中的任务：
