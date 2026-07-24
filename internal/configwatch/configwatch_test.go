@@ -230,6 +230,58 @@ func TestWatcherReloadConvertsCallbackPanicToError(t *testing.T) {
 	}
 }
 
+func TestWatcherReloadReportsLoggingCallbackError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+
+	w, err := New(path, holder, nil, func(config.LoggingCfg) error {
+		return errors.New("logging failed")
+	})
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	w.Reload()
+
+	if err := w.LastLoadErr(); err == nil || !strings.Contains(err.Error(), "logging failed") {
+		t.Fatalf("LastLoadErr=%v want logging callback error", err)
+	}
+}
+
+func TestWatcherSuccessfulReloadClearsCallbackError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+	fail := true
+
+	w, err := New(path, holder, func() error {
+		if fail {
+			return errors.New("temporary failure")
+		}
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	w.Reload()
+	if w.LastLoadErr() == nil {
+		t.Fatal("first reload should report callback error")
+	}
+	fail = false
+	w.Reload()
+	if err := w.LastLoadErr(); err != nil {
+		t.Fatalf("LastLoadErr=%v want cleared after success", err)
+	}
+}
+
 // TestWatcherReloadsOnBaseInstructionsChange 验证本地编辑 base_instructions.md
 // （与 config 同级）也会触发热重载，内存 BaseInstructions 更新。
 func TestWatcherReloadsOnBaseInstructionsChange(t *testing.T) {

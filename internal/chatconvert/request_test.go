@@ -919,6 +919,13 @@ func TestChatFunctionArgumentsPreservesWhitespace(t *testing.T) {
 	}
 }
 
+func TestChatFunctionArgumentsTruncatedJSONPassthrough(t *testing.T) {
+	const arguments = `{"city":`
+	if got := chatFunctionArguments(arguments); got != arguments {
+		t.Fatalf("arguments=%q want %q", got, arguments)
+	}
+}
+
 func TestChatFunctionArgumentsEmptyUsesObject(t *testing.T) {
 	if got := chatFunctionArguments(""); got != "{}" {
 		t.Fatalf("arguments=%q want {}", got)

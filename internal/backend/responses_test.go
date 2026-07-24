@@ -168,6 +168,68 @@ func TestResponsesBackend_FailedTerminalIsFailed(t *testing.T) {
 	}
 }
 
+func TestResponsesBackend_IncompleteTerminalIsIncomplete(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.incomplete\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.incomplete","response":{"id":"r1","model":"o3","usage":{"input_tokens":4,"output_tokens":2}}}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewResponses()
+	var up UpstreamEvent
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":[]}`),
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
+		nil,
+		func(model.SSEEvent) error { return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Status != "incomplete" || up.InputTokens != 4 || up.OutputTokens != 2 {
+		t.Fatalf("up=%+v want incomplete with usage 4/2", up)
+	}
+}
+
+func TestResponsesBackend_CancelAfterFailedTerminalIsFailed(t *testing.T) {
+	released := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		fl := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: response.failed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"r1","model":"o3","error":{"message":"failed upstream"}}}`+"\n\n")
+		fl.Flush()
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer ts.Close()
+	defer close(released)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := NewResponses()
+	var up UpstreamEvent
+	_ = b.Execute(ctx,
+		[]byte(`{"model":"gpt-5","input":[]}`),
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
+		nil,
+		func(model.SSEEvent) error {
+			cancel()
+			return ctx.Err()
+		},
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if up.Status != "failed" || up.Error != "failed upstream" {
+		t.Fatalf("up=%+v want failed terminal after cancel", up)
+	}
+}
+
 func TestResponsesBackend_CancelAfterTerminalIsCompleted(t *testing.T) {
 	released := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

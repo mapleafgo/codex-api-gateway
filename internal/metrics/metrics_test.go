@@ -318,8 +318,8 @@ func TestCollectorConsumeRecoversPerEvent(t *testing.T) {
 	c.groups = map[groupKey]*groupAgg{}
 	c.consume(RequestEvent{Kind: KindUpstream, SourceName: "healthy", Model: "m"})
 
-	if got := c.Snapshot().TotalRequests; got != 2 {
-		t.Fatalf("TotalRequests=%d want 2", got)
+	if got := c.Snapshot().TotalRequests; got != 1 {
+		t.Fatalf("TotalRequests=%d want only the healthy event", got)
 	}
 	if len(c.Snapshot().ByGroup) != 1 || c.Snapshot().ByGroup[0].Source != "healthy" {
 		t.Fatalf("ByGroup=%+v want healthy event after panic", c.Snapshot().ByGroup)

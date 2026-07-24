@@ -180,6 +180,16 @@ func (b *AnthropicBackend) Execute(
 			errText = errSummary(scanErr)
 		}
 	}
+	level := slog.LevelInfo
+	if status == "failed" {
+		level = slog.LevelWarn
+	}
+	log.Log(ctx, level, "Anthropic 上游流结束",
+		"status", status,
+		"code", code,
+		"error", errText,
+		"elapsed", time.Since(start).String(),
+		"ttfb", ttfb.String())
 	if onUpstream != nil {
 		if status == "completed" {
 			errText = ""

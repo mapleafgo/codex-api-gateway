@@ -221,6 +221,11 @@ func (c *Collector) apply(ev RequestEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// 上游事件会同时更新总量、分组和历史；先校验分组存储，避免 panic 时只写入部分聚合。
+	if ev.Kind == KindUpstream && c.groups == nil {
+		panic("metrics groups map is nil")
+	}
+
 	backendType := ev.BackendType
 	if backendType == "" {
 		backendType = "a" // 历史兼容：缺省视为 Anthropic

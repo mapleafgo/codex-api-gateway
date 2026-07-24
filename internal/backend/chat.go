@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
@@ -63,6 +64,7 @@ func (b *ChatBackend) Execute(
 
 	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body)
 	if err != nil {
+		log.Warn("Chat 上游建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
@@ -151,6 +153,20 @@ func (b *ChatBackend) Execute(
 		cacheRead = u.CacheReadInputTokens
 		cacheCreate = u.CacheCreationInputTokens
 	}
+	level := slog.LevelInfo
+	if status == "failed" {
+		level = slog.LevelWarn
+	}
+	log.Log(ctx, level, "Chat 上游流结束",
+		"status", status,
+		"code", code,
+		"error", errText,
+		"elapsed", time.Since(start).String(),
+		"ttfb", ttfb.String(),
+		"input_tokens", inTok,
+		"output_tokens", outTok,
+		"cache_read_tokens", cacheRead,
+		"cache_creation_tokens", cacheCreate)
 	if onUpstream != nil {
 		onUpstream(UpstreamEvent{
 			SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
