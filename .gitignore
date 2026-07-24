@@ -9,5 +9,6 @@ data/
 .mimocode/
 .worktrees/
 *.log
+*.log.*
 .playwright-mcp/
 gateway.pid
