@@ -1201,6 +1201,59 @@ func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
 	t.Fatal("client metrics record not found")
 }
 
+func TestAnthropicIncompleteTerminalRecordsIncompleteClientStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":10,"output_tokens":0}}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"working"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":10,"output_tokens":5}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0},
+		Sources: []config.Source{{
+			Name: "anthropic", BaseURL: upstream.URL, APIKey: "k",
+			BackendType: config.BackendAnthropic,
+		}},
+	}
+	srv := New(cfg)
+	t.Cleanup(func() { _ = srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("event: response.incomplete")) {
+		t.Fatalf("response stream missing incomplete terminal event:\n%s", body)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, record := range srv.Metrics().Snapshot().Recent {
+			if record.Kind == "client" {
+				if record.Status != "incomplete" || record.Code != http.StatusOK {
+					t.Fatalf("client record=%+v want incomplete/200", record)
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("client metrics record not found")
+}
+
 func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 	tests := []struct {
 		name           string

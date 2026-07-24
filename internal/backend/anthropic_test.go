@@ -77,6 +77,52 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	}
 }
 
+func TestAnthropicBackend_MaxTokensReportsIncomplete(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":10,"output_tokens":0}}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"working"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"input_tokens":10,"output_tokens":5}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	var up UpstreamEvent
+	b := NewAnthropic()
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		&config.Config{},
+		func(ev model.SSEEvent) error { return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if up.Status != model.ResponseStatusIncomplete {
+		t.Fatalf("upstream status=%q want %q", up.Status, model.ResponseStatusIncomplete)
+	}
+
+	logLine := ""
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, `"msg":"Anthropic 上游流结束"`) {
+			logLine = line
+			break
+		}
+	}
+	if !strings.Contains(logLine, `"status":"incomplete"`) {
+		t.Fatalf("final stream log must report incomplete: %s", logLine)
+	}
+}
+
 // TestAnthropicBackend_SetEchoOnCompleted 确保 response.completed 带回 instructions 等 echo 字段。
 func TestAnthropicBackend_SetEchoOnCompleted(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

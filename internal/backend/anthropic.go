@@ -153,7 +153,7 @@ func (b *AnthropicBackend) Execute(
 		}
 	}
 
-	status := "completed"
+	status := conv.Status()
 	// 流已建立后，旧 trySource 默认 code=200；仅当错误串带上游 HTTP 码时覆盖。
 	code := 200
 	errText := ""
@@ -167,9 +167,7 @@ func (b *AnthropicBackend) Execute(
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
-			if sawStop || conv.Done() {
-				status = "completed"
-			} else {
+			if !sawStop && !conv.Done() {
 				status = "canceled"
 			}
 		} else {

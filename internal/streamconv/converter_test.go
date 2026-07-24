@@ -1460,6 +1460,39 @@ func TestMaxTokensIncomplete(t *testing.T) {
 	t.Fatalf("expected response.incomplete for max_tokens")
 }
 
+func TestConverterStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		stopReason anthropic.StopReason
+		want       string
+	}{
+		{name: "max tokens", stopReason: anthropic.StopReasonMaxTokens, want: model.ResponseStatusIncomplete},
+		{name: "pause turn", stopReason: anthropic.StopReasonPauseTurn, want: model.ResponseStatusIncomplete},
+		{name: "refusal", stopReason: anthropic.StopReasonRefusal, want: model.ResponseStatusIncomplete},
+		{name: "end turn", stopReason: anthropic.StopReasonEndTurn, want: model.ResponseStatusCompleted},
+		{name: "tool use", stopReason: anthropic.StopReasonToolUse, want: model.ResponseStatusCompleted},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New()
+			c.Feed(&anthropic.MessageStreamEventUnion{
+				Type:    "message_start",
+				Message: anthropic.Message{ID: "m", Model: "x"},
+			})
+			c.Feed(&anthropic.MessageStreamEventUnion{
+				Type:  "message_delta",
+				Delta: anthropic.MessageStreamEventUnionDelta{StopReason: tt.stopReason},
+			})
+			c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+			if got := c.Status(); got != tt.want {
+				t.Fatalf("Status()=%q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPauseTurnDoesNotEmitInvalidIncompleteReason(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{

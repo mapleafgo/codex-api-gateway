@@ -199,9 +199,9 @@ func (c *Converter) nextSeq() int64 { c.seq++; return c.seq }
 // RespID returns the upstream message id.
 func (c *Converter) RespID() string { return c.respID }
 
-// Done returns true if the converter has already emitted a terminal event
-// (response.completed / response.failed). Callers use this to avoid emitting
-// a duplicate terminal event after a mid-stream error followed by a read error.
+// Done returns true if the converter has already emitted a terminal response
+// event. Callers use this to avoid emitting a duplicate terminal event after
+// a mid-stream error followed by a read error.
 func (c *Converter) Done() bool { return c.completed }
 
 // Failed reports whether the converter emitted a failed terminal response.
@@ -214,6 +214,13 @@ func (c *Converter) Seq() int64 { return c.seq }
 // StopReason returns the upstream stop reason for diagnostics (empty before
 // the message_delta carrying it arrives).
 func (c *Converter) StopReason() string { return c.stopReason }
+
+// Status returns the Responses terminal status derived from the upstream stop
+// reason. Before a stop reason arrives, it returns completed for compatibility.
+func (c *Converter) Status() string {
+	status, _ := statusFor(c.stopReason)
+	return status
+}
 
 // Usage returns the upstream token usage (including cache hit/creation) for
 // diagnostics; nil before the message_delta carrying usage arrives.
