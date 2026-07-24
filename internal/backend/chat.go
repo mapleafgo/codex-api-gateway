@@ -3,7 +3,6 @@ package backend
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
@@ -11,6 +10,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/chatstreamconv"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
@@ -35,6 +35,10 @@ func (b *ChatBackend) Execute(
 	attempt int,
 ) error {
 	start := time.Now()
+	log := logging.FromContext(ctx).With(
+		"source", src.Name,
+		"backend_type", config.BackendOpenAIChat,
+		"attempt", attempt)
 	req, err := convert.DecodeResponseNewParams(rawBody)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
@@ -51,8 +55,7 @@ func (b *ChatBackend) Execute(
 		return fmt.Errorf("marshal chat: %w", err)
 	}
 
-	slog.Info("Chat 请求转换完成",
-		"source", src.Name,
+	log.Info("Chat 请求转换完成",
 		"model", clientModel,
 		"resolved_model", resolved,
 		"messages", len(chatReq.Messages),
@@ -83,7 +86,7 @@ func (b *ChatBackend) Execute(
 		if !locked {
 			locked = true
 			ttfb = time.Since(start)
-			slog.Info("Chat 上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
+			log.Info("Chat 上游首字节到达", "ttfb", ttfb.String())
 		}
 		evs, err := conv.Feed(data)
 		if err != nil {

@@ -136,6 +136,38 @@ func TestResponsesBackend_PassthroughSSE(t *testing.T) {
 	}
 }
 
+func TestResponsesBackend_FailedTerminalIsFailed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.failed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"r1","model":"o3","error":{"message":"quota exceeded"},"usage":{"input_tokens":3,"output_tokens":1}}}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewResponses()
+	var up UpstreamEvent
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":[]}`),
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
+		nil,
+		func(model.SSEEvent) error { return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Status != "failed" || up.Code != http.StatusOK {
+		t.Fatalf("status=%s code=%d want failed/200", up.Status, up.Code)
+	}
+	if up.Error != "quota exceeded" {
+		t.Fatalf("error=%q want quota exceeded", up.Error)
+	}
+	if up.InputTokens != 3 || up.OutputTokens != 1 {
+		t.Fatalf("usage=%d/%d want 3/1", up.InputTokens, up.OutputTokens)
+	}
+}
+
 func TestResponsesBackend_CancelAfterTerminalIsCompleted(t *testing.T) {
 	released := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

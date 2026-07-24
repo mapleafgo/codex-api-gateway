@@ -13,6 +13,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
 
@@ -291,7 +292,7 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 // waitBackoff sleeps a fixed backoff before the next whole-round retry,
 // honoring context cancellation (client disconnect aborts the wait).
 func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
-	slog.Info("开始退避等待", "attempt", attempt, "wait", s.backoff.String())
+	logging.FromContext(ctx).Info("开始退避等待", "attempt", attempt, "wait", s.backoff.String())
 	t := time.NewTimer(s.backoff)
 	defer t.Stop()
 	select {
@@ -310,6 +311,7 @@ func (s *Scheduler) ExecuteGeneric(
 	onEvent func(model.SSEEvent) error,
 	onUpstream OnUpstream,
 ) (string, error) {
+	log := logging.FromContext(ctx)
 	cur := s.holder.Current()
 	mr := cur.Breaker.MaxRetries
 	start := time.Now()
@@ -322,7 +324,7 @@ func (s *Scheduler) ExecuteGeneric(
 			lastSource = sourceName
 		}
 		if success {
-			slog.Info("上游请求完成", "source", sourceName, "attempts", attempt+1, "elapsed", time.Since(start).String())
+			log.Info("上游请求完成", "source", sourceName, "attempts", attempt+1, "elapsed", time.Since(start).String())
 			return sourceName, err
 		}
 		if err != nil {
@@ -334,17 +336,17 @@ func (s *Scheduler) ExecuteGeneric(
 		if mr != -1 && attempt == mr {
 			break
 		}
-		slog.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
+		log.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)
 		if werr := s.waitBackoff(ctx, attempt); werr != nil {
-			slog.Warn("退避等待被取消", "attempt", attempt, "error", werr)
+			log.Warn("退避等待被取消", "attempt", attempt, "error", werr)
 			return lastSource, werr
 		}
 	}
 	if lastErr != nil {
-		slog.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_error", lastErr)
+		log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_error", lastErr)
 		return lastSource, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
 	}
-	slog.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String())
+	log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String())
 	return lastSource, ErrAllSourcesFailed
 }
 
@@ -355,12 +357,13 @@ func (s *Scheduler) tryRoundGeneric(
 	onUpstream OnUpstream,
 	attemptNo *int,
 ) (string, bool, error) {
+	log := logging.FromContext(ctx)
 	var lastErr error
 	var lastSource string
 
 	for _, src := range s.runtimeSeq() {
 		if src.Disabled {
-			slog.Debug("跳过上游源", "source", src.Name, "reason", "disabled")
+			log.Debug("跳过上游源", "source", src.Name, "reason", "disabled")
 			continue
 		}
 		// Auto-recover degraded sources that have exceeded degrade_interval.
@@ -368,7 +371,7 @@ func (s *Scheduler) tryRoundGeneric(
 
 		bk := s.breakerFor(&src)
 		if !bk.Allow() {
-			slog.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
+			log.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
 			continue
 		}
 		*attemptNo++
@@ -380,7 +383,7 @@ func (s *Scheduler) tryRoundGeneric(
 			bt, _ := config.NormalizeBackendType(src.BackendType)
 			lastErr = err
 			lastSource = src.Name
-			slog.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "error", err)
+			log.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "attempt", *attemptNo, "error", err)
 		}
 	}
 
@@ -429,10 +432,8 @@ func (s *Scheduler) trySourceGeneric(
 	defer timer.Stop()
 
 	bt, _ := config.NormalizeBackendType(src.BackendType)
-	slog.Info("尝试上游源",
-		"source", src.Name,
-		"endpoint", src.BaseURL,
-		"backend_type", bt)
+	log := logging.FromContext(ctx).With("source", src.Name, "backend_type", bt, "attempt", attemptNo)
+	log.Info("尝试上游源", "endpoint", src.BaseURL)
 
 	locked := false
 	wrapEvent := func(ev model.SSEEvent) error {
@@ -442,7 +443,7 @@ func (s *Scheduler) trySourceGeneric(
 			oldState := bk.State()
 			newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
-			slog.Info("上游源流已锁定", "source", src.Name, "backend_type", bt, "old_state", oldState, "new_state", newState)
+			log.Info("上游源流已锁定", "old_state", oldState, "new_state", newState)
 		}
 		return onEvent(ev)
 	}
@@ -466,7 +467,7 @@ func (s *Scheduler) trySourceGeneric(
 			oldState := bk.State()
 			newState := bk.RecordFailure()
 			s.adjustOrder(src.Name, oldState, newState)
-			slog.Warn("上游源失败（未锁定）", "source", src.Name, "backend_type", bt, "old_state", oldState, "new_state", newState, "error", err)
+			log.Warn("上游源失败（未锁定）", "old_state", oldState, "new_state", newState, "error", err)
 		}
 		return false, err
 	}

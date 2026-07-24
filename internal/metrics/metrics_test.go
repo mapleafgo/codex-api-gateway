@@ -3,6 +3,7 @@ package metrics
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -273,6 +274,56 @@ func TestRecordNonBlockingWhenStopped(t *testing.T) {
 	c.Stop()
 	// Stop 后 Record 不应 panic / 不应阻塞
 	c.Record(RequestEvent{SourceName: "x"})
+}
+
+func TestCollectorConcurrentRecordAndStop(t *testing.T) {
+	c := New()
+	start := make(chan struct{})
+	var writers sync.WaitGroup
+	for range 32 {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			for range 1000 {
+				c.Record(RequestEvent{Kind: KindUpstream, SourceName: "x", Model: "m"})
+			}
+		}()
+	}
+
+	close(start)
+	c.Stop()
+	writers.Wait()
+	c.Stop()
+}
+
+func TestCollectorStopDrainsAcceptedEvents(t *testing.T) {
+	c := New()
+	const count = 100
+	for range count {
+		c.Record(RequestEvent{Kind: KindUpstream, SourceName: "x", Model: "m"})
+	}
+
+	c.Stop()
+
+	if got := c.Snapshot().TotalRequests; got != count {
+		t.Fatalf("TotalRequests=%d want %d", got, count)
+	}
+}
+
+func TestCollectorConsumeRecoversPerEvent(t *testing.T) {
+	c := &Collector{groups: nil}
+	c.consume(RequestEvent{Kind: KindUpstream, SourceName: "broken", Model: "m"})
+
+	c.groups = map[groupKey]*groupAgg{}
+	c.consume(RequestEvent{Kind: KindUpstream, SourceName: "healthy", Model: "m"})
+
+	if got := c.Snapshot().TotalRequests; got != 2 {
+		t.Fatalf("TotalRequests=%d want 2", got)
+	}
+	if len(c.Snapshot().ByGroup) != 1 || c.Snapshot().ByGroup[0].Source != "healthy" {
+		t.Fatalf("ByGroup=%+v want healthy event after panic", c.Snapshot().ByGroup)
+	}
 }
 
 func TestRecordNonBlockingWhenFull(t *testing.T) {

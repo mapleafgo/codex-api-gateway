@@ -11,6 +11,7 @@ import (
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
 )
@@ -45,6 +46,10 @@ func (b *AnthropicBackend) Execute(
 	attempt int,
 ) error {
 	start := time.Now()
+	log := logging.FromContext(ctx).With(
+		"source", src.Name,
+		"backend_type", config.BackendAnthropic,
+		"attempt", attempt)
 	req, err := convert.DecodeResponseNewParams(rawBody)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
@@ -57,7 +62,7 @@ func (b *AnthropicBackend) Execute(
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
 
-	logAnthropicConverted(&src, anthReq)
+	logAnthropicConverted(log, anthReq)
 
 	conv := streamconv.New()
 	conv.SetEcho(convert.EchoFromRequest(req))
@@ -69,15 +74,13 @@ func (b *AnthropicBackend) Execute(
 		conv.SetSummarized(true)
 	}
 
-	slog.Info("尝试 Anthropic 上游",
-		"source", src.Name,
+	log.Info("尝试 Anthropic 上游",
 		"endpoint", src.BaseURL,
 		"model", clientModel,
 		"resolved_model", resolved)
 	body, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp)
 	if err != nil {
-		slog.Warn("上游源建连失败",
-			"source", src.Name, "elapsed", time.Since(start).String(), "error", err)
+		log.Warn("上游源建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {
 			// 与旧 trySource 一致：能解析出上游 HTTP 码则用，否则 0（非 failCode 默认 500）
 			onUpstream(UpstreamEvent{
@@ -100,7 +103,7 @@ func (b *AnthropicBackend) Execute(
 		if !locked {
 			locked = true
 			ttfb = time.Since(start)
-			slog.Info("Anthropic 上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
+			log.Info("Anthropic 上游首字节到达", "ttfb", ttfb.String())
 		}
 		if ev != nil && ev.Type == anMessageStop {
 			sawStop = true
@@ -143,10 +146,10 @@ func (b *AnthropicBackend) Execute(
 	if locked && scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
 			if !sawStop && !conv.Done() {
-				slog.Info("上游流读取因客户端断开中止", "source", src.Name, "elapsed", time.Since(start).String(), "error", scanErr)
+				log.Info("上游流读取因客户端断开中止", "elapsed", time.Since(start).String(), "error", scanErr)
 			}
 		} else {
-			slog.Warn("上游流读取失败（已锁定）", "source", src.Name, "elapsed", time.Since(start).String(), "error", scanErr)
+			log.Warn("上游流读取失败（已锁定）", "elapsed", time.Since(start).String(), "error", scanErr)
 		}
 	}
 
@@ -214,16 +217,14 @@ func (b *AnthropicBackend) Execute(
 	return scanErr
 }
 
-func logAnthropicConverted(src *config.Source, anthReq *anthropic.MessageNewParams) {
+func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams) {
 	sysLen := 0
 	for _, b := range anthReq.System {
 		sysLen += len(b.Text)
 	}
 	thinkingOn := anthReq.Thinking.OfEnabled != nil || anthReq.Thinking.OfAdaptive != nil
 	thinkingBlocks, emptySig, toolUseBlk, toolResultBlk, assistantMsgs, userMsgs := summarizeAnthropicRequest(anthReq)
-	slog.Info("请求转换完成",
-		"source", src.Name,
-		"backend_type", config.BackendAnthropic,
+	log.Info("请求转换完成",
 		"model", string(anthReq.Model),
 		"max_tokens", anthReq.MaxTokens,
 		"messages", len(anthReq.Messages),
@@ -237,8 +238,8 @@ func logAnthropicConverted(src *config.Source, anthReq *anthropic.MessageNewPara
 		"tool_result_blocks", toolResultBlk,
 		"tools", len(anthReq.Tools))
 	if emptySig > 0 {
-		slog.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
-			"source", src.Name, "thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
+		log.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
+			"thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
 	}
 }
 

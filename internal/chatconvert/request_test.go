@@ -887,8 +887,7 @@ func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
 	}
 }
 
-func TestChatFunctionArgumentsNonJSONWrapped(t *testing.T) {
-	// 非 JSON arguments 不得原样透传：MiMo prefill 会再 parse，报 unexpected end of data。
+func TestChatFunctionArgumentsNonJSONPassthrough(t *testing.T) {
 	out := mustChat(t, `{
 		"model":"gpt-5",
 		"input":[
@@ -903,17 +902,26 @@ func TestChatFunctionArgumentsNonJSONWrapped(t *testing.T) {
 				continue
 			}
 			found = true
-			if !json.Valid([]byte(tc.Function.Arguments)) {
-				t.Fatalf("arguments not valid JSON: %q", tc.Function.Arguments)
-			}
-			var wrap map[string]string
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &wrap); err != nil || wrap["raw"] != "not-json" {
-				t.Fatalf("want {\"raw\":\"not-json\"}, got %s", tc.Function.Arguments)
+			if tc.Function.Arguments != "not-json" {
+				t.Fatalf("want original arguments, got %q", tc.Function.Arguments)
 			}
 		}
 	}
 	if !found {
 		t.Fatal("tool_call not found")
+	}
+}
+
+func TestChatFunctionArgumentsPreservesWhitespace(t *testing.T) {
+	const arguments = `  {"city":"x"}  `
+	if got := chatFunctionArguments(arguments); got != arguments {
+		t.Fatalf("arguments=%q want %q", got, arguments)
+	}
+}
+
+func TestChatFunctionArgumentsEmptyUsesObject(t *testing.T) {
+	if got := chatFunctionArguments(""); got != "{}" {
+		t.Fatalf("arguments=%q want {}", got)
 	}
 }
 

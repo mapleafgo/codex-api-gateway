@@ -1158,6 +1158,49 @@ func TestPreviousResponseIDNoDiscardWarnWithResponsesSource(t *testing.T) {
 	}
 }
 
+func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.failed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"resp_1","model":"upstream-m","error":{"message":"quota exceeded"}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Sources: []config.Source{{
+			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
+			BackendType: config.BackendOpenAIResponses,
+		}},
+	}
+	srv := New(cfg)
+	t.Cleanup(func() { _ = srv.Close() })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/responses", "application/json",
+		strings.NewReader(`{"model":"gpt-5","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, record := range srv.Metrics().Snapshot().Recent {
+			if record.Kind == "client" {
+				if record.Status != "failed" || record.Code != http.StatusOK {
+					t.Fatalf("client record=%+v want failed/200", record)
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("client metrics record not found")
+}
+
 func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

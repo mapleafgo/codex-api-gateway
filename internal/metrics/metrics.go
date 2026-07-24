@@ -8,6 +8,7 @@
 package metrics
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,7 +119,12 @@ const eventBufSize = 2048
 // Collector 收集与聚合请求指标。零值不可用，须 New 构造。
 type Collector struct {
 	events chan RequestEvent
-	mu     sync.RWMutex
+
+	acceptMu sync.RWMutex
+	closed   bool
+	wg       sync.WaitGroup
+
+	mu sync.RWMutex
 
 	total struct {
 		requests    int64
@@ -133,7 +139,6 @@ type Collector struct {
 	histIdx int
 	histLen int
 
-	closed        atomic.Bool
 	droppedEvents atomic.Uint64
 }
 
@@ -161,13 +166,16 @@ func New() *Collector {
 		events: make(chan RequestEvent, eventBufSize),
 		groups: map[groupKey]*groupAgg{},
 	}
+	c.wg.Add(1)
 	go c.run()
 	return c
 }
 
-// Record 非阻塞投递一个请求事件。channel 满或已 Stop 时静默丢弃。
+// Record 非阻塞投递一个请求事件。Stop 后直接返回；channel 满时丢弃并计数。
 func (c *Collector) Record(ev RequestEvent) {
-	if c.closed.Load() {
+	c.acceptMu.RLock()
+	defer c.acceptMu.RUnlock()
+	if c.closed {
 		return
 	}
 	select {
@@ -179,20 +187,34 @@ func (c *Collector) Record(ev RequestEvent) {
 
 // Stop 关闭投递入口并等待 consumer 退出。
 func (c *Collector) Stop() {
-	if !c.closed.CompareAndSwap(false, true) {
-		return
+	c.acceptMu.Lock()
+	if !c.closed {
+		c.closed = true
+		close(c.events)
 	}
-	close(c.events)
-	for ev := range c.events {
-		c.apply(ev) // drain 期间继续消费，避免丢数据
-	}
+	c.acceptMu.Unlock()
+	c.wg.Wait()
 }
 
 func (c *Collector) run() {
-	defer func() { _ = recover() }()
+	defer c.wg.Done()
 	for ev := range c.events {
-		c.apply(ev)
+		c.consume(ev)
 	}
+}
+
+func (c *Collector) consume(ev RequestEvent) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("指标事件聚合 panic，已跳过当前事件",
+				"recover", recovered,
+				"kind", ev.Kind,
+				"source", ev.SourceName,
+				"model", ev.Model,
+				"backend_type", ev.BackendType)
+		}
+	}()
+	c.apply(ev)
 }
 
 func (c *Collector) apply(ev RequestEvent) {

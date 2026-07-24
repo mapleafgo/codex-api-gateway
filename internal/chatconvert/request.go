@@ -754,23 +754,12 @@ func freeformArgsJSON(input string) string {
 	return string(b)
 }
 
-// chatFunctionArguments 保证 Chat tool_calls[].function.arguments 是合法 JSON。
-//   - 空 → {}
-//   - 已是合法 JSON → 原样
-//   - 否则 → {"raw":"<原串>"}（避免 MiMo prefill "unexpected end of data"）
+// chatFunctionArguments 仅为空参数补充 Chat 所需的空对象；非空参数保持上游原始语义。
 func chatFunctionArguments(s string) string {
-	s = strings.TrimSpace(s)
 	if s == "" {
 		return "{}"
 	}
-	if json.Valid([]byte(s)) {
-		return s
-	}
-	b, err := json.Marshal(map[string]string{"raw": s})
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
+	return s
 }
 
 func toolSearchArgsJSON(args any) string {

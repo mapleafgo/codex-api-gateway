@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
@@ -134,6 +135,20 @@ func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRea
 	return inTok, outTok, cacheRead, cacheCreate, true
 }
 
+func parseResponseError(data []byte) string {
+	var envelope struct {
+		Response struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Response.Error == nil {
+		return ""
+	}
+	return envelope.Response.Error.Message
+}
+
 // Execute 实现 Backend：透传 Responses 上游 SSE，T2 model 回写，不合成终态。
 func (b *ResponsesBackend) Execute(
 	ctx context.Context,
@@ -145,16 +160,18 @@ func (b *ResponsesBackend) Execute(
 	attempt int,
 ) error {
 	start := time.Now()
+	log := logging.FromContext(ctx).With(
+		"source", src.Name,
+		"backend_type", config.BackendOpenAIResponses,
+		"attempt", attempt)
 	body, clientModel, resolved, err := PrepareUpstreamBody(rawBody, &src)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("Responses 透传请求准备完成",
-		"source", src.Name,
+	log.Info("Responses 透传请求准备完成",
 		"model", clientModel,
-		"resolved_model", resolved,
-		"backend_type", config.BackendOpenAIResponses)
+		"resolved_model", resolved)
 
 	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body)
 	if err != nil {
@@ -172,21 +189,25 @@ func (b *ResponsesBackend) Execute(
 
 	var ttfb time.Duration
 	locked := false
-	// naturalDone：已收到上游终态事件（对齐 ChatBackend.conv.Done）。
-	// 客户端在终态后取消/读尾噪声时，UpstreamEvent 记 completed 而非 canceled。
-	naturalDone := false
+	terminalStatus := ""
+	terminalError := ""
 	var inTok, outTok, cacheRead, cacheCreate int
 
 	scanErr := responsesclient.ScanSSE(stream, func(et string, data []byte) error {
 		if !locked {
 			locked = true
 			ttfb = time.Since(start)
-			slog.Info("Responses 上游首字节到达", "source", src.Name, "ttfb", ttfb.String())
+			log.Info("Responses 上游首字节到达", "ttfb", ttfb.String())
 		}
-		// 先记终态再写出，避免 onEvent 内 cancel 时 naturalDone 尚未置位。
+		// 先记终态再写出，避免 onEvent 内 cancel 时终态尚未置位。
 		switch et {
-		case "response.completed", "response.incomplete":
-			naturalDone = true
+		case "response.completed":
+			terminalStatus = "completed"
+		case "response.incomplete":
+			terminalStatus = "incomplete"
+		case "response.failed":
+			terminalStatus = "failed"
+			terminalError = parseResponseError(data)
 		}
 		data = rewriteClientModel(data, clientModel)
 		if err := onEvent(model.SSEEvent{Type: et, Data: data}); err != nil {
@@ -199,9 +220,12 @@ func (b *ResponsesBackend) Execute(
 		return nil
 	})
 
-	status := "completed"
+	status := terminalStatus
+	if status == "" {
+		status = "completed"
+	}
 	code := 200
-	errText := ""
+	errText := terminalError
 	if !locked {
 		if scanErr == nil {
 			scanErr = fmt.Errorf("upstream returned no events")
@@ -211,9 +235,7 @@ func (b *ResponsesBackend) Execute(
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {
-			if naturalDone {
-				status = "completed"
-			} else {
+			if terminalStatus == "" {
 				status = "canceled"
 			}
 		} else {

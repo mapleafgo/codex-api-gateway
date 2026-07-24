@@ -9,6 +9,8 @@
 package configwatch
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -24,8 +26,8 @@ type Watcher struct {
 	path       string // config.yaml 路径
 	configBase string // config 文件名，用于过滤目录事件
 	holder     *config.Holder
-	onReload   func()                  // 热重载成功后回调（scheduler.Reload）
-	onLog      func(config.LoggingCfg) // 热重载成功后回调（重新配置日志系统，可空）
+	onReload   ReloadCallback  // 热重载成功后回调（scheduler.Reload）
+	onLog      LoggingCallback // 热重载成功后回调（重新配置日志系统，可空）
 
 	fsw      *fsnotify.Watcher
 	stop     chan struct{}
@@ -38,13 +40,19 @@ type Watcher struct {
 	lastLoadErr atomic.Pointer[string]
 }
 
+// ReloadCallback 把最新 holder 配置应用到运行时组件。
+type ReloadCallback func() error
+
+// LoggingCallback 把最新日志配置应用到进程默认 logger。
+type LoggingCallback func(config.LoggingCfg) error
+
 // New 构造 Watcher。onReload 在每次成功重载后调用（可空）；
 // onLog 在每次成功重载后调用，用于把新的 logging 配置应用到运行中的日志系统
 // （否则管理页修改日志等级/格式/文件不会即时生效），可空。
 //
 // 监听范围：config.yaml、同级 base_instructions.md，以及配置所在目录
 // （覆盖编辑器原子保存 rename，以及 md 文件稍后才创建的情况）。
-func New(path string, holder *config.Holder, onReload func(), onLog func(config.LoggingCfg)) (*Watcher, error) {
+func New(path string, holder *config.Holder, onReload ReloadCallback, onLog LoggingCallback) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -139,25 +147,47 @@ func (w *Watcher) reload() {
 	s := ""
 	w.lastLoadErr.Store(&s)
 	w.holder.Replace(cfg)
+	var applyErrors []error
 	if w.onReload != nil {
-		// 隔离回调 panic：管理侧逻辑异常不能影响 watcher goroutine
-		func() {
-			defer func() { _ = recover() }()
-			w.onReload()
-		}()
+		if err := callReloadCallback(w.onReload); err != nil {
+			applyErrors = append(applyErrors, fmt.Errorf("scheduler reload: %w", err))
+			slog.Error("热重载应用 scheduler 配置失败", "path", w.path, "error", err)
+		}
 	}
 	if w.onLog != nil {
-		// 重新配置日志系统：管理页修改 logging.level/format/file 需即时生效。
-		// 隔离 panic：日志重配置异常不能影响 watcher goroutine 与转发路径。
-		func() {
-			defer func() { _ = recover() }()
-			w.onLog(cfg.Logging)
-		}()
+		if err := callLoggingCallback(w.onLog, cfg.Logging); err != nil {
+			applyErrors = append(applyErrors, fmt.Errorf("logging reload: %w", err))
+			slog.Error("热重载应用日志配置失败", "path", w.path, "error", err)
+		}
+	}
+	if err := errors.Join(applyErrors...); err != nil {
+		message := err.Error()
+		w.lastLoadErr.Store(&message)
+		slog.Warn("配置已加载但运行时应用不完整", "path", w.path, "error", err)
+		return
 	}
 	slog.Info("配置热重载完成",
 		"path", w.path,
 		"sources", len(cfg.Sources),
 		"base_instructions_bytes", len(cfg.BaseInstructions))
+}
+
+func callReloadCallback(callback ReloadCallback) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return callback()
+}
+
+func callLoggingCallback(callback LoggingCallback, cfg config.LoggingCfg) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return callback(cfg)
 }
 
 // LastLoadErr 返回最近一次加载错误（nil 表示成功或无错误）。

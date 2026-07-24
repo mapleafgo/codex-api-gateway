@@ -18,6 +18,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/scheduler"
@@ -59,15 +60,17 @@ func (s *Server) Scheduler() *scheduler.Scheduler { return s.sch }
 func (s *Server) WaitForHandlers() { s.handlerWg.Wait() }
 
 // ReloadScheduler 让外层（configwatch）通知 scheduler 重建运行时优先级。
-func (s *Server) ReloadScheduler() {
-	func() {
-		defer func() { _ = recover() }()
-		s.sch.Reload()
+func (s *Server) ReloadScheduler() (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("reload scheduler: %v", recovered)
+		}
 	}()
+	s.sch.Reload()
+	return nil
 }
 
-// Close releases server resources. Currently a no-op; retained as the
-// shutdown hook for future resources.
+// Close 停止 metrics consumer，等待已接收事件聚合完成；重复调用安全。
 func (s *Server) Close() error {
 	if s.metrics != nil {
 		s.metrics.Stop()
@@ -278,8 +281,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	s.handlerWg.Add(1)
 	defer s.handlerWg.Done()
 
+	r = r.WithContext(logging.WithRequestID(r.Context(), logging.NewRequestID()))
+	log := logging.FromContext(r.Context())
 	if r.Method != http.MethodPost {
-		slog.Warn("拒绝响应请求", "method", r.Method, "path", r.URL.Path)
+		log.Warn("拒绝响应请求", "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -294,23 +299,36 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// MaxBytesReader 超限时返回 *http.MaxBytesError
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			slog.Warn("响应请求体超过上限", "max_body_bytes", maxBody, "error", err)
+			log.Warn("响应请求体超过上限", "max_body_bytes", maxBody, "error", err)
 			http.Error(w, fmt.Sprintf("request body too large (max %d MiB)", maxBody>>20), http.StatusRequestEntityTooLarge)
 			return
 		}
-		slog.Warn("读取响应请求体失败", "error", err)
+		log.Warn("读取响应请求体失败", "error", err)
 		http.Error(w, "read request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	const debugBodyLimit = 4096
+	bodySnapshot := body
+	bodyTruncated := false
+	if len(bodySnapshot) > debugBodyLimit {
+		bodySnapshot = bodySnapshot[:debugBodyLimit]
+		bodyTruncated = true
+	}
+	log.Debug("响应请求体快照",
+		"body_snapshot", string(bodySnapshot),
+		"body_bytes", len(body),
+		"body_truncated", bodyTruncated)
 	req, err := convert.DecodeResponseNewParams(body)
 	if err != nil {
-		slog.Warn("解析响应请求体失败", "error", err)
+		log.Warn("解析响应请求体失败", "error", err)
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	slog.Info("收到响应请求",
+	log.Info("收到响应请求",
 		"method", r.Method,
 		"path", r.URL.Path,
+		"query", r.URL.RawQuery,
+		"body_bytes", len(body),
 		"model", string(req.Model),
 		"input_items", len(req.Input.OfInputItemList),
 		"input_string_len", len(req.Input.OfString.Value),
@@ -326,17 +344,17 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if it.OfMessage != nil {
 			role = string(it.OfMessage.Role)
 		}
-		slog.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
+		log.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
 	}
 
 	ordered := s.holder.Current().OrderedSources()
 	if len(ordered) == 0 {
 		// 零源配置：进程可启动但无上游可转发。返回 503 引导用户去管理页配置。
-		slog.Warn("转发请求被拒绝：未配置任何上游源")
+		log.Warn("转发请求被拒绝：未配置任何上游源")
 		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
 		return
 	}
-	warnDroppedOrIgnoredParams(req, ordered)
+	warnDroppedOrIgnoredParams(log, req, ordered)
 
 	// 预检：首源为 Anthropic 时 dry-run ToAnthropic；首源为 r 时 PrepareUpstreamBody dry-run。
 	// 首源为 Chat 时不做转换预检，避免纯 Chat 部署被误杀。
@@ -345,18 +363,18 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	switch bt {
 	case config.BackendAnthropic:
 		if _, err := convert.DecodeResponseNewParams(body); err != nil {
-			slog.Warn("预解析响应请求失败", "source", first.Name, "error", err)
+			log.Warn("预解析响应请求失败", "source", first.Name, "error", err)
 			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		if _, _, err := convert.ToAnthropic(req, s.holder.Current()); err != nil {
-			slog.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 	case config.BackendOpenAIResponses:
 		if _, _, _, err := backend.PrepareUpstreamBody(body, &first); err != nil {
-			slog.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -380,8 +398,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	sourceName, execErr := s.sch.ExecuteGeneric(r.Context(), body,
 		func(e model.SSEEvent) error {
 			evCount++
-			slog.Debug("写出响应 SSE 事件", "event_type", e.Type)
-			writeSSE(w, e)
+			log.Debug("写出响应 SSE 事件", "event_type", e.Type)
+			if err := writeSSE(w, e); err != nil {
+				log.Warn("写出响应 SSE 事件失败", "event_type", e.Type, "error", err)
+				return err
+			}
 			flusher.Flush()
 			return nil
 		},
@@ -402,20 +423,35 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	clientCanceled := isClientCanceled(r.Context(), execErr)
 
 	status := model.ResponseStatusCompleted
+	if lastUp.Status == "incomplete" {
+		status = "incomplete"
+	}
 	code := 200
 	errText := ""
-	// 上游业务完成（lastUp.Status=completed）后：客户端断开或读尾噪声均按 completed。
-	upstreamCompleted := lastUp.Status == "completed"
-	if execErr == nil || upstreamCompleted {
+	// 上游已给出业务终态后，客户端断开或读尾噪声不得覆盖该终态。
+	upstreamSucceeded := lastUp.Status == "completed" || lastUp.Status == "incomplete"
+	if lastUp.Status == "failed" && evCount > 0 {
+		status = model.ResponseStatusFailed
+		code = lastUp.Code
+		errText = lastUp.Error
+		log.Error("响应请求失败",
+			"response_id", respID,
+			"status", status,
+			"source", sourceName,
+			"backend_type", backendType,
+			"upstream_events", evCount,
+			"elapsed", time.Since(reqStart).String(),
+			"error", errText)
+	} else if execErr == nil || upstreamSucceeded {
 		if execErr != nil && !clientCanceled {
 			// 对齐旧路径：终态后读取失败只 WARN，不当作业务 failed。
-			slog.Warn("上游流终态后读取失败",
+			log.Warn("上游流终态后读取失败",
 				"response_id", respID,
 				"source", sourceName,
 				"elapsed", time.Since(reqStart).String(),
 				"error", execErr)
 		}
-		slog.Info("响应请求完成",
+		log.Info("响应请求完成",
 			"response_id", respID,
 			"status", status,
 			"source", sourceName,
@@ -428,7 +464,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		status = "canceled"
 		code = 499
 		errText = errSummary(execErr)
-		slog.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		log.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
 	} else {
 		status = model.ResponseStatusFailed
 		// 流已建立（有事件）时对齐旧语义：默认 200，能解析上游码再覆盖。
@@ -441,16 +477,18 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			code = clientFailCode(execErr)
 		}
 		errText = errSummary(execErr)
-		slog.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		log.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
 		// 若流尚未写出任何事件，补一条 failed（Backend 通常已写）
 		if evCount == 0 {
 			errResp := model.NewResponseObject(respID, model.ResponseStatusFailed, string(req.Model), time.Now().Unix(), echoFromRequest(req))
 			errResp.Output = []model.OutputItem{}
 			errResp.Error = &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
 			evType := string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
-			writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
+			if err := writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
 				Type: evType, SequenceNumber: 1, Response: errResp,
-			}))
+			})); err != nil {
+				log.Warn("写出失败终态 SSE 事件失败", "event_type", evType, "error", err)
+			}
 			flusher.Flush()
 		}
 	}
@@ -473,10 +511,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func writeSSE(w io.Writer, e model.SSEEvent) {
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, e.Data); err != nil {
-		slog.Warn("写出 SSE 事件失败", "event_type", e.Type, "error", err)
-	}
+func writeSSE(w io.Writer, e model.SSEEvent) error {
+	_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, e.Data)
+	return err
 }
 
 // hasEnabledResponsesBackend 判断当前配置是否含启用中的 Responses 透传源。
@@ -496,11 +533,11 @@ func hasEnabledResponsesBackend(sources []config.Source) bool {
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
 // 或 deprecated 的请求字段统一输出 WARN 级别结构化日志，避免静默丢弃。
 // 约定见 AGENTS.md「静默跳过与降级处理约定」。
-func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []config.Source) {
+func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewParams, sources []config.Source) {
 	// r 源可形状透传：跳过 a/c 路径「WARN + 丢弃」叙事，避免误报。
 	if hasEnabledResponsesBackend(sources) {
 		if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
-			slog.Info("previous_response_id 将透传上游；网关不代补会话历史",
+			log.Info("previous_response_id 将透传上游；网关不代补会话历史",
 				"field", "previous_response_id",
 				"previous_response_id", req.PreviousResponseID.Value,
 				"impact", "backend_type=r 时原样转发；网关无 session store")
@@ -510,7 +547,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	// deprecated reasoning.generate_summary：被 reasoning.summary 取代。
 	//nolint:staticcheck // 字段被 OpenAI 标记 deprecated，但我们正是要检测它以输出 WARN
 	if req.Reasoning.GenerateSummary != "" {
-		slog.Warn("忽略 deprecated 字段 reasoning.generate_summary（已由 reasoning.summary 取代），对应数据被丢弃",
+		log.Warn("忽略 deprecated 字段 reasoning.generate_summary（已由 reasoning.summary 取代），对应数据被丢弃",
 			"field", "reasoning.generate_summary",
 			"value", string(req.Reasoning.GenerateSummary),
 			"reasoning_summary", string(req.Reasoning.Summary),
@@ -519,7 +556,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	// previous_response_id：网关无 session store，不做 enrich。
 	// Codex 主路径不传此字段（客户端自带完整 input 回灌）；其它客户端若依赖链式会话会失效。
 	if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
-		slog.Warn("忽略 previous_response_id（网关无 session store，不做历史 enrich），对应数据被丢弃",
+		log.Warn("忽略 previous_response_id（网关无 session store，不做历史 enrich），对应数据被丢弃",
 			"field", "previous_response_id",
 			"previous_response_id", req.PreviousResponseID.Value,
 			"impact", "不会按 response_id 补全历史；请在 input 中完整回灌上下文")
@@ -527,14 +564,14 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	// service_tier：Chat 源（backend_type c）透传；Anthropic 源无等价，仍忽略。
 	// 此处 INFO 提示路径差异，避免「全局永不透传」误导（混排 failover 时以实际 Backend 为准）。
 	if req.ServiceTier != "" {
-		slog.Info("service_tier 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("service_tier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "service_tier",
 			"value", string(req.ServiceTier),
 			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
 	}
 	// text.verbosity：Chat 源透传；Anthropic 无原生参数。
 	if req.Text.Verbosity != "" {
-		slog.Info("text.verbosity 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("text.verbosity 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "text.verbosity",
 			"value", string(req.Text.Verbosity),
 			"impact", "backend_type=c 写入 Chat verbosity；backend_type=a 不传上游")
@@ -585,13 +622,13 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 			unsupported = append(unsupported, s)
 		}
 		if len(chatSkipped) > 0 {
-			slog.Warn("忽略仅 Chat 源可映射的 include 项（当前无 Chat 上游）",
+			log.Warn("忽略仅 Chat 源可映射的 include 项（当前无 Chat 上游）",
 				"field", "include",
 				"values", strings.Join(chatSkipped, ","),
 				"impact", "backend_type=c 且 top_logprobs 时才有 output_text.logprobs；当前配置无法生效")
 		}
 		if len(unsupported) > 0 {
-			slog.Warn("忽略无后端等价能力的 include 项，对应数据被丢弃",
+			log.Warn("忽略无后端等价能力的 include 项，对应数据被丢弃",
 				"field", "include",
 				"values", strings.Join(unsupported, ","),
 				"impact", "该 include 项不会生效（file_search / computer 等）")
@@ -606,7 +643,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 			}
 		}
 		if nonUserID > 0 {
-			slog.Info("metadata 按后端分流（c 整表透传；a 仅 user_id + 响应 echo）",
+			log.Info("metadata 按后端分流（c 整表透传；a 仅 user_id + 响应 echo）",
 				"field", "metadata",
 				"entries", len(req.Metadata),
 				"impact", "backend_type=c 写入 Chat metadata；backend_type=a 仅 metadata.user_id 进上游")
@@ -616,14 +653,14 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
 		// Codex 常发；网关已自主 cache_control，属可控协议差异 → DEBUG 即可。
 		// a 路径：网关自主 cache_control；c 路径：chatconvert 透传 prompt_cache_key。
-		slog.Debug("prompt_cache_key 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
+		log.Debug("prompt_cache_key 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
 			"field", "prompt_cache_key",
 			"impact", "Anthropic 源不按 OpenAI cache key 分桶；Chat 源由 chatconvert 写入 prompt_cache_key")
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		// 与 prompt_cache_key 同属可控协议差异，网关已自主 cache_control → DEBUG。
 		// a 路径：自主 cache_control；c 路径：chatconvert 透传 prompt_cache_options。
-		slog.Debug("prompt_cache_options 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
+		log.Debug("prompt_cache_options 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
 			"field", "prompt_cache_options",
 			"mode", req.PromptCacheOptions.Mode,
 			"ttl", req.PromptCacheOptions.Ttl,
@@ -631,27 +668,27 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	}
 	if req.PromptCacheRetention != "" {
 		// deprecated 字段且语义不等价；网关用 cache.ttl 配置，DEBUG 即可。
-		slog.Debug("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同）",
+		log.Debug("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同）",
 			"field", "prompt_cache_retention",
 			"value", string(req.PromptCacheRetention),
 			"impact", "不会按 in_memory/24h 调整上游缓存保留；请用网关 cache_control TTL 配置")
 	}
 	// prompt：引用 OpenAI prompt template，网关无服务端模板存储。
 	if req.Prompt.ID != "" {
-		slog.Warn("忽略 prompt（网关无 OpenAI prompt 模板存储能力），对应数据被丢弃",
+		log.Warn("忽略 prompt（网关无 OpenAI prompt 模板存储能力），对应数据被丢弃",
 			"field", "prompt",
 			"prompt_id", req.Prompt.ID,
 			"impact", "模板与变量不会被解析，input 以实际内容为准")
 	}
 	// background：当前网关只支持同步 SSE。
 	if req.Background.Valid() && req.Background.Value {
-		slog.Warn("忽略 background=true（网关仅支持同步 SSE），请求将按同步处理",
+		log.Warn("忽略 background=true（网关仅支持同步 SSE），请求将按同步处理",
 			"field", "background",
 			"impact", "请求不会被转为后台执行")
 	}
 	// conversation：网关无状态，不是 OpenAI Conversation API。
 	if req.Conversation.OfString.Valid() || req.Conversation.OfConversationObject != nil {
-		slog.Warn("忽略 conversation（网关非 OpenAI Conversation API），对应数据被丢弃",
+		log.Warn("忽略 conversation（网关非 OpenAI Conversation API），对应数据被丢弃",
 			"field", "conversation",
 			"impact", "不会使用 conversation 拉取历史")
 	}
@@ -661,21 +698,21 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 		for _, cm := range req.ContextManagement {
 			types = append(types, cm.Type)
 		}
-		slog.Warn("忽略 context_management（Anthropic 无等价请求参数，网关未实现 compaction），对应数据被丢弃",
+		log.Warn("忽略 context_management（Anthropic 无等价请求参数，网关未实现 compaction），对应数据被丢弃",
 			"field", "context_management",
 			"types", strings.Join(types, ","),
 			"impact", "上下文管理策略不生效")
 	}
 	// max_tool_calls：Anthropic 无直接请求参数。
 	if req.MaxToolCalls.Valid() {
-		slog.Warn("忽略 max_tool_calls（Anthropic 无等价请求参数，网关不做计数截断），对应数据被丢弃",
+		log.Warn("忽略 max_tool_calls（Anthropic 无等价请求参数，网关不做计数截断），对应数据被丢弃",
 			"field", "max_tool_calls",
 			"value", req.MaxToolCalls.Value,
 			"impact", "工具调用次数不会在网关层被截断")
 	}
 	// safety_identifier：Chat 透传；Anthropic 无等价。
 	if req.SafetyIdentifier.Valid() && req.SafetyIdentifier.Value != "" {
-		slog.Info("safety_identifier 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("safety_identifier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "safety_identifier",
 			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
 	}
@@ -683,7 +720,7 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	if req.Moderation.Model != "" ||
 		req.Moderation.Policy.Input.Mode != "" ||
 		req.Moderation.Policy.Output.Mode != "" {
-		slog.Info("moderation 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("moderation 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "moderation",
 			"moderation_model", req.Moderation.Model,
 			"input_mode", req.Moderation.Policy.Input.Mode,
@@ -692,21 +729,21 @@ func warnDroppedOrIgnoredParams(req *oairesponses.ResponseNewParams, sources []c
 	}
 	// stream_options.include_obfuscation：Chat 透传；Anthropic 无等价。
 	if req.StreamOptions.IncludeObfuscation.Valid() {
-		slog.Info("stream_options.include_obfuscation 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("stream_options.include_obfuscation 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "stream_options.include_obfuscation",
 			"value", req.StreamOptions.IncludeObfuscation.Value,
 			"impact", "backend_type=c 写入 Chat stream_options；backend_type=a 不传上游")
 	}
 	// top_logprobs：Chat 透传（并开 logprobs）；Anthropic 无等价。
 	if req.TopLogprobs.Valid() {
-		slog.Info("top_logprobs 仅 Chat 源透传，Anthropic 源忽略",
+		log.Info("top_logprobs 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "top_logprobs",
 			"value", req.TopLogprobs.Value,
 			"impact", "backend_type=c 写入 Chat logprobs/top_logprobs；backend_type=a 不返回 logprobs")
 	}
 	// deprecated user：OpenAI 已废弃，需决定忽略或映射 metadata。
 	if req.User.Valid() && req.User.Value != "" {
-		slog.Warn("忽略 deprecated 字段 user（OpenAI 已废弃，建议改用 safety_identifier / metadata.user_id），对应数据被丢弃",
+		log.Warn("忽略 deprecated 字段 user（OpenAI 已废弃，建议改用 safety_identifier / metadata.user_id），对应数据被丢弃",
 			"field", "user",
 			"impact", "不会传递给上游（可改用 metadata.user_id）")
 	}

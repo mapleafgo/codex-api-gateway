@@ -1,8 +1,10 @@
 package configwatch
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +25,9 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 
 	var reloads atomic.Int32
 	var logCalls atomic.Int32
-	w, err := New(path, holder, func() { reloads.Add(1) }, func(config.LoggingCfg) { logCalls.Add(1) })
+	w, err := New(path, holder,
+		func() error { reloads.Add(1); return nil },
+		func(config.LoggingCfg) error { logCalls.Add(1); return nil })
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -160,8 +164,9 @@ func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
 	holder := config.NewHolder(cfg)
 
 	var gotLevel atomic.Value
-	w, _ := New(path, holder, nil, func(lc config.LoggingCfg) {
+	w, _ := New(path, holder, nil, func(lc config.LoggingCfg) error {
 		gotLevel.Store(lc.Level)
+		return nil
 	})
 	t.Cleanup(func() { _ = w.Close() })
 
@@ -173,6 +178,55 @@ func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if gotLevel.Load() != "debug" {
 		t.Fatalf("日志回调收到的 level = %v, want debug", gotLevel.Load())
+	}
+}
+
+func TestWatcherReloadReportsCallbackErrorAndKeepsNewConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+
+	w, err := New(path, holder,
+		func() error { return errors.New("scheduler failed") },
+		func(config.LoggingCfg) error { return nil })
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	writeFile(t, path, minimalYAML(":7777", "src2"))
+	w.Reload()
+
+	if holder.Current().Server.Listen != ":7777" {
+		t.Fatalf("Server.Listen=%q want latest config", holder.Current().Server.Listen)
+	}
+	if err := w.LastLoadErr(); err == nil || !strings.Contains(err.Error(), "scheduler failed") {
+		t.Fatalf("LastLoadErr=%v want scheduler callback error", err)
+	}
+}
+
+func TestWatcherReloadConvertsCallbackPanicToError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, minimalYAML(":9999", "src1"))
+	cfg, _ := config.Load(path)
+	holder := config.NewHolder(cfg)
+
+	w, err := New(path, holder,
+		func() error { panic("scheduler panic") },
+		func(config.LoggingCfg) error { panic("logging panic") })
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	w.Reload()
+
+	got := w.LastLoadErr()
+	if got == nil || !strings.Contains(got.Error(), "scheduler panic") || !strings.Contains(got.Error(), "logging panic") {
+		t.Fatalf("LastLoadErr=%v want both callback panics", got)
 	}
 }
 
@@ -222,7 +276,7 @@ func TestWatcherIgnoresUnrelatedSiblingFile(t *testing.T) {
 	holder := config.NewHolder(cfg)
 
 	var reloads atomic.Int32
-	w, err := New(path, holder, func() { reloads.Add(1) }, nil)
+	w, err := New(path, holder, func() error { reloads.Add(1); return nil }, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +22,7 @@ func maybeDaemonize(enabled bool) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "daemon: 无法解析可执行文件: %v\n", err)
+		slog.Error("daemon 无法解析可执行文件", "error", err)
 		os.Exit(1)
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
@@ -30,9 +31,9 @@ func maybeDaemonize(enabled bool) {
 	// 这种情况下跳过 daemonize，直接前台运行，留给调用者处理后台
 	exePath := filepath.Dir(exe)
 	if strings.Contains(exePath, "/go-build") || strings.Contains(exePath, "/tmp/go") {
-		fmt.Fprintf(os.Stderr, "daemon: warning: detected go run environment, skipping daemonize\n"+
-			"daemon mode only works with pre-built binary (./codex-api-gateway -d).\n"+
-			"Starting in foreground...\n")
+		slog.Warn("go run 环境不支持 daemon，降级为前台运行",
+			"executable", exe,
+			"hint", "daemon 模式仅支持预构建二进制")
 		return
 	}
 
@@ -47,7 +48,7 @@ func maybeDaemonize(enabled bool) {
 	logPath := resolveDaemonPath(os.Getenv("GATEWAY_LOG"), "gateway.log")
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "daemon: 无法打开日志 %s: %v\n", logPath, err)
+		slog.Error("daemon 无法打开日志文件", "log_path", logPath, "error", err)
 		os.Exit(1)
 	}
 	// 子进程继承 fd；父进程退出时关闭自己的副本即可
@@ -57,7 +58,7 @@ func maybeDaemonize(enabled bool) {
 
 	if err := cmd.Start(); err != nil {
 		_ = f.Close()
-		fmt.Fprintf(os.Stderr, "daemon: 后台启动失败: %v\n", err)
+		slog.Error("daemon 后台启动失败", "error", err)
 		os.Exit(1)
 	}
 	_ = f.Close()
@@ -73,13 +74,13 @@ func maybeDaemonize(enabled bool) {
 		case <-waitDone:
 		case <-time.After(2 * time.Second):
 		}
-		fmt.Fprintf(os.Stderr, "daemon: %v\nlog: %s\n", err, logPath)
+		slog.Error("daemon 子进程未就绪", "log_path", logPath, "error", err)
 		os.Exit(1)
 	}
 	// 子进程已独立会话运行；不再阻塞 Wait，后台 goroutine 会回收状态。
 	// 父进程退出后子进程由 init 收养，不会成僵尸。
-	// 此时 logging 尚未初始化（父进程即将退出），用 fmt 写 stdout 前台提示用户。
-	fmt.Printf("codex-api-gateway 已后台启动 pid=%d log=%s\n", cmd.Process.Pid, logPath)
+	// 此时正式日志配置尚未加载，使用 slog 默认 handler 输出结构化启动结果。
+	slog.Info("codex-api-gateway 已后台启动", "pid", cmd.Process.Pid, "log_path", logPath)
 	os.Exit(0)
 }
 

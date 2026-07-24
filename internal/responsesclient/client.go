@@ -181,9 +181,7 @@ func ScanSSE(r io.Reader, onEvent func(eventType string, data []byte) error) err
 		if strings.HasPrefix(line, "data:") {
 			// optional single space after colon (SSE)
 			payload := strings.TrimPrefix(line, "data:")
-			if strings.HasPrefix(payload, " ") {
-				payload = payload[1:]
-			}
+			payload = strings.TrimPrefix(payload, " ")
 			dataLines = append(dataLines, payload)
 			hasData = true
 			continue

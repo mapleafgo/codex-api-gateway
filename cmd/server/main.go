@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -265,7 +266,7 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 // adminMount 挂载管理页到 mux，reload 回调统一从磁盘重载。
 // watcher 为 nil 时退化为手动 Load+Replace+Reload+重配置日志。
 // applyLogging 在每次成功重载后把新的 logging 配置应用到运行中的日志系统。
-func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg)) {
+func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg) error) {
 	reload := func() {
 		if w != nil {
 			w.Reload()
@@ -274,8 +275,12 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 		defer func() { _ = recover() }()
 		if newCfg, err := config.Load(cfgPath); err == nil {
 			srv.Holder().Replace(newCfg)
-			srv.ReloadScheduler()
-			applyLogging(newCfg.Logging)
+			if err := srv.ReloadScheduler(); err != nil {
+				slog.Error("管理页保存后应用 scheduler 配置失败", "error", err)
+			}
+			if err := applyLogging(newCfg.Logging); err != nil {
+				slog.Error("管理页保存后应用日志配置失败", "error", err)
+			}
 		}
 	}
 	admin.Mount(mux, admin.Deps{
@@ -302,9 +307,10 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 
 // applyLogging 把 logging 配置应用到运行中的进程日志系统（重配置 slog handler）。
 // 供热重载（configwatch 与 admin 手动保存两条路径）复用，确保管理页修改日志配置即时生效。
-// 异常不向上抛出，避免影响调用方（configwatch goroutine / 管理接口）。
-func applyLogging(cfg config.LoggingCfg) {
+// 失败时返回错误，由 configwatch 或管理接口记录对应应用阶段。
+func applyLogging(cfg config.LoggingCfg) error {
 	if err := logging.Configure(cfg); err != nil {
-		slog.Error("热重载应用日志配置失败，沿用旧日志配置", "log_file", cfg.File, "error", err)
+		return fmt.Errorf("configure logging: %w", err)
 	}
+	return nil
 }
