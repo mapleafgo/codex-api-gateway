@@ -282,7 +282,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			ID:   id,
 			Type: "function",
 			Function: ChatToolCallFunc{
-				Name:      name,
+				Name: name,
 				// Chat Completions 要求 arguments 是合法 JSON 字符串；上游
 				// （如 MiMo prefill）会对内容再 parse，截断/非 JSON 会 400。
 				Arguments: chatFunctionArguments(args),

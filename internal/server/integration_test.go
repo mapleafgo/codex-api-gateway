@@ -695,7 +695,7 @@ func TestIntegrationFailover(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100, // high so A doesn't degrade in this test
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 		},
 		Sources: []config.Source{
@@ -740,7 +740,7 @@ func TestIntegrationFailoverUsesSuccessfulSourceID(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -784,7 +784,7 @@ func TestIntegrationServerSideFailureAdvancesSequenceNumber(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -823,7 +823,7 @@ func TestIntegrationDegradeReorder(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 3,
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -880,7 +880,7 @@ func TestIntegrationRetry(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100, // high so it doesn't circuit-open
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       1, // initial + 1 retry = 2 rounds
 		},
@@ -912,7 +912,7 @@ func TestIntegrationRetryMaxZero(t *testing.T) {
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 100,
-			CircuitInterval:         config.Duration(time.Minute),
+			CircuitInterval:  config.Duration(time.Minute),
 			HalfOpenProbes:   1,
 			MaxRetries:       0, // no retry
 		},
@@ -976,7 +976,7 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
+			CircuitInterval:  config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},
@@ -1097,7 +1097,7 @@ func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 			FirstByteTimeout: config.Duration(5 * time.Second),
 			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
 			RecoverThreshold: 1,
-			CircuitInterval:         config.Duration(time.Minute), // long circuit_interval: A stays open
+			CircuitInterval:  config.Duration(time.Minute), // long circuit_interval: A stays open
 			HalfOpenProbes:   1,
 			MaxRetries:       0,
 		},

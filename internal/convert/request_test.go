@@ -2517,7 +2517,6 @@ func TestFunctionCallArgumentsNonObjectAsString(t *testing.T) {
 	}
 }
 
-
 func TestAppendToolUseSkipsEmptyIDOrName(t *testing.T) {
 	out := &anthropic.MessageNewParams{}
 	if err := appendToolUse(out, "", "shell", map[string]any{"x": 1}); err != nil {
