@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,8 +44,8 @@ func TestCollectorAggregates(t *testing.T) {
 	if s.TotalRequests != 3 {
 		t.Fatalf("TotalRequests = %d, want 3", s.TotalRequests)
 	}
-	if s.TotalInput != 600 {
-		t.Errorf("TotalInput = %d, want 600", s.TotalInput)
+	if s.TotalInput != 1200 {
+		t.Errorf("TotalInput = %d, want 1200", s.TotalInput)
 	}
 	if s.TotalCacheRead != 380 {
 		t.Errorf("TotalCacheRead = %d, want 380", s.TotalCacheRead)
@@ -51,10 +53,10 @@ func TestCollectorAggregates(t *testing.T) {
 	if s.TotalCacheCreate != 220 {
 		t.Errorf("TotalCacheCreate = %d, want 220", s.TotalCacheCreate)
 	}
-	// 命中率（token 维度）= cacheRead / (input + cacheRead + cacheCreate)
-	// = 380 / (600 + 380 + 220)
+	// BackendType 缺省按 Anthropic 处理，总输入已归一化。
+	// 命中率 = 380 / 1200
 	want := 380.0 / 1200.0
-	if absFloat(s.CacheHitRate-want) > 1e-9 {
+	if s.CacheHitRate == nil || absFloat(*s.CacheHitRate-want) > 1e-9 {
 		t.Errorf("CacheHitRate = %v, want %v", s.CacheHitRate, want)
 	}
 
@@ -78,6 +80,156 @@ func TestCollectorAggregates(t *testing.T) {
 	// 历史：3 条，最新在前
 	if len(s.Recent) != 3 {
 		t.Fatalf("Recent len = %d, want 3", len(s.Recent))
+	}
+}
+
+func TestCollectorCacheHitRateUsesBackendTokenSemantics(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []RequestEvent
+		want   float64
+	}{
+		{
+			name: "anthropic_input_excludes_cache_tokens",
+			events: []RequestEvent{{
+				Kind: KindUpstream, BackendType: "a",
+				InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
+			}},
+			want: 1000.0 / 1250.0,
+		},
+		{
+			name: "chat_input_includes_cache_tokens",
+			events: []RequestEvent{{
+				Kind: KindUpstream, BackendType: "c",
+				InputTokens: 1000, CacheRead: 800,
+			}},
+			want: 800.0 / 1000.0,
+		},
+		{
+			name: "responses_input_includes_cache_tokens",
+			events: []RequestEvent{{
+				Kind: KindUpstream, BackendType: "r",
+				InputTokens: 1000, CacheRead: 800, CacheCreate: 200,
+			}},
+			want: 800.0 / 1000.0,
+		},
+		{
+			name: "mixed_backends_use_normalized_denominator",
+			events: []RequestEvent{
+				{
+					Kind: KindUpstream, BackendType: "a",
+					InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
+				},
+				{
+					Kind: KindUpstream, BackendType: "c",
+					InputTokens: 1000, CacheRead: 800,
+				},
+			},
+			want: 1800.0 / 2250.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New()
+			defer c.Stop()
+			for _, ev := range tt.events {
+				c.Record(ev)
+			}
+
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if c.Snapshot().TotalRequests == int64(len(tt.events)) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			got := c.Snapshot().CacheHitRate
+			if got == nil || absFloat(*got-tt.want) > 1e-9 {
+				t.Fatalf("CacheHitRate = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollectorNormalizesInputTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		backendType string
+		want        int64
+	}{
+		{name: "anthropic", backendType: "a", want: 1250},
+		{name: "chat", backendType: "c", want: 1000},
+		{name: "responses", backendType: "r", want: 1000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New()
+			defer c.Stop()
+			c.Record(RequestEvent{
+				Kind: KindUpstream, BackendType: tt.backendType,
+				SourceName: "source", Model: "model",
+				InputTokens: 1000, CacheRead: 200, CacheCreate: 50,
+			})
+
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if c.Snapshot().TotalRequests == 1 {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			s := c.Snapshot()
+			if s.TotalInput != tt.want {
+				t.Fatalf("TotalInput=%d want %d", s.TotalInput, tt.want)
+			}
+			if len(s.ByGroup) != 1 || s.ByGroup[0].InputTokens != tt.want {
+				t.Fatalf("ByGroup=%+v want input %d", s.ByGroup, tt.want)
+			}
+			if len(s.Recent) != 1 || s.Recent[0].InputTokens != int(tt.want) {
+				t.Fatalf("Recent=%+v want input %d", s.Recent, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollectorNormalizesClientHistoryInput(t *testing.T) {
+	c := New()
+	defer c.Stop()
+	c.Record(RequestEvent{
+		Kind: KindClient, BackendType: "a",
+		InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(c.Snapshot().Recent) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	s := c.Snapshot()
+	if s.TotalRequests != 0 || s.TotalInput != 0 {
+		t.Fatalf("client record entered upstream totals: %+v", s)
+	}
+	if len(s.Recent) != 1 || s.Recent[0].InputTokens != 1250 {
+		t.Fatalf("Recent=%+v want normalized input 1250", s.Recent)
+	}
+}
+
+func TestCollectorCacheHitRateIsNullWithoutInput(t *testing.T) {
+	c := New()
+	defer c.Stop()
+	data, err := json.Marshal(c.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"cache_hit_rate":null`) {
+		t.Fatalf("snapshot=%s want null cache_hit_rate", data)
 	}
 }
 
@@ -130,6 +282,19 @@ func TestRecordNonBlockingWhenFull(t *testing.T) {
 	// 灌满 channel 后再 Record 应立即返回，验证不阻塞即可
 	for i := 0; i < eventBufSize+50; i++ {
 		c.Record(RequestEvent{SourceName: "x"})
+	}
+}
+
+func TestRecordCountsDroppedEvents(t *testing.T) {
+	c := &Collector{
+		events: make(chan RequestEvent, 1),
+		groups: map[groupKey]*groupAgg{},
+	}
+	c.Record(RequestEvent{})
+	c.Record(RequestEvent{})
+
+	if got := c.Snapshot().DroppedEvents; got != 1 {
+		t.Fatalf("DroppedEvents=%d want 1", got)
 	}
 }
 

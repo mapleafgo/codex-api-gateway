@@ -58,12 +58,13 @@ type RequestEvent struct {
 
 // Snapshot 是管理端读取的聚合快照。
 type Snapshot struct {
-	TotalRequests    int64   `json:"total_requests"`
-	TotalInput       int64   `json:"total_input"`
-	TotalOutput      int64   `json:"total_output"`
-	TotalCacheCreate int64   `json:"total_cache_create"`
-	TotalCacheRead   int64   `json:"total_cache_read"`
-	CacheHitRate     float64 `json:"cache_hit_rate"`
+	TotalRequests    int64    `json:"total_requests"`
+	TotalInput       int64    `json:"total_input"`
+	TotalOutput      int64    `json:"total_output"`
+	TotalCacheCreate int64    `json:"total_cache_create"`
+	TotalCacheRead   int64    `json:"total_cache_read"`
+	CacheHitRate     *float64 `json:"cache_hit_rate"`
+	DroppedEvents    uint64   `json:"dropped_events"`
 
 	ByGroup []GroupStat     `json:"by_group"`
 	Recent  []RequestRecord `json:"recent"`
@@ -132,7 +133,8 @@ type Collector struct {
 	histIdx int
 	histLen int
 
-	closed atomic.Bool
+	closed        atomic.Bool
+	droppedEvents atomic.Uint64
 }
 
 type groupKey struct {
@@ -171,6 +173,7 @@ func (c *Collector) Record(ev RequestEvent) {
 	select {
 	case c.events <- ev:
 	default:
+		c.droppedEvents.Add(1)
 	}
 }
 
@@ -196,11 +199,17 @@ func (c *Collector) apply(ev RequestEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	backendType := ev.BackendType
+	if backendType == "" {
+		backendType = "a" // 历史兼容：缺省视为 Anthropic
+	}
+	inputTokens := normalizedInputTokens(ev, backendType)
+
 	// 总量与 by_group 聚合只统计上游尝试：一次客户端请求可能触发多次上游
 	// 调用（主备切换、重试），按上游粒度统计才能反映真实流量与失败率。
 	if ev.Kind == KindUpstream {
 		c.total.requests++
-		c.total.input += int64(ev.InputTokens)
+		c.total.input += int64(inputTokens)
 		c.total.output += int64(ev.OutputTokens)
 		c.total.cacheRead += int64(ev.CacheRead)
 		c.total.cacheCreate += int64(ev.CacheCreate)
@@ -224,7 +233,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		case "failed":
 			g.failed++
 		}
-		g.input += int64(ev.InputTokens)
+		g.input += int64(inputTokens)
 		g.output += int64(ev.OutputTokens)
 		g.cacheRead += int64(ev.CacheRead)
 		g.cacheCreate += int64(ev.CacheCreate)
@@ -239,10 +248,6 @@ func (c *Collector) apply(ev RequestEvent) {
 	if ev.Kind == KindUpstream {
 		kindStr = "upstream"
 	}
-	bt := ev.BackendType
-	if bt == "" {
-		bt = "a" // 历史兼容：缺省视为 Anthropic
-	}
 	rec := RequestRecord{
 		Time:          ev.StartedAt.UTC().Format(time.RFC3339),
 		TimeUnix:      ev.StartedAt.Unix(),
@@ -252,7 +257,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		ResolvedModel: ev.ResolvedModel,
 		Source:        ev.SourceName,
 		Code:          ev.Code,
-		InputTokens:   ev.InputTokens,
+		InputTokens:   inputTokens,
 		OutputTokens:  ev.OutputTokens,
 		CacheRead:     ev.CacheRead,
 		CacheCreate:   ev.CacheCreate,
@@ -260,13 +265,24 @@ func (c *Collector) apply(ev RequestEvent) {
 		TTFBMs:        ev.TTFB.Milliseconds(),
 		Status:        ev.Status,
 		Error:         ev.Error,
-		BackendType:   bt,
+		BackendType:   backendType,
 	}
 	c.history[c.histIdx] = rec
 	c.histIdx = (c.histIdx + 1) % HistorySize
 	if c.histLen < HistorySize {
 		c.histLen++
 	}
+}
+
+// normalizedInputTokens 将不同上游协议的输入 usage 统一为完整输入 Token。
+// Anthropic 将未缓存、缓存读取和缓存写入拆成三个互斥字段；
+// Chat/Responses 的 input_tokens 已包含缓存 Token。
+func normalizedInputTokens(ev RequestEvent, backendType string) int {
+	input := ev.InputTokens
+	if backendType == "a" {
+		input += ev.CacheRead + ev.CacheCreate
+	}
+	return input
 }
 
 // Snapshot 返回当前聚合快照。
@@ -280,15 +296,13 @@ func (c *Collector) Snapshot() Snapshot {
 		TotalOutput:      c.total.output,
 		TotalCacheCreate: c.total.cacheCreate,
 		TotalCacheRead:   c.total.cacheRead,
+		DroppedEvents:    c.droppedEvents.Load(),
 	}
-	// 缓存命中率：所有输入 token 中从缓存读取的比例。
-	// 旧公式 cacheRead/(cacheRead+cacheCreate) 在很多 Anthropic 兼容后端
-	// （它们只填 cache_read、从不填 cache_creation）上恒为 100%，无参考价值。
-	// 改为 token 维度：cacheRead / (inputTokens + cacheRead + cacheCreate)，
-	// 含义是"输入侧有多少比例命中了 prompt 缓存"。
-	denom := s.TotalInput + s.TotalCacheRead + s.TotalCacheCreate
+	// TotalInput 已在采集边界归一化，可直接作为缓存 Token 命中率分母。
+	denom := c.total.input
 	if denom > 0 {
-		s.CacheHitRate = float64(s.TotalCacheRead) / float64(denom)
+		rate := float64(s.TotalCacheRead) / float64(denom)
+		s.CacheHitRate = &rate
 	}
 
 	keys := make([]groupKey, 0, len(c.groups))

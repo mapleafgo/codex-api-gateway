@@ -97,6 +97,29 @@ func TestMetricsEndpoint(t *testing.T) {
 	if snap.TotalRequests != 1 {
 		t.Errorf("TotalRequests = %d", snap.TotalRequests)
 	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if !strings.Contains(string(data), `"dropped_events":0`) {
+		t.Fatalf("snapshot missing dropped_events: %s", data)
+	}
+}
+
+func TestMetricsDashboardLabelsAndDroppedCard(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"cardReq: '上游调用量'",
+		"cardReq: 'Upstream calls'",
+		"cardDrop: '指标丢弃量'",
+		"cardDrop: 'Dropped metrics'",
+		"key:'drop'",
+		"s.dropped_events",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
 }
 
 func TestConfigRoundTrip(t *testing.T) {

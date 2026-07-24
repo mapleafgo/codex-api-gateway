@@ -146,9 +146,13 @@ type chatChunk struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		// DeepSeek 等 OpenAI-compatible 上游使用顶层 cache hit/miss 字段。
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 		// 官方 stream usage 可带 details；映射到 Responses usage 的 cache/reasoning 字段。
 		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
 		} `json:"prompt_tokens_details"`
 		CompletionTokensDetails *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
@@ -287,10 +291,21 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 			OutputTokens: chunk.Usage.CompletionTokens,
 			TotalTokens:  chunk.Usage.TotalTokens,
 		}
-		// Chat usage details → 官方 Responses details + a 路径 cache_read 兼容字段。
-		if d := chunk.Usage.PromptTokensDetails; d != nil && d.CachedTokens > 0 {
-			u.CacheReadInputTokens = d.CachedTokens
-			u.InputTokensDetails = &model.ResponseUsageInputDetails{CachedTokens: d.CachedTokens}
+		cacheRead := chunk.Usage.PromptCacheHitTokens
+		cacheCreate := 0
+		if d := chunk.Usage.PromptTokensDetails; d != nil {
+			if d.CachedTokens > 0 {
+				cacheRead = d.CachedTokens
+			}
+			cacheCreate = d.CacheWriteTokens
+		}
+		if cacheRead > 0 || cacheCreate > 0 {
+			u.CacheReadInputTokens = cacheRead
+			u.CacheCreationInputTokens = cacheCreate
+			u.InputTokensDetails = &model.ResponseUsageInputDetails{
+				CachedTokens:     cacheRead,
+				CacheWriteTokens: cacheCreate,
+			}
 		}
 		if d := chunk.Usage.CompletionTokensDetails; d != nil && d.ReasoningTokens > 0 {
 			u.OutputTokensDetails = &model.ResponseUsageOutputDetails{ReasoningTokens: d.ReasoningTokens}

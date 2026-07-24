@@ -55,6 +55,17 @@ func TestRewriteClientModel_T2(t *testing.T) {
 	}
 }
 
+func TestParseUsageFromEvent_CacheWriteTokens(t *testing.T) {
+	data := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":30}}}}`)
+	inTok, outTok, cacheRead, cacheCreate, ok := parseUsageFromEvent("response.completed", data)
+	if !ok {
+		t.Fatal("usage not parsed")
+	}
+	if inTok != 100 || outTok != 10 || cacheRead != 60 || cacheCreate != 30 {
+		t.Fatalf("usage=%d/%d/%d/%d want 100/10/60/30", inTok, outTok, cacheRead, cacheCreate)
+	}
+}
+
 func TestResponsesBackend_EmptyStreamNoSynthetic(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

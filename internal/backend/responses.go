@@ -107,7 +107,8 @@ func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRea
 				InputTokens        int `json:"input_tokens"`
 				OutputTokens       int `json:"output_tokens"`
 				InputTokensDetails *struct {
-					CachedTokens int `json:"cached_tokens"`
+					CachedTokens     int `json:"cached_tokens"`
+					CacheWriteTokens int `json:"cache_write_tokens"`
 				} `json:"input_tokens_details"`
 				// 兼容部分上游可能暴露的 cache 字段
 				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
@@ -122,11 +123,14 @@ func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRea
 	inTok, outTok = u.InputTokens, u.OutputTokens
 	if u.InputTokensDetails != nil {
 		cacheRead = u.InputTokensDetails.CachedTokens
+		cacheCreate = u.InputTokensDetails.CacheWriteTokens
 	}
 	if u.CacheReadInputTokens != 0 {
 		cacheRead = u.CacheReadInputTokens
 	}
-	cacheCreate = u.CacheCreationInputTokens
+	if u.CacheCreationInputTokens != 0 {
+		cacheCreate = u.CacheCreationInputTokens
+	}
 	return inTok, outTok, cacheRead, cacheCreate, true
 }
 

@@ -601,6 +601,64 @@ func TestUsageCachedTokensMapped(t *testing.T) {
 	}
 }
 
+func TestUsageDeepSeekCacheTokensMapped(t *testing.T) {
+	c := New()
+	raw := `{"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	u := c.Usage()
+	if u == nil {
+		t.Fatal("nil usage")
+	}
+	if u.CacheReadInputTokens != 80 {
+		t.Fatalf("CacheReadInputTokens=%d want 80", u.CacheReadInputTokens)
+	}
+	if u.InputTokensDetails == nil || u.InputTokensDetails.CachedTokens != 80 {
+		t.Fatalf("InputTokensDetails=%+v", u.InputTokensDetails)
+	}
+}
+
+func TestUsageDeepSeekCacheHitSurvivesEmptyDetails(t *testing.T) {
+	c := New()
+	raw := `{"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_tokens_details":{}}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Usage().CacheReadInputTokens; got != 80 {
+		t.Fatalf("CacheReadInputTokens=%d want 80", got)
+	}
+}
+
+func TestUsageDetailsCachedTokensOverrideDeepSeekCacheHit(t *testing.T) {
+	c := New()
+	raw := `{"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_cache_hit_tokens":80,"prompt_tokens_details":{"cached_tokens":60}}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Usage().CacheReadInputTokens; got != 60 {
+		t.Fatalf("CacheReadInputTokens=%d want 60", got)
+	}
+}
+
+func TestUsageCacheWriteTokensMapped(t *testing.T) {
+	c := New()
+	raw := `{"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":10,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":60,"cache_write_tokens":30}}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	u := c.Usage()
+	if u == nil {
+		t.Fatal("nil usage")
+	}
+	if u.CacheCreationInputTokens != 30 {
+		t.Fatalf("CacheCreationInputTokens=%d want 30", u.CacheCreationInputTokens)
+	}
+	if u.InputTokensDetails == nil || u.InputTokensDetails.CacheWriteTokens != 30 {
+		t.Fatalf("InputTokensDetails=%+v", u.InputTokensDetails)
+	}
+}
+
 func TestLogprobsOnTextDelta(t *testing.T) {
 	c := New()
 	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","content":"Hi"},"logprobs":{"content":[{"token":"Hi","logprob":-0.1,"top_logprobs":[{"token":"Hi","logprob":-0.1},{"token":"Hello","logprob":-1.2}]}]}}]}`))

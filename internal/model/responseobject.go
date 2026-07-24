@@ -62,9 +62,10 @@ type ResponseUsage struct {
 	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"`
 }
 
-// ResponseUsageInputDetails 对齐官方 input_tokens_details（cached_tokens 等）。
+// ResponseUsageInputDetails 对齐官方 input_tokens_details 缓存明细。
 type ResponseUsageInputDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // ResponseUsageOutputDetails 对齐官方 output_tokens_details（reasoning_tokens 等）。
