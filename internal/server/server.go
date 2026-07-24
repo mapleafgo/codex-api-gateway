@@ -333,6 +333,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		"input_items", len(req.Input.OfInputItemList),
 		"input_string_len", len(req.Input.OfString.Value),
 		"instructions_len", len(req.Instructions.Value),
+		"max_output_tokens_set", req.MaxOutputTokens.Valid(),
+		"max_output_tokens", req.MaxOutputTokens.Value,
 		"reasoning_effort", string(req.Reasoning.Effort),
 		"reasoning_summary", string(req.Reasoning.Summary),
 		slog.Group("input_item_type_counts", inputItemTypeCountAttrs(req.Input.OfInputItemList)...),
@@ -667,7 +669,7 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 			"impact", "Anthropic 源不按 OpenAI options 调缓存；Chat 源由 chatconvert 写入 prompt_cache_options")
 	}
 	if req.PromptCacheRetention != "" {
-		// deprecated 字段且语义不等价；网关用 cache.ttl 配置，DEBUG 即可。
+		// deprecated 字段且语义不等价；网关用 anthropic.cache_ttl 配置，DEBUG 即可。
 		log.Debug("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同）",
 			"field", "prompt_cache_retention",
 			"value", string(req.PromptCacheRetention),

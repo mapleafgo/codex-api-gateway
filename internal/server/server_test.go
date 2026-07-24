@@ -1340,6 +1340,11 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 				tt.finalLog:     false,
 				"响应请求完成":        false,
 			}
+			if tt.backendType == config.BackendAnthropic {
+				wanted["发起上游流式请求"] = false
+				wanted["上游流式请求已建立"] = false
+				wanted["SSE 事件流读取结束"] = false
+			}
 			requestID := ""
 			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 				var record map[string]any
@@ -1366,6 +1371,14 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 					}
 					if record["source"] != tt.sourceName || record["backend_type"] != tt.backendType {
 						t.Fatalf("message %q missing source/backend: %s", message, line)
+					}
+				}
+				if tt.backendType == config.BackendAnthropic && message == tt.convertedLog {
+					if record["max_tokens"] != float64(config.DefaultAnthropicMaxTokens) {
+						t.Fatalf("converted max_tokens=%v want %d: %s", record["max_tokens"], config.DefaultAnthropicMaxTokens, line)
+					}
+					if record["max_tokens_source"] != "anthropic_default" {
+						t.Fatalf("converted max_tokens_source=%v want anthropic_default: %s", record["max_tokens_source"], line)
 					}
 				}
 			}

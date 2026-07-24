@@ -397,12 +397,12 @@ func (h *handler) handleModels(w http.ResponseWriter, r *http.Request) {
 // adminConfigView 是 GET /admin/api/config 返回的视图。
 // 仅暴露管理页需要编辑的字段，api_key 明文展示（按用户要求）。
 type adminConfigView struct {
-	Server  serverView      `json:"server"`
-	Logging loggingView     `json:"logging"`
-	Breaker breakerView     `json:"breaker"`
-	Cache   cacheView       `json:"cache"`
-	Sources []sourceView    `json:"sources"`
-	Models  []modelViewItem `json:"models"`
+	Server    serverView      `json:"server"`
+	Logging   loggingView     `json:"logging"`
+	Breaker   breakerView     `json:"breaker"`
+	Anthropic anthropicView   `json:"anthropic"`
+	Sources   []sourceView    `json:"sources"`
+	Models    []modelViewItem `json:"models"`
 }
 
 type serverView struct {
@@ -427,8 +427,10 @@ type breakerView struct {
 	MaxRetries       int    `json:"max_retries"`
 	Recovery         string `json:"recovery"`
 }
-type cacheView struct {
-	TTL string `json:"ttl"`
+type anthropicView struct {
+	DefaultMaxTokens int    `json:"default_max_tokens"`
+	CacheEnabled     bool   `json:"cache_enabled"`
+	CacheTTL         string `json:"cache_ttl"`
 }
 type sourceView struct {
 	Name         string            `json:"name"`
@@ -452,12 +454,12 @@ type modelViewItem struct {
 // adminConfigInput 是 POST /admin/api/config 接收的视图，与 adminConfigView 同构。
 // 全量覆盖式更新：前端必须把完整配置 POST 回来（简化语义，避免增量合并）。
 type adminConfigInput struct {
-	Server  serverView      `json:"server"`
-	Logging loggingView     `json:"logging"`
-	Breaker breakerView     `json:"breaker"`
-	Cache   cacheView       `json:"cache"`
-	Sources []sourceView    `json:"sources"`
-	Models  []modelViewItem `json:"models"`
+	Server    serverView      `json:"server"`
+	Logging   loggingView     `json:"logging"`
+	Breaker   breakerView     `json:"breaker"`
+	Anthropic anthropicView   `json:"anthropic"`
+	Sources   []sourceView    `json:"sources"`
+	Models    []modelViewItem `json:"models"`
 }
 
 func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +495,11 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			MaxRetries:       cfg.Breaker.MaxRetries,
 			Recovery:         cfg.Breaker.Recovery,
 		},
-		Cache:   cacheView{TTL: cfg.Cache.TTL},
+		Anthropic: anthropicView{
+			DefaultMaxTokens: cfg.Anthropic.DefaultMaxTokens,
+			CacheEnabled:     cfg.Anthropic.CacheEnabledValue(),
+			CacheTTL:         cfg.Anthropic.CacheTTL,
+		},
 		Sources: make([]sourceView, 0, len(cfg.Sources)),
 		Models:  make([]modelViewItem, 0, len(cfg.ModelOverrides)),
 	}

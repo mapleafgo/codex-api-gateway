@@ -18,9 +18,9 @@ import (
 func newTestDeps(t *testing.T) (*Deps, string) {
 	t.Helper()
 	cfg := &config.Config{
-		Server:  config.ServerCfg{Listen: ":0"},
-		Logging: config.LoggingCfg{Level: "info", Format: "text"},
-		Cache:   config.CacheCfg{TTL: "5m"},
+		Server:    config.ServerCfg{Listen: ":0"},
+		Logging:   config.LoggingCfg{Level: "info", Format: "text"},
+		Anthropic: config.AnthropicCfg{DefaultMaxTokens: 16384, CacheEnabled: ptrBool(true), CacheTTL: "5m"},
 		Sources: []config.Source{
 			{Name: "s1", BaseURL: "https://example.com", APIKey: "k1", DefaultModel: "m1"},
 		},
@@ -97,24 +97,13 @@ func TestMetricsEndpoint(t *testing.T) {
 	if snap.TotalRequests != 1 {
 		t.Errorf("TotalRequests = %d", snap.TotalRequests)
 	}
-	data, err := json.Marshal(snap)
-	if err != nil {
-		t.Fatalf("marshal snapshot: %v", err)
-	}
-	if !strings.Contains(string(data), `"dropped_events":0`) {
-		t.Fatalf("snapshot missing dropped_events: %s", data)
-	}
 }
 
-func TestMetricsDashboardLabelsAndDroppedCard(t *testing.T) {
+func TestMetricsDashboardLabels(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
 		"cardReq: '上游调用量'",
 		"cardReq: 'Upstream calls'",
-		"cardDrop: '指标丢弃量'",
-		"cardDrop: 'Dropped metrics'",
-		"key:'drop'",
-		"s.dropped_events",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
@@ -140,6 +129,14 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if len(view.Sources) != 1 || view.Sources[0].Name != "s1" {
 		t.Fatalf("sources = %+v", view.Sources)
+	}
+	if view.Anthropic.DefaultMaxTokens != 16384 || !view.Anthropic.CacheEnabled || view.Anthropic.CacheTTL != "5m" {
+		t.Fatalf("anthropic = %+v", view.Anthropic)
+	}
+	view.Anthropic = anthropicView{
+		DefaultMaxTokens: 32768,
+		CacheEnabled:     false,
+		CacheTTL:         "1h",
 	}
 
 	// POST：加一个 source
@@ -175,6 +172,10 @@ func TestConfigRoundTrip(t *testing.T) {
 	if len(cur.ModelOverrides) != 1 {
 		t.Errorf("models = %v", cur.ModelOverrides)
 	}
+	if cur.Anthropic.DefaultMaxTokens != 32768 || cur.Anthropic.CacheEnabled == nil ||
+		*cur.Anthropic.CacheEnabled || cur.Anthropic.CacheTTL != "1h" {
+		t.Errorf("anthropic config not preserved: %+v", cur.Anthropic)
+	}
 }
 
 func TestPanicRecovery(t *testing.T) {
@@ -198,10 +199,27 @@ func TestPanicRecovery(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+func ptrBool(v bool) *bool    { return &v }
+
+func TestAnthropicConfigCard(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		`t('anthropicParams')`,
+		`cfg.anthropic.default_max_tokens`,
+		`cfg.anthropic.cache_enabled`,
+		`cfg.anthropic.cache_ttl`,
+		`t('loggingParams')`,
+		`class="ui-grid-3"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("Anthropic config card missing %q", want)
+		}
+	}
+}
 
 // TestYamlMarshalOmitsEmpty 验证管理页保存时空值字段不写入 config.yaml。
-// 覆盖 logging.format/file、cache.ttl、breaker 各字段、source 的
-// api_key/default_model/model_map、顶层 breaker/cache/models 为空时整体省略。
+// 覆盖 logging.format/file、anthropic 各字段、breaker 各字段、source 的
+// api_key/default_model/model_map、顶层 breaker/anthropic/models 为空时整体省略。
 func TestYamlMarshalOmitsEmpty(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{
@@ -227,7 +245,7 @@ func TestYamlMarshalOmitsEmpty(t *testing.T) {
 	mustNotContain := []string{
 		"format:", "file:", "ttl:", "api_key:", "default_model:", "model_map:",
 		"first_byte_timeout:", "degrade_threshold:",
-		"breaker:", "cache:", "models:", "base_instructions_file:",
+		"breaker:", "anthropic:", "models:", "base_instructions_file:",
 	}
 	for _, unwanted := range mustNotContain {
 		if strings.Contains(s, unwanted) {

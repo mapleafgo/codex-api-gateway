@@ -10,7 +10,6 @@ package metrics
 import (
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -65,7 +64,6 @@ type Snapshot struct {
 	TotalCacheCreate int64    `json:"total_cache_create"`
 	TotalCacheRead   int64    `json:"total_cache_read"`
 	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	DroppedEvents    uint64   `json:"dropped_events"`
 
 	ByGroup []GroupStat     `json:"by_group"`
 	Recent  []RequestRecord `json:"recent"`
@@ -138,8 +136,6 @@ type Collector struct {
 	history [HistorySize]RequestRecord
 	histIdx int
 	histLen int
-
-	droppedEvents atomic.Uint64
 }
 
 type groupKey struct {
@@ -171,7 +167,7 @@ func New() *Collector {
 	return c
 }
 
-// Record 非阻塞投递一个请求事件。Stop 后直接返回；channel 满时丢弃并计数。
+// Record 非阻塞投递一个请求事件。Stop 后直接返回；channel 满时丢弃。
 func (c *Collector) Record(ev RequestEvent) {
 	c.acceptMu.RLock()
 	defer c.acceptMu.RUnlock()
@@ -181,7 +177,6 @@ func (c *Collector) Record(ev RequestEvent) {
 	select {
 	case c.events <- ev:
 	default:
-		c.droppedEvents.Add(1)
 	}
 }
 
@@ -324,7 +319,6 @@ func (c *Collector) Snapshot() Snapshot {
 		TotalOutput:      c.total.output,
 		TotalCacheCreate: c.total.cacheCreate,
 		TotalCacheRead:   c.total.cacheRead,
-		DroppedEvents:    c.droppedEvents.Load(),
 	}
 	// TotalInput 已在采集边界归一化，可直接作为缓存 Token 命中率分母。
 	denom := c.total.input

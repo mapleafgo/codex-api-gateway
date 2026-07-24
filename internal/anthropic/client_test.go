@@ -15,7 +15,7 @@ func TestScanEvents(t *testing.T) {
 	body := "event: content_block_delta\n" +
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n"
 	var got []anthropic.MessageStreamEventUnion
-	err := ScanEvents(strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
+	err := ScanEvents(context.Background(), strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
 		got = append(got, *ev)
 		return nil
 	})
@@ -30,7 +30,7 @@ func TestScanEvents(t *testing.T) {
 func TestScanEventsError(t *testing.T) {
 	body := `data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}` + "\n\n"
 	var got []anthropic.MessageStreamEventUnion
-	err := ScanEvents(strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
+	err := ScanEvents(context.Background(), strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
 		got = append(got, *ev)
 		return nil
 	})
@@ -44,7 +44,7 @@ func TestScanEventsError(t *testing.T) {
 
 func TestScanEventsRejectsMalformedJSON(t *testing.T) {
 	body := "data: {not-json}\n\n"
-	err := ScanEvents(strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
+	err := ScanEvents(context.Background(), strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
 		t.Fatalf("callback should not be called for malformed JSON: %+v", ev)
 		return nil
 	})
@@ -63,7 +63,7 @@ func TestScanEventsMCPEnvelope(t *testing.T) {
 		`data: {"type":"content_block_start","index":0,"content_block":{"type":"mcp_tool_use","id":"toolu_e","name":"get","server_name":"weather","input":{"q":"sf"}}}` + "\n\n" +
 		`data: {"type":"content_block_start","index":1,"content_block":{"type":"mcp_tool_result","tool_use_id":"toolu_e","is_error":true,"content":[{"type":"text","text":"boom"}]}}` + "\n\n"
 	var got []anthropic.MessageStreamEventUnion
-	err := ScanEvents(strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
+	err := ScanEvents(context.Background(), strings.NewReader(body), func(ev *anthropic.MessageStreamEventUnion) error {
 		got = append(got, *ev)
 		return nil
 	})

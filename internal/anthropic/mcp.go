@@ -103,15 +103,17 @@ func injectMCP(body []byte, mcp *MCPInjection) ([]byte, error) {
 	return json.Marshal(obj)
 }
 
-// relocateToolsCacheControl 在 MCP toolset 追加后，保证 tools 列表只有
-// 末项一个 cache_control 断点；TTL 继承顶层 cache_control，缺省 5m。
+// relocateToolsCacheControl 在 MCP toolset 追加后，把已有 tools 缓存断点移动到末项。
+// 请求未启用缓存时不创建新的断点。
 func relocateToolsCacheControl(obj map[string]any) {
 	tools, ok := obj["tools"].([]any)
 	if !ok || len(tools) == 0 {
 		return
 	}
 	ttl := "5m"
+	hasCacheControl := false
 	if top, ok := obj["cache_control"].(map[string]any); ok {
+		hasCacheControl = true
 		if t, ok := top["ttl"].(string); ok && t != "" {
 			ttl = t
 		}
@@ -121,7 +123,16 @@ func relocateToolsCacheControl(obj map[string]any) {
 		if !ok {
 			continue
 		}
+		if cacheControl, ok := m["cache_control"].(map[string]any); ok {
+			hasCacheControl = true
+			if t, ok := cacheControl["ttl"].(string); ok && t != "" {
+				ttl = t
+			}
+		}
 		delete(m, "cache_control")
+	}
+	if !hasCacheControl {
+		return
 	}
 	last, ok := tools[len(tools)-1].(map[string]any)
 	if !ok {

@@ -318,6 +318,9 @@ html[data-theme="dark"] .ui-ac-list {
   outline: none; border-color: var(--focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
 }
+.ui-sel-btn:disabled {
+  cursor: not-allowed; opacity: .55; border-color: var(--line); box-shadow: none;
+}
 .ui-sel-list {
   position: absolute; left: 0; right: 0; top: 100%;
   margin-top: 2px; z-index: 50;
@@ -385,8 +388,12 @@ html[data-theme="dark"] .ui-sel-list {
 .ui-grid-2 {
   display: grid; grid-template-columns: 1fr; gap: 14px;
 }
+.ui-grid-3 {
+  display: grid; grid-template-columns: 1fr; gap: 14px;
+}
 @media (min-width: 768px) {
   .ui-grid-2 { grid-template-columns: 1fr 1fr; }
+  .ui-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .ui-span-2 { grid-column: span 2; }
 }
 
@@ -1098,19 +1105,10 @@ html[data-theme="dark"] .ui-select {
         <div class="ui-stack" style="gap:18px">
           <fieldset class="ui-fieldset">
             <legend x-text="t('globalParams')"></legend>
-            <div class="ui-grid-2">
+            <div class="ui-grid-3">
               <label class="ui-field">
                 <span class="ui-label" x-text="t('listen')"></span>
                 <input class="ui-input ui-input-sm mono" x-model="cfg.server.listen" autocomplete="off" spellcheck="false">
-              </label>
-              <label class="ui-field">
-                <span class="ui-label" x-text="t('cacheTtl')"></span>
-                <div class="ui-sel" x-data="uiSel()" data-field="cfg.cache.ttl" x-init="model=cfg.cache.ttl||'5m'" x-effect="const v=cfg.cache.ttl||'5m'; if(v!==model) model=v; opts=[{v:'5m',l:t('cacheTtl5m')},{v:'1h',l:t('cacheTtl1h')}]">
-                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)"><span x-text="label"></span></button>
-                  <div class="ui-sel-list" :class="open && 'is-open'">
-                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
-                  </div>
-                </div>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('maxBodyMb')"></span>
@@ -1122,6 +1120,11 @@ html[data-theme="dark"] .ui-select {
                 <input class="ui-input ui-input-sm mono" x-model="cfg.server.read_header_timeout" autocomplete="off" spellcheck="false" placeholder="10s">
                 <span class="ui-hint" x-text="t('readHeaderTimeoutHint')"></span>
               </label>
+            </div>
+          </fieldset>
+          <fieldset class="ui-fieldset">
+            <legend x-text="t('loggingParams')"></legend>
+            <div class="ui-grid-2">
               <label class="ui-field">
                 <span class="ui-label" x-text="t('logLevel')"></span>
                 <div class="ui-sel" x-data="uiSel()" data-field="cfg.logging.level" x-init="model=cfg.logging.level||'info'" x-effect="const v=cfg.logging.level||'info'; if(v!==model) model=v; opts=[{v:'debug',l:t('levelDebug')},{v:'info',l:t('levelInfo')},{v:'warn',l:t('levelWarn')},{v:'error',l:t('levelError')}]">
@@ -1154,6 +1157,29 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-label" x-text="t('logMaxBackups')"></span>
                 <input class="ui-input ui-input-sm mono" type="number" min="0" step="1" x-model.number="cfg.logging.max_backups" autocomplete="off" spellcheck="false">
                 <span class="ui-hint" x-text="t('logMaxBackupsHint')"></span>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="ui-fieldset">
+            <legend x-text="t('anthropicParams')"></legend>
+            <div class="ui-grid-3">
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('anthropicDefaultMaxTokens')"></span>
+                <input class="ui-input ui-input-sm mono" type="number" min="1" step="1" x-model.number="cfg.anthropic.default_max_tokens" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('anthropicDefaultMaxTokensHint')"></span>
+              </label>
+              <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
+                <input type="checkbox" x-model="cfg.anthropic.cache_enabled">
+                <span class="ui-label" style="margin:0" x-text="t('anthropicCacheEnabled')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('cacheTtl')"></span>
+                <div class="ui-sel" x-data="uiSel()" data-field="cfg.anthropic.cache_ttl" x-init="model=cfg.anthropic.cache_ttl||'5m'" x-effect="const v=cfg.anthropic.cache_ttl||'5m'; if(v!==model) model=v; opts=[{v:'5m',l:t('cacheTtl5m')},{v:'1h',l:t('cacheTtl1h')}]">
+                  <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)" :disabled="!cfg.anthropic.cache_enabled"><span x-text="label"></span></button>
+                  <div class="ui-sel-list" :class="open && 'is-open'">
+                    <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
+                  </div>
+                </div>
               </label>
             </div>
           </fieldset>
@@ -1366,7 +1392,9 @@ function app() {
       up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
       addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
-      globalParams: '全局参数', breaker: '断路器',
+      globalParams: '服务端参数', loggingParams: '日志参数', anthropicParams: 'Anthropic', breaker: '断路器',
+      anthropicDefaultMaxTokens: '默认输出额度', anthropicDefaultMaxTokensHint: '客户端未传 max_output_tokens 时写入上游 max_tokens',
+      anthropicCacheEnabled: '启用 Prompt Cache',
       listen: '监听地址', cacheTtl: '缓存时效', cacheTtl5m: '5 分钟（5m）', cacheTtl1h: '1 小时（1h）',
       maxBodyMb: '请求体上限（MiB）', maxBodyMbHint: '限制 /v1/responses 请求体，防止超大历史/图片撑爆内存',
       readHeaderTimeout: '读头超时', readHeaderTimeoutHint: '读完请求头的最长时间；不影响 SSE 长流',
@@ -1402,7 +1430,6 @@ function app() {
       cancel: '取消', confirm: '确认',
       cardReq: '上游调用量', cardIn: '总输入', cardOut: '总输出',
       cardCC: '缓存创建量', cardCR: '缓存命中量', cardHR: '缓存 Token 命中率',
-      cardDrop: '指标丢弃量',
       language: '语言', switchTheme: '切换主题', navPages: '页面切换',
       sseConnected: 'SSE 已连接', sseOffline: 'SSE 已断开',
       completed: '已完成', failed: '失败',
@@ -1427,7 +1454,9 @@ function app() {
       up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
       addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
-      globalParams: 'Global Parameters', breaker: 'Breaker',
+      globalParams: 'Server Parameters', loggingParams: 'Logging', anthropicParams: 'Anthropic', breaker: 'Breaker',
+      anthropicDefaultMaxTokens: 'Default output budget', anthropicDefaultMaxTokensHint: 'Used as upstream max_tokens when the client omits max_output_tokens',
+      anthropicCacheEnabled: 'Enable Prompt Cache',
       listen: 'Listen address', cacheTtl: 'Cache TTL', cacheTtl5m: '5 minutes (5m)', cacheTtl1h: '1 hour (1h)',
       maxBodyMb: 'Max body (MiB)', maxBodyMbHint: 'Cap /v1/responses body size to avoid huge history/images blowing memory',
       readHeaderTimeout: 'Read header timeout', readHeaderTimeoutHint: 'Max time to finish reading request headers; does not cut SSE streams',
@@ -1464,7 +1493,6 @@ function app() {
       cancel: 'Cancel', confirm: 'Confirm',
       cardReq: 'Upstream calls', cardIn: 'Total input', cardOut: 'Total output',
       cardCC: 'Cache create', cardCR: 'Cache hit', cardHR: 'Cache token hit rate',
-      cardDrop: 'Dropped metrics',
       language: 'Language', switchTheme: 'Switch theme', navPages: 'Page switch',
       sseConnected: 'SSE connected', sseOffline: 'SSE offline',
       completed: 'Completed', failed: 'Failed',
@@ -1498,7 +1526,7 @@ function app() {
     snap: { by_group: [], recent: [] },
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
-    cfg: { server:{}, logging:{}, breaker:{}, cache:{}, sources:[], models:[] },
+    cfg: { server:{}, logging:{}, breaker:{}, anthropic:{}, sources:[], models:[] },
     promoting: '',
     togglingDisabled: '',
     cfgSnapshot: '',
@@ -1587,7 +1615,6 @@ function app() {
         { key:'cc', label: this.t('cardCC'), display: this.fmtTokens(s.total_cache_create), raw: this.fmtRaw(s.total_cache_create), tone: 'tone-info', color: 'var(--info)' },
         { key:'cr', label: this.t('cardCR'), display: this.fmtTokens(s.total_cache_read), raw: this.fmtRaw(s.total_cache_read), tone: 'tone-good', color: 'var(--good)' },
         { key:'hr', label: this.t('cardHR'), display: (s.cache_hit_rate != null ? (s.cache_hit_rate * 100).toFixed(1) + '%' : '-'), raw: '', tone: 'tone-good', color: 'var(--signal)' },
-        { key:'drop', label: this.t('cardDrop'), display: this.fmtTokens(s.dropped_events || 0), raw: this.fmtRaw(s.dropped_events || 0), tone: '', color: 'var(--warn)' },
       ];
     },
 
@@ -1757,6 +1784,10 @@ function app() {
         data.logging = data.logging || {};
         if (data.logging.max_size_mb == null || data.logging.max_size_mb === 0) data.logging.max_size_mb = 50;
         if (data.logging.max_backups == null) data.logging.max_backups = 3;
+        data.anthropic = data.anthropic || {};
+        if (data.anthropic.default_max_tokens == null || data.anthropic.default_max_tokens === 0) data.anthropic.default_max_tokens = 16384;
+        if (data.anthropic.cache_enabled == null) data.anthropic.cache_enabled = true;
+        if (!data.anthropic.cache_ttl) data.anthropic.cache_ttl = '5m';
         this.cfg = data;
         this.cfgSnapshot = JSON.stringify(this.cfg);
       } catch (e) {
@@ -1783,6 +1814,10 @@ function app() {
         payload.logging = payload.logging || {};
         payload.logging.max_size_mb = Number(payload.logging.max_size_mb) || 50;
         payload.logging.max_backups = Math.max(0, Number(payload.logging.max_backups) || 0);
+        payload.anthropic = payload.anthropic || {};
+        payload.anthropic.default_max_tokens = Number(payload.anthropic.default_max_tokens) || 16384;
+        payload.anthropic.cache_enabled = payload.anthropic.cache_enabled !== false;
+        payload.anthropic.cache_ttl = payload.anthropic.cache_ttl || '5m';
         const r = await fetch('/admin/api/config', {
           method: 'POST', headers: {'content-type':'application/json'},
           body: JSON.stringify(payload),

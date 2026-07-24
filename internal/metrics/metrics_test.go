@@ -336,19 +336,6 @@ func TestRecordNonBlockingWhenFull(t *testing.T) {
 	}
 }
 
-func TestRecordCountsDroppedEvents(t *testing.T) {
-	c := &Collector{
-		events: make(chan RequestEvent, 1),
-		groups: map[groupKey]*groupAgg{},
-	}
-	c.Record(RequestEvent{})
-	c.Record(RequestEvent{})
-
-	if got := c.Snapshot().DroppedEvents; got != 1 {
-		t.Fatalf("DroppedEvents=%d want 1", got)
-	}
-}
-
 func absFloat(x float64) float64 {
 	if x < 0 {
 		return -x

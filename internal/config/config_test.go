@@ -119,12 +119,108 @@ sources:
 	if cfg.Logging.Format != "text" {
 		t.Fatalf("default logging.format: got %q, want text", cfg.Logging.Format)
 	}
-	if cfg.Cache.TTL != "5m" {
-		t.Fatalf("default cache.ttl: got %q, want 5m", cfg.Cache.TTL)
+	if cfg.Anthropic.DefaultMaxTokens != 16384 {
+		t.Fatalf("default anthropic.default_max_tokens: got %d, want 16384", cfg.Anthropic.DefaultMaxTokens)
+	}
+	if cfg.Anthropic.CacheEnabled == nil || !*cfg.Anthropic.CacheEnabled {
+		t.Fatalf("default anthropic.cache_enabled: got %v, want true", cfg.Anthropic.CacheEnabled)
+	}
+	if cfg.Anthropic.CacheTTL != "5m" {
+		t.Fatalf("default anthropic.cache_ttl: got %q, want 5m", cfg.Anthropic.CacheTTL)
 	}
 }
 
-func TestCacheTTLValidatesWhitelist(t *testing.T) {
+func TestAnthropicConfigLoadsExplicitValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+anthropic:
+  default_max_tokens: 32768
+  cache_enabled: false
+  cache_ttl: 1h
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Anthropic.DefaultMaxTokens != 32768 {
+		t.Fatalf("anthropic.default_max_tokens: got %d, want 32768", cfg.Anthropic.DefaultMaxTokens)
+	}
+	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
+		t.Fatalf("anthropic.cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
+	}
+	if cfg.Anthropic.CacheTTL != "1h" {
+		t.Fatalf("anthropic.cache_ttl: got %q, want 1h", cfg.Anthropic.CacheTTL)
+	}
+}
+
+func TestAnthropicConfigEnvironmentOverrides(t *testing.T) {
+	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__DEFAULT_MAX_TOKENS", "24576")
+	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__CACHE_ENABLED", "false")
+	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__CACHE_TTL", "1h")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Anthropic.DefaultMaxTokens != 24576 {
+		t.Fatalf("env default_max_tokens: got %d, want 24576", cfg.Anthropic.DefaultMaxTokens)
+	}
+	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
+		t.Fatalf("env cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
+	}
+	if cfg.Anthropic.CacheTTL != "1h" {
+		t.Fatalf("env cache_ttl: got %q, want 1h", cfg.Anthropic.CacheTTL)
+	}
+}
+
+func TestAnthropicConfigRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "negative default max tokens",
+			body: `
+anthropic:
+  default_max_tokens: -1
+`,
+		},
+		{
+			name: "unsupported cache ttl",
+			body: `
+anthropic:
+  cache_ttl: 30m
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			_ = os.WriteFile(path, []byte(tt.body+`
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected invalid Anthropic config to fail")
+			}
+		})
+	}
+}
+
+func TestLegacyCachePrefixIsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
@@ -132,11 +228,14 @@ sources:
   - name: s1
     base_url: http://upstream
 cache:
-  ttl: 30m
+  ttl: 1h
 `), 0644)
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected cache.ttl whitelist error for 30m, got nil")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Anthropic.CacheTTL != "5m" {
+		t.Fatalf("legacy cache.ttl must not override anthropic.cache_ttl: got %q", cfg.Anthropic.CacheTTL)
 	}
 }
 

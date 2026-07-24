@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
+	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 )
 
 var streamErrorType = string(aconstant.ValueOf[aconstant.Error]())
@@ -79,6 +79,7 @@ type ModelInfo struct {
 // 认证头与 Stream 一致（同时发 x-api-key 与 Authorization: Bearer，兼容各后端）。
 // 返回的模型按上游顺序透传，不做排序或去重。
 func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]ModelInfo, error) {
+	log := logging.FromContext(ctx)
 	url := modelsURL(endpoint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -95,7 +96,7 @@ func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]Mod
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		slog.Warn("上游拉取模型列表失败", "status", resp.StatusCode, "url", url)
+		log.Warn("上游拉取模型列表失败", "status", resp.StatusCode, "url", url)
 		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, truncForLog(b, 500))
 	}
 	var body struct {
@@ -104,7 +105,7 @@ func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]Mod
 	if err := json.Unmarshal(b, &body); err != nil {
 		return nil, fmt.Errorf("parse models response: %w: %s", err, truncForLog(b, 500))
 	}
-	slog.Info("拉取上游模型列表成功", "url", url, "count", len(body.Data))
+	log.Info("拉取上游模型列表成功", "url", url, "count", len(body.Data))
 	return body.Data, nil
 }
 
@@ -121,6 +122,7 @@ func truncForLog(b []byte, n int) string {
 // mcp 非 nil 时把 mcp_servers（顶层）+ mcp_toolset（tools[] 追加）注入请求体，
 // 并补上 beta header mcp-client-2025-11-20（与 thinking beta 共存）。
 func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection) (io.ReadCloser, error) {
+	log := logging.FromContext(ctx)
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -141,10 +143,10 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// https://api.anthropic.com、智谱 https://open.bigmodel.cn/api/anthropic），
 	// 但 Messages 路径同为 /v1/messages，故配置不写该后缀、由 messagesURL 补全。
 	url := messagesURL(endpoint)
-	slog.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req), "mcp", mcp != nil && mcp.NeedsBeta())
+	log.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req), "mcp", mcp != nil && mcp.NeedsBeta())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("构造流式请求失败", "url", url, "error", err)
+		log.Warn("构造流式请求失败", "url", url, "error", err)
 		return nil, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
@@ -177,10 +179,10 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		slog.Warn("上游流式请求失败",
+		log.Warn("上游流式请求失败",
 			"status", resp.StatusCode,
 			"url", url)
-		slog.Debug("上游流式请求失败详情",
+		log.Debug("上游流式请求失败详情",
 			"status", resp.StatusCode,
 			"url", url,
 			"request", truncForLog(body, 2000),
@@ -192,11 +194,11 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if ct := resp.Header.Get("content-type"); !strings.Contains(ct, "text/event-stream") {
 		b, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		slog.Warn("上游流式请求返回非 SSE 响应",
+		log.Warn("上游流式请求返回非 SSE 响应",
 			"status", resp.StatusCode,
 			"url", url,
 			"content_type", ct)
-		slog.Debug("上游非 SSE 响应详情",
+		log.Debug("上游非 SSE 响应详情",
 			"status", resp.StatusCode,
 			"url", url,
 			"content_type", ct,
@@ -207,16 +209,18 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 		}
 		return nil, fmt.Errorf("anthropic upstream %d: unexpected content-type %q: %s", resp.StatusCode, ct, string(b))
 	}
-	slog.Info("上游流式请求已建立", "status", resp.StatusCode, "url", url)
+	log.Info("上游流式请求已建立", "status", resp.StatusCode, "url", url)
 	return resp.Body, nil
 }
 
 // ScanEvents parses an SSE body and calls fn for each data event.
+// ctx 用于关联底层解析日志；请求取消通过上游 response body 的读取错误返回。
 // Error events (type=error) are detected and their message is injected
 // into a synthetic MessageStreamEventUnion with Type="error" and the
 // error message in Delta.Text, so the converter can surface them as
 // response.failed.
-func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) error {
+func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) error {
+	log := logging.FromContext(ctx)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var count int
@@ -243,7 +247,7 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 				} `json:"error"`
 			}
 			_ = json.Unmarshal([]byte(payload), &errInfo)
-			slog.Warn("收到上游 error 事件", "error_type", errInfo.Error.Type, "message", errInfo.Error.Message)
+			log.Warn("收到上游 error 事件", "error_type", errInfo.Error.Type, "message", errInfo.Error.Message)
 			ev := &anthropic.MessageStreamEventUnion{
 				Type: streamErrorType,
 			}
@@ -266,10 +270,10 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 		}
 		if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Type == "content_block_start" &&
 			(envelope.ContentBlock.Type == "mcp_tool_use" || envelope.ContentBlock.Type == "mcp_tool_result") {
-			slog.Debug("合成 beta MCP content_block_start 事件", "block_type", envelope.ContentBlock.Type)
+			log.Debug("合成 beta MCP content_block_start 事件", "block_type", envelope.ContentBlock.Type)
 			synthetic, err := synthesizeMCPEvent([]byte(payload))
 			if err != nil {
-				slog.Warn("解析 beta MCP content_block 失败", "block_type", envelope.ContentBlock.Type, "error", err)
+				log.Warn("解析 beta MCP content_block 失败", "block_type", envelope.ContentBlock.Type, "error", err)
 				return fmt.Errorf("parse mcp block: %w: %s", err, truncForLog([]byte(payload), 500))
 			}
 			if err := fn(synthetic); err != nil {
@@ -280,7 +284,7 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 
 		var ev anthropic.MessageStreamEventUnion
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
-			slog.Warn("解析 SSE data 失败", "error", err, "payload", truncForLog([]byte(payload), 500))
+			log.Warn("解析 SSE data 失败", "error", err, "payload", truncForLog([]byte(payload), 500))
 			return fmt.Errorf("parse SSE data: %w: %s", err, truncForLog([]byte(payload), 500))
 		}
 		count++
@@ -288,6 +292,6 @@ func ScanEvents(r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) 
 			return err
 		}
 	}
-	slog.Info("SSE 事件流读取结束", "events", count)
+	log.Info("SSE 事件流读取结束", "events", count)
 	return sc.Err()
 }

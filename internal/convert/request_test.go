@@ -39,11 +39,33 @@ func TestTextRequestConverts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.MaxTokens == 0 {
-		t.Fatal("max_tokens default not set")
+	if out.MaxTokens != 16384 {
+		t.Fatalf("max_tokens default = %d, want 16384", out.MaxTokens)
 	}
 	if len(out.Messages) != 1 || out.Messages[0].Role != anthropic.MessageParamRoleUser {
 		t.Fatalf("user message not converted: %+v", out.Messages)
+	}
+}
+
+func TestMaxTokensUsesAnthropicConfigAndClientOverride(t *testing.T) {
+	cfg := &config.Config{Anthropic: config.AnthropicCfg{DefaultMaxTokens: 32768}}
+
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+	out, _, err := ToAnthropic(req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.MaxTokens != 32768 {
+		t.Fatalf("configured max_tokens = %d, want 32768", out.MaxTokens)
+	}
+
+	req = mustReq(t, `{"model":"gpt-5","input":"hi","max_output_tokens":2048,"stream":true}`)
+	out, _, err = ToAnthropic(req, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.MaxTokens != 2048 {
+		t.Fatalf("client max_output_tokens must win: got %d, want 2048", out.MaxTokens)
 	}
 }
 
@@ -1240,8 +1262,8 @@ func TestDefaultMaxTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.MaxTokens != 4096 {
-		t.Fatalf("expected default 4096, got %d", out.MaxTokens)
+	if out.MaxTokens != config.DefaultAnthropicMaxTokens {
+		t.Fatalf("expected default %d, got %d", config.DefaultAnthropicMaxTokens, out.MaxTokens)
 	}
 }
 
@@ -2082,7 +2104,7 @@ func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 	}
 }
 
-// TestCacheControlTTLFromConfig 复现 gap④:TTL 必须从 config.Cache.TTL 读,
+// TestCacheControlTTLFromConfig 复现 gap④:TTL 必须从 config.Anthropic.CacheTTL 读,
 // "1h" 时顶层 cache_control 用 1h,默认 5m。
 func TestCacheControlTTLFromConfig(t *testing.T) {
 	t.Run("default 5m", func(t *testing.T) {
@@ -2097,12 +2119,28 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 	})
 	t.Run("1h from config", func(t *testing.T) {
 		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-		out, _, err := ToAnthropic(req, &config.Config{Cache: config.CacheCfg{TTL: "1h"}})
+		out, _, err := ToAnthropic(req, &config.Config{Anthropic: config.AnthropicCfg{CacheTTL: "1h"}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL1h {
 			t.Fatalf("configured TTL want 1h, got %v", out.CacheControl.TTL)
+		}
+	})
+	t.Run("disabled", func(t *testing.T) {
+		disabled := false
+		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
+		out, _, err := ToAnthropic(req, &config.Config{
+			Anthropic: config.AnthropicCfg{CacheEnabled: &disabled},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.CacheControl.Type != "" {
+			t.Fatalf("disabled cache must omit top-level cache_control: %+v", out.CacheControl)
+		}
+		if len(out.System) > 0 && out.System[len(out.System)-1].CacheControl.Type != "" {
+			t.Fatalf("disabled cache must omit system cache_control: %+v", out.System)
 		}
 	})
 }

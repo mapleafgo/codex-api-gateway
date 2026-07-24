@@ -20,6 +20,8 @@ import (
 
 const (
 	envPrefix = "CODEX_API_GATEWAY_"
+	// DefaultAnthropicMaxTokens 是客户端未指定输出额度时的内置 Anthropic 上限。
+	DefaultAnthropicMaxTokens = 16384
 
 	// BaseInstructionsFileName 是与 config.yaml 同级的基线指令文件名。
 	// 不走配置项；管理页与 Load 均固定读写此文件。
@@ -30,11 +32,11 @@ var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // Config is the top-level YAML configuration.
 type Config struct {
-	Server  ServerCfg  `koanf:"server" yaml:"server"`
-	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
-	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker,omitempty"`
-	Cache   CacheCfg   `koanf:"cache" yaml:"cache,omitempty"`
-	Sources []Source   `koanf:"sources" yaml:"sources,omitempty"`
+	Server    ServerCfg    `koanf:"server" yaml:"server"`
+	Logging   LoggingCfg   `koanf:"logging" yaml:"logging"`
+	Breaker   BreakerCfg   `koanf:"breaker" yaml:"breaker,omitempty"`
+	Anthropic AnthropicCfg `koanf:"anthropic" yaml:"anthropic,omitempty"`
+	Sources   []Source     `koanf:"sources" yaml:"sources,omitempty"`
 
 	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
 	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
@@ -86,9 +88,21 @@ func (s ServerCfg) MaxBodyBytes() int64 {
 	return int64(s.MaxBodyMB) << 20
 }
 
-// CacheCfg 配置 Anthropic prompt cache 的 TTL。
-type CacheCfg struct {
-	TTL string `koanf:"ttl" yaml:"ttl,omitempty"` // "5m"(默认)或 "1h"
+// AnthropicCfg 配置 backend_type=a 的 Anthropic Messages 转换行为。
+type AnthropicCfg struct {
+	// DefaultMaxTokens 是客户端未传 max_output_tokens 时写入上游的 max_tokens。
+	// 0 表示使用内置默认值 16384。
+	DefaultMaxTokens int `koanf:"default_max_tokens" yaml:"default_max_tokens,omitempty"`
+	// CacheEnabled 控制是否自动注入 Anthropic prompt cache 断点。
+	// nil 表示使用默认值 true；指针用于区分缺省与显式 false。
+	CacheEnabled *bool `koanf:"cache_enabled" yaml:"cache_enabled,omitempty"`
+	// CacheTTL 是 prompt cache 时效，仅允许 5m 或 1h；空值默认 5m。
+	CacheTTL string `koanf:"cache_ttl" yaml:"cache_ttl,omitempty"`
+}
+
+// CacheEnabledValue 返回 prompt cache 的有效开关；缺省时保持历史行为并返回 true。
+func (a AnthropicCfg) CacheEnabledValue() bool {
+	return a.CacheEnabled == nil || *a.CacheEnabled
 }
 
 // BreakerCfg configures upstream failover and circuit breaking.
@@ -166,19 +180,19 @@ type ModelOverride struct {
 // 不参与序列化；models 按 ModelSlugOrder（或 ConfiguredModelSlugs）有序输出。
 func (c Config) MarshalYAML() (any, error) {
 	type out struct {
-		Server  ServerCfg    `yaml:"server"`
-		Logging LoggingCfg   `yaml:"logging,omitempty"`
-		Breaker BreakerCfg   `yaml:"breaker,omitempty"`
-		Cache   CacheCfg     `yaml:"cache,omitempty"`
-		Sources []Source     `yaml:"sources,omitempty"`
-		Models  *yamlv3.Node `yaml:"models,omitempty"`
+		Server    ServerCfg    `yaml:"server"`
+		Logging   LoggingCfg   `yaml:"logging,omitempty"`
+		Breaker   BreakerCfg   `yaml:"breaker,omitempty"`
+		Anthropic AnthropicCfg `yaml:"anthropic,omitempty"`
+		Sources   []Source     `yaml:"sources,omitempty"`
+		Models    *yamlv3.Node `yaml:"models,omitempty"`
 	}
 	o := out{
-		Server:  c.Server,
-		Logging: c.Logging,
-		Breaker: c.Breaker,
-		Cache:   c.Cache,
-		Sources: c.Sources,
+		Server:    c.Server,
+		Logging:   c.Logging,
+		Breaker:   c.Breaker,
+		Anthropic: c.Anthropic,
+		Sources:   c.Sources,
 	}
 	if n := orderedModelsYAMLNode(c); n != nil {
 		o.Models = n
@@ -292,7 +306,9 @@ func Load(path string) (*Config, error) {
 	}
 	slog.Info("配置加载完成",
 		"breaker_max_retries", cfg.Breaker.MaxRetries,
-		"cache_ttl", cfg.Cache.TTL)
+		"anthropic_default_max_tokens", cfg.Anthropic.DefaultMaxTokens,
+		"anthropic_cache_enabled", cfg.Anthropic.CacheEnabledValue(),
+		"anthropic_cache_ttl", cfg.Anthropic.CacheTTL)
 	return &cfg, nil
 }
 
@@ -377,6 +393,8 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.file", &cfg.Logging.File},
 		{"logging.max_size_mb", &cfg.Logging.MaxSizeMB},
 		{"logging.max_backups", &cfg.Logging.MaxBackups},
+		{"anthropic.default_max_tokens", &cfg.Anthropic.DefaultMaxTokens},
+		{"anthropic.cache_ttl", &cfg.Anthropic.CacheTTL},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
 		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
@@ -390,6 +408,13 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
 			return err
 		}
+	}
+	if k.Exists("anthropic.cache_enabled") {
+		var enabled bool
+		if err := unmarshalEnvPath(k, "anthropic.cache_enabled", &enabled); err != nil {
+			return err
+		}
+		cfg.Anthropic.CacheEnabled = &enabled
 	}
 	for i := range cfg.Sources {
 		if err := applySourceEnvOverrides(&cfg.Sources[i], k, fmt.Sprintf("sources.%d", i)); err != nil {
@@ -496,11 +521,21 @@ func (c *Config) validate() error {
 	if c.Server.ReadHeaderTimeout < 0 {
 		return fmt.Errorf("config: server.read_header_timeout must be >= 0")
 	}
-	if c.Cache.TTL == "" {
-		c.Cache.TTL = "5m"
+	if c.Anthropic.DefaultMaxTokens == 0 {
+		c.Anthropic.DefaultMaxTokens = DefaultAnthropicMaxTokens
 	}
-	if c.Cache.TTL != "5m" && c.Cache.TTL != "1h" {
-		return fmt.Errorf("config: cache.ttl must be \"5m\" or \"1h\", got %q", c.Cache.TTL)
+	if c.Anthropic.DefaultMaxTokens < 0 {
+		return fmt.Errorf("config: anthropic.default_max_tokens must be >= 0, got %d", c.Anthropic.DefaultMaxTokens)
+	}
+	if c.Anthropic.CacheEnabled == nil {
+		enabled := true
+		c.Anthropic.CacheEnabled = &enabled
+	}
+	if c.Anthropic.CacheTTL == "" {
+		c.Anthropic.CacheTTL = "5m"
+	}
+	if c.Anthropic.CacheTTL != "5m" && c.Anthropic.CacheTTL != "1h" {
+		return fmt.Errorf("config: anthropic.cache_ttl must be \"5m\" or \"1h\", got %q", c.Anthropic.CacheTTL)
 	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
@@ -626,6 +661,9 @@ func warnDeprecatedFields(data []byte) {
 	if err := yamlv3.Unmarshal(data, &raw); err != nil {
 		return // real parse will report the error
 	}
+	if _, ok := raw["cache"]; ok {
+		slog.Warn("忽略已废弃配置字段", "field", "cache", "replacement", "anthropic.cache_enabled / anthropic.cache_ttl")
+	}
 	scanDeprecated(raw)
 }
 
@@ -730,6 +768,11 @@ logging:
   # file: gateway.log
   # max_size_mb: 50              # 单日志文件滚动阈值（MiB，仅 file 模式）
   # max_backups: 3               # 保留历史日志个数
+
+anthropic:
+  default_max_tokens: 16384      # 客户端未传 max_output_tokens 时使用
+  cache_enabled: true            # 自动注入 Anthropic prompt cache 断点
+  cache_ttl: 5m                  # 5m | 1h
 `
 
 // WriteDefault 写入最小默认配置到 path。目录不存在时创建。

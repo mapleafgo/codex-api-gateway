@@ -151,6 +151,25 @@ func TestInjectMCPOnlyToolsetGetsCacheControl(t *testing.T) {
 	}
 }
 
+func TestInjectMCPDoesNotCreateCacheControlWhenDisabled(t *testing.T) {
+	body := []byte(`{"model":"x","tools":[]}`)
+	out, err := injectMCP(body, &MCPInjection{
+		Servers:  []MCPServer{{URL: "https://s.example", Name: "weather"}},
+		Toolsets: []MCPToolset{{MCPServerName: "weather"}},
+	})
+	if err != nil {
+		t.Fatalf("injectMCP: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := obj["tools"].([]any)
+	if _, ok := tools[0].(map[string]any)["cache_control"]; ok {
+		t.Fatalf("cache disabled request must not gain cache_control: %v", tools[0])
+	}
+}
+
 func TestMergeBetaHeader(t *testing.T) {
 	if got := mergeBetaHeader(""); got != MCPBetaHeader {
 		t.Fatalf("empty base: %q", got)

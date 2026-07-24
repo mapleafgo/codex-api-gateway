@@ -291,9 +291,13 @@ func validateNamespaceToolChildren(data []byte) error {
 // 第二个返回值是 MCP beta 注入定义（mcp_servers + mcp_toolset），由 collectMCP 产出；
 // 非 nil 时由 client 层注入到 marshal 后的请求体（SDK 不支持这组字段）。
 func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+	defaultMaxTokens := int64(config.DefaultAnthropicMaxTokens)
+	if cfg != nil && cfg.Anthropic.DefaultMaxTokens > 0 {
+		defaultMaxTokens = int64(cfg.Anthropic.DefaultMaxTokens)
+	}
 	out := &anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
-		MaxTokens: 4096,
+		MaxTokens: defaultMaxTokens,
 	}
 	if req.MaxOutputTokens.Valid() && req.MaxOutputTokens.Value > 0 {
 		out.MaxTokens = req.MaxOutputTokens.Value
@@ -1936,8 +1940,11 @@ func setDocumentTitle(block *anthropic.DocumentBlockParam, file *oairesponses.Re
 }
 
 func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Config) {
+	if cfg != nil && !cfg.Anthropic.CacheEnabledValue() {
+		return
+	}
 	ttl := anthropic.CacheControlEphemeralTTLTTL5m
-	if cfg != nil && cfg.Cache.TTL == "1h" {
+	if cfg != nil && cfg.Anthropic.CacheTTL == "1h" {
 		ttl = anthropic.CacheControlEphemeralTTLTTL1h
 	}
 	cacheControl := anthropic.NewCacheControlEphemeralParam()

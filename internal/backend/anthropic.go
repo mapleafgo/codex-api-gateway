@@ -62,7 +62,11 @@ func (b *AnthropicBackend) Execute(
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
 
-	logAnthropicConverted(log, anthReq)
+	maxTokensSource := "anthropic_default"
+	if req.MaxOutputTokens.Valid() && req.MaxOutputTokens.Value > 0 {
+		maxTokensSource = "client"
+	}
+	logAnthropicConverted(log, anthReq, maxTokensSource)
 
 	conv := streamconv.New()
 	conv.SetEcho(convert.EchoFromRequest(req))
@@ -99,7 +103,7 @@ func (b *AnthropicBackend) Execute(
 	var usage anthropic.MessageDeltaUsage
 	sawStop := false
 
-	scanErr := anthropicclient.ScanEvents(body, func(ev *anthropic.MessageStreamEventUnion) error {
+	scanErr := anthropicclient.ScanEvents(ctx, body, func(ev *anthropic.MessageStreamEventUnion) error {
 		if !locked {
 			locked = true
 			ttfb = time.Since(start)
@@ -230,7 +234,7 @@ func (b *AnthropicBackend) Execute(
 	return scanErr
 }
 
-func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams) {
+func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams, maxTokensSource string) {
 	sysLen := 0
 	for _, b := range anthReq.System {
 		sysLen += len(b.Text)
@@ -240,6 +244,9 @@ func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams
 	log.Info("请求转换完成",
 		"model", string(anthReq.Model),
 		"max_tokens", anthReq.MaxTokens,
+		"max_tokens_source", maxTokensSource,
+		"cache_enabled", anthReq.CacheControl.Type != "",
+		"cache_ttl", string(anthReq.CacheControl.TTL),
 		"messages", len(anthReq.Messages),
 		"assistant_messages", assistantMsgs,
 		"user_messages", userMsgs,
