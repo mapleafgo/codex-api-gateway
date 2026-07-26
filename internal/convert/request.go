@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -376,12 +377,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	// ensureToolUsePaired 补占位时可能在 tail 追加一条新的 user 消息，
 	// 若原本末尾就是 user，会再次产生连续 user。再合并一次保证最终交替。
 	coalesceSameRoleMessages(out)
-	// 经过上述合并后，messages 严格 user/assistant 交替，tool_use/tool_result 总数对等。
-	// 但 Grok 等兼容后端会逐条校验：assistant(tool_use) 之后紧接的 user message 必须含
-	// 所有 tool_use ID 的 tool_result。若某条 user message 只覆盖了部分 tool_use ID
-	//（其余出现在更后的 user 中），Grok 仍会返回 400，官方 Anthropic 后端则宽容接受。
-	// 这是兼容端严格性差异，非通用协议 BUG，当前不额外修复 —— scheduler 已对 4xx
-	// 作不降级、不重试处理，下次请求仍可正常使用该源。
+	// Grok 等兼容后端严格校验 assistant(tool_use) 之后紧接的 user message
+	// 必须含所有 tool_use ID 的 tool_result。若某个 tool_result 出现在更远的
+	// user 中（例如 tool_search_output 在 function_call_output 之前插入，
+	// 拆散了 tool_use→tool_result 的配对），将无紧邻结果的 tool_use 移到
+	// 其对应 tool_result 所在 user 之前的 assistant 消息中。
+	ensureToolResultProximity(out)
+	coalesceSameRoleMessages(out)
 	applyAnthropicCacheControl(out, cfg)
 
 	mcp, err := collectMCP(req)
@@ -1581,6 +1583,121 @@ func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 	if flushed > 0 {
 		slog.Warn("补占位 tool_result：input 历史存在未配对的 tool call（缺少对应 output），已降级为 is_error 占位 result 以避免上游 400",
 			"placeholder_count", flushed)
+	}
+}
+
+// ensureToolResultProximity 保证每条 assistant message 的 tool_use 结果都在
+// 紧接的下一条 user message 中。若部分 tool_result 出现在更远的 user 中，
+// 将这些 tool_use 移到紧邻其对应 result 的 assistant message 里。
+func ensureToolResultProximity(out *anthropic.MessageNewParams) {
+	// 第一遍：收集每个 tool_result 所在的 user message index
+	resultPos := map[string]int{}
+	for i := range out.Messages {
+		m := out.Messages[i]
+		if m.Role != anthropic.MessageParamRoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.OfToolResult != nil {
+				resultPos[b.OfToolResult.ToolUseID] = i
+			}
+		}
+	}
+
+	i := 0
+	for i < len(out.Messages) {
+		m := out.Messages[i]
+		if m.Role != anthropic.MessageParamRoleAssistant {
+			i++
+			continue
+		}
+		if i+1 >= len(out.Messages) || out.Messages[i+1].Role != anthropic.MessageParamRoleUser {
+			i++
+			continue
+		}
+
+		// 收集当前 assistant 的 tool_use ID
+		var toolUseIDs []string
+		toolUseMap := map[string]anthropic.ContentBlockParamUnion{}
+		for _, b := range m.Content {
+			if b.OfToolUse != nil {
+				id := b.OfToolUse.ID
+				toolUseIDs = append(toolUseIDs, id)
+				toolUseMap[id] = b
+			}
+		}
+		if len(toolUseIDs) == 0 {
+			i++
+			continue
+		}
+
+		// 收集紧接 user 的 tool_result ID
+		nextResultIDs := map[string]bool{}
+		for _, b := range out.Messages[i+1].Content {
+			if b.OfToolResult != nil {
+				nextResultIDs[b.OfToolResult.ToolUseID] = true
+			}
+		}
+
+		// 找出缺少紧邻结果的 tool_use
+		var missingIDs []string
+		for _, id := range toolUseIDs {
+			if !nextResultIDs[id] {
+				missingIDs = append(missingIDs, id)
+			}
+		}
+		if len(missingIDs) == 0 {
+			i++
+			continue
+		}
+
+		// 从当前 assistant 移除缺失的 tool_use
+		var newContent []anthropic.ContentBlockParamUnion
+		for _, b := range m.Content {
+			if b.OfToolUse != nil {
+				skip := false
+				for _, mid := range missingIDs {
+					if b.OfToolUse.ID == mid {
+						skip = true
+						break
+					}
+				}
+				if skip {
+					continue
+				}
+			}
+			newContent = append(newContent, b)
+		}
+		out.Messages[i].Content = newContent
+
+		// 按 result 位置分组
+		byTarget := map[int][]anthropic.ContentBlockParamUnion{}
+		for _, id := range missingIDs {
+			if pos, ok := resultPos[id]; ok {
+				byTarget[pos] = append(byTarget[pos], toolUseMap[id])
+			}
+		}
+
+		var targets []int
+		for t := range byTarget {
+			targets = append(targets, t)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(targets)))
+
+		for _, pos := range targets {
+			newMsg := anthropic.MessageParam{
+				Role:    anthropic.MessageParamRoleAssistant,
+				Content: byTarget[pos],
+			}
+			out.Messages = append(out.Messages[:pos], append([]anthropic.MessageParam{newMsg}, out.Messages[pos:]...)...)
+		}
+
+		// 空 assistant 移除
+		if len(out.Messages[i].Content) == 0 {
+			out.Messages = append(out.Messages[:i], out.Messages[i+1:]...)
+		} else {
+			i++
+		}
 	}
 }
 
