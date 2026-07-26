@@ -376,6 +376,12 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	// ensureToolUsePaired 补占位时可能在 tail 追加一条新的 user 消息，
 	// 若原本末尾就是 user，会再次产生连续 user。再合并一次保证最终交替。
 	coalesceSameRoleMessages(out)
+	// 经过上述合并后，messages 严格 user/assistant 交替，tool_use/tool_result 总数对等。
+	// 但 Grok 等兼容后端会逐条校验：assistant(tool_use) 之后紧接的 user message 必须含
+	// 所有 tool_use ID 的 tool_result。若某条 user message 只覆盖了部分 tool_use ID
+	//（其余出现在更后的 user 中），Grok 仍会返回 400，官方 Anthropic 后端则宽容接受。
+	// 这是兼容端严格性差异，非通用协议 BUG，当前不额外修复 —— scheduler 已对 4xx
+	// 作不降级、不重试处理，下次请求仍可正常使用该源。
 	applyAnthropicCacheControl(out, cfg)
 
 	mcp, err := collectMCP(req)

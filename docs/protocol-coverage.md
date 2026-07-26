@@ -413,7 +413,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `input` string | user text message | `supported` | 转为单条 user text block |
 | `input` item list | `messages` / `system` / tool blocks | `lossy_supported` | 仅部分 item 语义支持，详见 Input Item Union |
 | `instructions` | top-level `system` | `supported` | 作为 developer 指令段折入 system text |
-| `max_output_tokens` | `max_tokens` | `supported` | 客户端值优先；未设置时使用 `anthropic.default_max_tokens`，默认 16384 |
+| `max_output_tokens` | `max_tokens` | `lossy_supported` | 客户端值优先；未设置时使用 `anthropic.default_max_tokens`，默认 16384。**注意**：OpenAI `max_output_tokens` 预算含 reasoning token，Anthropic `max_tokens` 仅限制可见输出（thinking 由 `budget_tokens` 独立控制），两者计数口径不一致 |
 | `temperature` | `temperature` | `supported` | 直接映射 |
 | `top_p` | `top_p` | `supported` | 直接映射 |
 | `parallel_tool_calls` | `disable_parallel_tool_use` 反向映射 | `supported` | `false` 时禁用 Anthropic 并行 tool use |

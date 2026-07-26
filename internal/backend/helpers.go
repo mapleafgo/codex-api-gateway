@@ -51,3 +51,9 @@ func StatusCodeFromErr(err error) int {
 	}
 	return 0
 }
+
+// IsClientError reports whether err represents an HTTP 4xx client error.
+func IsClientError(err error) bool {
+	code := StatusCodeFromErr(err)
+	return code >= 400 && code < 500
+}

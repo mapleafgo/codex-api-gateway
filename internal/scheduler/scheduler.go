@@ -319,7 +319,8 @@ func (s *Scheduler) ExecuteGeneric(
 	var lastErr error
 	var lastSource string
 	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
-		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo)
+		var clientErrSeen bool
+		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo, &clientErrSeen)
 		if sourceName != "" {
 			lastSource = sourceName
 		}
@@ -329,6 +330,10 @@ func (s *Scheduler) ExecuteGeneric(
 		}
 		if err != nil {
 			lastErr = err
+		}
+		if clientErrSeen {
+			log.Warn("上游源返回 4xx 客户端错误，不重试", "last_error", lastErr)
+			return lastSource, lastErr
 		}
 		if mr == 0 {
 			break
@@ -356,10 +361,14 @@ func (s *Scheduler) tryRoundGeneric(
 	onEvent func(model.SSEEvent) error,
 	onUpstream OnUpstream,
 	attemptNo *int,
+	clientErrSeen *bool,
 ) (string, bool, error) {
 	log := logging.FromContext(ctx)
 	var lastErr error
 	var lastSource string
+	if clientErrSeen != nil {
+		*clientErrSeen = false
+	}
 
 	for _, src := range s.runtimeSeq() {
 		if src.Disabled {
@@ -381,6 +390,9 @@ func (s *Scheduler) tryRoundGeneric(
 		}
 		if err != nil {
 			bt, _ := config.NormalizeBackendType(src.BackendType)
+			if backend.IsClientError(err) && clientErrSeen != nil {
+				*clientErrSeen = true
+			}
 			lastErr = err
 			lastSource = src.Name
 			log.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "attempt", *attemptNo, "error", err)
@@ -464,10 +476,14 @@ func (s *Scheduler) trySourceGeneric(
 	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, wrapUpstream, attemptNo)
 	if !locked {
 		if ctx.Err() == nil {
-			oldState := bk.State()
-			newState := bk.RecordFailure()
-			s.adjustOrder(src.Name, oldState, newState)
-			log.Warn("上游源失败（未锁定）", "old_state", oldState, "new_state", newState, "error", err)
+			if backend.IsClientError(err) {
+				log.Warn("上游源拒绝请求 (4xx)，不降级", "error", err)
+			} else {
+				oldState := bk.State()
+				newState := bk.RecordFailure()
+				s.adjustOrder(src.Name, oldState, newState)
+				log.Warn("上游源失败（未锁定）", "old_state", oldState, "new_state", newState, "error", err)
+			}
 		}
 		return false, err
 	}
