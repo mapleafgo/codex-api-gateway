@@ -5,8 +5,12 @@
 #       a = Anthropic Messages（默认）、c = OpenAI Chat Completions（仅流式）、
 #       r = OpenAI Responses 透传（仅流式）；多源主备故障转移 + 断路器。
 # 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
-# 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖配置，层级分隔符用双下划线。
+# 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖部分配置，层级分隔符用双下划线。
 # 例如：CODEX_API_GATEWAY_SOURCES__0__API_KEY=sk-ant-...
+# 支持覆盖的字段是白名单制（见 internal/config applyEnvOverrides）：
+# logging.*、server.*、breaker.*（除 per-source max_retries）、anthropic.*、
+# sources.N 的 name/base_url/api_key/default_model；backend_type/disabled/
+# model_map 与 models.* 不支持环境变量覆盖。
 # =============================================================================
 
 # HTTP 服务
@@ -62,13 +66,14 @@ anthropic:
 # per-slug 能力覆盖；只返回在此显式列出的模型，不合并上游 /v1/models 列表，
 # 也不暴露 sources.model_map 的别名。
 # 网关不向上游拉取模型列表，context_window 等能力字段必须在此显式补充。
-# 仅 context_window / supports_image 可 per-slug 覆盖；其余能力
-# （search_tool / parallel_tool_calls / reasoning_summaries / web_search_tool_type /
+# 仅 context_window / supports_image / supports_search 可 per-slug 覆盖；其余能力
+# （parallel_tool_calls / reasoning_summaries / web_search_tool_type /
 # input_modalities / use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
 # models:
 #   gpt-5.5:                        # slug，客户端请求时使用的模型名
 #     context_window: 200000        # 最大上下文 token 数（同步到 max_context_window）
 #     # supports_image: false       # 是否支持图片识别（原尺寸 detail，默认 false）
+#     # supports_search: false      # 显式 false 时关闭 tool_search 搜索能力（默认 true）
 #   glm-5.2:
 #     context_window: 131072
 

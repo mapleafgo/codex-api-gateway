@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,8 +25,8 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/tray"
 )
 
-// version 由 CI 通过 -ldflags "-X ...cmd/server.version=<tag>" 注入；
-// 本地构建或未注入时为空串（startup 日志中展示）。
+// version 由构建注入：-ldflags "-X main.version=<tag>"（见 Taskfile LDFLAGS）；
+// 未注入时为空串（startup 日志与管理页均不展示）。
 var version string
 
 // pidFilePath 默认 gateway.pid（工作目录），可用 GATEWAY_PID_FILE 覆盖。
@@ -78,7 +80,7 @@ func main() {
 	// 读写。
 	//
 	// 关闭逻辑（shutdownHandler）不放 tray.OnQuit 回调里：它含 HTTP Shutdown
-	// （最长 10 秒），在 systray 事件循环线程同步执行会阻塞菜单响应，表现为
+	// （最长等满 Shutdown 超时），在 systray 事件循环线程同步执行会阻塞菜单响应，表现为
 	// "点退出无响应、需多次点击才退出"。改为 main 在 <-t.Done() 后执行。
 	//
 	// headless 环境（无 D-Bus / DISPLAY）systray 初始化失败时，tray 包内部
@@ -105,8 +107,10 @@ func main() {
 
 	t := tray.New(tray.Config{
 		Tooltip: "codex-api-gateway",
-		// -d 子进程无交互会话：systray 可能秒退，导致 main 立刻退出、pid 文件被 defer 删掉。
-		ForceSignal: os.Getenv("GATEWAY_DAEMON") == "1",
+		// -d 后台模式同样启用托盘：systray 异常或提前返回时 tray 包内部
+		// 降级为信号模式继续运行，不会带退守护进程。
+		// GATEWAY_NO_TRAY=1 可显式禁用托盘（纯服务器部署跳过图形初始化）。
+		ForceSignal: os.Getenv("GATEWAY_NO_TRAY") == "1",
 		OpenURLFunc: func() string {
 			urlMu.RLock()
 			defer urlMu.RUnlock()
@@ -120,15 +124,18 @@ func main() {
 	// 不会留下后台运行的残留进程。
 	cfg, err := config.Load(absConfigPath)
 	if err != nil {
-		slog.Warn("加载配置失败，尝试生成默认配置", "config_path", absConfigPath, "error", err)
-		// 打包为单文件后，首次运行可能没有 config.yaml。缺失或解析失败时
-		// 自动生成最小默认配置并重试一次，保证进程可启动（管理页可用，
-		// 转发请求在用户添加 source 前返回 503）。
+		// 仅文件缺失时生成默认配置（打包为单文件后首次运行的场景）。
+		// 解析/校验失败必须保留原文件退出：坏文件里仍是用户的全部
+		// sources 配置，覆盖等于毁档；这与热重载"Load 失败保留旧配置"一致。
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Error("加载配置失败，保留原文件退出（修复 config.yaml 后重启）", "config_path", absConfigPath, "error", err)
+			os.Exit(1)
+		}
+		slog.Warn("config.yaml 不存在，生成默认配置", "config_path", absConfigPath)
 		if werr := config.WriteDefault(absConfigPath); werr != nil {
 			slog.Error("生成默认配置失败", "config_path", absConfigPath, "error", werr)
 			os.Exit(1)
 		}
-		slog.Info("已生成默认配置", "config_path", absConfigPath)
 		cfg, err = config.Load(absConfigPath)
 		if err != nil {
 			slog.Error("默认配置加载仍失败", "config_path", absConfigPath, "error", err)
@@ -157,7 +164,7 @@ func main() {
 
 	// HTTP server 用 *http.Server 以支持 Shutdown；由 tray/shutdown 协调关闭。
 	// appCtx 在退出时 cancel，通过 BaseContext 注入每个请求：管理页 SSE、
-	// /v1/responses 长流都能在 Shutdown 前收到取消，避免等满 10s 超时。
+	// /v1/responses 长流都能在 Shutdown 前收到取消，避免等满 Shutdown 超时。
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 	httpSrv := &http.Server{
@@ -203,14 +210,25 @@ func main() {
 	// 初始化完成：写入 adminURL，"打开"菜单此后指向管理页。
 	// 关闭逻辑由 <-t.Done() 后的兜底 select 执行，不在 tray 回调里做。
 	urlMu.Lock()
-	adminURL = "http://localhost" + cfg.Server.Listen + "/"
+	adminURL = adminURLFromListen(cfg.Server.Listen)
 	urlMu.Unlock()
 
-	// 阻塞直到托盘退出（tray.Quit / 信号 / tray 内部降级退出）。
-	<-t.Done()
-	slog.Debug("退出流程：托盘已 Done")
+	// 阻塞直到托盘退出（tray.Quit / 信号 / tray 内部降级退出），
+	// 或 HTTP server 运行期自行退出（listener 被外部关闭等）——后者若只等
+	// 托盘，进程会带着死掉的 HTTP server 静默挂着，错误也无人上报。
+	var serveErr error
+	serveErrReceived := false
+	select {
+	case <-t.Done():
+		slog.Debug("退出流程：托盘已 Done")
+	case serveErr = <-serverErrCh:
+		serveErrReceived = true
+		slog.Warn("HTTP 服务先于托盘退出，触发关闭流程", "error", serveErr)
+		t.Quit()
+		<-t.Done()
+	}
 
-	// 兜底：若 HTTP server 因自身原因先退出（如端口冲突），也走一遍关闭流程。
+	// 走一遍统一关闭流程（幂等）。
 	select {
 	case <-shutdownCh:
 		slog.Debug("退出流程：shutdownCh 已关闭，跳过 shutdownHandler")
@@ -220,12 +238,30 @@ func main() {
 
 	// 检查 HTTP server 是否以非预期原因退出。
 	t4 := time.Now()
-	if err := <-serverErrCh; err != nil && err != http.ErrServerClosed {
-		slog.Error("HTTP 服务异常退出", "listen", cfg.Server.Listen, "error", err)
+	if !serveErrReceived {
+		serveErr = <-serverErrCh
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		slog.Error("HTTP 服务异常退出", "listen", cfg.Server.Listen, "error", serveErr)
 		os.Exit(1)
 	}
 	slog.Debug("退出流程：serverErrCh 接收完成", "elapsed", time.Since(t4).String())
 	slog.Info("codex-api-gateway 已退出")
+}
+
+// adminURLFromListen 把 server.listen 转成浏览器可打开的管理页 URL。
+// listen 可以是 ":8383" 也可以带 host（"127.0.0.1:8383"）；直接字符串拼接
+// 只对无 host 形态成立。host 为空或通配地址时用 localhost。
+func adminURLFromListen(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://localhost" + listen + "/"
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
 }
 
 // shutdownHandler 统一执行优雅关闭：
@@ -239,7 +275,7 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 	slog.Debug("退出流程：shutdownHandler 开始")
 	t0 := time.Now()
 	// 先 cancel 再 Shutdown：让 r.Context() 立刻 Done，SSE/流式 handler 退出，
-	// 避免 Shutdown 干等 10s 超时。
+	// 避免 Shutdown 干等超时。
 	if appCancel != nil {
 		appCancel()
 	}
@@ -272,7 +308,13 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 			w.Reload()
 			return
 		}
-		defer func() { _ = recover() }()
+		defer func() {
+			if rec := recover(); rec != nil {
+				// 降级 reload 的 panic 不能静默吞：管理页保存看似成功
+				// 实际未生效，必须留下可观测痕迹。
+				slog.Error("管理页保存后重载 panic", "recover", rec)
+			}
+		}()
 		if newCfg, err := config.Load(cfgPath); err == nil {
 			srv.Holder().Replace(newCfg)
 			if err := srv.ReloadScheduler(); err != nil {

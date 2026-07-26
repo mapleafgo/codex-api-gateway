@@ -28,21 +28,25 @@ func Configure(cfg config.LoggingCfg) error {
 		if err != nil {
 			return err
 		}
-		// 先关闭旧 writer，再切换，避免 fd 泄漏。
-		closeCurrentLogWriter(rf)
 		out = rf
+	}
+	// 先安装新 handler 再关旧句柄：反过来会留下一个窗口，其它 goroutine
+	// 经旧 default logger 写入已关闭的文件，write error 被 slog 吞掉，
+	// 日志静默丢失。
+	handler := NewHandler(out, cfg)
+	slog.SetDefault(slog.New(handler))
+	log.SetOutput(io.Discard)
+	if cfg.File != "" {
+		closeCurrentLogWriter(out.(io.Closer))
 	} else {
 		// 退回 stderr：关闭已打开的日志文件。
 		closeCurrentLogWriter(nil)
 	}
-	handler := NewHandler(out, cfg)
-	slog.SetDefault(slog.New(handler))
-	log.SetOutput(io.Discard)
 	return nil
 }
 
 // currentLogWriter 保存当前文件日志 writer（可能是 *rotatingFile），供热重载关闭旧句柄。
-// 仅由 Configure 在持有锁时读写。
+// 仅经 closeCurrentLogWriter 在 currentLogWriterMu 保护下读写。
 var (
 	currentLogWriterMu sync.Mutex
 	currentLogWriter   io.Closer

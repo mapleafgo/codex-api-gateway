@@ -196,7 +196,7 @@ func (w *Watcher) LastLoadErr() error {
 	if p == nil || *p == "" {
 		return nil
 	}
-	return &errStr{*p}
+	return errors.New(*p)
 }
 
 // Reload 手动触发一次重载（admin 写回后调用）。
@@ -221,7 +221,3 @@ func (w *Watcher) Close() error {
 	})
 	return err
 }
-
-type errStr struct{ s string }
-
-func (e *errStr) Error() string { return e.s }

@@ -27,10 +27,11 @@ func maybeDaemonize(enabled bool) {
 	}
 	exe, _ = filepath.EvalSymlinks(exe)
 
-	// go run 运行时，exe 是 /tmp/go-build*/... 临时文件，父进程退出后会被删除
-	// 这种情况下跳过 daemonize，直接前台运行，留给调用者处理后台
+	// go run 运行时，exe 是临时目录下的 go-build*/... 文件，父进程退出后会被
+	// 删除，这种情况下跳过 daemonize，直接前台运行，留给调用者处理后台。
+	// 不用 "/go-build" 硬编码正斜杠：Windows 路径是反斜杠，永远不命中。
 	exePath := filepath.Dir(exe)
-	if strings.Contains(exePath, "/go-build") || strings.Contains(exePath, "/tmp/go") {
+	if strings.Contains(exePath, "go-build") || strings.HasPrefix(exePath, os.TempDir()) {
 		slog.Warn("go run 环境不支持 daemon，降级为前台运行",
 			"executable", exe,
 			"hint", "daemon 模式仅支持预构建二进制")
@@ -42,6 +43,8 @@ func maybeDaemonize(enabled bool) {
 	if wd, err := os.Getwd(); err == nil {
 		cmd.Dir = wd
 	}
+	// GATEWAY_DAEMON 无代码消费，仅作排障标记：ps eww / /proc/<pid>/environ
+	// 可据此辨识进程是 -d 拉起的后台子进程。
 	cmd.Env = append(os.Environ(), "GATEWAY_DAEMON=1")
 	cmd.Stdin = nil
 

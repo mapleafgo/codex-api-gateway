@@ -794,3 +794,36 @@ sources:
 		t.Fatalf("logging roll = %d/%d, want 1/2", cfg.Logging.MaxSizeMB, cfg.Logging.MaxBackups)
 	}
 }
+
+// TestWriteDefaultDoesNotOverwrite 已存在的 config.yaml 绝不能被覆盖：
+// 现有文件可能只是暂时解析失败，覆盖等于丢失用户全部 sources。
+func TestWriteDefaultDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	const original = "sources: [broken yaml"
+	if err := os.WriteFile(p, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteDefault(p); err == nil {
+		t.Fatal("WriteDefault 对已存在文件应返回错误")
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != original {
+		t.Fatalf("原文件被改写: %q", string(b))
+	}
+}
+
+// TestWriteDefaultCreatesWhenMissing 文件缺失时正常生成且可被 Load 接受。
+func TestWriteDefaultCreatesWhenMissing(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := WriteDefault(p); err != nil {
+		t.Fatalf("WriteDefault: %v", err)
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatalf("默认配置应能通过 Load: %v", err)
+	}
+}

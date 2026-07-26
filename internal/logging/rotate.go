@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/config"
 )
 
 // rotatingFile 是按大小滚动的日志文件写入器。
@@ -20,7 +22,7 @@ type rotatingFile struct {
 
 func openRotatingFile(path string, maxSizeMB, maxBackups int) (*rotatingFile, error) {
 	if maxSizeMB <= 0 {
-		maxSizeMB = 50
+		maxSizeMB = config.DefaultLogMaxSizeMB
 	}
 	if maxBackups < 0 {
 		maxBackups = 0

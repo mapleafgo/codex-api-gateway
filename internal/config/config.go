@@ -117,14 +117,24 @@ type BreakerCfg struct {
 	Recovery         string   `koanf:"recovery" yaml:"recovery,omitempty"`
 }
 
-// Source configures one upstream.
-// backend_type: 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming),
-// 'r' = OpenAI Responses (passthrough, only streaming)
+// Backend* 是 Source.BackendType 的合法取值：
+// 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming),
+// 'r' = OpenAI Responses (passthrough, only streaming)。
 const (
 	BackendAnthropic       = "a"
 	BackendOpenAIChat      = "c"
 	BackendOpenAIResponses = "r"
 )
+
+// Recovery* 是 BreakerCfg.Recovery 的合法取值（半开探测成功后的恢复目标）。
+const (
+	RecoveryNormal   = "normal"
+	RecoveryDegraded = "degraded"
+)
+
+// DefaultLogMaxSizeMB 是日志文件滚动阈值默认值（MiB）。
+// config 校验与 logging/rotate 的兜底共用，避免默认值双份分叉。
+const DefaultLogMaxSizeMB = 50
 
 // Source configures one upstream (backend_type a | c | r).
 type Source struct {
@@ -296,8 +306,10 @@ func Load(path string) (*Config, error) {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			if !os.IsNotExist(err) {
-				slog.Info("base_instructions.md 读取失败，降级为空串（沿用 Codex 内置指令）",
-					"path", p, "error", err)
+				// 非 NotExist 的真实 I/O 错误（权限等）：用户显式配置的基线
+				// 指令被整体丢弃、模型行为静默变化，属重要数据丢失，必须 WARN。
+				slog.Warn("base_instructions.md 读取失败，降级为空串（沿用 Codex 内置指令）",
+					"path", p, "error", err, "impact", "基线指令不会注入模型")
 			}
 		} else {
 			cfg.BaseInstructions = string(b)
@@ -346,9 +358,11 @@ func defaultLoggingCfg() LoggingCfg {
 	return cfg
 }
 
-// applyLoggingDefaults 补齐 logging 段的默认值（与 validate 共用，避免分叉）。
 // applyServerDefaults 补齐 server 段防误伤默认值（本机场景）。
 func applyServerDefaults(s *ServerCfg) {
+	if s.Listen == "" {
+		s.Listen = ":8383"
+	}
 	if s.MaxBodyMB == 0 {
 		s.MaxBodyMB = 32 // 32 MiB：覆盖长历史 + 少量图片；仍能挡住误传巨型 body
 	}
@@ -357,6 +371,7 @@ func applyServerDefaults(s *ServerCfg) {
 	}
 }
 
+// applyLoggingDefaults 补齐 logging 段的默认值（与 validate 共用，避免分叉）。
 func applyLoggingDefaults(l *LoggingCfg) {
 	if l.Level == "" {
 		l.Level = "info"
@@ -366,14 +381,14 @@ func applyLoggingDefaults(l *LoggingCfg) {
 	}
 	// 仅文件日志需要滚动参数；stderr 模式忽略。
 	if l.MaxSizeMB == 0 {
-		l.MaxSizeMB = 50
+		l.MaxSizeMB = DefaultLogMaxSizeMB
 	}
 	if l.MaxBackups == 0 {
 		l.MaxBackups = 3
 	}
 }
 
-func transformEnv(key, value string) (string, interface{}) {
+func transformEnv(key, value string) (string, any) {
 	key = strings.TrimPrefix(key, envPrefix)
 	key = strings.ToLower(key)
 	key = strings.ReplaceAll(key, "__", ".")
@@ -545,11 +560,14 @@ func (c *Config) validate() error {
 		RecoverThreshold: 1,
 		HalfOpenProbes:   1,
 		MaxRetries:       0,
-		Recovery:         "normal",
+		Recovery:         RecoveryNormal,
 	}
 	c.Breaker = applyDefaults(c.Breaker, def)
-	if c.Breaker.Recovery != "normal" && c.Breaker.Recovery != "degraded" {
+	if c.Breaker.Recovery != RecoveryNormal && c.Breaker.Recovery != RecoveryDegraded {
 		return fmt.Errorf("config: breaker.recovery must be \"normal\" or \"degraded\", got %q", c.Breaker.Recovery)
+	}
+	if err := validateBreakerNonNegative("breaker", &c.Breaker); err != nil {
+		return err
 	}
 	for i := range c.Sources {
 		s := &c.Sources[i]
@@ -561,10 +579,38 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: source %d: %w", i, err)
 		}
 		s.BackendType = norm
-		if s.Breaker != nil && s.Breaker.Recovery != "" &&
-			s.Breaker.Recovery != "normal" && s.Breaker.Recovery != "degraded" {
-			return fmt.Errorf("config: source %d breaker.recovery must be \"normal\" or \"degraded\", got %q",
-				i, s.Breaker.Recovery)
+		if s.Breaker != nil {
+			if s.Breaker.Recovery != "" &&
+				s.Breaker.Recovery != RecoveryNormal && s.Breaker.Recovery != RecoveryDegraded {
+				return fmt.Errorf("config: source %d breaker.recovery must be \"normal\" or \"degraded\", got %q",
+					i, s.Breaker.Recovery)
+			}
+			if err := validateBreakerNonNegative(fmt.Sprintf("source %d breaker", i), s.Breaker); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateBreakerNonNegative 拒绝断路器数值字段的负值：applyDefaults 只补零值，
+// 负值会原样进入运行时（负超时立即熔断、负阈值永不降级）。
+func validateBreakerNonNegative(scope string, b *BreakerCfg) error {
+	checks := []struct {
+		name string
+		v    int64
+	}{
+		{"first_byte_timeout", int64(b.FirstByteTimeout)},
+		{"circuit_interval", int64(b.CircuitInterval)},
+		{"degrade_interval", int64(b.DegradeInterval)},
+		{"degrade_threshold", int64(b.DegradeThreshold)},
+		{"recover_threshold", int64(b.RecoverThreshold)},
+		{"half_open_probes", int64(b.HalfOpenProbes)},
+		{"max_retries", int64(b.MaxRetries)},
+	}
+	for _, c := range checks {
+		if c.v < 0 {
+			return fmt.Errorf("config: %s.%s must be >= 0, got %d", scope, c.name, c.v)
 		}
 	}
 	return nil
@@ -606,17 +652,6 @@ func (c *Config) OrderedSources() []Source {
 	copy(out, c.Sources)
 	for i := range out {
 		out[i].OriginalIndex = i
-	}
-	return out
-}
-
-// sourceNames 返回所有源名称，按配置顺序，仅用于日志展示。
-//
-//nolint:unused // 保留供日志/调试场景调用
-func (c *Config) sourceNames() []string {
-	out := make([]string, len(c.Sources))
-	for i, s := range c.Sources {
-		out[i] = s.Name
 	}
 	return out
 }
@@ -776,13 +811,22 @@ anthropic:
 `
 
 // WriteDefault 写入最小默认配置到 path。目录不存在时创建。
-// 已存在 path 不会覆盖（调用方负责只在文件缺失时调用）。
+// path 已存在时返回错误而不覆盖：现有文件可能只是暂时解析失败
+// （语法笔误等），覆盖会丢失用户的全部 sources 配置。
 func WriteDefault(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("write default config: %w", err)
+	}
+	if _, err := f.Write([]byte(defaultConfigYAML)); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write default config: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("write default config: %w", err)
 	}
 	return nil
