@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +59,7 @@ func writeInitialYAML(path string, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return writeFile(path, out)
+	return os.WriteFile(path, out, 0o644)
 }
 
 func TestMetricsEndpoint(t *testing.T) {

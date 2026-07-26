@@ -23,7 +23,7 @@
 
 分层与职责（从下到上）：
 
-- L0 基础层：`internal/config`、`internal/logging`、`internal/model`、`internal/breaker`、`internal/toolcatalog`。不依赖本仓其它 internal 包。
+- L0 基础层：`internal/config`、`internal/logging`、`internal/model`、`internal/breaker`、`internal/toolcatalog`。依赖闭包必须收在 L0 内部：允许层内互相引用（`config` 是层内公共底座，`logging`/`breaker` 引用其参数类型，`toolcatalog` 引用 `model` 的协议常量），禁止依赖 L1 及以上任何包。
 - L1 客户端层：`internal/anthropic`、`internal/chatclient`、`internal/responsesclient`（各上游低层 HTTP）。
 - L2 转换层：`convert`/`streamconv`（a）、`chatconvert`/`chatstreamconv`（c）。r 路径无语义转换层，由 Backend 最小改写 + SSE 透传。
 - L2.5 适配层：`internal/backend`（`AnthropicBackend` / `ChatBackend` / `ResponsesBackend`），统一 `Execute` 产出 Responses SSE。

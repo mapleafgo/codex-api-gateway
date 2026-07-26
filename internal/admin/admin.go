@@ -125,8 +125,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// 只对精确 "/" 与非 /v1、非 /admin/api 的路径返回页面；
-	// 不匹配则 404（避免吃掉未知路径）。
+	// 仅精确 "/" 返回页面，其余一律 404（避免吃掉未知路径）。
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -304,10 +303,8 @@ func (h *handler) handleReload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, okBody{OK: true})
 }
 
-// handleModels 拉取指定源的上游 /v1/models 列表。
-
-// POST /admin/api/upstream-models
-// body: {base_url, api_key, backend_type} — 允许未落盘试拉。
+// handleUpstreamModels 按连接参数试拉上游 /v1/models（允许未落盘配置）。
+// POST /admin/api/upstream-models，body: {base_url, api_key, backend_type}。
 func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
@@ -364,8 +361,8 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
-// GET /admin/api/models?source=<name>
-// 成功返回 { source, models: [{id, display_name}] }。
+// handleModels 按源名拉取该源的上游 /v1/models 列表。
+// GET /admin/api/models?source=<name>，成功返回 { source, models: [{id, display_name}] }；
 // source 未提供或 fetcher 缺失分别返回 400 / 501。
 func (h *handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -538,9 +535,13 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// adminBodyLimit 管理接口 POST body 上限。旁路不走 /v1 的 MaxBytesReader，
+// 自己兜底防误传超大 payload 撑内存。
+const adminBodyLimit = 1 << 20 // 1 MiB
+
 func (h *handler) postConfig(w http.ResponseWriter, r *http.Request) {
 	var in adminConfigInput
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, adminBodyLimit))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "read body", Detail: err.Error()})
 		return
@@ -675,7 +676,7 @@ func (h *handler) handleGuidance(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Content string `json:"content"`
 		}
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, adminBodyLimit))
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: "read body", Detail: err.Error()})
 			return
@@ -736,6 +737,12 @@ func readFileOrNil(path string) string {
 	return string(b)
 }
 
+// handleVersion 返回构建注入的版本号（未注入时为空串）。
+// GET /admin/api/version。
 func (h *handler) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"version": h.deps.Version})
 }
