@@ -332,7 +332,7 @@ func (s *Scheduler) ExecuteGeneric(
 			lastErr = err
 		}
 		if clientErrSeen {
-			log.Warn("上游源返回 4xx 客户端错误，不重试", "last_error", lastErr)
+			log.Warn("上游源返回 4xx 客户端错误，不重试", "elapsed", time.Since(start).String(), "last_error", lastErr)
 			return lastSource, lastErr
 		}
 		if mr == 0 {
