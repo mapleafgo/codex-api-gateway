@@ -8,7 +8,9 @@
 package metrics
 
 import (
+	"cmp"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -41,7 +43,7 @@ type RequestEvent struct {
 	// 二者相同时表示未发生映射。
 	ResolvedModel string
 	Status        string
-	Code          int // 语义化响应码：completed/incomplete=200，failed=500
+	Code          int // 响应码：成功 200；失败时为解析出的上游 HTTP 码（429/401…），解析不到回退 500
 	InputTokens   int
 	OutputTokens  int
 	CacheRead     int
@@ -331,14 +333,12 @@ func (c *Collector) Snapshot() Snapshot {
 	for k := range c.groups {
 		keys = append(keys, k)
 	}
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			ki, kj := keys[i], keys[j]
-			if ki.source > kj.source || (ki.source == kj.source && ki.model > kj.model) {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
+	slices.SortFunc(keys, func(a, b groupKey) int {
+		if c := cmp.Compare(a.source, b.source); c != 0 {
+			return c
 		}
-	}
+		return cmp.Compare(a.model, b.model)
+	})
 	s.ByGroup = make([]GroupStat, 0, len(keys))
 	for _, k := range keys {
 		g := c.groups[k]
