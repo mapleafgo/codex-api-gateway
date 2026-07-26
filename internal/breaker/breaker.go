@@ -97,19 +97,22 @@ func (b *Breaker) Allow() bool {
 	return true
 }
 
-// RecordFailure records a failure and returns the new State.
+// RecordFailure records a failure and returns the (old, new) State pair.
+// 在锁内原子捕获迁移前后状态：调用方据此调整运行时 order，若在锁外先读
+// State() 再 Record，两次加锁间隙的并发迁移会导致 order 与实际状态错位。
 // normal -> degraded (after degradeThreshold consecutive failures)
 // degraded -> circuitOpen (after degradeThreshold more consecutive failures)
 // halfOpen probe failure -> circuitOpen (circuit_interval reset)
-func (b *Breaker) RecordFailure() State {
+func (b *Breaker) RecordFailure() (State, State) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	old := b.st
 
 	// Defensive: when already circuitOpen, don't accumulate failStreak /
 	// degradeCount or reset openedAt. This avoids edge-case behaviour when
 	// HalfOpenProbes > 1 and multiple probe failures arrive.
 	if b.st == CircuitOpen {
-		return b.st
+		return old, b.st
 	}
 
 	b.successStreak = 0
@@ -119,7 +122,7 @@ func (b *Breaker) RecordFailure() State {
 		b.st = CircuitOpen
 		b.openedAt = b.now()
 		b.halfOpenInflight = 0
-		return b.st
+		return old, b.st
 	}
 
 	if b.failStreak >= b.cfg.DegradeThreshold {
@@ -137,30 +140,32 @@ func (b *Breaker) RecordFailure() State {
 		// reset the auto-recovery timer.
 		b.degradedAt = b.now()
 	}
-	return b.st
+	return old, b.st
 }
 
-// RecordSuccess records a success and returns the new State.
+// RecordSuccess records a success and returns the (old, new) State pair
+// （锁内原子捕获，理由见 RecordFailure）。
 // degraded -> normal (after recoverThreshold consecutive successes)
 // halfOpen probe success -> recovery per cfg.Recovery ("normal" | "degraded")
-func (b *Breaker) RecordSuccess() State {
+func (b *Breaker) RecordSuccess() (State, State) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	old := b.st
 	b.failStreak = 0
 	b.successStreak++
 
 	if b.st == HalfOpen {
 		b.halfOpenInflight = 0
 		switch b.cfg.Recovery {
-		case "degraded":
+		case config.RecoveryDegraded:
 			b.st = Degraded
 			b.degradeCount = 1
-		default: // "normal"
+		default: // RecoveryNormal
 			b.st = Normal
 			b.degradeCount = 0
 			b.successStreak = 0
 		}
-		return b.st
+		return old, b.st
 	}
 
 	if b.st == Degraded && b.successStreak >= b.cfg.RecoverThreshold {
@@ -169,7 +174,7 @@ func (b *Breaker) RecordSuccess() State {
 		b.successStreak = 0
 		b.degradedAt = time.Time{}
 	}
-	return b.st
+	return old, b.st
 }
 
 // AutoRecover 检查 degraded 源是否已超过 degrade_interval 无新失败。
@@ -195,7 +200,17 @@ func (b *Breaker) AutoRecover() (State, State, bool) {
 	return b.st, b.st, false
 }
 
-// SetDegradedAt 设置 degradedAt 时间戳，供 scheduler 测试使用。
+// UpdateCfg 原子替换阈值配置，保留当前健康状态与计数。
+// 热重载路径调用（scheduler.Reload）：管理页修改断路器参数即时生效，
+// 不重置已有源的降级/熔断进度。
+func (b *Breaker) UpdateCfg(cfg config.BreakerCfg) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cfg = cfg
+}
+
+// SetDegradedAt 设置 degradedAt 时间戳。仅供测试拨动自动恢复计时；
+// 生产路径禁止调用（会破坏状态机不变量）。
 func (b *Breaker) SetDegradedAt(t time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

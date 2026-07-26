@@ -46,27 +46,12 @@ type Scheduler struct {
 
 // UpstreamEvent 描述一次单源上游尝试的观测数据，由 Scheduler 通过
 // OnUpstream 回调上报给观测层（L5 metrics）。Scheduler 自身不依赖 metrics
-// 包，保持分层：L3 不反向引用 L5。字段语义对齐 metrics.RequestEvent 的
-// upstream 子集，由 server 层（L4 编排）在注入回调时做映射。
-type UpstreamEvent struct {
-	SourceName    string
-	Model         string // 客户端请求的模型（可能为别名）
-	ResolvedModel string // 实际发给上游的模型（经 ModelMap 解析）
-	StartedAt     time.Time
-	Duration      time.Duration
-	// TTFB 是从开始尝试到收到第一个 SSE 事件的耗时。
-	// 未收到首字节（建连失败/首字节超时）时为 0。
-	TTFB         time.Duration
-	Status       string // "completed" | "failed"
-	Code         int    // 200 成功 / 500 失败
-	InputTokens  int
-	OutputTokens int
-	CacheRead    int
-	CacheCreate  int
-	Error        string // 失败原因摘要
-	Attempt      int    // 该次尝试在客户端请求内的序号（从 1 开始）
-	BackendType  string // a | c | r
-}
+// 包，保持分层：L3 不反向引用 L5；由 server 层（L4 编排）映射到
+// metrics.RequestEvent。
+//
+// 直接别名 backend.UpstreamEvent（L3 依赖 L2.5 合法）：字段逐一手抄会在
+// 新增字段时静默丢数据，别名让两层永远一致。
+type UpstreamEvent = backend.UpstreamEvent
 
 // OnUpstream 是单次上游尝试结束时的回调。nil 时不上报。
 // Scheduler 在 trySource 返回前调用：成功一条 completed，失败一条 failed。
@@ -119,7 +104,8 @@ func New(cfg any) *Scheduler {
 // 热重载时调用：新配置里的源以配置顺序作为新 order，丢弃运行时调整
 // （失败源会被 breaker 重新打回 degraded，自然后移）。
 func (s *Scheduler) Reload() {
-	srcs := s.holder.Current().OrderedSources()
+	cur := s.holder.Current()
+	srcs := cur.OrderedSources()
 	newOrder := make([]orderEntry, len(srcs))
 	for i, src := range srcs {
 		newOrder[i] = orderEntry{name: src.Name, originalIndex: src.OriginalIndex}
@@ -127,12 +113,17 @@ func (s *Scheduler) Reload() {
 	s.ordMu.Lock()
 	s.order = newOrder
 	s.ordMu.Unlock()
-	// 清理已不存在的源的 breaker，避免 map 堆积
 	s.bkMu.Lock()
 	valid := map[string]bool{}
-	for _, src := range srcs {
-		valid[src.Name] = true
+	for i := range srcs {
+		valid[srcs[i].Name] = true
+		// 存活源刷新断路器阈值（保留健康状态）：breaker 持有的是创建时的
+		// 快照，不刷新则热改熔断参数对已有源静默无效。
+		if b, ok := s.breakers[srcs[i].Name]; ok {
+			b.UpdateCfg(cur.BreakerFor(&srcs[i]))
+		}
 	}
+	// 清理已不存在的源的 breaker，避免 map 堆积
 	for name := range s.breakers {
 		if !valid[name] {
 			delete(s.breakers, name)
@@ -147,7 +138,6 @@ func (s *Scheduler) SourceHealth() []SourceHealth {
 	seq := s.runtimeSeq()
 	out := make([]SourceHealth, 0, len(seq))
 	for i, src := range seq {
-		src := src
 		bk := s.breakerFor(&src)
 		out = append(out, SourceHealth{
 			Name:         src.Name,
@@ -186,13 +176,30 @@ func (s *Scheduler) breakerFor(src *config.Source) *breaker.Breaker {
 }
 
 // runtimeSeq returns sources in the current runtime order (runtimeOrder).
+// holder.Replace 与 Reload 之间存在窗口（configwatch 先 Replace 再回调），
+// 此时 order 仍是旧配置的：必须按 name 对齐新配置，不能盲信 originalIndex
+// ——删源时索引越界 panic，重排时静默选错源。
 func (s *Scheduler) runtimeSeq() []config.Source {
 	s.ordMu.RLock()
 	defer s.ordMu.RUnlock()
 	srcs := s.holder.Current().OrderedSources()
-	result := make([]config.Source, len(s.order))
-	for i, entry := range s.order {
-		result[i] = srcs[entry.originalIndex]
+	byName := make(map[string]int, len(srcs))
+	for i := range srcs {
+		byName[srcs[i].Name] = i
+	}
+	result := make([]config.Source, 0, len(srcs))
+	inOrder := make(map[string]bool, len(s.order))
+	for _, entry := range s.order {
+		if i, ok := byName[entry.name]; ok {
+			result = append(result, srcs[i])
+			inOrder[entry.name] = true
+		}
+	}
+	// 新配置新增、order 尚未收录的源按配置顺序补到尾部（Reload 后会归位）。
+	for i := range srcs {
+		if !inOrder[srcs[i].Name] {
+			result = append(result, srcs[i])
+		}
 	}
 	return result
 }
@@ -319,8 +326,8 @@ func (s *Scheduler) ExecuteGeneric(
 	var lastErr error
 	var lastSource string
 	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
-		var clientErrSeen bool
-		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo, &clientErrSeen)
+		var firstClientErr clientRejection
+		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo, &firstClientErr)
 		if sourceName != "" {
 			lastSource = sourceName
 		}
@@ -331,9 +338,12 @@ func (s *Scheduler) ExecuteGeneric(
 		if err != nil {
 			lastErr = err
 		}
-		if clientErrSeen {
-			log.Warn("上游源返回 4xx 客户端错误，不重试", "elapsed", time.Since(start).String(), "last_error", lastErr)
-			return lastSource, lastErr
+		if firstClientErr.err != nil {
+			// 返回并记录首个 4xx 的源与错误：轮内混合失败（A 400、B 503）时
+			// lastErr 是 B 的 503，与「4xx 不重试」的结论对不上号。
+			log.Warn("上游源返回 4xx 客户端错误，不重试",
+				"source", firstClientErr.source, "elapsed", time.Since(start).String(), "error", firstClientErr.err)
+			return firstClientErr.source, firstClientErr.err
 		}
 		if mr == 0 {
 			break
@@ -348,11 +358,18 @@ func (s *Scheduler) ExecuteGeneric(
 		}
 	}
 	if lastErr != nil {
-		log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_error", lastErr)
+		log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_source", lastSource, "last_error", lastErr)
 		return lastSource, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
 	}
-	log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String())
+	log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_source", lastSource)
 	return lastSource, ErrAllSourcesFailed
+}
+
+// clientRejection 记录一轮尝试中首个 4xx 拒绝的源与错误，
+// 供 ExecuteGeneric 的「4xx 不重试」提前返回使用一致的归因。
+type clientRejection struct {
+	source string
+	err    error
 }
 
 func (s *Scheduler) tryRoundGeneric(
@@ -361,14 +378,11 @@ func (s *Scheduler) tryRoundGeneric(
 	onEvent func(model.SSEEvent) error,
 	onUpstream OnUpstream,
 	attemptNo *int,
-	clientErrSeen *bool,
+	firstClientErr *clientRejection,
 ) (string, bool, error) {
 	log := logging.FromContext(ctx)
 	var lastErr error
 	var lastSource string
-	if clientErrSeen != nil {
-		*clientErrSeen = false
-	}
 
 	for _, src := range s.runtimeSeq() {
 		if src.Disabled {
@@ -390,8 +404,8 @@ func (s *Scheduler) tryRoundGeneric(
 		}
 		if err != nil {
 			bt, _ := config.NormalizeBackendType(src.BackendType)
-			if backend.IsClientError(err) && clientErrSeen != nil {
-				*clientErrSeen = true
+			if backend.IsClientError(err) && firstClientErr != nil && firstClientErr.err == nil {
+				*firstClientErr = clientRejection{source: src.Name, err: err}
 			}
 			lastErr = err
 			lastSource = src.Name
@@ -452,35 +466,20 @@ func (s *Scheduler) trySourceGeneric(
 		if !locked {
 			locked = true
 			timer.Stop()
-			oldState := bk.State()
-			newState := bk.RecordSuccess()
+			oldState, newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
 			log.Info("上游源流已锁定", "old_state", oldState, "new_state", newState)
 		}
 		return onEvent(ev)
 	}
-	wrapUpstream := func(ev backend.UpstreamEvent) {
-		if onUpstream == nil {
-			return
-		}
-		onUpstream(UpstreamEvent{
-			SourceName: ev.SourceName, Model: ev.Model, ResolvedModel: ev.ResolvedModel,
-			StartedAt: ev.StartedAt, Duration: ev.Duration, TTFB: ev.TTFB,
-			Status: ev.Status, Code: ev.Code,
-			InputTokens: ev.InputTokens, OutputTokens: ev.OutputTokens,
-			CacheRead: ev.CacheRead, CacheCreate: ev.CacheCreate,
-			Error: ev.Error, Attempt: ev.Attempt, BackendType: ev.BackendType,
-		})
-	}
-
-	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, wrapUpstream, attemptNo)
+	// UpstreamEvent 是 backend.UpstreamEvent 的别名，回调直接透传（nil 时不上报）。
+	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
 	if !locked {
 		if ctx.Err() == nil {
 			if backend.IsClientError(err) {
 				log.Warn("上游源拒绝请求 (4xx)，不降级", "error", err)
 			} else {
-				oldState := bk.State()
-				newState := bk.RecordFailure()
+				oldState, newState := bk.RecordFailure()
 				s.adjustOrder(src.Name, oldState, newState)
 				log.Warn("上游源失败（未锁定）", "old_state", oldState, "new_state", newState, "error", err)
 			}
@@ -506,15 +505,4 @@ func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
 		s.restoreOriginal(name)
 		slog.Info("上游源运行优先级恢复", "source", name, "old_state", oldState, "new_state", newState)
 	}
-}
-
-// ResolveModel maps a Response model name to the source's actual model.
-func ResolveModel(src *config.Source, reqModel string) string {
-	if m, ok := src.ModelMap[reqModel]; ok {
-		return m
-	}
-	if src.DefaultModel != "" {
-		return src.DefaultModel
-	}
-	return reqModel
 }

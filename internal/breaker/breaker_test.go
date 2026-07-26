@@ -49,7 +49,7 @@ func TestDegradedRecoversOnSuccess(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		b.RecordFailure() // -> degraded
 	}
-	st := b.RecordSuccess() // recover=1 -> normal
+	_, st := b.RecordSuccess() // recover=1 -> normal
 	if st != Normal {
 		t.Fatalf("expected normal after recovery, got %v", st)
 	}
@@ -67,7 +67,7 @@ func TestDegradedNeedsMultipleSuccesses(t *testing.T) {
 	if b.State() != Degraded {
 		t.Fatalf("premature recovery: state=%v", b.State())
 	}
-	st := b.RecordSuccess() // 2nd success -> normal
+	_, st := b.RecordSuccess() // 2nd success -> normal
 	if st != Normal {
 		t.Fatalf("expected normal after 2 successes, got %v", st)
 	}
@@ -101,7 +101,7 @@ func TestDegradedToCircuitOpen(t *testing.T) {
 	if b.State() != Degraded {
 		t.Fatalf("should still be degraded before 3rd post-degrade failure, got %v", b.State())
 	}
-	st := b.RecordFailure() // 3rd failure in degraded -> circuitOpen
+	_, st := b.RecordFailure() // 3rd failure in degraded -> circuitOpen
 	if st != CircuitOpen {
 		t.Fatalf("expected circuitOpen, got %v", st)
 	}
@@ -127,7 +127,7 @@ func TestCircuitOpenHalfOpenRecoveryNormal(t *testing.T) {
 	if b.State() != HalfOpen {
 		t.Fatalf("expected halfOpen, got %v", b.State())
 	}
-	st := b.RecordSuccess() // recovery=normal -> normal
+	_, st := b.RecordSuccess() // recovery=normal -> normal
 	if st != Normal {
 		t.Fatalf("should recover to normal, got %v", st)
 	}
@@ -145,7 +145,7 @@ func TestCircuitOpenHalfOpenRecoveryDegraded(t *testing.T) {
 	if !b.Allow() {
 		t.Fatal("should halfOpen after circuit_interval")
 	}
-	st := b.RecordSuccess() // recovery=degraded -> degraded
+	_, st := b.RecordSuccess() // recovery=degraded -> degraded
 	if st != Degraded {
 		t.Fatalf("should recover to degraded, got %v", st)
 	}
@@ -163,7 +163,7 @@ func TestHalfOpenFailResets(t *testing.T) {
 	}
 	advanceTime(b, 31*time.Second) // past circuit_interval
 	b.Allow()                      // -> halfOpen
-	st := b.RecordFailure()        // probe fail -> circuitOpen, openedAt reset
+	_, st := b.RecordFailure()     // probe fail -> circuitOpen, openedAt reset
 	if st != CircuitOpen {
 		t.Fatalf("expected circuitOpen after probe failure, got %v", st)
 	}
@@ -313,7 +313,7 @@ func TestFailStreakResetsAfterDegradeTransition(t *testing.T) {
 
 func TestRecordSuccessOnNormalStaysNormal(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
-	st := b.RecordSuccess()
+	_, st := b.RecordSuccess()
 	if st != Normal {
 		t.Fatalf("normal + success should stay normal, got %v", st)
 	}
@@ -326,7 +326,7 @@ func TestRecordFailureOnCircuitOpenStaysCircuitOpen(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		b.RecordFailure() // -> circuitOpen
 	}
-	st := b.RecordFailure()
+	_, st := b.RecordFailure()
 	if st != CircuitOpen {
 		t.Fatalf("circuitOpen + failure should stay circuitOpen, got %v", st)
 	}
@@ -349,7 +349,7 @@ func TestRecordFailureOnCircuitOpenNoSideEffects(t *testing.T) {
 	// Call RecordFailure enough times to exceed threshold (3 more) — without
 	// the early-return guard, this would bump degradeCount and reset openedAt.
 	for i := 0; i < 5; i++ {
-		if st := b.RecordFailure(); st != CircuitOpen {
+		if _, st := b.RecordFailure(); st != CircuitOpen {
 			t.Fatalf("should stay circuitOpen on extra failure #%d, got %v", i+1, st)
 		}
 	}
@@ -423,15 +423,15 @@ func TestAutoRecoverDegradedElapsed(t *testing.T) {
 	// Advance past degrade_interval (cfg uses 30s)
 	b.now = func() time.Time { return start.Add(31 * time.Second) }
 
-	old, new, recovered := b.AutoRecover()
+	oldSt, newSt, recovered := b.AutoRecover()
 	if !recovered {
 		t.Fatal("AutoRecover should return true after degrade_interval")
 	}
-	if old != Degraded {
-		t.Fatalf("old state: want Degraded, got %v", old)
+	if oldSt != Degraded {
+		t.Fatalf("old state: want Degraded, got %v", oldSt)
 	}
-	if new != Normal {
-		t.Fatalf("new state: want Normal, got %v", new)
+	if newSt != Normal {
+		t.Fatalf("new state: want Normal, got %v", newSt)
 	}
 	if b.State() != Normal {
 		t.Fatalf("state after AutoRecover: want Normal, got %v", b.State())

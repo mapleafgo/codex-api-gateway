@@ -744,20 +744,6 @@ func TestOnUpstreamTTFBZeroOnConnectFail(t *testing.T) {
 	}
 }
 
-func TestResolveModel(t *testing.T) {
-	src := &config.Source{ModelMap: map[string]string{"a": "b"}, DefaultModel: "def"}
-	if ResolveModel(src, "a") != "b" {
-		t.Fatal("map")
-	}
-	if ResolveModel(src, "x") != "def" {
-		t.Fatal("default")
-	}
-	src2 := &config.Source{}
-	if ResolveModel(src2, "x") != "x" {
-		t.Fatal("passthrough")
-	}
-}
-
 func TestSourceHealthAndPromote(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
@@ -1029,5 +1015,67 @@ func TestListUpstreamModels_Responses(t *testing.T) {
 	}
 	if len(ms) != 1 || ms[0].ID != "gpt-5" {
 		t.Fatalf("models=%+v", ms)
+	}
+}
+
+// TestRuntimeSeqSurvivesReplaceBeforeReload 覆盖 holder.Replace 与 Reload 之间
+// 的窗口：旧 order 不得按 originalIndex 盲索引新配置——删源会越界 panic，
+// 重排会静默选错源。runtimeSeq 必须按 name 对齐。
+func TestRuntimeSeqSurvivesReplaceBeforeReload(t *testing.T) {
+	base := config.BreakerCfg{
+		FirstByteTimeout: config.Duration(time.Second),
+		DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+	}
+	holder := config.NewHolder(&config.Config{
+		Breaker: base,
+		Sources: []config.Source{
+			makeSource("a", "http://a", 0),
+			makeSource("b", "http://b", 1),
+			makeSource("c", "http://c", 2),
+		},
+	})
+	s := New(holder)
+
+	// 新配置：删掉 a/c，b 挪到 index 0，新增 d。Replace 后暂不 Reload。
+	holder.Replace(&config.Config{
+		Breaker: base,
+		Sources: []config.Source{
+			makeSource("b", "http://b", 0),
+			makeSource("d", "http://d", 1),
+		},
+	})
+
+	seq := s.runtimeSeq()
+	if len(seq) != 2 || seq[0].Name != "b" || seq[1].Name != "d" {
+		t.Fatalf("runtimeSeq 应按 name 对齐并把新源补到尾部，got %+v", seq)
+	}
+	hs := s.SourceHealth()
+	if len(hs) != 2 || hs[0].Name != "b" || hs[1].Name != "d" {
+		t.Fatalf("SourceHealth 应只含新配置中的源，got %+v", hs)
+	}
+}
+
+// TestReloadRefreshesBreakerCfg 热重载后存活源的 breaker 阈值必须即时生效，
+// 不得沿用创建时的配置快照。
+func TestReloadRefreshesBreakerCfg(t *testing.T) {
+	mk := func(threshold int) *config.Config {
+		return &config.Config{
+			Breaker: config.BreakerCfg{
+				FirstByteTimeout: config.Duration(time.Second),
+				DegradeThreshold: threshold, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			},
+			Sources: []config.Source{makeSource("a", "http://a", 0)},
+		}
+	}
+	holder := config.NewHolder(mk(5))
+	s := New(holder)
+	src := holder.Current().OrderedSources()[0]
+	bk := s.breakerFor(&src)
+
+	holder.Replace(mk(1))
+	s.Reload()
+
+	if _, st := bk.RecordFailure(); st != breaker.Degraded {
+		t.Fatalf("阈值热更新为 1 后，单次失败应即降级，got %v", st)
 	}
 }
