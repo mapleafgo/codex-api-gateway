@@ -17,34 +17,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
-	oairesponses "github.com/openai/openai-go/v3/responses"
 )
-
-func TestShouldSummarizeReasoning(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want bool
-	}{
-		{name: "empty", body: `{"model":"gpt-5","input":"hi"}`, want: false},
-		{name: "none", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none"}}`, want: false},
-		{name: "concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"summary":"concise"}}`, want: true},
-		{name: "effort_without_summary", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium"}}`, want: false},
-		{name: "effort_plus_concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"medium","summary":"concise"}}`, want: true},
-		{name: "effort_none_concise", body: `{"model":"gpt-5","input":"hi","reasoning":{"effort":"none","summary":"concise"}}`, want: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var req oairesponses.ResponseNewParams
-			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if got := shouldSummarizeReasoning(&req); got != tc.want {
-				t.Fatalf("shouldSummarizeReasoning() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
 
 func TestResponsesEndpointStreamsSSE(t *testing.T) {
 	// fake upstream that emits one text delta

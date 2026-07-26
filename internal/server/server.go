@@ -31,7 +31,6 @@ type Server struct {
 	holder    *config.Holder
 	sch       *scheduler.Scheduler
 	metrics   *metrics.Collector
-	startedAt int64
 	handlerWg sync.WaitGroup // 追踪 handleResponses goroutine 生命周期，供测试同步
 }
 
@@ -40,10 +39,9 @@ func New(cfg *config.Config) *Server {
 	holder := config.NewHolder(cfg)
 	slog.Info("初始化服务组件", "sources", len(cfg.Sources))
 	return &Server{
-		holder:    holder,
-		sch:       scheduler.New(holder),
-		metrics:   metrics.New(),
-		startedAt: time.Now().Unix(),
+		holder:  holder,
+		sch:     scheduler.New(holder),
+		metrics: metrics.New(),
 	}
 }
 
@@ -349,7 +347,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		log.Debug("响应请求输入项", "index", i, "type", itemType(it), "role", role)
 	}
 
-	ordered := s.holder.Current().OrderedSources()
+	// 本次请求的预检统一使用同一份配置快照，避免热重载窗口里
+	// 「零源判断用旧配置、首源预检用新配置」的错位。
+	cur := s.holder.Current()
+	ordered := cur.OrderedSources()
 	if len(ordered) == 0 {
 		// 零源配置：进程可启动但无上游可转发。返回 503 引导用户去管理页配置。
 		log.Warn("转发请求被拒绝：未配置任何上游源")
@@ -360,16 +361,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// 预检：首源为 Anthropic 时 dry-run ToAnthropic；首源为 r 时 PrepareUpstreamBody dry-run。
 	// 首源为 Chat 时不做转换预检，避免纯 Chat 部署被误杀。
+	// body 已在上方 DecodeResponseNewParams 成功解析为 req，不再重复解码。
 	first := ordered[0]
 	bt, _ := config.NormalizeBackendType(first.BackendType)
 	switch bt {
 	case config.BackendAnthropic:
-		if _, err := convert.DecodeResponseNewParams(body); err != nil {
-			log.Warn("预解析响应请求失败", "source", first.Name, "error", err)
-			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if _, _, err := convert.ToAnthropic(req, s.holder.Current()); err != nil {
+		if _, _, err := convert.ToAnthropic(req, cur); err != nil {
 			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
@@ -416,7 +413,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			if ev.BackendType != "" {
 				backendType = ev.BackendType
 			}
-			s.recordUpstream()(ev)
+			s.recordUpstream(ev)
 		},
 	)
 
@@ -472,7 +469,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// 流已建立（有事件）时对齐旧语义：默认 200，能解析上游码再覆盖。
 		if evCount > 0 {
 			code = 200
-			if sc := statusCodeFromErr(execErr); sc != 0 {
+			if sc := backend.StatusCodeFromErr(execErr); sc != 0 {
 				code = sc
 			}
 		} else {
@@ -756,12 +753,6 @@ func echoFromRequest(req *oairesponses.ResponseNewParams) model.ResponseObjectPa
 	return convert.EchoFromRequest(req)
 }
 
-// shouldSummarizeReasoning 与 AnthropicBackend / convert.applyReasoning 对齐：
-// 仅 reasoning.summary==concise 时使用 reasoning_summary_* 事件格式。
-func shouldSummarizeReasoning(req *oairesponses.ResponseNewParams) bool {
-	return string(req.Reasoning.Summary) == model.ReasoningSummaryConcise
-}
-
 // itemType 返回 input item 的人类可读类型名称，用于日志。
 func itemType(it *oairesponses.ResponseInputItemUnionParam) string {
 	if it.OfMessage != nil {
@@ -900,40 +891,33 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 	return attrs
 }
 
-// summarizeAnthropicRequest counts block/role distribution in a converted
-// Anthropic request for diagnostics: reasoning signature health (empty
-// signatures violate Anthropic's thinking round-trip rules and can corrupt
-// multi-turn thinking context), tool-loop balance, and context volume.
-
 func newResponseID() string {
 	return fmt.Sprintf("resp_%d", time.Now().UnixNano())
 }
 
-// recordUpstream 返回一个 scheduler.OnUpstream 回调，把单次上游尝试事件
-// 映射为 metrics.RequestEvent（Kind=KindUpstream）投递给观测台。
-// 每次 trySource 结束时调用：成功一条 completed，失败一条 failed。
+// recordUpstream 把单次上游尝试事件映射为 metrics.RequestEvent
+// （Kind=KindUpstream）投递给观测台。每次 trySource 结束时被调用：
+// 成功一条 completed，失败一条 failed。
 // scheduler 不依赖 metrics 包（分层约束），由 server（L4）做桥接。
-func (s *Server) recordUpstream() scheduler.OnUpstream {
-	return func(ev scheduler.UpstreamEvent) {
-		s.metrics.Record(metrics.RequestEvent{
-			Kind:          metrics.KindUpstream,
-			StartedAt:     ev.StartedAt,
-			Duration:      ev.Duration,
-			TTFB:          ev.TTFB,
-			SourceName:    ev.SourceName,
-			Model:         ev.Model,
-			ResolvedModel: ev.ResolvedModel,
-			Status:        ev.Status,
-			Code:          ev.Code,
-			InputTokens:   ev.InputTokens,
-			OutputTokens:  ev.OutputTokens,
-			CacheRead:     ev.CacheRead,
-			CacheCreate:   ev.CacheCreate,
-			Error:         ev.Error,
-			Attempt:       ev.Attempt,
-			BackendType:   ev.BackendType,
-		})
-	}
+func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
+	s.metrics.Record(metrics.RequestEvent{
+		Kind:          metrics.KindUpstream,
+		StartedAt:     ev.StartedAt,
+		Duration:      ev.Duration,
+		TTFB:          ev.TTFB,
+		SourceName:    ev.SourceName,
+		Model:         ev.Model,
+		ResolvedModel: ev.ResolvedModel,
+		Status:        ev.Status,
+		Code:          ev.Code,
+		InputTokens:   ev.InputTokens,
+		OutputTokens:  ev.OutputTokens,
+		CacheRead:     ev.CacheRead,
+		CacheCreate:   ev.CacheCreate,
+		Error:         ev.Error,
+		Attempt:       ev.Attempt,
+		BackendType:   ev.BackendType,
+	})
 }
 
 // isClientCanceled 判断 execErr 是否由客户端断开（请求 ctx 取消）引起。
@@ -959,35 +943,11 @@ func errSummary(err error) string {
 
 // clientFailCode 从 execErr 解析上游 HTTP 状态码；解析不到（网络错误/取消）回退 500。
 // 客户端失败记录展示最终失败原因对应的上游码，便于观测台对齐限流/鉴权等场景。
+// 解析统一走 backend.StatusCodeFromErr（支持 a/c/r 三类 client 的错误格式），
+// 不在本包维护第二份前缀解析。
 func clientFailCode(err error) int {
-	if sc := statusCodeFromErr(err); sc != 0 {
+	if sc := backend.StatusCodeFromErr(err); sc != 0 {
 		return sc
 	}
 	return 500
-}
-
-// statusCodeFromErr 从 anthropic client 错误串解析上游 HTTP 状态码。
-// 错误格式固定为 "anthropic upstream %d: ..."；解析失败返回 0。
-func statusCodeFromErr(err error) int {
-	if err == nil {
-		return 0
-	}
-	const prefix = "anthropic upstream "
-	s := err.Error()
-	i := strings.Index(s, prefix)
-	if i < 0 {
-		return 0
-	}
-	rest := s[i+len(prefix):]
-	n := 0
-	for _, ch := range rest {
-		if ch < '0' || ch > '9' {
-			break
-		}
-		n = n*10 + int(ch-'0')
-	}
-	if n >= 100 && n <= 599 {
-		return n
-	}
-	return 0
 }
