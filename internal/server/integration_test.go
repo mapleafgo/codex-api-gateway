@@ -661,6 +661,43 @@ func TestIntegrationErrorToFailed(t *testing.T) {
 	}
 }
 
+func TestIntegrationFirstErrorFailsOver(t *testing.T) {
+	errorA, aCalls := mockBackend([]mockResp{{lines: []string{
+		`{"type":"error","error":{"type":"overloaded_error","message":"Server is overloaded"}}`,
+	}}})
+	defer errorA.Close()
+	goodB, bCalls := mockBackend([]mockResp{{lines: textStreamLines()}})
+	defer goodB.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(5 * time.Second),
+			DegradeThreshold: 100,
+			CircuitInterval:  config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+		},
+		Sources: []config.Source{
+			{Name: "A", BaseURL: errorA.URL},
+			{Name: "B", BaseURL: goodB.URL},
+		},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	events := postResponses(t, ts, textStreamBody)
+
+	requireEvent(t, events, "response.completed")
+	requireNotEvent(t, events, "error")
+	requireNotEvent(t, events, "response.failed")
+	if got := aCalls.Load(); got != 1 {
+		t.Fatalf("expected A called once, got %d", got)
+	}
+	if got := bCalls.Load(); got != 1 {
+		t.Fatalf("expected B called once, got %d", got)
+	}
+}
+
 // TestIntegrationNon200EmitsFailed verifies that a non-200 status (connection
 // error before any events) produces a response.failed event.
 func TestIntegrationNon200EmitsFailed(t *testing.T) {

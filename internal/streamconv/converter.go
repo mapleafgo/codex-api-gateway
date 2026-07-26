@@ -219,8 +219,11 @@ func (c *Converter) Seq() int64 { return c.seq }
 func (c *Converter) StopReason() string { return c.stopReason }
 
 // Status returns the Responses terminal status derived from the upstream stop
-// reason. Before a stop reason arrives, it returns completed for compatibility.
+// reason. An emitted response.failed takes precedence over an absent stop reason.
 func (c *Converter) Status() string {
+	if c.failed {
+		return model.ResponseStatusFailed
+	}
 	status, _ := statusFor(c.stopReason)
 	return status
 }
@@ -878,10 +881,13 @@ func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) []model.S
 	failed := model.MarshalEvent(evResponseFailed, model.TerminalResponseEvent{
 		Type: evResponseFailed, SequenceNumber: c.nextSeq(), Response: resp,
 	})
-	// 同时发出 OpenAI error 事件，携带上游错误文本与 code 占位。
+	code := ev.Delta.Type
+	if code == "" {
+		code = "upstream_error"
+	}
 	errEv := model.MarshalEvent(evError, model.ErrorEvent{
 		Type: evError, SequenceNumber: c.nextSeq(),
-		Code: "upstream_error", Message: msg,
+		Code: code, Message: msg,
 	})
 	return []model.SSEEvent{errEv, failed}
 }

@@ -564,6 +564,7 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 		Message: anthropic.Message{ID: "m", Model: "x"},
 	})
 	ev := &anthropic.MessageStreamEventUnion{Type: "error"}
+	ev.Delta.Type = "api_error"
 	ev.Delta.Text = "Overloaded"
 	evs, _ := c.Feed(ev)
 	// 上游 error 现在会同时产生 OpenAI error 事件 + response.failed 终态。
@@ -572,7 +573,7 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	}
 	// error 事件本身也应携带 message。
 	errPayload := decodePayload(t, evs[0].Data)
-	if errPayload["message"] != "Overloaded" || errPayload["code"] != "upstream_error" {
+	if errPayload["message"] != "Overloaded" || errPayload["code"] != "api_error" {
 		t.Fatalf("expected error event with code/message, got %v", errPayload)
 	}
 	// Verify error message is present in the response object.
@@ -584,6 +585,9 @@ func TestErrorEventSurfacesAsFailed(t *testing.T) {
 	errObj, _ := r["error"].(map[string]any)
 	if errObj == nil || errObj["message"] != "Overloaded" {
 		t.Fatalf("expected error.message=Overloaded, got %v", r["error"])
+	}
+	if got := c.Status(); got != model.ResponseStatusFailed {
+		t.Fatalf("status=%q want %q", got, model.ResponseStatusFailed)
 	}
 }
 

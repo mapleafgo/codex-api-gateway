@@ -20,6 +20,7 @@ var (
 	anMessageStart = string(aconstant.ValueOf[aconstant.MessageStart]())
 	anMessageDelta = string(aconstant.ValueOf[aconstant.MessageDelta]())
 	anMessageStop  = string(aconstant.ValueOf[aconstant.MessageStop]())
+	anError        = string(aconstant.ValueOf[aconstant.Error]())
 )
 
 // AnthropicBackend 将 Responses 请求转到 Anthropic Messages 上游。
@@ -82,15 +83,17 @@ func (b *AnthropicBackend) Execute(
 		"endpoint", src.BaseURL,
 		"model", clientModel,
 		"resolved_model", resolved)
-	body, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp)
+	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp)
 	if err != nil {
 		log.Warn("上游源建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {
-			// 与旧 trySource 一致：能解析出上游 HTTP 码则用，否则 0（非 failCode 默认 500）
+			if upstreamCode == 0 {
+				upstreamCode = StatusCodeFromErr(err)
+			}
 			onUpstream(UpstreamEvent{
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
-				Status: "failed", Code: StatusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
+				Status: "failed", Code: upstreamCode, Error: errSummary(err), Attempt: attempt,
 				BackendType: config.BackendAnthropic,
 			})
 		}
@@ -99,15 +102,29 @@ func (b *AnthropicBackend) Execute(
 	defer body.Close()
 
 	var ttfb time.Duration
+	sawFirstByte := false
 	locked := false
 	var usage anthropic.MessageDeltaUsage
 	sawStop := false
 
 	scanErr := anthropicclient.ScanEvents(ctx, body, func(ev *anthropic.MessageStreamEventUnion) error {
-		if !locked {
-			locked = true
+		if !sawFirstByte {
+			sawFirstByte = true
 			ttfb = time.Since(start)
 			log.Info("Anthropic 上游首字节到达", "ttfb", ttfb.String())
+		}
+		if ev != nil && ev.Type == anError && !locked {
+			message := ev.Delta.Text
+			if message == "" {
+				message = "upstream stream error"
+			}
+			if ev.Delta.Type != "" {
+				return fmt.Errorf("anthropic upstream stream error (%s): %s", ev.Delta.Type, message)
+			}
+			return fmt.Errorf("anthropic upstream stream error: %s", message)
+		}
+		if !locked {
+			locked = true
 		}
 		if ev != nil && ev.Type == anMessageStop {
 			sawStop = true
@@ -158,16 +175,16 @@ func (b *AnthropicBackend) Execute(
 	}
 
 	status := conv.Status()
-	// 流已建立后，旧 trySource 默认 code=200；仅当错误串带上游 HTTP 码时覆盖。
-	code := 200
+	code := upstreamCode
 	errText := ""
 	if !locked {
 		if scanErr == nil {
 			scanErr = fmt.Errorf("upstream returned no events")
 		}
 		status = "failed"
-		// 未出流：有 HTTP 码用 HTTP 码，否则 0（旧 trySource 语义）
-		code = StatusCodeFromErr(scanErr)
+		if sc := StatusCodeFromErr(scanErr); sc != 0 {
+			code = sc
+		}
 		errText = errSummary(scanErr)
 	} else if scanErr != nil {
 		if isClientCanceled(ctx, scanErr) {

@@ -118,25 +118,26 @@ func truncForLog(b []byte, n int) string {
 	return string(b[:n]) + fmt.Sprintf("...(+%d bytes)", len(b)-n)
 }
 
-// Stream POSTs the request and returns the streaming response body.
+// Stream 发送请求并返回流式响应体及其 HTTP 状态码。
+// 传输失败返回状态码 0；HTTP/SSE 失败保留上游状态码，供观测和故障转移使用。
 // mcp 非 nil 时把 mcp_servers（顶层）+ mcp_toolset（tools[] 追加）注入请求体，
 // 并补上 beta header mcp-client-2025-11-20（与 thinking beta 共存）。
-func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection) (io.ReadCloser, error) {
+func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection) (io.ReadCloser, int, error) {
 	log := logging.FromContext(ctx)
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// anthropic-sdk-go 的 MessageNewParams 不含 stream 字段（官方 SDK 把流式放在
 	// NewStreaming 方法层而非请求参数），而本服务是纯流式中继网关，须显式注入
 	// stream:true，否则上游按非流式返回完整 JSON 而非 SSE。
 	if body, err = injectStream(body); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// MCP 是 beta server tool：mcp_servers + mcp_toolset 必须在 marshal 后注入
 	// （SDK 不支持这组字段），否则上游无法识别 MCP 定义。
 	if body, err = injectMCP(body, mcp); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	// base_url 在配置里只写到各网关根地址，Messages 路径 /v1/messages 由
 	// 代码统一补全。各 Anthropic 兼容后端根地址不同（官方
@@ -147,7 +148,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		log.Warn("构造流式请求失败", "url", url, "error", err)
-		return nil, err
+		return nil, 0, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
@@ -174,7 +175,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	}
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
@@ -187,7 +188,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 			"url", url,
 			"request", truncForLog(body, 2000),
 			"response", truncForLog(b, 1000))
-		return nil, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, string(b))
+		return nil, resp.StatusCode, fmt.Errorf("anthropic upstream %d: %s", resp.StatusCode, string(b))
 	}
 	// 部分网关（如智谱）对错误路径或非法请求返回 HTTP 200 + JSON 错误体（非 4xx），
 	// 仅靠状态码无法识别；content-type 非 SSE 时视为失败，附带响应体辅助排查。
@@ -207,18 +208,16 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 		if len(b) > 500 {
 			b = append(b[:500:500], []byte("...(truncated)")...)
 		}
-		return nil, fmt.Errorf("anthropic upstream %d: unexpected content-type %q: %s", resp.StatusCode, ct, string(b))
+		return nil, resp.StatusCode, fmt.Errorf("anthropic upstream %d: unexpected content-type %q: %s", resp.StatusCode, ct, string(b))
 	}
 	log.Info("上游流式请求已建立", "status", resp.StatusCode, "url", url)
-	return resp.Body, nil
+	return resp.Body, resp.StatusCode, nil
 }
 
-// ScanEvents parses an SSE body and calls fn for each data event.
+// ScanEvents 解析 SSE data 事件并逐个调用 fn。
 // ctx 用于关联底层解析日志；请求取消通过上游 response body 的读取错误返回。
-// Error events (type=error) are detected and their message is injected
-// into a synthetic MessageStreamEventUnion with Type="error" and the
-// error message in Delta.Text, so the converter can surface them as
-// response.failed.
+// error 事件会被合成为 MessageStreamEventUnion，保留 error.type 和 message，
+// 供转换器生成带真实语义错误码的 response.failed。
 func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) error {
 	log := logging.FromContext(ctx)
 	sc := bufio.NewScanner(r)
@@ -251,6 +250,7 @@ func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStre
 			ev := &anthropic.MessageStreamEventUnion{
 				Type: streamErrorType,
 			}
+			ev.Delta.Type = errInfo.Error.Type
 			ev.Delta.Text = errInfo.Error.Message
 			if err := fn(ev); err != nil {
 				return err

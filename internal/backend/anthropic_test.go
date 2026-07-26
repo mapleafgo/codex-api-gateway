@@ -247,3 +247,38 @@ func TestAnthropicBackend_MidStreamEOFCode200(t *testing.T) {
 		t.Fatalf("expected response.failed, types=%v", types)
 	}
 }
+
+func TestAnthropicBackend_FirstErrorReportsCodes(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"type":"error","error":{"type":"api_error","message":"The model is currently at capacity"}}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	var up UpstreamEvent
+	var types []string
+	b := NewAnthropic()
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		&config.Config{},
+		func(ev model.SSEEvent) error { types = append(types, ev.Type); return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err == nil {
+		t.Fatal("expected upstream SSE error")
+	}
+	if len(types) != 0 {
+		t.Fatalf("first error must remain unlocked, types=%v", types)
+	}
+	if up.Status != model.ResponseStatusFailed {
+		t.Fatalf("status=%q want %q", up.Status, model.ResponseStatusFailed)
+	}
+	if up.Code != http.StatusOK {
+		t.Fatalf("code=%d want %d", up.Code, http.StatusOK)
+	}
+	if !strings.Contains(up.Error, "api_error") {
+		t.Fatalf("error=%q must preserve SSE error type", up.Error)
+	}
+}
