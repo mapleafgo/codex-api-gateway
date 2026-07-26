@@ -43,7 +43,8 @@ func TestQuitNilOnQuit(t *testing.T) {
 	tr.Quit() // 不应 panic
 }
 
-// TestQuitOnQuitPanicRecovered 验证 OnQuit panic 被 recover，不会传播。
+// TestQuitOnQuitPanicRecovered 验证 OnQuit panic 被 recover，不会传播，
+// 且 Done channel 仍正常关闭（否则 main 永远阻塞在 <-t.Done()）。
 func TestQuitOnQuitPanicRecovered(t *testing.T) {
 	t.Parallel()
 	tr := New(Config{OnQuit: func() { panic("boom") }})
@@ -53,6 +54,12 @@ func TestQuitOnQuitPanicRecovered(t *testing.T) {
 		}
 	}()
 	tr.Quit()
+	select {
+	case <-tr.Done():
+		// 预期：OnQuit panic 不得阻断 closeDone
+	default:
+		t.Fatal("OnQuit panic 后 Done 仍应关闭")
+	}
 }
 
 // TestDoneChannelCloses 验证 Done 在 closeDone 后关闭。

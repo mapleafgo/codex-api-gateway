@@ -3,8 +3,9 @@
 // 设计要点：
 //   - Run 在独立 goroutine 中调用，通过 Show 立即显示图标，实现"在任何处理前启动托盘"。
 //   - 菜单："打开"、可选勾选"开机自启"、"退出"。
-//   - headless 降级：systray 在无图形桌面（无 D-Bus / DISPLAY）下初始化失败时，
-//     自动转为等待 SIGINT/SIGTERM 的信号模式，保证服务可在纯服务器环境运行。
+//   - headless / 异常降级：systray 事件循环在未请求退出时提前返回（无图形桌面、
+//     D-Bus 不可用、托盘宿主崩溃、无交互会话等）一律降级为等待 SIGINT/SIGTERM
+//     的信号模式继续运行，托盘异常绝不带崩进程，因此 -d 后台模式也可安全启用托盘。
 //   - logo 通过 go:embed 内嵌 assets/logo.png，零外部文件依赖。
 //   - 退出流程不阻塞等待 tray.Run 返回：Quit 先关闭 Done channel 通知等待方，
 //     tr.Remove（含 D-Bus 连接关闭）异步执行。因为 Remove 若在菜单 OnClick
@@ -45,7 +46,8 @@ type Config struct {
 	// Autostart 非 nil 时显示「开机自启」勾选菜单；为 OS 自启注册的真相源。
 	Autostart *autostart.Spec
 	// ForceSignal 为 true 时跳过图形托盘，仅监听 SIGINT/SIGTERM。
-	// 用于 -d 后台进程：无交互会话时 systray 可能秒退导致 main 退出。
+	// 正常无需设置：systray 不可用或提前返回时 runTray 会自动降级为信号模式。
+	// 仅作为显式禁用托盘的逃生开关（如 GATEWAY_NO_TRAY=1）。
 	ForceSignal bool
 	// OnQuit "退出"菜单点击或收到 SIGINT/SIGTERM 时调用（同步），
 	// 用于触发优雅关闭（关闭 HTTP server、释放资源）。可为 nil。
@@ -82,19 +84,19 @@ func (t *Tray) Run() {
 	if t.cfg.ForceSignal {
 		slog.Info("ForceSignal：跳过系统托盘，信号模式运行")
 		t.runSignal(sigCh)
-	} else if err := t.runTray(sigCh); err != nil {
-		slog.Warn("系统托盘初始化失败，降级为信号模式（headless）", "error", err)
-		t.runSignal(sigCh)
+	} else {
+		t.runTray(sigCh)
 	}
 	// 兜底：确保 OnQuit 已触发。quitCh 在 Quit 内已关闭，这里的 closeDone 幂等。
 	t.Quit()
 	t.closeDone()
 }
 
-// runTray 启动 systray，返回 nil 表示正常退出，返回 error 表示初始化失败。
-// 退出时机：菜单"退出"被点击（Quit 关闭 quitCh）、tray.Run 因 Remove 返回
-// （异步清理的副作用）或收到信号。
-func (t *Tray) runTray(sigCh chan os.Signal) error {
+// runTray 启动 systray 并阻塞到退出。
+// 退出时机：菜单"退出"被点击（Quit 关闭 quitCh）或收到信号。
+// systray 事件循环在未请求退出时提前返回（初始化失败、托盘宿主不可用、
+// 无交互会话秒退等）时，就地降级为信号模式继续阻塞，不让进程跟着退出。
+func (t *Tray) runTray(sigCh chan os.Signal) {
 	tray := systray.New()
 	tray.SetIcon(logoBytes).
 		SetTooltip(t.cfg.Tooltip).
@@ -113,22 +115,34 @@ func (t *Tray) runTray(sigCh chan os.Signal) error {
 
 	select {
 	case err := <-runErr:
-		// tray.Run 自己返回（菜单"退出"触发 Remove，或平台错误）。
-		return err
+		select {
+		case <-t.quitCh:
+			// Quit 触发的 Remove 使 tray.Run 返回，属正常退出。
+			return
+		default:
+		}
+		// 未请求退出却提前返回（含 err 为 nil 的"秒退"）：降级为信号模式，
+		// 保证 -d 守护进程不因托盘异常被带退。
+		slog.Warn("系统托盘事件循环提前返回，降级为信号模式", "error", err)
+		t.mu.Lock()
+		t.tray = nil // 实例已死：避免 Quit 的异步 Remove / refreshMenu 再触碰
+		t.mu.Unlock()
+		t.runSignal(sigCh)
 	case sig := <-sigCh:
 		slog.Info("收到信号，准备退出", "signal", sig.String())
-		return nil
 	case <-t.quitCh:
 		// Quit 已被调用（菜单"退出"或信号），Done 已关闭，立即返回。
 		// 不等 tray.Run：Remove 异步执行，进程退出自然回收其 goroutine。
-		return nil
 	}
 }
 
-// runSignal 在 systray 不可用时仅监听信号。
+// runSignal 在 systray 不可用时监听信号；Quit 被程序化调用时同样解除阻塞。
 func (t *Tray) runSignal(sigCh chan os.Signal) {
-	sig := <-sigCh
-	slog.Info("收到信号，准备退出", "signal", sig.String())
+	select {
+	case sig := <-sigCh:
+		slog.Info("收到信号，准备退出", "signal", sig.String())
+	case <-t.quitCh:
+	}
 }
 
 // buildMenu 按当前配置与自启状态组装菜单。
@@ -217,13 +231,18 @@ func (t *Tray) Quit() {
 		t0 := time.Now()
 		slog.Debug("tray.Quit: 开始退出流程")
 		if t.cfg.OnQuit != nil {
-			defer func() {
-				if rec := recover(); rec != nil {
-					slog.Error("OnQuit 回调 panic", "recover", rec)
-				}
-			}()
 			t1 := time.Now()
-			t.cfg.OnQuit()
+			// recover 必须只包 OnQuit 本身：若挂在整个 Do 闭包出口，
+			// OnQuit panic 会跳过后面的 closeDone/Remove 且 once 已耗尽，
+			// main 将永远阻塞在 <-t.Done()。
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						slog.Error("OnQuit 回调 panic", "recover", rec)
+					}
+				}()
+				t.cfg.OnQuit()
+			}()
 			slog.Debug("tray.Quit: OnQuit 回调完成", "elapsed", time.Since(t1).String())
 		}
 		// 先关 Done：让等待 <-t.Done() 的 main 立即继续关闭流程，
