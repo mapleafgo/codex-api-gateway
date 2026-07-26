@@ -33,7 +33,8 @@ tasks:
     internal: true
     cmds:
       - mkdir -p bin
-      - GOOS={{.GOOS}} GOARCH={{.GOARCH}} go build -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-{{.GOOS}}-{{.GOARCH}}{{.EXT}} ./cmd/server
+      # CGO_ENABLED=0：交叉编译无法用宿主 gcc；全仓依赖均纯 Go（D-Bus 走 socket）。
+      - CGO_ENABLED=0 GOOS={{.GOOS}} GOARCH={{.GOARCH}} go build -ldflags '{{.LDFLAGS}}' -o bin/{{.BINARY}}-{{.GOOS}}-{{.GOARCH}}{{.EXT}} ./cmd/server
 
   cli-linux-amd64:
     desc: Build cli binary for linux amd64
