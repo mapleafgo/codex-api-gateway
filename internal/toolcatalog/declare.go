@@ -103,11 +103,11 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 	}
 }
 
-// webSearchTool 构造 Anthropic web_search_20250305。
+// webSearchTool 构造 Anthropic web_search_20260318。
 // city/country/region/timezone 来自 OpenAI user_location（两侧均为 param.Opt[string] 但包不同，按值拷贝）。
 // Anthropic 无 search_context_size 字段，调用方对非空值自行 WARN。
 func webSearchTool(allowed []string, city, country, region, timezone oparam.Opt[string]) anthropic.ToolUnionParam {
-	p := &anthropic.WebSearchTool20250305Param{AllowedDomains: allowed}
+	p := &anthropic.WebSearchTool20260318Param{AllowedDomains: allowed}
 	if city.Valid() || country.Valid() || region.Valid() || timezone.Valid() {
 		loc := anthropic.UserLocationParam{}
 		if city.Valid() {
@@ -124,7 +124,7 @@ func webSearchTool(allowed []string, city, country, region, timezone oparam.Opt[
 		}
 		p.UserLocation = loc
 	}
-	return anthropic.ToolUnionParam{OfWebSearchTool20250305: p}
+	return anthropic.ToolUnionParam{OfWebSearchTool20260318: p}
 }
 
 // ClientTool 构造一个 Anthropic client tool（ToolParam）。

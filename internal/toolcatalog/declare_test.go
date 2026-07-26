@@ -51,14 +51,14 @@ func TestDeclareWebSearchMapsAllowedDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Declare error: %v", err)
 	}
-	if decls[0].OfWebSearchTool20250305 == nil || len(decls[0].OfWebSearchTool20250305.AllowedDomains) != 1 {
+	if decls[0].OfWebSearchTool20260318 == nil || len(decls[0].OfWebSearchTool20260318.AllowedDomains) != 1 {
 		t.Fatalf("web_search not mapped: %+v", decls)
 	}
 }
 
 func TestDeclareWebSearchPreviewNoDomains(t *testing.T) {
 	decls, _ := Declare(oairesponses.ToolUnionParam{OfWebSearchPreview: &oairesponses.WebSearchPreviewToolParam{}})
-	if decls[0].OfWebSearchTool20250305 == nil || len(decls[0].OfWebSearchTool20250305.AllowedDomains) != 0 {
+	if decls[0].OfWebSearchTool20260318 == nil || len(decls[0].OfWebSearchTool20260318.AllowedDomains) != 0 {
 		t.Fatalf("web_search_preview must map to empty-domain server tool")
 	}
 }
@@ -126,9 +126,9 @@ func TestDeclareWebSearchMapsUserLocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
 	}
-	ws := decls[0].OfWebSearchTool20250305
+	ws := decls[0].OfWebSearchTool20260318
 	if ws == nil {
-		t.Fatal("expected WebSearchTool20250305")
+		t.Fatal("expected WebSearchTool20260318")
 	}
 	if !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Shanghai" {
 		t.Fatalf("user_location.city not mapped: %+v", ws.UserLocation)
@@ -159,7 +159,7 @@ func TestDeclareWebSearchSearchContextSizeDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
 	}
-	if decls[0].OfWebSearchTool20250305 == nil {
+	if decls[0].OfWebSearchTool20260318 == nil {
 		t.Fatal("expected web search tool")
 	}
 	got := logs.String()
@@ -178,7 +178,7 @@ func TestDeclareWebSearchPreviewMapsUserLocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Declare: %v", err)
 	}
-	ws := decls[0].OfWebSearchTool20250305
+	ws := decls[0].OfWebSearchTool20260318
 	if ws == nil || !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Beijing" {
 		t.Fatalf("preview user_location not mapped: %+v", decls)
 	}

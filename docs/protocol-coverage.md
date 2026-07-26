@@ -268,6 +268,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `instructions` | system message（首条） | `supported` | 与 developer/system item 可合并 |
 | `max_output_tokens` | `max_tokens` + `max_completion_tokens` | `supported` | 双写兼容旧上游与新模型 |
 | `temperature` / `top_p` | 同名 | `supported` | |
+| `top_k` | `top_k` | `supported` | Chat 同名透传；a 路径仍忽略 |
 | `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
 | `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过 |
 | `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice 忽略 |
@@ -310,7 +311,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
 | `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) | `lossy_supported` | image 丢弃 |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
-| computer / file_search / image_generation / program / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
+| computer / file_search / image_generation / program / program_output / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
 | `compaction` / `compaction_trigger` | system marker | `raw_preserved` | 对齐 a 路径：`<compaction>` / `<compaction_trigger />` 文本 |
 
 ### Tool 声明（c）
@@ -420,7 +421,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
 | `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
-| `text.format.json_schema` | forced Anthropic tool | `lossy_supported` | 通过工具调用模拟 structured output；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
+| `text.format.json_schema` | `OutputConfig.Format` | `supported` | 使用 Anthropic 原生 `output_config.format`（JSON Schema），不再需要合成工具；与 tool_choice 正交共存 |
 | `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
 | `text.verbosity` | none | `unsupported_by_backend` | a 忽略；Chat 见 c 专节 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |

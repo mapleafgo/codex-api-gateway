@@ -370,10 +370,10 @@ func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ws *anthropic.WebSearchTool20250305Param
+	var ws *anthropic.WebSearchTool20260318Param
 	for _, tool := range out.Tools {
-		if tool.OfWebSearchTool20250305 != nil {
-			ws = tool.OfWebSearchTool20250305
+		if tool.OfWebSearchTool20260318 != nil {
+			ws = tool.OfWebSearchTool20260318
 			break
 		}
 	}
@@ -391,17 +391,17 @@ func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
 	}
 }
 
-func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20250305Param {
+func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20260318Param {
 	for _, tool := range tools {
-		if tool.OfWebSearchTool20250305 != nil {
-			return tool.OfWebSearchTool20250305
+		if tool.OfWebSearchTool20260318 != nil {
+			return tool.OfWebSearchTool20260318
 		}
 	}
 	return nil
 }
 
 // TestCacheControlAppliedToNonFunctionTool 复现 gap②:最后一个 tool 是
-// web_search(OfWebSearchTool20250305)而非 function(OfTool)时,cache_control
+// web_search(OfWebSearchTool20260318)而非 function(OfTool)时,cache_control
 // 仍应加到该 tool 上,否则整个 tools 列表缓存丢失。
 func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search"}],"stream":true}`)
@@ -409,10 +409,10 @@ func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if len(out.Tools) == 0 || out.Tools[0].OfWebSearchTool20250305 == nil {
+	if len(out.Tools) == 0 || out.Tools[0].OfWebSearchTool20260318 == nil {
 		t.Fatalf("expected web_search tool to be mapped: %+v", out.Tools)
 	}
-	cc := out.Tools[0].OfWebSearchTool20250305.CacheControl
+	cc := out.Tools[0].OfWebSearchTool20260318.CacheControl
 	if cc.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
 		t.Fatalf("cache_control not applied to non-function tool: %+v", cc)
 	}
@@ -1228,17 +1228,26 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 	}
 }
 
-func TestStructuredOutputInjectsTool(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"give me json"}]}],"text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"v":{"type":"number"}}}}},"stream":true}`)
+func TestStructuredOutputSetsOutputConfigFormat(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":"hi","text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"v":{"type":"number"}}}}},"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Tools) != 1 || out.Tools[0].OfTool.Name != "answer" {
-		t.Fatalf("structured output tool not injected: %+v", out.Tools)
+	if out.OutputConfig.Format.Schema == nil {
+		t.Fatalf("expected OutputConfig.Format to be set for json_schema, got %+v", out.OutputConfig.Format)
 	}
-	if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "answer" {
-		t.Fatalf("bad tool_choice: %+v", out.ToolChoice)
+	if out.OutputConfig.Format.Schema["type"] != "object" {
+		t.Fatalf("schema not preserved: %+v", out.OutputConfig.Format.Schema)
+	}
+	// 不应注入合成工具或覆写 tool_choice
+	if out.ToolChoice.OfTool != nil {
+		t.Fatalf("tool_choice should not be modified: %+v", out.ToolChoice)
+	}
+	for _, tool := range out.Tools {
+		if tool.OfTool != nil && tool.OfTool.Name == "answer" {
+			t.Fatalf("should not inject synthetic tool: %+v", out.Tools)
+		}
 	}
 }
 
@@ -1520,7 +1529,7 @@ func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
 	}
 }
 
-func TestStructuredOutputPrefersSchemaOverAllowedTools(t *testing.T) {
+func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 	for _, mode := range []string{"auto", "required"} {
 		t.Run(mode, func(t *testing.T) {
 			req := mustReq(t, `{
@@ -1533,20 +1542,23 @@ func TestStructuredOutputPrefersSchemaOverAllowedTools(t *testing.T) {
 
 			out, _, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
-				t.Fatalf("expected degrade success, got %v", err)
+				t.Fatalf("expected success, got %v", err)
 			}
-			if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "result" {
-				t.Fatalf("want forced schema tool result, got %+v", out.ToolChoice)
+			if out.OutputConfig.Format.Schema == nil {
+				t.Fatalf("expected OutputConfig.Format schema, got %+v", out.OutputConfig.Format)
+			}
+			// Anthropic 无 allowed_tools；convertToolChoice 已将 allowed_tools 映射为
+			// OfAuto（mode=auto）或 OfAny（mode=required）。确认不因 format 而中断。
+			if out.ToolChoice.OfAuto == nil && out.ToolChoice.OfAny == nil {
+				t.Fatalf("tool_choice should be mapped from allowed_tools, got %+v", out.ToolChoice)
 			}
 		})
 	}
-}
-
-func TestStructuredOutputPrefersSchemaOverIncompatibleExplicitToolChoice(t *testing.T) {
 	tests := []struct {
 		name       string
 		tools      string
 		toolChoice string
+		wantErr    bool
 	}{
 		{name: "none", toolChoice: `"none"`},
 		{name: "auto", toolChoice: `"auto"`},
@@ -1556,8 +1568,8 @@ func TestStructuredOutputPrefersSchemaOverIncompatibleExplicitToolChoice(t *test
 		{name: "apply_patch", tools: `[{"type":"apply_patch"}]`, toolChoice: `{"type":"apply_patch"}`},
 		{name: "shell", tools: `[{"type":"shell"}]`, toolChoice: `{"type":"shell"}`},
 		{name: "unknown mode", toolChoice: `"unsupported"`},
-		{name: "unknown type", toolChoice: `{"type":"unsupported"}`},
-		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`},
+		{name: "unknown type", toolChoice: `{"type":"unsupported"}`, wantErr: true},
+		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -1569,13 +1581,19 @@ func TestStructuredOutputPrefersSchemaOverIncompatibleExplicitToolChoice(t *test
 				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
 				"tool_choice":`+tt.toolChoice+`
 			}`)
-
 			out, _, err := ToAnthropic(req, &config.Config{})
-			if err != nil {
-				t.Fatalf("expected degrade success, got %v", err)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for tool_choice %s", tt.toolChoice)
+				}
+				return
 			}
-			if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "result" {
-				t.Fatalf("want forced schema tool result, got %+v", out.ToolChoice)
+			if err != nil {
+				t.Fatalf("expected success, got %v", err)
+			}
+			// OutputConfig.Format 应始终携带 schema
+			if out.OutputConfig.Format.Schema == nil {
+				t.Fatalf("expected OutputConfig.Format schema, got %+v", out.OutputConfig.Format)
 			}
 		})
 	}

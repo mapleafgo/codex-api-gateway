@@ -100,7 +100,10 @@ var (
 	// mid_conversation_system: Anthropic 中途插入的 system 指令块。
 	// OpenAI Responses 没有原生等价的「中途 system 消息」输出项，
 	// 当前选择 WARN + 跳过（不中断流），后续可考虑转为 developer marker。
-	anBlockMidConvSystem = "mid_conv_system"
+	anBlockMidConvSystem = string(aconstant.ValueOf[aconstant.MidConvSystem]())
+	// ContainerUploadBlock: Anthropic code_execution container 上传生命周期回调。
+	// OpenAI Responses 无容器上传概念，WARN + 跳过（不中断流）。
+	anBlockContainerUpload = string(aconstant.ValueOf[aconstant.ContainerUpload]())
 
 	anDeltaText      = string(aconstant.ValueOf[aconstant.TextDelta]())
 	anDeltaThinking  = string(aconstant.ValueOf[aconstant.ThinkingDelta]())
@@ -364,6 +367,8 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		slog.Warn("跳过 Anthropic mid_conversation_system 块（OpenAI Responses 无原生等价输出），对应数据被丢弃",
 			"response_id", c.respID, "block_index", blkIdx)
 		return nil
+	case anBlockContainerUpload:
+		return c.handleSkippedBlockStart(ev)
 	case anBlockMcpToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockMcpToolResult:

@@ -1668,26 +1668,20 @@ func hasTool(out *anthropic.MessageNewParams, name string) bool {
 	return false
 }
 
-func optionalString(v oparam.Opt[string]) *string {
-	if !v.Valid() {
-		return nil
-	}
-	return &v.Value
-}
-
 func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
 	if req.Text.Format.OfJSONSchema != nil {
 		f := req.Text.Format.OfJSONSchema
-		description := optionalString(f.Description)
-		if err := appendConvertedTool(out, f.Name, f.Schema, description, false); err != nil {
-			return err
-		}
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: f.Name},
+		// 使用 Anthropic 原生 output_config.format 表达 JSON Schema 约束，
+		// 替代之前创建合成工具 + 强制 tool_choice 的有损方式。
+		// 原生方式下模型产出 text block（JSON 文本），由 streamconv 正常转为
+		// output_text.delta/done 事件，不再需要 tool_use→function_call 转换。
+		out.OutputConfig.Format = anthropic.JSONOutputFormatParam{
+			Schema: f.Schema,
 		}
 		return nil
 	}
 	if req.Text.Format.OfJSONObject != nil {
+		// Anthropic 无 json_object 等价格式，保持 forced tool 方式。
 		if err := appendConvertedTool(out, model.StructuredOutputJSONObjectTool, map[string]any{"type": "object"}, nil, false); err != nil {
 			return err
 		}
