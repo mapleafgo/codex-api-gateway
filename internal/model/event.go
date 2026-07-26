@@ -1,6 +1,9 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"log/slog"
+)
 
 // SSEEvent is one server-sent event to emit to the Codex client.
 // Data holds the already-marshaled event JSON.
@@ -326,8 +329,14 @@ func (p ContentPartOut) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalEvent marshals any event struct into an SSEEvent.
+// 序列化失败不 panic：记 Warn 后返回 Data 为 nil 的事件，
+// 由写出层按空 data 处理，避免单个坏事件拖垮整条流。
 func MarshalEvent(eventType string, v any) SSEEvent {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		slog.Warn("SSE 事件序列化失败，事件被丢弃", "event_type", eventType, "error", err)
+		return SSEEvent{Type: eventType}
+	}
 	return SSEEvent{Type: eventType, Data: b}
 }
 

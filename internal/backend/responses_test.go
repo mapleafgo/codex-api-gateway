@@ -194,6 +194,43 @@ func TestResponsesBackend_IncompleteTerminalIsIncomplete(t *testing.T) {
 	}
 }
 
+func TestResponsesBackend_TruncatedStreamWithoutTerminalIsFailed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		// 只发部分事件后直接关流，不给任何终态事件
+		_, _ = io.WriteString(w, "event: response.created\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"r1","model":"o3"}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"hi"}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewResponses()
+	var up UpstreamEvent
+	var events int
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-5","input":[]}`),
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
+		nil,
+		func(model.SSEEvent) error { events++; return nil },
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Status != "failed" {
+		t.Fatalf("status=%s want failed for truncated stream", up.Status)
+	}
+	if up.Error != "upstream stream ended without terminal event" {
+		t.Fatalf("error=%q", up.Error)
+	}
+	// 不代补终态：客户端只应收到上游实际发出的 2 个事件
+	if events != 2 {
+		t.Fatalf("events=%d want 2 (no synthetic terminal)", events)
+	}
+}
+
 func TestResponsesBackend_CancelAfterFailedTerminalIsFailed(t *testing.T) {
 	released := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

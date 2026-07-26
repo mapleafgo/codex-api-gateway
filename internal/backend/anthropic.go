@@ -157,7 +157,7 @@ func (b *AnthropicBackend) Execute(
 			errResp := model.NewResponseObject(conv.RespID(), model.ResponseStatusFailed, clientModel, time.Now().Unix(), convert.EchoFromRequest(req))
 			errResp.Output = conv.OutputItems()
 			errResp.Error = &model.ResponseError{Message: scanErr.Error()}
-			evType := "response.failed"
+			evType := evResponseFailed
 			_ = onEvent(model.MarshalEvent(evType, model.TerminalResponseEvent{
 				Type: evType, SequenceNumber: conv.NextSeq(), Response: errResp,
 			}))
@@ -174,31 +174,15 @@ func (b *AnthropicBackend) Execute(
 		}
 	}
 
-	status := conv.Status()
-	code := upstreamCode
-	errText := ""
-	if !locked {
-		if scanErr == nil {
-			scanErr = fmt.Errorf("upstream returned no events")
-		}
-		status = "failed"
-		if sc := StatusCodeFromErr(scanErr); sc != 0 {
-			code = sc
-		}
-		errText = errSummary(scanErr)
-	} else if scanErr != nil {
-		if isClientCanceled(ctx, scanErr) {
-			if !sawStop && !conv.Done() {
-				status = "canceled"
-			}
-		} else {
-			status = "failed"
-			if sc := StatusCodeFromErr(scanErr); sc != 0 {
-				code = sc
-			}
-			errText = errSummary(scanErr)
-		}
-	}
+	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
+		locked:   locked,
+		scanErr:  scanErr,
+		terminal: sawStop || conv.Done(),
+		status:   conv.Status(),
+		code:     upstreamCode,
+		// 错误串解析不出状态码时保留建连返回的 upstreamCode。
+		noEventsCode: upstreamCode,
+	})
 	level := slog.LevelInfo
 	if status == "failed" {
 		level = slog.LevelWarn
@@ -244,10 +228,8 @@ func (b *AnthropicBackend) Execute(
 			BackendType: config.BackendAnthropic,
 		})
 	}
-	if !locked {
-		return scanErr
-	}
-	// 业务已终态后客户端断开：返回 error 供上层记日志，但 onUpstream 已记 completed。
+	// 无论是否锁定都原样返回 scanErr：未锁定时供 scheduler 故障转移；
+	// 已锁定时（如业务终态后客户端断开）供上层记日志，onUpstream 已按实际终态上报。
 	return scanErr
 }
 

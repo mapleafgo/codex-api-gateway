@@ -122,31 +122,15 @@ func (b *ChatBackend) Execute(
 		}
 	}
 
-	status := "completed"
-	code := 200
-	errText := ""
-	if !locked {
-		if scanErr == nil {
-			scanErr = fmt.Errorf("upstream returned no events")
-		}
-		status = "failed"
-		code = StatusCodeFromErr(scanErr)
-		errText = errSummary(scanErr)
-	} else if scanErr != nil {
-		if isClientCanceled(ctx, scanErr) {
-			if conv.Done() {
-				status = "completed"
-			} else {
-				status = "canceled"
-			}
-		} else {
-			status = "failed"
-			if sc := StatusCodeFromErr(scanErr); sc != 0 {
-				code = sc
-			}
-			errText = errSummary(scanErr)
-		}
-	}
+	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
+		locked:   locked,
+		scanErr:  scanErr,
+		terminal: conv.Done(),
+		status:   "completed",
+		code:     200,
+		// 无事件且错误串解析不出状态码时 code 落 0（与历史行为一致）。
+		noEventsCode: 0,
+	})
 	var inTok, outTok, cacheRead, cacheCreate int
 	if u := conv.Usage(); u != nil {
 		inTok, outTok = u.InputTokens, u.OutputTokens
@@ -178,11 +162,5 @@ func (b *ChatBackend) Execute(
 			BackendType: config.BackendOpenAIChat,
 		})
 	}
-	if !locked {
-		return scanErr
-	}
 	return scanErr
 }
-
-// 确保 config 常量可用
-var _ = config.BackendOpenAIChat

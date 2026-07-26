@@ -40,8 +40,22 @@ var (
 	ItemTypeMcpCall              = string(oaconstant.ValueOf[oaconstant.McpCall]())
 
 	ContentTypeOutputText  = string(oaconstant.ValueOf[oaconstant.OutputText]())
+	ContentTypeInputText   = string(oaconstant.ValueOf[oaconstant.InputText]())
 	ContentTypeRefusal     = string(oaconstant.ValueOf[oaconstant.Refusal]())
 	ContentTypeSummaryText = string(oaconstant.ValueOf[oaconstant.SummaryText]())
+
+	ToolTypeFunction        = string(oaconstant.ValueOf[oaconstant.Function]())
+	ToolTypeCustom          = string(oaconstant.ValueOf[oaconstant.Custom]())
+	ToolTypeApplyPatch      = string(oaconstant.ValueOf[oaconstant.ApplyPatch]())
+	ToolTypeShell           = string(oaconstant.ValueOf[oaconstant.Shell]())
+	ToolTypeLocalShell      = string(oaconstant.ValueOf[oaconstant.LocalShell]())
+	ToolTypeToolSearch      = string(oaconstant.ValueOf[oaconstant.ToolSearch]())
+	ToolTypeNamespace       = string(oaconstant.ValueOf[oaconstant.Namespace]())
+	ToolTypeMcp             = string(oaconstant.ValueOf[oaconstant.Mcp]())
+	ToolTypeCodeInterpreter = string(oaconstant.ValueOf[oaconstant.CodeInterpreter]())
+
+	AnnotationTypeFileCitation = string(oaconstant.ValueOf[oaconstant.FileCitation]())
+	AnnotationTypeURLCitation  = string(oaconstant.ValueOf[oaconstant.URLCitation]())
 
 	StructuredOutputJSONObjectTool = string(oaconstant.ValueOf[oaconstant.JSONObject]())
 )
@@ -71,4 +85,7 @@ const (
 	ToolChoiceAuto     = string(oairesponses.ToolChoiceOptionsAuto)
 	ToolChoiceRequired = string(oairesponses.ToolChoiceOptionsRequired)
 	ToolChoiceNone     = string(oairesponses.ToolChoiceOptionsNone)
+
+	// oaconstant 只有带日期的 web_search 变体，裸 "web_search" 取自 responses 枚举。
+	ToolTypeWebSearch = string(oairesponses.WebSearchToolTypeWebSearch)
 )

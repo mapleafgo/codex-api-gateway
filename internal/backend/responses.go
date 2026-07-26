@@ -11,6 +11,14 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
+	oaconstant "github.com/openai/openai-go/v3/shared/constant"
+)
+
+// 终态事件 wire 字符串，派生自 SDK shared/constant 以防止与规范值漂移。
+var (
+	evResponseCompleted  = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
+	evResponseIncomplete = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
+	evResponseFailed     = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
 )
 
 // ResponsesBackend 将 Responses 请求透传到 OpenAI Responses 上游（仅流式）。
@@ -98,7 +106,7 @@ func rewriteClientModel(data []byte, clientModel string) []byte {
 // parseUsageFromEvent 尽力从终态事件解析 usage（仅观测，失败返回 0）。
 func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRead, cacheCreate int, ok bool) {
 	switch eventType {
-	case "response.completed", "response.incomplete", "response.failed":
+	case evResponseCompleted, evResponseIncomplete, evResponseFailed:
 	default:
 		return 0, 0, 0, 0, false
 	}
@@ -202,11 +210,11 @@ func (b *ResponsesBackend) Execute(
 		}
 		// 先记终态再写出，避免 onEvent 内 cancel 时终态尚未置位。
 		switch et {
-		case "response.completed":
+		case evResponseCompleted:
 			terminalStatus = "completed"
-		case "response.incomplete":
+		case evResponseIncomplete:
 			terminalStatus = "incomplete"
-		case "response.failed":
+		case evResponseFailed:
 			terminalStatus = "failed"
 			terminalError = parseResponseError(data)
 		}
@@ -221,31 +229,30 @@ func (b *ResponsesBackend) Execute(
 		return nil
 	})
 
-	status := terminalStatus
-	if status == "" {
-		status = "completed"
+	initialStatus := terminalStatus
+	if initialStatus == "" {
+		initialStatus = "completed"
 	}
-	code := 200
-	errText := terminalError
-	if !locked {
-		if scanErr == nil {
-			scanErr = fmt.Errorf("upstream returned no events")
-		}
+	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
+		locked:   locked,
+		scanErr:  scanErr,
+		terminal: terminalStatus != "",
+		status:   initialStatus,
+		code:     200,
+		errText:  terminalError,
+		// 无事件且错误串解析不出状态码时 code 落 0（与历史行为一致）。
+		noEventsCode: 0,
+	})
+	// 上游发了部分事件后干净关流、始终未给出 completed/failed/incomplete 终态：
+	// 客户端收到的是截断流，指标不得记 completed。只修观测，不向客户端
+	// 合成任何 SSE 终态事件（透传层不代补终态）。
+	if locked && scanErr == nil && terminalStatus == "" {
 		status = "failed"
-		code = StatusCodeFromErr(scanErr)
-		errText = errSummary(scanErr)
-	} else if scanErr != nil {
-		if isClientCanceled(ctx, scanErr) {
-			if terminalStatus == "" {
-				status = "canceled"
-			}
-		} else {
-			status = "failed"
-			if sc := StatusCodeFromErr(scanErr); sc != 0 {
-				code = sc
-			}
-			errText = errSummary(scanErr)
-		}
+		errText = "upstream stream ended without terminal event"
+		log.Warn("Responses 上游流缺失终态事件即关闭",
+			"model", clientModel,
+			"resolved_model", resolved,
+			"elapsed", time.Since(start).String())
 	}
 	level := slog.LevelInfo
 	if status == "failed" {
@@ -271,9 +278,6 @@ func (b *ResponsesBackend) Execute(
 			CacheRead: cacheRead, CacheCreate: cacheCreate,
 			BackendType: config.BackendOpenAIResponses,
 		})
-	}
-	if !locked {
-		return scanErr
 	}
 	return scanErr
 }

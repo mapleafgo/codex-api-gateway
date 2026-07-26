@@ -42,6 +42,17 @@ func TestResponseObjectMarshalHasRequired(t *testing.T) {
 	}
 }
 
+func TestMarshalEventUnmarshalableValueNoPanic(t *testing.T) {
+	// channel 无法被 json.Marshal，MarshalEvent 不得 panic，Data 应为 nil
+	ev := MarshalEvent("response.completed", map[string]any{"ch": make(chan int)})
+	if ev.Type != "response.completed" {
+		t.Fatalf("type=%s", ev.Type)
+	}
+	if ev.Data != nil {
+		t.Fatalf("data=%s want nil", ev.Data)
+	}
+}
+
 func TestOutputItemMarshalClean(t *testing.T) {
 	item := OutputItem{
 		Type: "message", ID: "msg_0", Role: "assistant",
