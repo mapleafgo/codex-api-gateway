@@ -404,14 +404,14 @@ func (c *Converter) classifyTool(name string) toolKind {
 	switch name {
 	case "tool_search":
 		return kindToolSearch
-	case "shell", "apply_patch":
+	case toolcatalog.ChatNameShell, toolcatalog.ChatNameApplyPatch:
 		return kindCustom
-	case "web_search":
+	case toolcatalog.ChatNameWebSearch:
 		return kindWebSearch
-	case "code_interpreter":
+	case toolcatalog.ChatNameCodeInterpreter:
 		return kindCodeInterpreter
 	}
-	if strings.HasPrefix(name, "mcp__") {
+	if strings.HasPrefix(name, toolcatalog.MCPChatNamePrefix) {
 		return kindMCP
 	}
 	if _, ok := c.freeformNames[name]; ok {
@@ -432,10 +432,10 @@ func (c *Converter) ensureMessageOpen() []model.SSEEvent {
 	c.msgIndex = len(c.outputItems)
 	c.msgItemID = fmt.Sprintf("msg_%s_%d", c.respID, c.msgIndex)
 	item := model.OutputItem{
-		Type:   "message",
+		Type:   model.ItemTypeMessage,
 		ID:     c.msgItemID,
-		Status: "in_progress",
-		Role:   "assistant",
+		Status: model.ResponseStatusInProgress,
+		Role:   model.RoleAssistant,
 	}
 	c.outputItems = append(c.outputItems, item)
 	out = append(out, model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
@@ -447,7 +447,7 @@ func (c *Converter) ensureMessageOpen() []model.SSEEvent {
 		"output_index":    c.msgIndex,
 		"content_index":   0,
 		"item_id":         c.msgItemID,
-		"part":            model.ContentPartOut{Type: "output_text", Text: ""},
+		"part":            model.ContentPartOut{Type: model.ContentTypeOutputText, Text: ""},
 	}))
 	c.contentOpen = true
 	return out
@@ -671,11 +671,10 @@ func (c *Converter) buildToolItem(acc *toolAccum) model.OutputItem {
 }
 
 func parseMCPName(flat string) (server, tool string, ok bool) {
-	const p = "mcp__"
-	if !strings.HasPrefix(flat, p) {
+	if !strings.HasPrefix(flat, toolcatalog.MCPChatNamePrefix) {
 		return "", "", false
 	}
-	rest := strings.TrimPrefix(flat, p)
+	rest := strings.TrimPrefix(flat, toolcatalog.MCPChatNamePrefix)
 	idx := strings.LastIndex(rest, "__")
 	if idx <= 0 {
 		return "", "", false
@@ -734,17 +733,17 @@ func (c *Converter) closeMessage() []model.SSEEvent {
 		out = append(out, model.MarshalEvent(evContentPartDone, model.ContentPartDoneEvent{
 			Type: evContentPartDone, SequenceNumber: c.nextSeq(),
 			OutputIndex: c.msgIndex, ContentIndex: 0, ItemID: c.msgItemID,
-			Part: model.ContentPartOut{Type: "output_text", Text: text, Logprobs: lps},
+			Part: model.ContentPartOut{Type: model.ContentTypeOutputText, Text: text, Logprobs: lps},
 		}))
 		c.contentOpen = false
 	}
 	item := model.OutputItem{
-		Type:   "message",
+		Type:   model.ItemTypeMessage,
 		ID:     c.msgItemID,
-		Status: "completed",
-		Role:   "assistant",
+		Status: model.ResponseStatusCompleted,
+		Role:   model.RoleAssistant,
 		Content: []model.OutputText{{
-			Type: "output_text", Text: text, Logprobs: lps,
+			Type: model.ContentTypeOutputText, Text: text, Logprobs: lps,
 		}},
 	}
 	if c.msgIndex < len(c.outputItems) {
@@ -977,11 +976,7 @@ func (c *Converter) emitTerminal() []model.SSEEvent {
 	if len(resp.Output) == 0 {
 		resp.Output = []model.OutputItem{}
 	}
-	if status == model.ResponseStatusCompleted {
-		resp.CompletedAt = time.Now().Unix()
-	} else {
-		resp.CompletedAt = time.Now().Unix()
-	}
+	resp.CompletedAt = time.Now().Unix()
 	resp.Usage = c.usage
 	if incompleteReason != "" {
 		resp.IncompleteDetails = &model.IncompleteDetails{Reason: incompleteReason}
@@ -1031,11 +1026,11 @@ func (c *Converter) prepareRefusalOutput() []model.SSEEvent {
 	addedPart := model.ContentPartOut{Type: model.ContentTypeRefusal, Refusal: &empty}
 	donePart := model.ContentPartOut{Type: model.ContentTypeRefusal, Refusal: &refusal}
 	addedItem := model.OutputItem{
-		Type: model.ItemTypeMessage, ID: itemID, Role: "assistant",
+		Type: model.ItemTypeMessage, ID: itemID, Role: model.RoleAssistant,
 		Status: model.ResponseStatusInProgress, Content: []model.OutputText{},
 	}
 	doneItem := model.OutputItem{
-		Type: model.ItemTypeMessage, ID: itemID, Role: "assistant",
+		Type: model.ItemTypeMessage, ID: itemID, Role: model.RoleAssistant,
 		Status: model.ResponseStatusCompleted, Content: []model.OutputText{refusalPart},
 	}
 	c.outputItems = []model.OutputItem{doneItem}
@@ -1090,8 +1085,6 @@ func jsonStringField(raw, key string) string {
 	}
 	return ""
 }
-
-// Fail 标记失败并产出 response.failed（流中断时由 Backend 调用）。
 
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {

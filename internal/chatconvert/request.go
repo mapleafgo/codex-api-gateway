@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
+	openai "github.com/openai/openai-go/v3"
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
@@ -229,7 +230,7 @@ func (r *ChatRequest) IsFreeformName(name string) bool {
 
 func isBuiltinFreeform(name string) bool {
 	switch name {
-	case "shell", "apply_patch":
+	case toolcatalog.ChatNameShell, toolcatalog.ChatNameApplyPatch:
 		return true
 	default:
 		return false
@@ -340,8 +341,8 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			})
 		case item.OfShellCall != nil:
 			call := item.OfShellCall
-			freeform["shell"] = struct{}{}
-			appendToolCall(call.CallID, "shell", freeformArgsJSON(strings.Join(call.Action.Commands, "\n")))
+			freeform[toolcatalog.ChatNameShell] = struct{}{}
+			appendToolCall(call.CallID, toolcatalog.ChatNameShell, freeformArgsJSON(strings.Join(call.Action.Commands, "\n")))
 		case item.OfShellCallOutput != nil:
 			flushPending()
 			o := item.OfShellCallOutput
@@ -352,12 +353,12 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			})
 		case item.OfLocalShellCall != nil:
 			call := item.OfLocalShellCall
-			freeform["shell"] = struct{}{}
+			freeform[toolcatalog.ChatNameShell] = struct{}{}
 			id := call.CallID
 			if id == "" {
 				id = call.ID
 			}
-			appendToolCall(id, "shell", freeformArgsJSON(strings.Join(call.Action.Command, " ")))
+			appendToolCall(id, toolcatalog.ChatNameShell, freeformArgsJSON(strings.Join(call.Action.Command, " ")))
 		case item.OfLocalShellCallOutput != nil:
 			flushPending()
 			o := item.OfLocalShellCallOutput
@@ -368,14 +369,14 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			})
 		case item.OfApplyPatchCall != nil:
 			call := item.OfApplyPatchCall
-			freeform["apply_patch"] = struct{}{}
+			freeform[toolcatalog.ChatNameApplyPatch] = struct{}{}
 			patch, err := applyPatchText(call)
 			if err != nil {
 				slog.Warn("chatconvert: apply_patch 历史无法拼 V4A，跳过",
 					"call_id", call.CallID, "error", err.Error())
 				continue
 			}
-			appendToolCall(call.CallID, "apply_patch", freeformArgsJSON(patch))
+			appendToolCall(call.CallID, toolcatalog.ChatNameApplyPatch, freeformArgsJSON(patch))
 		case item.OfApplyPatchCallOutput != nil:
 			flushPending()
 			o := item.OfApplyPatchCallOutput
@@ -401,7 +402,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			if id == "" {
 				id = "ws_hist"
 			}
-			appendToolCall(id, chatNameWebSearch, args)
+			appendToolCall(id, toolcatalog.ChatNameWebSearch, args)
 			flushPending()
 			out = append(out, ChatMessage{Role: "tool", ToolCallID: id, Content: result})
 		case item.OfCodeInterpreterCall != nil:
@@ -411,7 +412,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			if id == "" {
 				id = "ci_hist"
 			}
-			appendToolCall(id, chatNameCodeInterpreter, args)
+			appendToolCall(id, toolcatalog.ChatNameCodeInterpreter, args)
 			flushPending()
 			out = append(out, ChatMessage{Role: "tool", ToolCallID: id, Content: result})
 		case item.OfMcpCall != nil:
@@ -475,13 +476,9 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 				pendingReasoning += "\n" + t
 			}
 		default:
-			typ := itemType(item)
-			if isImportantHistoryDrop(typ) {
-				slog.Warn("chatconvert: 跳过无 Chat 等价的重要历史 item",
-					"type", typ, "impact", "对应上下文不会发给 Chat 上游")
-			} else {
-				slog.Debug("chatconvert: 跳过无 Chat 等价的 input item", "type", typ)
-			}
+			// 已知的重要历史类型全部被前面的显式分支接住（mcp_call/web_search_call
+			// 等各有 WARN），走到这里的只有全部 Of* 为 nil 的未知类型——可控跳过。
+			slog.Debug("chatconvert: 跳过无 Chat 等价的 input item", "type", itemType(item))
 		}
 	}
 	flushPending()
@@ -490,18 +487,6 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			"chars", len(pendingReasoning))
 	}
 	return out, nil
-}
-
-func isImportantHistoryDrop(typ string) bool {
-	switch typ {
-	case "mcp_call", "web_search_call", "code_interpreter_call",
-		"computer_call", "computer_call_output",
-		"file_search_call", "image_generation_call",
-		"program", "program_output", "item_reference", "additional_tools":
-		return true
-	default:
-		return false
-	}
 }
 
 const placeholderToolResultContent = "[no tool output available — this call's result was missing from the request history]"
@@ -847,20 +832,20 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 			},
 		}}
 	case t.OfShell != nil, t.OfLocalShell != nil:
-		freeform["shell"] = struct{}{}
+		freeform[toolcatalog.ChatNameShell] = struct{}{}
 		return []ChatTool{{
 			Type: "function",
 			Function: ChatFunction{
-				Name:       "shell",
+				Name:       toolcatalog.ChatNameShell,
 				Parameters: toolcatalog.FreeformInputSchema(),
 			},
 		}}
 	case t.OfApplyPatch != nil:
-		freeform["apply_patch"] = struct{}{}
+		freeform[toolcatalog.ChatNameApplyPatch] = struct{}{}
 		return []ChatTool{{
 			Type: "function",
 			Function: ChatFunction{
-				Name:        "apply_patch",
+				Name:        toolcatalog.ChatNameApplyPatch,
 				Description: toolcatalog.ApplyPatchDescription(),
 				Parameters:  toolcatalog.FreeformInputSchema(),
 			},
@@ -1069,12 +1054,12 @@ func convertToolChoice(tc oairesponses.ResponseNewParamsToolChoiceUnion) any {
 	case tc.OfSpecificShellToolChoice != nil:
 		return map[string]any{
 			"type":     "function",
-			"function": map[string]string{"name": "shell"},
+			"function": map[string]string{"name": toolcatalog.ChatNameShell},
 		}
 	case tc.OfSpecificApplyPatchToolChoice != nil:
 		return map[string]any{
 			"type":     "function",
-			"function": map[string]string{"name": "apply_patch"},
+			"function": map[string]string{"name": toolcatalog.ChatNameApplyPatch},
 		}
 	case tc.OfAllowedTools != nil:
 		mode := string(tc.OfAllowedTools.Mode)
@@ -1082,11 +1067,42 @@ func convertToolChoice(tc oairesponses.ResponseNewParamsToolChoiceUnion) any {
 			return "required"
 		}
 		return "auto"
-	case tc.OfHostedTool != nil, tc.OfMcpTool != nil,
-		tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
+	case tc.OfHostedTool != nil:
+		return convertHostedToolChoice(tc.OfHostedTool)
+	case tc.OfMcpTool != nil:
+		slog.Debug("chatconvert: tool_choice mcp 无 Chat 等价，降级为默认选择",
+			"server_label", tc.OfMcpTool.ServerLabel, "name", optString(tc.OfMcpTool.Name))
+		return nil
+	case tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
+		slog.Debug("chatconvert: tool_choice programmatic 无 Chat 等价，降级为默认选择")
 		return nil
 	default:
 		return nil
+	}
+}
+
+// convertHostedToolChoice 把 hosted tool_choice 映射为 Chat 强制 function 选择。
+// c 路径已把 web_search / code_interpreter 声明为同名 synthetic function（见
+// hosted.go / toolcatalog/chatnames.go），强制选择按同名 function 下发即可。
+func convertHostedToolChoice(hosted *oairesponses.ToolChoiceTypesParam) any {
+	switch hosted.Type {
+	case oairesponses.ToolChoiceTypesType(toolcatalog.ChatNameWebSearch),
+		oairesponses.ToolChoiceTypesTypeWebSearchPreview,
+		oairesponses.ToolChoiceTypesTypeWebSearchPreview2025_03_11:
+		return namedFunctionChoice(toolcatalog.ChatNameWebSearch)
+	case oairesponses.ToolChoiceTypesTypeCodeInterpreter:
+		return namedFunctionChoice(toolcatalog.ChatNameCodeInterpreter)
+	default:
+		slog.Debug("chatconvert: tool_choice hosted 类型无 Chat 等价，降级为默认选择",
+			"type", string(hosted.Type))
+		return nil
+	}
+}
+
+// namedFunctionChoice 构造 Chat 的强制 function 选择（SDK 参数，type 恒为 function）。
+func namedFunctionChoice(name string) any {
+	return openai.ChatCompletionNamedToolChoiceParam{
+		Function: openai.ChatCompletionNamedToolChoiceFunctionParam{Name: name},
 	}
 }
 

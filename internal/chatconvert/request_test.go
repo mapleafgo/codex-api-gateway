@@ -776,6 +776,100 @@ func TestToChat_ToolChoiceFunctionName(t *testing.T) {
 	}
 }
 
+func TestConvertToolChoiceHosted(t *testing.T) {
+	hosted := func(typ oairesponses.ToolChoiceTypesType) oairesponses.ResponseNewParamsToolChoiceUnion {
+		return oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfHostedTool: &oairesponses.ToolChoiceTypesParam{Type: typ},
+		}
+	}
+	cases := []struct {
+		name     string
+		tc       oairesponses.ResponseNewParamsToolChoiceUnion
+		wantName string // 期望强制选择的 function 名；空表示降级为 nil
+	}{
+		{
+			name:     "web_search 强制选择映射为同名 function",
+			tc:       hosted(oairesponses.ToolChoiceTypesType("web_search")),
+			wantName: "web_search",
+		},
+		{
+			name:     "web_search_preview 归并到 web_search",
+			tc:       hosted(oairesponses.ToolChoiceTypesTypeWebSearchPreview),
+			wantName: "web_search",
+		},
+		{
+			name:     "code_interpreter 强制选择映射为同名 function",
+			tc:       hosted(oairesponses.ToolChoiceTypesTypeCodeInterpreter),
+			wantName: "code_interpreter",
+		},
+		{
+			name:     "image_generation hosted 无映射，降级为 nil",
+			tc:       hosted(oairesponses.ToolChoiceTypesTypeImageGeneration),
+			wantName: "",
+		},
+		{
+			name: "mcp tool_choice 无 Chat 等价，降级为 nil",
+			tc: oairesponses.ResponseNewParamsToolChoiceUnion{
+				OfMcpTool: &oairesponses.ToolChoiceMcpParam{ServerLabel: "srv"},
+			},
+			wantName: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convertToolChoice(tc.tc)
+			if tc.wantName == "" {
+				if got != nil {
+					t.Fatalf("tool_choice 应降级为 nil, got %v", got)
+				}
+				return
+			}
+			raw, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("marshal tool_choice: %v", err)
+			}
+			var parsed struct {
+				Type     string `json:"type"`
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			}
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatalf("unmarshal tool_choice %s: %v", raw, err)
+			}
+			if parsed.Type != "function" || parsed.Function.Name != tc.wantName {
+				t.Fatalf("tool_choice=%s, want function %q", raw, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestToChat_ToolChoiceHostedEndToEnd 走 ToChat 全链路验证 hosted 强制选择进出 wire。
+func TestToChat_ToolChoiceHostedEndToEnd(t *testing.T) {
+	body := `{"model":"gpt-4o","input":"x","tools":[{"type":"web_search"}]}`
+	req, err := convert.DecodeResponseNewParams([]byte(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
+		OfHostedTool: &oairesponses.ToolChoiceTypesParam{
+			Type: oairesponses.ToolChoiceTypesType("web_search"),
+		},
+	}
+	out, err := ToChat(req, "gpt-4o")
+	if err != nil {
+		t.Fatalf("ToChat: %v", err)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"tool_choice":{"function":{"name":"web_search"},"type":"function"}`) &&
+		!strings.Contains(string(raw), `"tool_choice":{"type":"function","function":{"name":"web_search"}}`) {
+		t.Fatalf("wire tool_choice missing forced web_search: %s", raw)
+	}
+}
+
 func TestToChat_CompactionTrigger(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",

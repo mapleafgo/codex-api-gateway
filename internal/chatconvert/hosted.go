@@ -6,25 +6,22 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
-// Hosted tool names used on Chat function wire (lossy; no server execution).
-const (
-	chatNameWebSearch       = "web_search"
-	chatNameCodeInterpreter = "code_interpreter"
-	mcpNamePrefix           = "mcp__"
-)
+// Hosted tool names used on Chat function wire (lossy; no server execution)
+// 见 toolcatalog/chatnames.go：出站合成与 chatstreamconv 回程识别共用契约。
 
 func mcpChatName(serverLabel, toolName string) string {
-	return mcpNamePrefix + serverLabel + "__" + toolName
+	return toolcatalog.MCPChatNamePrefix + serverLabel + "__" + toolName
 }
 
 func webSearchToolDecl() ChatTool {
 	return ChatTool{
 		Type: "function",
 		Function: ChatFunction{
-			Name:        chatNameWebSearch,
+			Name:        toolcatalog.ChatNameWebSearch,
 			Description: "Search the web (Chat backend: shape-only; no hosted search execution).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -41,7 +38,7 @@ func codeInterpreterToolDecl() ChatTool {
 	return ChatTool{
 		Type: "function",
 		Function: ChatFunction{
-			Name:        chatNameCodeInterpreter,
+			Name:        toolcatalog.ChatNameCodeInterpreter,
 			Description: "Run code (Chat backend: shape-only; no sandbox).",
 			Parameters: map[string]any{
 				"type": "object",

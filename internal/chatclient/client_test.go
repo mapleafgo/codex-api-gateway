@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
 
 func TestChatCompletionsURL(t *testing.T) {
@@ -40,7 +42,7 @@ func TestModelsURL(t *testing.T) {
 		{"https://api.openai.com/v1/models", "https://api.openai.com/v1/models"},
 	}
 	for _, tc := range cases {
-		got := modelsURL(tc.in)
+		got := upstreamhttp.ModelsURL(tc.in)
 		if got != tc.want {
 			t.Errorf("modelsURL(%q) = %q, want %q", tc.in, got, tc.want)
 		}
@@ -124,5 +126,38 @@ func TestScanEventsDone(t *testing.T) {
 	}
 	if len(chunks) != 1 || chunks[0] != `{"x":1}` {
 		t.Fatalf("chunks=%v (must stop at [DONE])", chunks)
+	}
+}
+
+// TestScanEvents_LargeFrame 单行超过 bufio.Scanner 默认 64KiB 上限时不得断流。
+func TestScanEvents_LargeFrame(t *testing.T) {
+	big := strings.Repeat("x", 200*1024)
+	input := "data: {\"content\":\"" + big + "\"}\n\ndata: [DONE]\n\n"
+	var got []string
+	err := ScanEvents(strings.NewReader(input), func(data []byte) error {
+		got = append(got, string(data))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("大帧不应报错: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], big) {
+		t.Fatalf("大帧应完整送达 onEvent，got %d 条", len(got))
+	}
+}
+
+// TestScanEvents_NoSpaceAfterColon SSE 规范允许 "data:" 后无空格。
+func TestScanEvents_NoSpaceAfterColon(t *testing.T) {
+	input := "data:{\"a\":1}\n\ndata:[DONE]\n\n"
+	var got []string
+	err := ScanEvents(strings.NewReader(input), func(data []byte) error {
+		got = append(got, string(data))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != `{"a":1}` {
+		t.Fatalf("无空格形态应被解析，got %v", got)
 	}
 }
