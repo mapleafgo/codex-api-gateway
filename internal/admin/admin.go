@@ -40,6 +40,7 @@ type Deps struct {
 	Holder  *config.Holder
 	Metrics *metrics.Collector
 	CfgPath string // config.yaml 的绝对路径（用于写回）
+	Version string // 构建版本号，由 CI 通过 -ldflags 注入
 	// ReloadFromDisk 在写回 config.yaml 后调用：让 configwatch 重新 Load。
 	// 必须同步完成——调用方（如 handleSetSourceDisabled）依赖 reload 后 holder 已更新。
 	// 若 configwatch 未启用，传 nil 即可（写回不立即生效，需重启）。
@@ -78,6 +79,7 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
 	mux.HandleFunc("/admin/api/sources/promote", wrap("promote-source", h.handlePromoteSource))
 	mux.HandleFunc("/admin/api/sources/disabled", wrap("source-disabled", h.handleSetSourceDisabled))
+	mux.HandleFunc("/admin/api/version", wrap("version", h.handleVersion))
 }
 
 // recoverMiddleware 捕获 handler panic，记录日志后返回 500。
@@ -732,4 +734,8 @@ func readFileOrNil(path string) string {
 		return ""
 	}
 	return string(b)
+}
+
+func (h *handler) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": h.deps.Version})
 }

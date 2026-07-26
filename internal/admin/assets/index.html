@@ -123,6 +123,10 @@ a { color: inherit; }
   font-family: var(--mono); font-size: 11px; font-weight: 500;
   letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint);
 }
+.ui-brand .svc-ver {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--ink-border); margin-left: 6px;
+}
 .ui-brand .sep { color: var(--line); }
 .ui-topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
@@ -679,6 +683,7 @@ html[data-theme="dark"] .ui-select {
           :title="connected ? t('sseConnected') : t('sseOffline')" aria-hidden="true"></span>
     <h1>
       <span class="svc">codex-api-gateway</span>
+      <span class="svc-ver" x-text="version ? 'v'+version : ''"></span>
     </h1>
   </div>
   <div class="ui-topbar-actions">
@@ -1565,6 +1570,7 @@ function app() {
       this.applyLocale();
       this.startSSE();
       this.loadConfig();
+      this.fetchVersion();
       this.$nextTick(() => this.onListScroll());
       window.addEventListener('sel-change', (e) => {
         const field = e.target.closest('.ui-sel')?.dataset?.field;
@@ -1590,6 +1596,12 @@ function app() {
       this.theme = this.theme === 'dark' ? 'light' : 'dark';
       localStorage.setItem('gw_theme', this.theme);
       this.applyTheme();
+    },
+    async fetchVersion() {
+      try {
+        const res = await fetch('/admin/api/version');
+        if (res.ok) { const d = await res.json(); this.version = d.version || ''; }
+      } catch(_) {}
     },
     applyTheme() {
       document.documentElement.setAttribute('data-theme', this.theme);

@@ -287,6 +287,7 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 		Holder:         srv.Holder(),
 		Metrics:        srv.Metrics(),
 		CfgPath:        cfgPath,
+		Version:        version,
 		ReloadFromDisk: reload,
 		ModelsFetcher:  srv.Scheduler().ListUpstreamModels,
 		SourceHealth: func() []admin.SourceHealthView {
