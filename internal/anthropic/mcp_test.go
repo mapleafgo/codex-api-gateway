@@ -170,14 +170,14 @@ func TestInjectMCPDoesNotCreateCacheControlWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestMergeBetaHeader(t *testing.T) {
-	if got := mergeBetaHeader(""); got != MCPBetaHeader {
+func TestAppendBetaMCPHeader(t *testing.T) {
+	if got := appendBeta("", MCPBetaHeader); got != MCPBetaHeader {
 		t.Fatalf("empty base: %q", got)
 	}
-	if got := mergeBetaHeader("interleaved-thinking-2025-05-14"); !strings.Contains(got, MCPBetaHeader) || !strings.Contains(got, "interleaved-thinking") {
+	if got := appendBeta("interleaved-thinking-2025-05-14", MCPBetaHeader); !strings.Contains(got, MCPBetaHeader) || !strings.Contains(got, "interleaved-thinking") {
 		t.Fatalf("must merge: %q", got)
 	}
-	if got := mergeBetaHeader(MCPBetaHeader); got != MCPBetaHeader {
+	if got := appendBeta(MCPBetaHeader, MCPBetaHeader); got != MCPBetaHeader {
 		t.Fatalf("must dedupe: %q", got)
 	}
 }

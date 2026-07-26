@@ -63,11 +63,12 @@ func (mcpCallKind) finish(c *Converter, st *callState, _ string) (model.OutputIt
 	return c.outputItems[st.itemIdx], nil
 }
 
-func (mcpCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (k mcpCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
 	if itemIdx >= len(c.outputItems) {
 		return nil
 	}
-	itemID := fmt.Sprintf("mcp_%d", itemIdx)
+	// done 事件 item_id 必须与 added 一致，统一从 idPrefix 派生。
+	itemID := fmt.Sprintf("%s_%d", k.idPrefix(), itemIdx)
 	output, isError := decodeMcpResultInput(ev.ContentBlock.Input)
 	c.outputItems[itemIdx].Output = output
 	if isError {

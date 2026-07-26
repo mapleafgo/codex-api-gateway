@@ -51,11 +51,12 @@ func (webSearchCallKind) finish(c *Converter, st *callState, _ string) (model.Ou
 	return c.outputItems[st.itemIdx], nil
 }
 
-func (webSearchCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (k webSearchCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
 	if itemIdx >= len(c.outputItems) {
 		return nil
 	}
-	itemID := fmt.Sprintf("ws_%d", itemIdx)
+	// done 事件 item_id 必须与 added 一致，统一从 idPrefix 派生。
+	itemID := fmt.Sprintf("%s_%d", k.idPrefix(), itemIdx)
 	c.outputItems[itemIdx].Status = model.ResponseStatusCompleted
 	if sources := extractWebSearchSources(ev.ContentBlock.Content); len(sources) > 0 && c.outputItems[itemIdx].Action != nil {
 		c.outputItems[itemIdx].Action.Sources = sources

@@ -73,16 +73,3 @@ func TestFormatApplyPatchV4ADelete(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

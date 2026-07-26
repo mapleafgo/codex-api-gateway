@@ -21,16 +21,16 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		return []anthropic.ToolUnionParam{ClientTool(fn.Name, schemaFromAny(fn.Parameters), optionalString(fn.Description), false)}, nil
 	case t.OfCustom != nil:
 		c := t.OfCustom
-		return []anthropic.ToolUnionParam{ClientTool(c.Name, freeformInputSchema(), optionalString(c.Description), true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool(c.Name, FreeformInputSchema(), optionalString(c.Description), true)}, nil
 	case t.OfApplyPatch != nil:
 		// Codex apply_patch 是 freeform V4A 文本工具（非 structured operation/path/diff）。
 		// 声明 structured schema 会诱导上游产出 JSON，回程/客户端校验双双失败。
 		desc := ApplyPatchDescription()
-		return []anthropic.ToolUnionParam{ClientTool("apply_patch", freeformInputSchema(), &desc, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("apply_patch", FreeformInputSchema(), &desc, true)}, nil
 	case t.OfShell != nil:
-		return []anthropic.ToolUnionParam{ClientTool("shell", freeformInputSchema(), nil, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(), nil, true)}, nil
 	case t.OfLocalShell != nil:
-		return []anthropic.ToolUnionParam{ClientTool("shell", freeformInputSchema(), nil, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(), nil, true)}, nil
 	case t.OfToolSearch != nil:
 		s := t.OfToolSearch
 		return []anthropic.ToolUnionParam{ClientTool("tool_search", schemaFromAny(s.Parameters), optionalString(s.Description), false)}, nil
@@ -44,7 +44,7 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 				out = append(out, ClientTool(ToolName(ns.Name, fn.Name), schemaFromAny(fn.Parameters), optionalString(fn.Description), false))
 			case nested.OfCustom != nil:
 				c := nested.OfCustom
-				out = append(out, ClientTool(ToolName(ns.Name, c.Name), freeformInputSchema(), optionalString(c.Description), true))
+				out = append(out, ClientTool(ToolName(ns.Name, c.Name), FreeformInputSchema(), optionalString(c.Description), true))
 			default:
 				return nil, fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
 			}
@@ -169,10 +169,6 @@ func schemaFromAny(v any) map[string]any {
 
 // FreeformInputSchema 返回 freeform 工具（shell/apply_patch/custom）的通用 input schema。
 func FreeformInputSchema() map[string]any {
-	return freeformInputSchema()
-}
-
-func freeformInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

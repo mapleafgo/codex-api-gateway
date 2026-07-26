@@ -70,11 +70,12 @@ func (codeInterpreterCallKind) finish(c *Converter, st *callState, _ string) (mo
 	return c.outputItems[st.itemIdx], nil
 }
 
-func (codeInterpreterCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
+func (k codeInterpreterCallKind) handleResult(c *Converter, ev *anthropic.MessageStreamEventUnion, itemIdx int) []model.SSEEvent {
 	if itemIdx >= len(c.outputItems) {
 		return nil
 	}
-	itemID := fmt.Sprintf("ci_%d", itemIdx)
+	// done 事件 item_id 必须与 added 一致，统一从 idPrefix 派生。
+	itemID := fmt.Sprintf("%s_%d", k.idPrefix(), itemIdx)
 	rc := ev.ContentBlock.Content
 	logs := foldExecutionLogs(rc.Stdout, rc.Stderr)
 	c.outputItems[itemIdx].Status = model.ResponseStatusCompleted

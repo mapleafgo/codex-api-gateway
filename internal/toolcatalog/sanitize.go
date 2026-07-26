@@ -204,15 +204,7 @@ func SanitizeJSONIntegerNumbers(raw string) string {
 	if err := dec.Decode(&v); err != nil {
 		return raw
 	}
-	// 尾部非空白 → 非整段 JSON
-	rest, err := io.ReadAll(dec.Buffered())
-	if err != nil {
-		return raw
-	}
-	// Decoder 可能已读完 buffer；再扫 reader 剩余
-	more, _ := io.ReadAll(dec.Buffered())
-	_ = more
-	// 用第二个 decoder 验证无多余 token
+	// 尾部有多余 token → 非整段 JSON，原样返回
 	if hasTrailingJSONTokens(trimmed) {
 		return raw
 	}
@@ -221,7 +213,6 @@ func SanitizeJSONIntegerNumbers(raw string) string {
 	if err != nil {
 		return raw
 	}
-	_ = rest
 	return string(out)
 }
 

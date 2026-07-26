@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
@@ -13,37 +14,37 @@ import (
 func Inspect(t oairesponses.ToolUnionParam) ([]Identity, error) {
 	switch {
 	case t.OfFunction != nil:
-		return []Identity{{OpenAIType: "function", Name: t.OfFunction.Name}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeFunction, Name: t.OfFunction.Name}}, nil
 	case t.OfCustom != nil:
-		return []Identity{{OpenAIType: "custom", Name: t.OfCustom.Name, Freeform: true}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeCustom, Name: t.OfCustom.Name, Freeform: true}}, nil
 	case t.OfApplyPatch != nil:
-		return []Identity{{OpenAIType: "apply_patch", Name: "apply_patch", Freeform: true}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeApplyPatch, Name: "apply_patch", Freeform: true}}, nil
 	case t.OfShell != nil:
-		return []Identity{{OpenAIType: "shell", Name: "shell", Freeform: true}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeShell, Name: "shell", Freeform: true}}, nil
 	case t.OfLocalShell != nil:
-		return []Identity{{OpenAIType: "local_shell", Name: "shell", Freeform: true}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeLocalShell, Name: "shell", Freeform: true}}, nil
 	case t.OfToolSearch != nil:
-		return []Identity{{OpenAIType: "tool_search", Name: "tool_search"}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeToolSearch, Name: "tool_search"}}, nil
 	case t.OfNamespace != nil:
 		ns := t.OfNamespace
 		out := make([]Identity, 0, len(ns.Tools))
 		for _, nested := range ns.Tools {
 			switch {
 			case nested.OfFunction != nil:
-				out = append(out, Identity{OpenAIType: "function", Namespace: ns.Name, Name: nested.OfFunction.Name})
+				out = append(out, Identity{OpenAIType: model.ToolTypeFunction, Namespace: ns.Name, Name: nested.OfFunction.Name})
 			case nested.OfCustom != nil:
-				out = append(out, Identity{OpenAIType: "custom", Namespace: ns.Name, Name: nested.OfCustom.Name, Freeform: true})
+				out = append(out, Identity{OpenAIType: model.ToolTypeCustom, Namespace: ns.Name, Name: nested.OfCustom.Name, Freeform: true})
 			default:
 				return nil, fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
 			}
 		}
 		return out, nil
 	case t.OfCodeInterpreter != nil:
-		return []Identity{{OpenAIType: "code_interpreter", Name: "code_interpreter"}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeCodeInterpreter, Name: "code_interpreter"}}, nil
 	case t.OfMcp != nil:
-		return []Identity{{OpenAIType: "mcp", Name: "mcp"}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeMcp, Name: "mcp"}}, nil
 	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
-		return []Identity{{OpenAIType: "web_search", Name: "web_search"}}, nil
+		return []Identity{{OpenAIType: model.ToolTypeWebSearch, Name: "web_search"}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))
 	}
@@ -58,19 +59,19 @@ func InspectAllowed(tool map[string]any) ([]Identity, error) {
 		return nil, fmt.Errorf("tool_choice allowed_tools entry requires a type")
 	}
 	switch typ {
-	case "shell", "local_shell":
+	case model.ToolTypeShell, model.ToolTypeLocalShell:
 		return []Identity{{OpenAIType: typ, Name: "shell", Freeform: true}}, nil
-	case "apply_patch":
+	case model.ToolTypeApplyPatch:
 		return []Identity{{OpenAIType: typ, Name: "apply_patch", Freeform: true}}, nil
-	case "tool_search":
+	case model.ToolTypeToolSearch:
 		return []Identity{{OpenAIType: typ, Name: "tool_search"}}, nil
-	case "function", "custom":
+	case model.ToolTypeFunction, model.ToolTypeCustom:
 		name, _ := tool["name"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("tool_choice allowed_tools entry %q requires a name", typ)
 		}
-		return []Identity{{OpenAIType: typ, Name: name, Freeform: typ == "custom"}}, nil
-	case "namespace":
+		return []Identity{{OpenAIType: typ, Name: name, Freeform: typ == model.ToolTypeCustom}}, nil
+	case model.ToolTypeNamespace:
 		return inspectAllowedNamespace(tool)
 	default:
 		return nil, fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
@@ -93,14 +94,14 @@ func inspectAllowedNamespace(tool map[string]any) ([]Identity, error) {
 			return nil, fmt.Errorf("tool_choice allowed_tools namespace %q has invalid child", namespace)
 		}
 		typ, _ := nested["type"].(string)
-		if typ != "function" && typ != "custom" {
+		if typ != model.ToolTypeFunction && typ != model.ToolTypeCustom {
 			return nil, fmt.Errorf("unsupported tool_choice allowed_tools namespace %q child type %q", namespace, typ)
 		}
 		name, _ := nested["name"].(string)
 		if name == "" {
 			return nil, fmt.Errorf("tool_choice allowed_tools namespace %q child %q requires a name", namespace, typ)
 		}
-		out = append(out, Identity{OpenAIType: typ, Namespace: namespace, Name: name, Freeform: typ == "custom"})
+		out = append(out, Identity{OpenAIType: typ, Namespace: namespace, Name: name, Freeform: typ == model.ToolTypeCustom})
 	}
 	return out, nil
 }

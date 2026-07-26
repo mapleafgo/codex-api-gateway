@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -66,7 +67,7 @@ func injectMCP(body []byte, mcp *MCPInjection) ([]byte, error) {
 	if mcp == nil || len(mcp.Servers) == 0 {
 		return body, nil
 	}
-	dec := json.NewDecoder(strings.NewReader(string(body)))
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var obj map[string]any
 	if err := dec.Decode(&obj); err != nil {
@@ -136,18 +137,16 @@ func relocateToolsCacheControl(obj map[string]any) {
 	}
 	last, ok := tools[len(tools)-1].(map[string]any)
 	if !ok {
-		slog.Warn("tools 末项不是 object，无法设 cache_control，tools 列表缓存将丢失")
+		slog.Warn("tools 末项不是 object，无法设 cache_control",
+			"impact", "tools 列表缓存将丢失",
+			"tool_index", len(tools)-1,
+			"ttl", ttl)
 		return
 	}
 	last["cache_control"] = map[string]any{
 		"type": "ephemeral",
 		"ttl":  ttl,
 	}
-}
-
-// mergeBetaHeader 把 mcp beta 值并入已有 anthropic-beta（逗号分隔），避免覆盖 thinking。
-func mergeBetaHeader(existing string) string {
-	return appendBeta(existing, MCPBetaHeader)
 }
 
 // synthesizeMCPEvent 把 beta mcp block 的 raw JSON（content_block_start envelope）
@@ -184,10 +183,10 @@ func synthesizeMCPEvent(payload []byte) (*asdk.MessageStreamEventUnion, error) {
 	if err := json.Unmarshal(env.ContentBlock, &blk); err != nil {
 		return nil, err
 	}
-	ev := &asdk.MessageStreamEventUnion{Type: "content_block_start"}
+	ev := &asdk.MessageStreamEventUnion{Type: eventContentBlockStart}
 	cb := asdk.ContentBlockStartEventContentBlockUnion{Type: blk.Type}
 	switch blk.Type {
-	case "mcp_tool_use":
+	case blockMCPToolUse:
 		cb.ID = blk.ID
 		cb.Name = blk.Name
 		cb.Input = map[string]any{
@@ -195,7 +194,7 @@ func synthesizeMCPEvent(payload []byte) (*asdk.MessageStreamEventUnion, error) {
 			"name":        blk.Name,
 			"arguments":   string(blk.Input),
 		}
-	case "mcp_tool_result":
+	case blockMCPToolResult:
 		cb.ToolUseID = blk.ToolUseID
 		cb.Input = map[string]any{
 			"output":   mcpResultText(blk.Content),

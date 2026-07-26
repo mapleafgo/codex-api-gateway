@@ -271,7 +271,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `top_k` | `top_k` | `supported` | Chat 同名透传；a 路径仍忽略 |
 | `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
 | `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过 |
-| `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice 忽略 |
+| `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search/code_interpreter 映射为同名 function 强制选择，其余与 mcp/programmatic DEBUG 后忽略 |
 | `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
 | `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
@@ -422,7 +422,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
 | `text.format.json_schema` | `OutputConfig.Format` | `supported` | 使用 Anthropic 原生 `output_config.format`（JSON Schema），不再需要合成工具；与 tool_choice 正交共存 |
-| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与所有不等价的显式 `tool_choice` 组合均明确转换失败 |
+| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与不等价的显式 function/custom/specific/allowed_tools choice 组合明确转换失败；hosted/mcp/programmatic choice 本身被忽略（见 Tool Choice Union），不阻断 structured output |
 | `text.verbosity` | none | `unsupported_by_backend` | a 忽略；Chat 见 c 专节 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
@@ -544,8 +544,8 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `shell` | `tool_choice.tool("shell")` | `supported` | 仅在已声明 `shell` 时映射；`local_shell` 不是此 specific choice 的等价声明 |
 | `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错；不能与 structured output 同时使用 |
 | structured output + explicit incompatible choice | none | `unsupported_by_backend` | synthetic structured-output tool 已被强制时，`none`、`auto`、`required`、其他 specific choice、`allowed_tools` 和未知 choice 均无等价语义，明确转换失败 |
-| hosted tool choice | none | `unsupported_by_backend` | file/web/computer/code/image 等内置工具不能安全模拟；请求时返回明确转换错误 |
-| `mcp` | none | `unsupported_by_backend` | 无等价 MCP choice；请求时返回明确转换错误 |
+| hosted tool choice | none | `lossy_supported` | 无 Anthropic 等价 choice：DEBUG 后忽略，声明的工具照常下发，是否调用由上游决定（不代劳拒绝） |
+| `mcp` | none | `lossy_supported` | 无等价 MCP choice：DEBUG 后忽略，交上游决定（不代劳拒绝） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |
 
 ## Output Item Union

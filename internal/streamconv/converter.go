@@ -76,7 +76,8 @@ var (
 	anBlockWebSearchToolResult = string(aconstant.ValueOf[aconstant.WebSearchToolResult]())
 
 	// tool_result 在 Anthropic 协议中只出现在请求侧，但某些后端会在响应流中
-	// 回传它，Responses API 没有对应的响应事件，静默跳过。
+	// 回传它。若能关联到已知 web_search server_tool_use 则按 web search 结果
+	// 处理（Debug）；否则 Responses API 没有对应的响应事件，WARN + 跳过（丢弃）。
 	anBlockToolResult = string(aconstant.ValueOf[aconstant.ToolResult]())
 
 	// server-tool result / error block wire strings: no Responses equivalent,
@@ -93,10 +94,9 @@ var (
 	anBlockToolSearchToolResult                   = string(aconstant.ValueOf[aconstant.ToolSearchToolResult]())
 	anBlockToolSearchToolResultError              = string(aconstant.ValueOf[aconstant.ToolSearchToolResultError]())
 
-	// beta mcp block：aconstant 无对应（beta only），硬编码 wire 字符串。
-	// ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
-	anBlockMcpToolUse    = "mcp_tool_use"
-	anBlockMcpToolResult = "mcp_tool_result"
+	// beta mcp block：ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
+	anBlockMcpToolUse    = string(aconstant.ValueOf[aconstant.MCPToolUse]())
+	anBlockMcpToolResult = string(aconstant.ValueOf[aconstant.MCPToolResult]())
 	// mid_conversation_system: Anthropic 中途插入的 system 指令块。
 	// OpenAI Responses 没有原生等价的「中途 system 消息」输出项，
 	// 当前选择 WARN + 跳过（不中断流），后续可考虑转为 developer marker。
@@ -110,6 +110,13 @@ var (
 	anDeltaSignature = string(aconstant.ValueOf[aconstant.SignatureDelta]())
 	anDeltaInputJSON = string(aconstant.ValueOf[aconstant.InputJSONDelta]())
 	anDeltaCitations = string(aconstant.ValueOf[aconstant.CitationsDelta]())
+
+	// citations_delta 内 citation 变体的 wire 字符串。
+	anCitCharLocation            = string(aconstant.ValueOf[aconstant.CharLocation]())
+	anCitPageLocation            = string(aconstant.ValueOf[aconstant.PageLocation]())
+	anCitContentBlockLocation    = string(aconstant.ValueOf[aconstant.ContentBlockLocation]())
+	anCitSearchResultLocation    = string(aconstant.ValueOf[aconstant.SearchResultLocation]())
+	anCitWebSearchResultLocation = string(aconstant.ValueOf[aconstant.WebSearchResultLocation]())
 )
 
 const refusalFallback = "I can't help with that."
@@ -547,13 +554,13 @@ func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) 
 	}
 	cit := ev.Delta.Citation
 	switch cit.Type {
-	case "char_location", "page_location", "content_block_location", "search_result_location":
+	case anCitCharLocation, anCitPageLocation, anCitContentBlockLocation, anCitSearchResultLocation:
 		// 这些 citation 在 OpenAI 端无原生 url/file 等价物（除非有 file_id），
 		// 折叠为 file_citation 占位以保留引用范围信息。Anthropic 的 char/page/block
 		// 位置是相对于被引用文档的，不是相对于 output_text 的，所以不映射到
 		// OpenAI start_index/end_index（OpenAI file_citation 也无此字段）。
 		annotation := map[string]any{
-			"type":     "file_citation",
+			"type":     model.AnnotationTypeFileCitation,
 			"file_id":  cit.FileID,
 			"filename": cit.DocumentTitle, // Anthropic document_title 近似为 filename
 			"index":    c.annotationIndex,
@@ -562,14 +569,14 @@ func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) 
 		out := c.buildAnnotationEvent(annotation)
 		c.annotationIndex++
 		return out
-	case "web_search_result_location":
+	case anCitWebSearchResultLocation:
 		// 折叠为 OpenAI url_citation。title/url 直接映射。
 		// start_index/end_index 是 OpenAI required 字段，但 Anthropic 的
 		// web_search_result_location 没有文本范围信息（只有 encrypted_index），
 		// 以当前 output_text 长度作为 end_index、0 作为 start_index 占位。
 		textLen := int64(c.textBuilder.Len())
 		annotation := map[string]any{
-			"type":        "url_citation",
+			"type":        model.AnnotationTypeURLCitation,
 			"title":       cit.Title,
 			"url":         cit.URL,
 			"start_index": 0,
@@ -623,10 +630,10 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		if anns == nil {
 			anns = []any{}
 		}
-		if c.textItemIdx < len(c.outputItems) {
-			c.outputItems[c.textItemIdx].Content = []model.OutputText{
-				{Type: model.ContentTypeOutputText, Text: text, Annotations: anns},
-			}
+		// handleTextStart guarantees the item exists at c.textItemIdx,
+		// so no bounds check is needed here (consistent with thinking/tool branches).
+		c.outputItems[c.textItemIdx].Content = []model.OutputText{
+			{Type: model.ContentTypeOutputText, Text: text, Annotations: anns},
 		}
 		out = append(out, model.MarshalEvent(evOutputTextDone, model.OutputTextDoneEvent{
 			Type: evOutputTextDone, SequenceNumber: c.nextSeq(),

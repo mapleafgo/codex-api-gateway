@@ -18,6 +18,13 @@ import (
 
 var streamErrorType = string(aconstant.ValueOf[aconstant.Error]())
 
+// beta MCP probe 与合成事件使用的 wire 字符串，派生自 SDK shared/constant。
+var (
+	eventContentBlockStart = string(aconstant.ValueOf[aconstant.ContentBlockStart]())
+	blockMCPToolUse        = string(aconstant.ValueOf[aconstant.MCPToolUse]())
+	blockMCPToolResult     = string(aconstant.ValueOf[aconstant.MCPToolResult]())
+)
+
 // Client posts Anthropic Messages requests and returns SSE bodies.
 type Client struct {
 	HTTP *http.Client
@@ -167,7 +174,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if mcp != nil && mcp.NeedsBeta() {
 		beta = appendBeta(beta, MCPBetaHeader)
 	}
-	if req != nil && req.CacheControl.TTL == anthropic.CacheControlEphemeralTTLTTL1h {
+	if req.CacheControl.TTL == anthropic.CacheControlEphemeralTTLTTL1h {
 		beta = appendBeta(beta, ExtendedCacheTTLBetaHeader)
 	}
 	if beta != "" {
@@ -268,8 +275,8 @@ func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStre
 				Type string `json:"type"`
 			} `json:"content_block"`
 		}
-		if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Type == "content_block_start" &&
-			(envelope.ContentBlock.Type == "mcp_tool_use" || envelope.ContentBlock.Type == "mcp_tool_result") {
+		if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Type == eventContentBlockStart &&
+			(envelope.ContentBlock.Type == blockMCPToolUse || envelope.ContentBlock.Type == blockMCPToolResult) {
 			log.Debug("合成 beta MCP content_block_start 事件", "block_type", envelope.ContentBlock.Type)
 			synthetic, err := synthesizeMCPEvent([]byte(payload))
 			if err != nil {

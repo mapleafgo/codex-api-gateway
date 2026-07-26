@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -54,26 +53,50 @@ func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) 
 	var name string
 	_ = json.Unmarshal(obj["name"], &name)
 	switch typ {
-	case "function":
+	case model.ToolTypeFunction:
 		if name != "" {
 			req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
 				OfFunctionTool: &oairesponses.ToolChoiceFunctionParam{Name: name},
 			}
 		}
-	case "custom":
+	case model.ToolTypeCustom:
 		if name != "" {
 			req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
 				OfCustomTool: &oairesponses.ToolChoiceCustomParam{Name: name},
 			}
 		}
-	case "apply_patch":
+	case model.ToolTypeApplyPatch:
 		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
 			OfSpecificApplyPatchToolChoice: &oairesponses.ToolChoiceApplyPatchParam{},
 		}
-	case "shell":
+	case model.ToolTypeShell:
 		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
 			OfSpecificShellToolChoice: &oairesponses.ToolChoiceShellParam{},
 		}
+	case string(oairesponses.ToolChoiceTypesTypeFileSearch),
+		string(oairesponses.ToolChoiceTypesTypeWebSearchPreview),
+		string(oairesponses.ToolChoiceTypesTypeWebSearchPreview2025_03_11),
+		string(oairesponses.ToolChoiceTypesTypeComputer),
+		string(oairesponses.ToolChoiceTypesTypeComputerUse),
+		string(oairesponses.ToolChoiceTypesTypeComputerUsePreview),
+		string(oairesponses.ToolChoiceTypesTypeImageGeneration),
+		string(oairesponses.ToolChoiceTypesTypeCodeInterpreter),
+		model.ToolTypeWebSearch:
+		// SDK union 对 hosted tool_choice 的 JSON 会误落 OfAllowedTools
+		// （实测五种 hosted 形态全中），此处从 raw 恢复为 OfHostedTool，
+		// 下游 a/c/r 各自决定映射或透传。裸 web_search 不在 SDK 枚举内，
+		// 但 wire 合法，字符串透传。
+		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfHostedTool: &oairesponses.ToolChoiceTypesParam{Type: oairesponses.ToolChoiceTypesType(typ)},
+		}
+	case model.ToolTypeMcp:
+		var serverLabel string
+		_ = json.Unmarshal(obj["server_label"], &serverLabel)
+		mcp := &oairesponses.ToolChoiceMcpParam{ServerLabel: serverLabel}
+		if name != "" {
+			mcp.Name = oparam.NewOpt(name)
+		}
+		req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{OfMcpTool: mcp}
 	default:
 		if !toolChoiceExplicit(req.ToolChoice) {
 			req.ToolChoice = oairesponses.ResponseNewParamsToolChoiceUnion{
@@ -166,11 +189,11 @@ func restoreOneAssistantOutputText(rawItem json.RawMessage, item *oairesponses.R
 		return false
 	}
 	// type 缺省时按 message 处理（部分客户端省略）；明确非 message 则跳过。
-	if probe.Type != "" && probe.Type != "message" {
+	if probe.Type != "" && probe.Type != model.ItemTypeMessage {
 		return false
 	}
 	// 仅 assistant 历史用 output_text；user/system/developer 走 input_text。
-	if probe.Role != "" && probe.Role != "assistant" {
+	if probe.Role != "" && probe.Role != model.RoleAssistant {
 		return false
 	}
 	if len(probe.Content) == 0 || probe.Content[0] != '[' {
@@ -189,9 +212,9 @@ func restoreOneAssistantOutputText(rawItem json.RawMessage, item *oairesponses.R
 	need := false
 	droppedAnnotations := 0
 	for _, p := range parts {
-		if p.Type == "output_text" || p.Type == "refusal" {
+		if p.Type == model.ContentTypeOutputText || p.Type == model.ContentTypeRefusal {
 			need = true
-			if p.Type == "output_text" && len(p.Annotations) > 2 && string(p.Annotations) != "[]" && string(p.Annotations) != "null" {
+			if p.Type == model.ContentTypeOutputText && len(p.Annotations) > 2 && string(p.Annotations) != "[]" && string(p.Annotations) != "null" {
 				droppedAnnotations++
 			}
 		}
@@ -209,12 +232,12 @@ func restoreOneAssistantOutputText(rawItem json.RawMessage, item *oairesponses.R
 	list := make(oairesponses.ResponseInputMessageContentListParam, 0, len(parts))
 	for _, p := range parts {
 		switch p.Type {
-		case "output_text", "input_text":
+		case model.ContentTypeOutputText, model.ContentTypeInputText:
 			// 空 output_text 也 append 占位，保持与原 content 等长，避免结构漂移。
 			list = append(list, oairesponses.ResponseInputContentUnionParam{
 				OfInputText: &oairesponses.ResponseInputTextParam{Text: p.Text},
 			})
-		case "refusal":
+		case model.ContentTypeRefusal:
 			// refusal 无 input 侧等价；折成可见文本保留语义，避免整段对话被抹掉。
 			text := p.Refusal
 			if text == "" {
@@ -270,7 +293,7 @@ func validateNamespaceToolChildren(data []byte) error {
 		if err := json.Unmarshal(rawTool, &tool); err != nil {
 			return err
 		}
-		if tool.Type != "namespace" {
+		if tool.Type != model.ToolTypeNamespace {
 			continue
 		}
 		for _, rawChild := range tool.Tools {
@@ -280,7 +303,7 @@ func validateNamespaceToolChildren(data []byte) error {
 			if err := json.Unmarshal(rawChild, &child); err != nil {
 				return err
 			}
-			if child.Type != "function" && child.Type != "custom" {
+			if child.Type != model.ToolTypeFunction && child.Type != model.ToolTypeCustom {
 				return fmt.Errorf("unsupported namespace tool type %q: Anthropic backend has no safe equivalent", child.Type)
 			}
 		}
@@ -705,17 +728,19 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 	role := string(m.Role)
 
 	// system/developer fold into top-level System.
-	// NOTE: image blocks in system/developer messages are silently dropped here.
+	// NOTE: image blocks in system/developer messages are dropped here.
 	// Anthropic's system parameter is []TextBlockParam (text-only), so images
 	// cannot be represented in the system role. This is a protocol limitation.
-	for _, b := range blocks {
-		if b.OfImage != nil {
-			slog.Warn("丢弃 system/developer message 中的 image block（Anthropic system 仅支持文本），对应数据被丢弃",
-				"role", role,
-				"impact", "图片不会传递给上游")
-		}
-	}
+	// WARN 必须只在真正折入 System 时输出：user/assistant 的 image 会随
+	// blocks 正常发给上游，在这之前告警就是对每张用户图片撒谎。
 	if role == model.RoleSystem || role == model.RoleDeveloper {
+		for _, b := range blocks {
+			if b.OfImage != nil {
+				slog.Warn("丢弃 system/developer message 中的 image block（Anthropic system 仅支持文本），对应数据被丢弃",
+					"role", role,
+					"impact", "图片不会传递给上游")
+			}
+		}
 		*sysParts = append(*sysParts, instructionPart{
 			role: role,
 			text: joinNonEmpty("\n", textParts),
@@ -1587,13 +1612,19 @@ func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 }
 
 // ensureToolResultProximity 保证每条 assistant message 的 tool_use 结果都在
-// 紧接的下一条 user message 中。若部分 tool_result 出现在更远的 user 中，
-// 将这些 tool_use 移到紧邻其对应 result 的 assistant message 里。
+// 紧接的下一条 user message 中。若 tool_result 出现在更远的 user 中，把对应
+// tool_use 摘出，前移/后移到紧邻该 result 所在 user 之前的 assistant 里
+// （Grok 等上游要求 assistant 的全部待处理 tool_use 在下一条 user 中闭环）。
+//
+// 实现为单遍重建：先在原始索引上规划「哪些 tool_use 移到哪条 user 之前」，
+// 再一次性生成新 messages。禁止就地插入/删除——突变会使已计算的位置索引
+// 失效，多批迁移场景会漏修。产出的相邻同 role 消息由随后的
+// coalesceSameRoleMessages 合并，保持严格交替。
 func ensureToolResultProximity(out *anthropic.MessageNewParams) {
-	// 第一遍：收集每个 tool_result 所在的 user message index
+	// 每个 tool_result 所在 user message 的原始索引。
 	resultPos := map[string]int{}
 	for i := range out.Messages {
-		m := out.Messages[i]
+		m := &out.Messages[i]
 		if m.Role != anthropic.MessageParamRoleUser {
 			continue
 		}
@@ -1603,102 +1634,60 @@ func ensureToolResultProximity(out *anthropic.MessageNewParams) {
 			}
 		}
 	}
+	if len(resultPos) == 0 {
+		return
+	}
 
-	i := 0
-	for i < len(out.Messages) {
-		m := out.Messages[i]
+	// 规划：moved[target] 是要插到原始索引 target（user 消息）之前的
+	// tool_use，按扫描顺序保序；kept[i] 是第 i 条消息保留的 content。
+	moved := map[int][]anthropic.ContentBlockParamUnion{}
+	kept := make([][]anthropic.ContentBlockParamUnion, len(out.Messages))
+	total := 0
+	for i := range out.Messages {
+		m := &out.Messages[i]
+		kept[i] = m.Content
 		if m.Role != anthropic.MessageParamRoleAssistant {
-			i++
 			continue
 		}
-		if i+1 >= len(out.Messages) || out.Messages[i+1].Role != anthropic.MessageParamRoleUser {
-			i++
-			continue
-		}
-
-		// 收集当前 assistant 的 tool_use ID
-		var toolUseIDs []string
-		toolUseMap := map[string]anthropic.ContentBlockParamUnion{}
+		var stay []anthropic.ContentBlockParamUnion
+		changed := false
 		for _, b := range m.Content {
 			if b.OfToolUse != nil {
-				id := b.OfToolUse.ID
-				toolUseIDs = append(toolUseIDs, id)
-				toolUseMap[id] = b
-			}
-		}
-		if len(toolUseIDs) == 0 {
-			i++
-			continue
-		}
-
-		// 收集紧接 user 的 tool_result ID
-		nextResultIDs := map[string]bool{}
-		for _, b := range out.Messages[i+1].Content {
-			if b.OfToolResult != nil {
-				nextResultIDs[b.OfToolResult.ToolUseID] = true
-			}
-		}
-
-		// 找出缺少紧邻结果的 tool_use
-		var missingIDs []string
-		for _, id := range toolUseIDs {
-			if !nextResultIDs[id] {
-				missingIDs = append(missingIDs, id)
-			}
-		}
-		if len(missingIDs) == 0 {
-			i++
-			continue
-		}
-
-		// 从当前 assistant 移除缺失的 tool_use
-		var newContent []anthropic.ContentBlockParamUnion
-		for _, b := range m.Content {
-			if b.OfToolUse != nil {
-				skip := false
-				for _, mid := range missingIDs {
-					if b.OfToolUse.ID == mid {
-						skip = true
-						break
-					}
-				}
-				if skip {
+				if pos, ok := resultPos[b.OfToolUse.ID]; ok && pos != i+1 {
+					moved[pos] = append(moved[pos], b)
+					total++
+					changed = true
 					continue
 				}
 			}
-			newContent = append(newContent, b)
+			stay = append(stay, b)
 		}
-		out.Messages[i].Content = newContent
-
-		// 按 result 位置分组
-		byTarget := map[int][]anthropic.ContentBlockParamUnion{}
-		for _, id := range missingIDs {
-			if pos, ok := resultPos[id]; ok {
-				byTarget[pos] = append(byTarget[pos], toolUseMap[id])
-			}
-		}
-
-		var targets []int
-		for t := range byTarget {
-			targets = append(targets, t)
-		}
-		sort.Sort(sort.Reverse(sort.IntSlice(targets)))
-
-		for _, pos := range targets {
-			newMsg := anthropic.MessageParam{
-				Role:    anthropic.MessageParamRoleAssistant,
-				Content: byTarget[pos],
-			}
-			out.Messages = append(out.Messages[:pos], append([]anthropic.MessageParam{newMsg}, out.Messages[pos:]...)...)
-		}
-
-		// 空 assistant 移除
-		if len(out.Messages[i].Content) == 0 {
-			out.Messages = append(out.Messages[:i], out.Messages[i+1:]...)
-		} else {
-			i++
+		if changed {
+			kept[i] = stay
 		}
 	}
+	if total == 0 {
+		return
+	}
+
+	rebuilt := make([]anthropic.MessageParam, 0, len(out.Messages)+len(moved))
+	for i := range out.Messages {
+		if blocks := moved[i]; len(blocks) != 0 {
+			rebuilt = append(rebuilt, anthropic.MessageParam{
+				Role:    anthropic.MessageParamRoleAssistant,
+				Content: blocks,
+			})
+		}
+		if len(kept[i]) == 0 {
+			// tool_use 全部迁走的 assistant：整条移除，避免空 content 400。
+			continue
+		}
+		msg := out.Messages[i]
+		msg.Content = kept[i]
+		rebuilt = append(rebuilt, msg)
+	}
+	out.Messages = rebuilt
+	slog.Debug("tool_result 邻近性修复完成", "moved_tool_use", total)
 }
 
 // reasoningEffortToOutputConfig 把 OpenAI reasoning.effort 映射到 Anthropic
@@ -2094,15 +2083,10 @@ func setLastToolCacheControl(tools []anthropic.ToolUnionParam, cc anthropic.Cach
 	}
 	last := &tools[len(tools)-1]
 	if !toolcatalog.ApplyCacheControl(last, cc) {
-		slog.Warn("最后一个 tool 是未知变体，无法加 cache_control，tools 列表缓存将丢失")
+		slog.Warn("最后一个 tool 是未知变体，无法加 cache_control",
+			"impact", "tools 列表缓存将丢失",
+			"tool_index", len(tools)-1)
 	}
-}
-
-func orDefault(s string, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 func formatInstructionParts(parts []instructionPart) string {

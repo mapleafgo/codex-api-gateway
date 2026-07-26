@@ -1,13 +1,23 @@
 package toolcatalog
 
-import "github.com/anthropics/anthropic-sdk-go"
+import (
+	"github.com/anthropics/anthropic-sdk-go"
+	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
+)
+
+// Anthropic 回程 server_tool_use 的 name wire 字符串，派生自 SDK shared/constant。
+var (
+	anthropicNameWebSearch     = string(aconstant.ValueOf[aconstant.WebSearch]())
+	anthropicNameCodeExecution = string(aconstant.ValueOf[aconstant.CodeExecution]())
+)
 
 // serverToolByAnthropicName 登记 Anthropic 回程 server_tool_use 的 name → 身份。
 // streamconv 用它判定一个 server_tool_use 是否对应已注册的 hosted server tool；
 // code_execution 已注册；新增 server tool 在此追加，回程 dispatch 自动覆盖。
 var serverToolByAnthropicName = map[string]Identity{
-	"web_search":     {OpenAIType: "web_search", Name: "web_search", Freeform: false},
-	"code_execution": {OpenAIType: "code_interpreter", Name: "code_interpreter"},
+	anthropicNameWebSearch:     {OpenAIType: model.ToolTypeWebSearch, Name: "web_search", Freeform: false},
+	anthropicNameCodeExecution: {OpenAIType: model.ToolTypeCodeInterpreter, Name: "code_interpreter"},
 }
 
 // ServerToolByAnthropicName 查询一个 Anthropic server_tool_use name 是否对应

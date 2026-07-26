@@ -1569,15 +1569,21 @@ func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 		{name: "shell", tools: `[{"type":"shell"}]`, toolChoice: `{"type":"shell"}`},
 		{name: "unknown mode", toolChoice: `"unsupported"`},
 		{name: "unknown type", toolChoice: `{"type":"unsupported"}`, wantErr: true},
-		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`, wantErr: true},
+		// hosted tool_choice 现在被正确恢复为 OfHostedTool（此前误落 OfAllowedTools
+		// 才撞上 fail-fast）：a 路径按「不代劳拒绝」Debug 后忽略，structured output 照常。
+		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tools := tt.tools
+			if tools == "" {
+				tools = "[]"
+			}
 			req := mustReq(t, `{
 				"model":"gpt-5",
 				"input":"hi",
-				"tools":`+orDefault(tt.tools, "[]")+`,
+				"tools":`+tools+`,
 				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
 				"tool_choice":`+tt.toolChoice+`
 			}`)
