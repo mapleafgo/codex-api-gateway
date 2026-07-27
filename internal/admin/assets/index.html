@@ -1465,8 +1465,8 @@ html[data-theme="dark"] .ui-select {
       </div>
     </template>
 
-    <div class="ui-modal-actions">
-      <button class="ui-btn ui-btn-ghost" type="button"
+   <div class="ui-modal-actions">
+      <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
               x-show="modal.kind === 'form' && formHasBaseURL()"
               :disabled="!!testingSrc || !formBaseURL()"
               @click="testFormSource()"
@@ -1478,9 +1478,9 @@ html[data-theme="dark"] .ui-select {
               x-text="(testResults['__form__'].ok ? t('testReachable') : t('testUnreachable')) + (testResults['__form__'].httpStatus ? ' HTTP ' + testResults['__form__'].httpStatus : '') + (testResults['__form__'].responseTime != null ? ' · ' + testResults['__form__'].responseTime + 'ms' : '')">
         </span>
       </template>
-      <div style="margin-left:auto; display:flex; gap:8px">
-        <button class="ui-btn ui-btn-ghost" type="button" @click="cancelModal()" x-text="modal.cancelText || t('cancel')" x-ref="modalCancelBtn"></button>
-        <button class="ui-btn" type="button"
+     <div style="margin-left:auto; display:flex; gap:8px">
+        <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button" @click="cancelModal()" x-text="modal.cancelText || t('cancel')" x-ref="modalCancelBtn"></button>
+        <button class="ui-btn ui-btn-sm" type="button"
                 :class="modal.danger ? 'ui-btn-danger' : 'ui-btn-primary'"
                 @click="confirmModal()"
                 x-text="modal.confirmText || t('confirm')"></button>
