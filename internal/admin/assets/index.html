@@ -460,6 +460,51 @@ html[data-theme="dark"] .ui-sel-list {
 .ui-badge-soft-bad { background: var(--bad-soft); color: var(--bad); }
 .ui-badge-soft-info { background: var(--info-soft); color: var(--info); }
 .ui-badge-soft-neutral { background: var(--surface-2); color: var(--ink-soft); }
+
+/* ---------- Priority Select ---------- */
+.ui-pri {
+  display: inline-flex; align-items: center; gap: 2px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface-2); padding: 1px 1px 1px 8px;
+  font-size: 11px; font-weight: 600; color: var(--ink-soft);
+  cursor: pointer; position: relative; user-select: none;
+}
+.ui-pri:hover { border-color: var(--focus); color: var(--ink); }
+.ui-pri-current {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.6em; font-family: var(--mono);
+}
+.ui-pri-arrow {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 999px;
+  color: var(--ink-faint); font-size: 10px;
+}
+.ui-pri-open .ui-pri-arrow { transform: rotate(180deg); }
+.ui-pri-drop {
+  position: absolute; top: 100%; left: 0; margin-top: 2px; z-index: 60;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-sm); box-shadow: var(--shadow-lg);
+  padding: 2px 0; min-width: 56px;
+  display: none;
+}
+.ui-pri-open .ui-pri-drop { display: block; }
+.ui-pri-item {
+  padding: 4px 10px; font-size: 12px; font-family: var(--mono);
+  cursor: pointer; text-align: center; border-radius: 6px;
+}
+.ui-pri-item:hover { background: color-mix(in srgb, var(--focus) 10%, transparent); }
+
+/* ---------- Test Tag ---------- */
+.ui-test-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 26px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; font-family: var(--mono);
+  line-height: 1; white-space: nowrap;
+  border: 1px solid var(--line);
+}
+.ui-test-tag.is-ok { background: var(--good-soft); color: var(--good); border-color: color-mix(in srgb, var(--good) 30%, var(--line)); }
+.ui-test-tag.is-fail { background: var(--bad-soft); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, var(--line)); }
+.ui-test-tag.is-loading { background: var(--surface-2); color: var(--ink-faint); }
 .ui-status {
   display: inline-block; width: 8px; height: 8px; border-radius: 999px;
   background: var(--ink-faint);
@@ -635,15 +680,17 @@ html[data-theme="dark"] .ui-select {
 .ui-toast.is-error { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .ui-toast.is-info { border-color: color-mix(in srgb, var(--info) 40%, var(--line)); }
 
-.ui-modal { border: 0; padding: 0; background: transparent; max-width: 440px; width: calc(100% - 32px); }
+.ui-modal { border: 0; padding: 0; background: transparent; max-width: 440px; width: calc(100% - 32px); overflow: visible; }
 .ui-modal::backdrop { background: rgba(8,12,20,.45); backdrop-filter: blur(4px); }
 .ui-modal-box {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 18px;
+  max-height: calc(100vh - 64px); overflow: visible;
+  display: flex; flex-direction: column;
 }
 .ui-modal-box h3 { margin: 0; font-size: 16px; font-weight: 650; }
 .ui-modal-box p { margin: 8px 0 0; font-size: 13px; color: var(--ink-soft); }
-.ui-modal-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+.ui-modal-actions { margin-top: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 
 /* ---------- Spinner / skip ---------- */
 .ui-spin {
@@ -901,15 +948,23 @@ html[data-theme="dark"] .ui-select {
             <span aria-hidden="true">＋</span><span x-text="t('addSrc')"></span>
           </button>
         </div>
-        <div class="ui-stack">
-          <template x-for="(src, idx) in cfg.sources" :key="idx">
-            <div class="ui-card" :style="src.disabled ? 'opacity:.72' : ''">
-              <div class="ui-card-body ui-stack">
-                <div class="ui-row">
-                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
-                    <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
-                    <strong x-text="src.name || t('newSource')"></strong>
-                    <span class="ui-badge" :class="src.disabled ? 'ui-badge-soft-neutral' : healthBadgeClass(src.name)"
+     <div class="ui-stack">
+       <template x-for="(src, idx) in cfg.sources" :key="src._id || idx">
+         <div class="ui-card" :style="src.disabled ? 'opacity:.72' : ''" @pri-change="moveSource(idx, $event.detail - idx)">
+           <div class="ui-card-body ui-stack">
+             <div class="ui-row">
+               <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                 <div class="ui-pri" tabindex="0" x-data="priSel()" :class="open && 'ui-pri-open'" @click="open=!open" @focusout="setTimeout(()=>open=false,150)" @keydown.escape="open=false">
+                  <span class="ui-pri-current" x-text="'#' + (idx+1)"></span>
+                  <span class="ui-pri-arrow" x-text="'▾'"></span>
+                  <div class="ui-pri-drop">
+                    <template x-for="n in cfg.sources.length" :key="n">
+                      <div class="ui-pri-item" @mousedown.prevent="select(n-1)" x-text="'#' + n"></div>
+                    </template>
+                  </div>
+                </div>
+                  <strong x-text="src.name || t('newSource')"></strong>
+                  <span class="ui-badge" :class="src.disabled ? 'ui-badge-soft-neutral' : healthBadgeClass(src.name)"
                           :title="src.disabled ? t('healthHintDisabled') : healthHint(src.name)"
                           x-text="src.disabled ? t('healthDisabled') : healthLabel(src.name)"></span>
                     <span class="ui-hint mono" style="font-size:11px"
@@ -917,19 +972,28 @@ html[data-theme="dark"] .ui-select {
                           x-text="t('runtimePri') + ' #' + (healthOf(src.name)||{}).priority"></span>
                   </div>
                   <div class="ui-src-actions" role="group" :aria-label="t('actions')">
-                    <button class="ui-text-action" type="button"
-                            x-show="canPromote(src.name) && !src.disabled"
-                            :disabled="promoting===src.name"
-                            @click="promoteSource(src.name)"
-                            x-text="promoting===src.name ? t('promoting') : t('promote')"></button>
-                    <button class="ui-text-action" type="button"
-                            :disabled="!src.name || togglingDisabled===src.name"
-                            @click="toggleSourceDisabled(idx)"
-                            x-text="togglingDisabled===src.name ? t('togglingSrc') : (src.disabled ? t('enableSrc') : t('disableSrc'))"></button>
-                    <button class="ui-text-action" type="button" @click="moveSource(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
-                    <button class="ui-text-action" type="button" @click="moveSource(idx, 1)" :disabled="idx===cfg.sources.length-1">↓ <span x-text="t('down')"></span></button>
-                    <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
-                  </div>
+                  <button class="ui-text-action" type="button"
+                          x-show="canPromote(src.name) && !src.disabled"
+                          :disabled="promoting===src.name"
+                          @click="promoteSource(src.name)"
+                          x-text="promoting===src.name ? t('promoting') : t('promote')"></button>
+                  <template x-if="testResults[src.name]">
+                    <span class="ui-test-tag"
+                          :class="testResults[src.name].ok ? 'is-ok' : 'is-fail'"
+                          x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].httpStatus ? ' HTTP ' + testResults[src.name].httpStatus : '') + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
+                    </span>
+                  </template>
+                  <button class="ui-text-action" type="button"
+                          :disabled="testingSrc===src.name || !src.base_url"
+                          @click="testSource(src)"
+                          :title="t('testReachHint')"
+                          x-text="testingSrc===src.name ? t('testingSrc') : t('testSrc')"></button>
+                 <button class="ui-text-action" type="button"
+                           :disabled="!src.name || togglingDisabled===src.name"
+                           @click="toggleSourceDisabled(idx)"
+                           x-text="togglingDisabled===src.name ? t('togglingSrc') : (src.disabled ? t('enableSrc') : t('disableSrc'))"></button>
+                 <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
+               </div>
                 </div>
                 <div class="ui-grid-2">
                   <label class="ui-field">
@@ -1075,20 +1139,26 @@ html[data-theme="dark"] .ui-select {
           <p class="ui-hint" x-text="t('modelHint')"></p>
           <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="addModel()">
             <span aria-hidden="true">＋</span><span x-text="t('addModel')"></span>
-          </button>
-        </div>
-        <div class="ui-stack">
-          <template x-for="(m, idx) in (cfg.models || [])" :key="(m.slug || '') + '#' + idx">
-            <div class="ui-card">
+         </button>
+       </div>
+       <div class="ui-stack">
+         <template x-for="(m, idx) in (cfg.models || [])" :key="m._id || ((m.slug || '') + '#' + idx)">
+           <div class="ui-card" @pri-change="moveModel(idx, $event.detail - idx)">
               <div class="ui-card-body ui-stack">
                 <div class="ui-row">
                   <div style="display:flex; align-items:center; gap:8px; min-width:0">
-                    <span class="ui-badge ui-badge-soft-neutral" :aria-label="t('priority')" x-text="'#' + (idx+1)"></span>
+                    <div class="ui-pri" tabindex="0" x-data="priSel()" :class="open && 'ui-pri-open'" @click="open=!open" @focusout="setTimeout(()=>open=false,150)" @keydown.escape="open=false">
+                      <span class="ui-pri-current" x-text="'#' + (idx+1)"></span>
+                      <span class="ui-pri-arrow" x-text="'▾'"></span>
+                      <div class="ui-pri-drop">
+                        <template x-for="n in cfg.models.length" :key="n">
+                          <div class="ui-pri-item" @mousedown.prevent="select(n-1)" x-text="'#' + n"></div>
+                        </template>
+                      </div>
+                    </div>
                     <strong class="mono truncate" x-text="m.slug"></strong>
                   </div>
                   <div class="ui-src-actions" role="group" :aria-label="t('actions')">
-                    <button class="ui-text-action" type="button" @click="moveModel(idx, -1)" :disabled="idx===0">↑ <span x-text="t('up')"></span></button>
-                    <button class="ui-text-action" type="button" @click="moveModel(idx, 1)" :disabled="idx===cfg.models.length-1">↓ <span x-text="t('down')"></span></button>
                     <button class="ui-text-action is-danger" type="button" @click="removeModel(idx)" x-text="t('delete')"></button>
                   </div>
                 </div>
@@ -1320,7 +1390,7 @@ html[data-theme="dark"] .ui-select {
     </template>
 
     <template x-if="modal.open && modal.kind === 'form'">
-      <div class="ui-stack" style="margin-top:12px; gap:10px">
+      <div class="ui-stack" style="margin-top:12px; gap:10px;">
         <template x-for="f in modal.fields" :key="f.key">
           <div>
             <template x-if="f.type === 'checkbox'">
@@ -1350,30 +1420,71 @@ html[data-theme="dark"] .ui-select {
                 </div>
               </label>
             </template>
-            <template x-if="f.type !== 'checkbox' && f.type !== 'select'">
-              <label class="ui-field">
-                <span class="ui-label" x-text="f.label"></span>
-                <input class="ui-input ui-input-sm mono"
-                       :type="f.type === 'number' ? 'number' : 'text'"
-                       :value="f.value"
-                       @input="f.value = $event.target.value"
-                       @keydown.enter="confirmModal()"
-                       autocomplete="off" spellcheck="false"
-                       :inputmode="f.type === 'number' ? 'numeric' : 'text'"
-                       :placeholder="f.placeholder">
-              </label>
-            </template>
+           <template x-if="f.type !== 'checkbox' && f.type !== 'select'">
+             <label class="ui-field">
+               <span class="ui-label" x-text="f.label"></span>
+               <template x-if="f.key === 'default_model'">
+                 <div class="ui-ac" x-data="{ q: f.value || '', open: false, ai: -1,
+                   opts() { const s = this.q.toLowerCase(); return (upstreamModels['__form__']||[]).map(m=>m.id).filter(o => !s || o.toLowerCase().includes(s)); },
+                   pick(v) { this.q = v; f.value = v; this.open = false; this.ai = -1; },
+                    kd(e) { if(!this.open) { if(e.key==='ArrowDown'||e.key==='ArrowUp'){this.open=true;e.preventDefault();}return;}
+                      const o = this.opts();
+                      if(e.key==='ArrowDown'){e.preventDefault();this.ai=Math.min(this.ai+1,o.length-1);}
+                      else if(e.key==='ArrowUp'){e.preventDefault();this.ai=Math.max(this.ai-1,0);}
+                      else if(e.key==='Enter'&&this.ai>=0){e.preventDefault();this.pick(o[this.ai]);}
+                      else if(e.key==='Escape'){this.open=false;} }
+                  }">
+                    <input type="text" class="ui-input ui-input-sm mono" x-model="q"
+                           @input="f.value = q; open = true; ai = -1; fetchFormUpstreamModels()"
+                           @focus="fetchFormUpstreamModels(); open = true"
+                           @keydown="kd($event)"
+                           @blur="setTimeout(() => open = false, 150)"
+                           :placeholder="f.placeholder">
+                    <div class="ui-ac-list" :class="open && opts().length && 'is-open'">
+                      <template x-for="(opt, i) in opts()" :key="opt">
+                        <div class="ui-ac-item" :class="i === ai && 'is-active'"
+                             @mousedown.prevent="pick(opt)" x-text="opt"></div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <template x-if="f.key !== 'default_model'">
+                  <input class="ui-input ui-input-sm mono"
+                         :type="f.type === 'number' ? 'number' : 'text'"
+                         :value="f.value"
+                         @input="f.value = $event.target.value"
+                         @keydown.enter="confirmModal()"
+                         autocomplete="off" spellcheck="false"
+                         :inputmode="f.type === 'number' ? 'numeric' : 'text'"
+                         :placeholder="f.placeholder">
+                </template>
+             </label>
+           </template>
           </div>
         </template>
       </div>
     </template>
 
     <div class="ui-modal-actions">
-      <button class="ui-btn ui-btn-ghost" type="button" @click="cancelModal()" x-text="modal.cancelText || t('cancel')" x-ref="modalCancelBtn"></button>
-      <button class="ui-btn" type="button"
-              :class="modal.danger ? 'ui-btn-danger' : 'ui-btn-primary'"
-              @click="confirmModal()"
-              x-text="modal.confirmText || t('confirm')"></button>
+      <button class="ui-btn ui-btn-ghost" type="button"
+              x-show="modal.kind === 'form' && formHasBaseURL()"
+              :disabled="!!testingSrc || !formBaseURL()"
+              @click="testFormSource()"
+              :title="t('testReachHint')"
+             x-text="testingSrc === '__form__' ? t('testingSrc') : t('testSrc')"></button>
+      <template x-if="testResults['__form__']">
+        <span class="ui-test-tag"
+              :class="testResults['__form__'].ok ? 'is-ok' : 'is-fail'"
+              x-text="(testResults['__form__'].ok ? t('testReachable') : t('testUnreachable')) + (testResults['__form__'].httpStatus ? ' HTTP ' + testResults['__form__'].httpStatus : '') + (testResults['__form__'].responseTime != null ? ' · ' + testResults['__form__'].responseTime + 'ms' : '')">
+        </span>
+      </template>
+      <div style="margin-left:auto; display:flex; gap:8px">
+        <button class="ui-btn ui-btn-ghost" type="button" @click="cancelModal()" x-text="modal.cancelText || t('cancel')" x-ref="modalCancelBtn"></button>
+        <button class="ui-btn" type="button"
+                :class="modal.danger ? 'ui-btn-danger' : 'ui-btn-primary'"
+                @click="confirmModal()"
+                x-text="modal.confirmText || t('confirm')"></button>
+      </div>
     </div>
   </div>
 </dialog>
@@ -1387,12 +1498,19 @@ document.addEventListener('alpine:init', () => {
     kd(e) {
       if (!this.open) { if (e.key==='ArrowDown'||e.key==='ArrowUp') { this.open=true; e.preventDefault(); } return; }
       const o = this.opts;
-      if (e.key==='ArrowDown') { e.preventDefault(); this.ai=Math.min(this.ai+1,o.length-1); }
-      else if (e.key==='ArrowUp') { e.preventDefault(); this.ai=Math.max(this.ai-1,0); }
-      else if (e.key==='Enter'&&this.ai>=0) { e.preventDefault(); this.pick(o[this.ai].v); }
+     if (e.key==='ArrowDown') { e.preventDefault(); this.ai=Math.min(this.ai+1,o.length-1); }
+     else if (e.key==='ArrowUp') { e.preventDefault(); this.ai=Math.max(this.ai-1,0); }
+     else if (e.key==='Enter'&&this.ai>=0) { e.preventDefault(); this.pick(o[this.ai].v); }
       else if (e.key==='Escape') { this.open=false; }
     },
   }));
+ Alpine.data('priSel', () => ({
+   open: false,
+   select(newIdx) {
+     this.open = false;
+     this.$dispatch('pri-change', newIdx);
+   },
+ }));
 });
 function app() {
   const I18N = {
@@ -1406,12 +1524,13 @@ function app() {
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
       sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: '模型', global: '全局参数', guidance: '基线指令',
-      addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
-      srcName: '源名称', srcURL: '上游地址',
+     addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
+    testSrc: '测试', testingSrc: '测试中…', testResult: '测试结果', testReachable: '可达', testUnreachable: '不可达', testReachHint: '仅探测 base_url 是否可达，不发真实大模型请求',
+     srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
-      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
-      up: '上移', down: '下移', delete: '删除', noSources: '尚未配置供应商',
+     alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
+     delete: '删除', noSources: '尚未配置供应商',
       addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
       globalParams: '服务端参数', loggingParams: '日志参数', anthropicParams: 'Anthropic', breaker: '断路器',
@@ -1468,12 +1587,13 @@ function app() {
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
       sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: 'Models', global: 'Global', guidance: 'Base instructions',
-      addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
-      srcName: 'Source name', srcURL: 'Upstream URL',
+     addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
+    testSrc: 'Test', testingSrc: 'Testing…', testResult: 'Test result', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Only probes base_url reachability; no real LLM request sent',
+     srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
-      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
-      up: 'Up', down: 'Down', delete: 'Delete', noSources: 'No sources configured',
+     alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
+     delete: 'Delete', noSources: 'No sources configured',
       addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
       globalParams: 'Server Parameters', loggingParams: 'Logging', anthropicParams: 'Anthropic', breaker: 'Breaker',
@@ -1550,9 +1670,11 @@ function app() {
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
     cfg: { server:{}, logging:{}, breaker:{}, anthropic:{}, sources:[], models:[] },
-    promoting: '',
-    togglingDisabled: '',
-    cfgSnapshot: '',
+   promoting: '',
+   togglingDisabled: '',
+   testingSrc: '',
+   testResults: {},
+   cfgSnapshot: '',
     saving: false,
     guidance: { path: '', content: '', exists: false },
     guidanceSaving: false,
@@ -1807,6 +1929,7 @@ function app() {
         });
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
+          if (!s._id) s._id = 'src_' + Math.random().toString(36).slice(2, 10);
         });
         data.server = data.server || {};
         if (data.server.max_body_mb == null || data.server.max_body_mb === 0) data.server.max_body_mb = 32;
@@ -1835,9 +1958,11 @@ function app() {
           if (m.context_window != null && m.context_window !== '') item.context_window = Number(m.context_window) || 0;
           return item;
         }).filter(m => m.slug);
-        (payload.sources || []).forEach(s => {
-          if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
-        });
+       (payload.sources || []).forEach(s => {
+         if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
+         delete s._id;
+         delete s.top;
+       });
         payload.server = payload.server || {};
         payload.server.max_body_mb = Number(payload.server.max_body_mb) || 32;
         payload.server.read_header_timeout = (payload.server.read_header_timeout || '10s').trim() || '10s';
@@ -1916,19 +2041,76 @@ function app() {
           this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
           return;
         }
-        this.cfg.sources.push({
-          name,
-          base_url,
-          backend_type: (v.backend_type || 'a'),
-          api_key: (v.api_key || '').trim(),
-          model_map: {},
-          default_model: (v.default_model || '').trim(),
-          disabled: false,
-        });
+       this.cfg.sources.push({
+         name,
+         base_url,
+         backend_type: (v.backend_type || 'a'),
+         api_key: (v.api_key || '').trim(),
+         model_map: {},
+         default_model: (v.default_model || '').trim(),
+         disabled: false,
+         _id: 'src_' + Math.random().toString(36).slice(2, 10),
+       });
         this.$nextTick(() => {
           const el = this.$refs.srcScroll;
           if (el) el.scrollTop = el.scrollHeight;
         });
+      });
+    },
+    async testSource(src) {
+      if (!src || !(src.base_url || '').trim()) return;
+      this.testingSrc = src.name || src.base_url;
+      try {
+        const r = await fetch('/admin/api/sources/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: (src.base_url || '').trim(),
+            backend_type: src.backend_type || 'a',
+          }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+        const key = src.name || src.base_url;
+        this.testResults = Object.assign({}, this.testResults, {
+          [key]: {
+            ok: j.ok,
+            status: j.ok ? 'reachable' : 'unreachable',
+            message: j.message || '',
+            httpStatus: j.http_status || null,
+            responseTime: j.response_time_ms || null,
+          }
+        });
+      } catch (e) {
+        const key = src.name || src.base_url;
+        this.testResults = Object.assign({}, this.testResults, {
+          [key]: { ok: false, status: 'error', message: e.message, httpStatus: null, responseTime: null }
+        });
+      } finally {
+        this.testingSrc = '';
+      }
+    },
+    formHasBaseURL() {
+      return (this.modal.fields || []).some(f => f.key === 'base_url');
+    },
+    formBaseURL() {
+      const f = (this.modal.fields || []).find(x => x.key === 'base_url');
+      return f ? String(f.value || '').trim() : '';
+    },
+    formBackendType() {
+      const f = (this.modal.fields || []).find(x => x.key === 'backend_type');
+      return f ? (f.value || 'a') : 'a';
+    },
+    async testFormSource() {
+      const base_url = this.formBaseURL();
+      if (!base_url) {
+        this.notify(this.locale === 'zh' ? '请先填写上游地址' : 'Enter upstream URL first', 'error');
+        return;
+      }
+      await this.testSource({
+        name: '__form__',
+        base_url,
+        backend_type: this.formBackendType(),
       });
     },
     healthMap() {
@@ -2010,9 +2192,61 @@ function app() {
         this.notify((next ? this.t('disableOk') : this.t('enableOk')) + ': ' + name, 'success');
       } catch (e) {
         this.notify(this.t('disableFail') + ': ' + e.message, 'error');
-      } finally {
-        this.togglingDisabled = '';
+     } finally {
+       this.togglingDisabled = '';
+     }
+   },
+    async reorderSourcesBackend(from, to) {
+      try {
+        const r = await fetch('/admin/api/sources/reorder', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ from, to }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+        if (Array.isArray(j.health)) {
+          this.snap = Object.assign({}, this.snap || {}, { sources_health: j.health });
+        }
+        this.patchSnapshotOrder('sources', from, to);
+      } catch (e) {
+        // 后端失败时回滚本地顺序
+        const arr = this.cfg.sources;
+        if (arr && from !== to && from >= 0 && to >= 0 && from < arr.length && to < arr.length) {
+          const [item] = arr.splice(to, 1);
+          arr.splice(from, 0, item);
+        }
+        this.notify(this.locale === 'zh' ? '排序失败：' + e.message : 'Reorder failed: ' + e.message, 'error');
       }
+    },
+    async reorderModelsBackend(from, to) {
+      try {
+        const r = await fetch('/admin/api/models/reorder', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ from, to }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+        this.patchSnapshotOrder('models', from, to);
+      } catch (e) {
+        const arr = this.cfg.models;
+        if (arr && from !== to && from >= 0 && to >= 0 && from < arr.length && to < arr.length) {
+          const [item] = arr.splice(to, 1);
+          arr.splice(from, 0, item);
+        }
+        this.notify(this.locale === 'zh' ? '排序失败：' + e.message : 'Reorder failed: ' + e.message, 'error');
+      }
+    },
+    patchSnapshotOrder(key, from, to) {
+      try {
+        const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+        if (!snap || !Array.isArray(snap[key])) return;
+        if (from === to || from < 0 || to < 0 || from >= snap[key].length || to >= snap[key].length) return;
+        const [item] = snap[key].splice(from, 1);
+        snap[key].splice(to, 0, item);
+        this.cfgSnapshot = JSON.stringify(snap);
+      } catch (e) {}
     },
     async promoteSource(name) {
       if (!name || this.promoting) return;
@@ -2047,13 +2281,15 @@ function app() {
         confirmText: this.t('delete'),
       }).then((ok) => { if (ok) this.cfg.sources.splice(idx, 1); });
     },
-    moveSource(idx, delta) {
-      const j = idx + delta;
-      if (j < 0 || j >= this.cfg.sources.length) return;
-      const arr = this.cfg.sources;
-      [arr[idx], arr[j]] = [arr[j], arr[idx]];
-    },
-    toggleKeyVisibility(idx) {
+  moveSource(idx, delta) {
+    const arr = this.cfg.sources;
+    const newIdx = idx + delta;
+    if (newIdx < 0 || newIdx >= arr.length) return;
+    const [item] = arr.splice(idx, 1);
+    arr.splice(newIdx, 0, item);
+    this.reorderSourcesBackend(idx, newIdx);
+  },
+   toggleKeyVisibility(idx) {
       this.visibleKeys[idx] = !this.visibleKeys[idx];
       this.visibleKeys = Object.assign({}, this.visibleKeys);
     },
@@ -2109,13 +2345,15 @@ function app() {
         });
       });
     },
-    moveModel(idx, delta) {
-      const j = idx + delta;
-      if (!this.cfg.models || j < 0 || j >= this.cfg.models.length) return;
-      const arr = this.cfg.models;
-      [arr[idx], arr[j]] = [arr[j], arr[idx]];
-    },
-    removeModel(idx) {
+   moveModel(idx, delta) {
+     const arr = this.cfg.models;
+     const newIdx = idx + delta;
+     if (!arr || newIdx < 0 || newIdx >= arr.length) return;
+     const [item] = arr.splice(idx, 1);
+     arr.splice(newIdx, 0, item);
+     this.reorderModelsBackend(idx, newIdx);
+   },
+   removeModel(idx) {
       const m = (this.cfg.models || [])[idx];
       const slug = m && m.slug ? m.slug : String(idx + 1);
       this.openConfirm({
@@ -2162,11 +2400,36 @@ function app() {
         if (name) errNext[name] = e.message;
         this.upstreamErrors = errNext;
       } finally {
+       this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: false });
+     }
+   },
+    async fetchFormUpstreamModels() {
+      const fields = this.modal.fields || [];
+      const base_url = (fields.find(f => f.key === 'base_url') || {}).value || '';
+      const api_key = (fields.find(f => f.key === 'api_key') || {}).value || '';
+      const backend_type = (fields.find(f => f.key === 'backend_type') || {}).value || 'a';
+      if (!base_url.trim()) return;
+      const cacheKey = '__form__';
+      if (this.upstreamLoading[cacheKey]) return;
+      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
+      try {
+        const r = await fetch('/admin/api/upstream-models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base_url: base_url.trim(), api_key: api_key || '', backend_type }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
+        const models = j.models || [];
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { [cacheKey]: models });
+      } catch (e) {
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { [cacheKey]: e.message });
+      } finally {
         this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: false });
       }
     },
 
-    openConfirm(opts) {
+   openConfirm(opts) {
       return new Promise((resolve) => {
         this.modal = Object.assign({}, this.modal, {
           open: true, kind: 'confirm',

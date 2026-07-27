@@ -519,3 +519,53 @@ func TestSetSourceDisabled(t *testing.T) {
 		t.Fatal("holder still disabled")
 	}
 }
+
+func TestSourceTest(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// missing base_url
+	resp, err := http.Post(srv.URL+"/admin/api/sources/test", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// invalid backend_type
+	resp, err = http.Post(srv.URL+"/admin/api/sources/test", "application/json",
+		strings.NewReader(`{"base_url":"https://example.com","backend_type":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// reachable (test server itself)
+	resp, err = http.Post(srv.URL+"/admin/api/sources/test", "application/json",
+		strings.NewReader(`{"base_url":"`+srv.URL+`","backend_type":"a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true {
+		t.Fatalf("body=%v", body)
+	}
+	if body["status"] != "reachable" {
+		t.Fatalf("status=%v", body["status"])
+	}
+}

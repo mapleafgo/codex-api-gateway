@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,9 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
 	mux.HandleFunc("/admin/api/sources/promote", wrap("promote-source", h.handlePromoteSource))
 	mux.HandleFunc("/admin/api/sources/disabled", wrap("source-disabled", h.handleSetSourceDisabled))
+	mux.HandleFunc("/admin/api/sources/test", wrap("source-test", h.handleSourceTest))
+	mux.HandleFunc("/admin/api/sources/reorder", wrap("source-reorder", h.handleReorderSources))
+	mux.HandleFunc("/admin/api/models/reorder", wrap("model-reorder", h.handleReorderModels))
 	mux.HandleFunc("/admin/api/version", wrap("version", h.handleVersion))
 }
 
@@ -619,6 +623,178 @@ func (h *handler) handleSetSourceDisabled(w http.ResponseWriter, r *http.Request
 		"ok": true, "name": name, "disabled": in.Disabled,
 		"health": h.sourcesHealth(),
 	})
+}
+
+// handleSourceTest POST {base_url, backend_type}：对上游 base_url 做可达性探测。
+// 仅发 GET 请求读响应头，任意 HTTP 响应即判定可达；只有 DNS/连接被拒/TLS/超时
+// 等网络级错误才判定不可达。不验证鉴权、不发真实大模型请求。
+func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		BaseURL     string `json:"base_url"`
+		BackendType string `json:"backend_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	baseURL := strings.TrimSpace(in.BaseURL)
+	if baseURL == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing base_url"})
+		return
+	}
+	if _, err := config.NormalizeBackendType(in.BackendType); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+		return
+	}
+
+	result := h.probeReachability(r.Context(), baseURL)
+	writeJSON(w, http.StatusOK, result)
+}
+
+type sourceTestResult struct {
+	OK           bool   `json:"ok"`
+	Status       string `json:"status"` // "reachable" | "unreachable"
+	Message      string `json:"message"`
+	HTTPStatus   *int   `json:"http_status,omitempty"`
+	ResponseTime int64  `json:"response_time_ms"`
+}
+
+// handleReorderSources POST {from, to}：将源从 from 位置移到 to 位置（插入式），写盘并热重载。
+func (h *handler) handleReorderSources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		From int `json:"from"`
+		To   int `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	if in.From < 0 || in.From >= len(cur.Sources) || in.To < 0 || in.To >= len(cur.Sources) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid position"})
+		return
+	}
+	next := *cur
+	next.Sources = make([]config.Source, len(cur.Sources))
+	copy(next.Sources, cur.Sources)
+	item := next.Sources[in.From]
+	next.Sources = append(next.Sources[:in.From], next.Sources[in.From+1:]...)
+	next.Sources = append(next.Sources[:in.To], append([]config.Source{item}, next.Sources[in.To:]...)...)
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页调整源顺序", "from", in.From, "to", in.To)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "health": h.sourcesHealth(),
+	})
+}
+
+// handleReorderModels POST {from, to}：将模型从 from 位置移到 to 位置（插入式），写盘并热重载。
+func (h *handler) handleReorderModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		From int `json:"from"`
+		To   int `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	if in.From < 0 || in.From >= len(cur.ModelSlugOrder) || in.To < 0 || in.To >= len(cur.ModelSlugOrder) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid position"})
+		return
+	}
+	next := *cur
+	next.ModelSlugOrder = make([]string, len(cur.ModelSlugOrder))
+	copy(next.ModelSlugOrder, cur.ModelSlugOrder)
+	item := next.ModelSlugOrder[in.From]
+	next.ModelSlugOrder = append(next.ModelSlugOrder[:in.From], next.ModelSlugOrder[in.From+1:]...)
+	next.ModelSlugOrder = append(next.ModelSlugOrder[:in.To], append([]string{item}, next.ModelSlugOrder[in.To:]...)...)
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页调整模型顺序", "from", in.From, "to", in.To)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+	})
+}
+
+func (h *handler) probeReachability(ctx context.Context, baseURL string) sourceTestResult {
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
+	if err != nil {
+		return sourceTestResult{
+			OK:      false,
+			Status:  "unreachable",
+			Message: fmt.Sprintf("invalid URL: %s", err.Error()),
+		}
+	}
+	req.Header.Set("User-Agent", "codex-api-gateway/1.0")
+	req.Header.Set("Accept", "*/*")
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		msg := err.Error()
+		if urlErr, ok := err.(*url.Error); ok {
+			if urlErr.Timeout() {
+				msg = fmt.Sprintf("request timeout after %ds", int(8))
+			}
+		}
+		return sourceTestResult{
+			OK:           false,
+			Status:       "unreachable",
+			Message:      msg,
+			ResponseTime: elapsed,
+		}
+	}
+	defer resp.Body.Close()
+
+	return sourceTestResult{
+		OK:           true,
+		Status:       "reachable",
+		Message:      "Reachable",
+		HTTPStatus:   &resp.StatusCode,
+		ResponseTime: elapsed,
+	}
 }
 
 // writeConfigYAML 序列化配置并原子写盘，成功后触发热重载。内部加 writeMu。
