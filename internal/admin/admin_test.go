@@ -524,6 +524,20 @@ func TestSourceTest(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	mux := http.NewServeMux()
 	Mount(mux, *deps)
+
+	// mock /models endpoint for health check (upstreamhttp.ModelsURL appends /models)
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		// reject missing or empty Bearer token
+		if auth == "" || auth == "Bearer " || auth == "Bearer" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4"}]}`))
+	})
+
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -548,9 +562,9 @@ func TestSourceTest(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// reachable (test server itself)
+	// reachable with valid api_key
 	resp, err = http.Post(srv.URL+"/admin/api/sources/test", "application/json",
-		strings.NewReader(`{"base_url":"`+srv.URL+`","backend_type":"a"}`))
+		strings.NewReader(`{"base_url":"`+srv.URL+`","api_key":"sk-test","backend_type":"a"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,5 +581,23 @@ func TestSourceTest(t *testing.T) {
 	}
 	if body["status"] != "reachable" {
 		t.Fatalf("status=%v", body["status"])
+	}
+
+	// missing api_key should fail (401 from mock)
+	resp2, err := http.Post(srv.URL+"/admin/api/sources/test", "application/json",
+		strings.NewReader(`{"base_url":"`+srv.URL+`","backend_type":"a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("status=%d", resp2.StatusCode)
+	}
+	var body2 map[string]any
+	if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
+		t.Fatal(err)
+	}
+	if body2["ok"] != false {
+		t.Fatalf("expected ok=false without api_key, got body=%v", body2)
 	}
 }

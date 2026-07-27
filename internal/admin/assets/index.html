@@ -980,7 +980,8 @@ html[data-theme="dark"] .ui-select {
                   <template x-if="testResults[src.name]">
                     <span class="ui-test-tag"
                           :class="testResults[src.name].ok ? 'is-ok' : 'is-fail'"
-                          x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].httpStatus ? ' HTTP ' + testResults[src.name].httpStatus : '') + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
+                          :title="testResults[src.name].message"
+                          x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
                     </span>
                   </template>
                   <button class="ui-text-action" type="button"
@@ -1475,7 +1476,8 @@ html[data-theme="dark"] .ui-select {
       <template x-if="testResults['__form__']">
         <span class="ui-test-tag"
               :class="testResults['__form__'].ok ? 'is-ok' : 'is-fail'"
-              x-text="(testResults['__form__'].ok ? t('testReachable') : t('testUnreachable')) + (testResults['__form__'].httpStatus ? ' HTTP ' + testResults['__form__'].httpStatus : '') + (testResults['__form__'].responseTime != null ? ' · ' + testResults['__form__'].responseTime + 'ms' : '')">
+              :title="testResults['__form__'].message"
+              x-text="(testResults['__form__'].ok ? t('testReachable') : t('testUnreachable')) + (testResults['__form__'].responseTime != null ? ' · ' + testResults['__form__'].responseTime + 'ms' : '')">
         </span>
       </template>
      <div style="margin-left:auto; display:flex; gap:8px">
@@ -1525,7 +1527,7 @@ function app() {
       allModels: '全部模型', allSources: '全部供应商',
       sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: '模型', global: '全局参数', guidance: '基线指令',
      addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
-    testSrc: '测试', testingSrc: '测试中…', testResult: '测试结果', testReachable: '可达', testUnreachable: '不可达', testReachHint: '仅探测 base_url 是否可达，不发真实大模型请求',
+    testSrc: '测试', testingSrc: '测试中…', testReachable: '可达', testUnreachable: '不可达', testReachHint: '验证 base_url 可达且 api_key 有效，不发真实大模型请求',
      srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
@@ -1588,7 +1590,7 @@ function app() {
       allModels: 'All models', allSources: 'All sources',
       sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: 'Models', global: 'Global', guidance: 'Base instructions',
      addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
-    testSrc: 'Test', testingSrc: 'Testing…', testResult: 'Test result', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Only probes base_url reachability; no real LLM request sent',
+    testSrc: 'Test', testingSrc: 'Testing…', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Verifies base_url reachable and api_key valid; no real LLM request sent',
      srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
@@ -2066,6 +2068,7 @@ function app() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             base_url: (src.base_url || '').trim(),
+            api_key: src.api_key || '',
             backend_type: src.backend_type || 'a',
           }),
         });
@@ -2101,6 +2104,10 @@ function app() {
       const f = (this.modal.fields || []).find(x => x.key === 'backend_type');
       return f ? (f.value || 'a') : 'a';
     },
+    formAPIKey() {
+      const f = (this.modal.fields || []).find(x => x.key === 'api_key');
+      return f ? String(f.value || '').trim() : '';
+    },
     async testFormSource() {
       const base_url = this.formBaseURL();
       if (!base_url) {
@@ -2110,6 +2117,7 @@ function app() {
       await this.testSource({
         name: '__form__',
         base_url,
+        api_key: this.formAPIKey(),
         backend_type: this.formBackendType(),
       });
     },

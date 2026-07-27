@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
@@ -625,9 +625,9 @@ func (h *handler) handleSetSourceDisabled(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// handleSourceTest POST {base_url, backend_type}：对上游 base_url 做可达性探测。
-// 仅发 GET 请求读响应头，任意 HTTP 响应即判定可达；只有 DNS/连接被拒/TLS/超时
-// 等网络级错误才判定不可达。不验证鉴权、不发真实大模型请求。
+// handleSourceTest POST {base_url, api_key, backend_type}：对上游做连通性探测。
+// 通过 GET /v1/models 验证 base_url 可达 + api_key 有效。
+// 不发真实大模型请求，不消耗 token。
 func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
@@ -635,6 +635,7 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		BaseURL     string `json:"base_url"`
+		APIKey      string `json:"api_key"`
 		BackendType string `json:"backend_type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -651,8 +652,32 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.probeReachability(r.Context(), baseURL)
-	writeJSON(w, http.StatusOK, result)
+	src := config.Source{
+		Name:        "__test__",
+		BaseURL:     baseURL,
+		APIKey:      in.APIKey,
+		BackendType: in.BackendType,
+	}
+	checker := health.New(health.DefaultConfig())
+	result := checker.CheckSource(r.Context(), src)
+
+	// 转换为前端期望的格式
+	status := string(result.Status)
+	isOK := result.Success
+	if status == string(health.StatusDegraded) {
+		status = "reachable"
+	}
+	if status == string(health.StatusOperational) {
+		status = "reachable"
+	}
+
+	writeJSON(w, http.StatusOK, sourceTestResult{
+		OK:           isOK,
+		Status:       status,
+		Message:      result.Message,
+		HTTPStatus:   &result.HTTPStatus,
+		ResponseTime: result.ResponseTimeMs,
+	})
 }
 
 type sourceTestResult struct {
@@ -745,56 +770,6 @@ func (h *handler) handleReorderModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 	})
-}
-
-func (h *handler) probeReachability(ctx context.Context, baseURL string) sourceTestResult {
-	client := &http.Client{
-		Timeout: 8 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
-	if err != nil {
-		return sourceTestResult{
-			OK:      false,
-			Status:  "unreachable",
-			Message: fmt.Sprintf("invalid URL: %s", err.Error()),
-		}
-	}
-	req.Header.Set("User-Agent", "codex-api-gateway/1.0")
-	req.Header.Set("Accept", "*/*")
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	elapsed := time.Since(start).Milliseconds()
-	if err != nil {
-		msg := err.Error()
-		if urlErr, ok := err.(*url.Error); ok {
-			if urlErr.Timeout() {
-				msg = fmt.Sprintf("request timeout after %ds", int(8))
-			}
-		}
-		return sourceTestResult{
-			OK:           false,
-			Status:       "unreachable",
-			Message:      msg,
-			ResponseTime: elapsed,
-		}
-	}
-	defer resp.Body.Close()
-
-	return sourceTestResult{
-		OK:           true,
-		Status:       "reachable",
-		Message:      "Reachable",
-		HTTPStatus:   &resp.StatusCode,
-		ResponseTime: elapsed,
-	}
 }
 
 // writeConfigYAML 序列化配置并原子写盘，成功后触发热重载。内部加 writeMu。
