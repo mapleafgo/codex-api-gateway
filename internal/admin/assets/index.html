@@ -2478,6 +2478,10 @@ function app() {
     openForm(opts) {
       return new Promise((resolve) => {
         const fields = (opts.fields || []).map(f => Object.assign({}, f));
+        // 打开表单时清空上一次残留的上游模型列表，避免下拉显示旧数据
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
+        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { '__form__': false });
         this.modal = Object.assign({}, this.modal, {
           open: true, kind: 'form',
           title: opts.title || '',
@@ -2500,6 +2504,10 @@ function app() {
       const r = this.modal;
       const resolve = r._resolve;
       this.modal._resolve = null;
+      if (r.kind === 'form') {
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
+      }
       this.modal = Object.assign({}, this.modal, { open: false });
       this.$refs.gwModal.close();
       if (!resolve) return;
@@ -2518,6 +2526,10 @@ function app() {
       const r = this.modal;
       const resolve = r._resolve;
       this.modal._resolve = null;
+      if (r.kind === 'form') {
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
+      }
       this.modal = Object.assign({}, this.modal, { open: false });
       this.$refs.gwModal.close();
       if (resolve) resolve(r.kind === 'confirm' ? false : null);
@@ -2527,6 +2539,10 @@ function app() {
       if (r._resolve) {
         r._resolve(r.kind === 'confirm' ? false : null);
         r._resolve = null;
+      }
+      if (r.kind === 'form') {
+        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
+        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
       }
       this.modal = Object.assign({}, this.modal, { open: false });
     },
