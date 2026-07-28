@@ -50,8 +50,9 @@ func TestCheckSource_Operational(t *testing.T) {
 	if res.HTTPStatus != 200 {
 		t.Fatalf("期望 http 200，得到 %d", res.HTTPStatus)
 	}
-	if res.ResponseTimeMs <= 0 {
-		t.Fatalf("期望正响应时间，得到 %d", res.ResponseTimeMs)
+	// 本机 loopback 常 <1ms，Milliseconds() 截断为 0 是合法结果。
+	if res.ResponseTimeMs < 0 {
+		t.Fatalf("期望非负响应时间，得到 %d", res.ResponseTimeMs)
 	}
 }
 
@@ -186,77 +187,77 @@ func TestCheckSource_ResultJSON(t *testing.T) {
 }
 
 func TestCheckSource_Models404_FallbackValidKey(t *testing.T) {
-    // /v1/models 返回 404，但 /v1/messages 返回 400（说明 key 有效）
-    mux := http.NewServeMux()
-    mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusNotFound)
-    })
-    mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-        // 400 = 请求体为空但 key 有效（区别于 401）
-        w.WriteHeader(http.StatusBadRequest)
-    })
-    srv := httptest.NewServer(mux)
-    defer srv.Close()
+	// /v1/models 返回 404，但 /v1/messages 返回 400（说明 key 有效）
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		// 400 = 请求体为空但 key 有效（区别于 401）
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
 
-    c := New(DefaultConfig())
-    src := config.Source{Name: "no-models", BaseURL: srv.URL, APIKey: "sk-valid"}
-    res := c.CheckSource(context.Background(), src)
+	c := New(DefaultConfig())
+	src := config.Source{Name: "no-models", BaseURL: srv.URL, APIKey: "sk-valid"}
+	res := c.CheckSource(context.Background(), src)
 
-    if res.Status != StatusOperational {
-        t.Fatalf("期望 operational，得到 %s (%s)", res.Status, res.Message)
-    }
-    if !res.Success {
-        t.Fatal("期望 success=true")
-    }
+	if res.Status != StatusOperational {
+		t.Fatalf("期望 operational，得到 %s (%s)", res.Status, res.Message)
+	}
+	if !res.Success {
+		t.Fatal("期望 success=true")
+	}
 }
 
 func TestCheckSource_Models404_FallbackInvalidKey(t *testing.T) {
-    // /v1/models 返回 404，/v1/messages 返回 401（key 无效）
-    mux := http.NewServeMux()
-    mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusNotFound)
-    })
-    mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusUnauthorized)
-    })
-    srv := httptest.NewServer(mux)
-    defer srv.Close()
+	// /v1/models 返回 404，/v1/messages 返回 401（key 无效）
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
 
-    c := New(DefaultConfig())
-    src := config.Source{Name: "bad-key-no-models", BaseURL: srv.URL, APIKey: "sk-wrong"}
-    res := c.CheckSource(context.Background(), src)
+	c := New(DefaultConfig())
+	src := config.Source{Name: "bad-key-no-models", BaseURL: srv.URL, APIKey: "sk-wrong"}
+	res := c.CheckSource(context.Background(), src)
 
-    if res.Status != StatusFailed {
-        t.Fatalf("期望 failed，得到 %s (%s)", res.Status, res.Message)
-    }
-    if res.Success {
-        t.Fatal("期望 success=false")
-    }
-    if res.HTTPStatus != 401 {
-        t.Fatalf("期望 http 401，得到 %d", res.HTTPStatus)
-    }
+	if res.Status != StatusFailed {
+		t.Fatalf("期望 failed，得到 %s (%s)", res.Status, res.Message)
+	}
+	if res.Success {
+		t.Fatal("期望 success=false")
+	}
+	if res.HTTPStatus != 401 {
+		t.Fatalf("期望 http 401，得到 %d", res.HTTPStatus)
+	}
 }
 
 func TestCheckSource_Models404_ChatBackend(t *testing.T) {
-    // Chat 后端：/v1/models 404，降级到 /chat/completions
-    mux := http.NewServeMux()
-    mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusNotFound)
-    })
-    mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusBadRequest) // key 有效但 body 为空
-    })
-    srv := httptest.NewServer(mux)
-    defer srv.Close()
+	// Chat 后端：/v1/models 404，降级到 /chat/completions
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest) // key 有效但 body 为空
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
 
-    c := New(DefaultConfig())
-    src := config.Source{Name: "chat-no-models", BaseURL: srv.URL, APIKey: "sk-valid", BackendType: "c"}
-    res := c.CheckSource(context.Background(), src)
+	c := New(DefaultConfig())
+	src := config.Source{Name: "chat-no-models", BaseURL: srv.URL, APIKey: "sk-valid", BackendType: "c"}
+	res := c.CheckSource(context.Background(), src)
 
-    if res.Status != StatusOperational {
-        t.Fatalf("期望 operational，得到 %s (%s)", res.Status, res.Message)
-    }
-    if !res.Success {
-        t.Fatal("期望 success=true")
-    }
+	if res.Status != StatusOperational {
+		t.Fatalf("期望 operational，得到 %s (%s)", res.Status, res.Message)
+	}
+	if !res.Success {
+		t.Fatal("期望 success=true")
+	}
 }

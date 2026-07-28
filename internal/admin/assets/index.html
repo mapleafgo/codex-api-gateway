@@ -1468,12 +1468,12 @@ html[data-theme="dark"] .ui-select {
 
    <div class="ui-modal-actions">
       <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
-              x-show="modal.kind === 'form' && formHasBaseURL()"
+              x-show="modal.kind === 'form' && modal.allowTest && formHasBaseURL()"
               :disabled="!!testingSrc || !formBaseURL()"
               @click="testFormSource()"
               :title="t('testReachHint')"
              x-text="testingSrc === '__form__' ? t('testingSrc') : t('testSrc')"></button>
-      <template x-if="testResults['__form__']">
+      <template x-if="modal.kind === 'form' && modal.allowTest && testResults['__form__']">
         <span class="ui-test-tag"
               :class="testResults['__form__'].ok ? 'is-ok' : 'is-fail'"
               :title="testResults['__form__'].message"
@@ -1684,7 +1684,7 @@ function app() {
     upstreamModels: {},
     upstreamLoading: {},
     upstreamErrors: {},
-    modal: { open: false, kind: 'confirm', title: '', msg: '', value: '', placeholder: '', confirmText: '', cancelText: '', danger: false, fields: [], _resolve: null },
+    modal: { open: false, kind: 'confirm', title: '', msg: '', value: '', placeholder: '', confirmText: '', cancelText: '', danger: false, allowTest: false, fields: [], _resolve: null },
 
     ROW_H: 36,
     viewStart: 0,
@@ -2019,6 +2019,7 @@ function app() {
       this.openForm({
         title: this.t('addSrc'),
         confirmText: this.t('addSrc'),
+        allowTest: true,
         fields: [
           { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
           { key: 'backend_type', label: this.t('backendType'), type: 'select', value: 'a', options: [
@@ -2120,6 +2121,15 @@ function app() {
         api_key: this.formAPIKey(),
         backend_type: this.formBackendType(),
       });
+    },
+    clearFormScratch() {
+      const next = Object.assign({}, this.testResults);
+      delete next['__form__'];
+      this.testResults = next;
+      this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
+      this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
+      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { '__form__': false });
+      if (this.testingSrc === '__form__') this.testingSrc = '';
     },
     healthMap() {
       const arr = (this.snap && this.snap.sources_health) || [];
@@ -2439,6 +2449,7 @@ function app() {
 
    openConfirm(opts) {
       return new Promise((resolve) => {
+        this.clearFormScratch();
         this.modal = Object.assign({}, this.modal, {
           open: true, kind: 'confirm',
           title: opts.title || '',
@@ -2447,6 +2458,7 @@ function app() {
           confirmText: opts.confirmText || '',
           cancelText: opts.cancelText || '',
           danger: !!opts.danger,
+          allowTest: false,
           _resolve: resolve,
         });
         this.$refs.gwModal.showModal();
@@ -2457,6 +2469,7 @@ function app() {
     },
     openPrompt(opts) {
       return new Promise((resolve) => {
+        this.clearFormScratch();
         this.modal = Object.assign({}, this.modal, {
           open: true, kind: 'prompt',
           title: opts.title || '',
@@ -2467,6 +2480,7 @@ function app() {
           confirmText: opts.confirmText || '',
           cancelText: opts.cancelText || '',
           danger: false,
+          allowTest: false,
           _resolve: resolve,
         });
         this.$refs.gwModal.showModal();
@@ -2478,10 +2492,8 @@ function app() {
     openForm(opts) {
       return new Promise((resolve) => {
         const fields = (opts.fields || []).map(f => Object.assign({}, f));
-        // 打开表单时清空上一次残留的上游模型列表，避免下拉显示旧数据
-        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
-        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { '__form__': false });
+        // 打开表单时清空上一次残留的上游模型列表与测试结果，避免下次看到旧数据
+        this.clearFormScratch();
         this.modal = Object.assign({}, this.modal, {
           open: true, kind: 'form',
           title: opts.title || '',
@@ -2491,6 +2503,7 @@ function app() {
           confirmText: opts.confirmText || '',
           cancelText: opts.cancelText || '',
           danger: !!opts.danger,
+          allowTest: !!opts.allowTest,
           _resolve: resolve,
         });
         this.$refs.gwModal.showModal();
@@ -2504,11 +2517,8 @@ function app() {
       const r = this.modal;
       const resolve = r._resolve;
       this.modal._resolve = null;
-      if (r.kind === 'form') {
-        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
-      }
-      this.modal = Object.assign({}, this.modal, { open: false });
+      this.clearFormScratch();
+      this.modal = Object.assign({}, this.modal, { open: false, allowTest: false });
       this.$refs.gwModal.close();
       if (!resolve) return;
       if (r.kind === 'confirm') resolve(true);
@@ -2526,11 +2536,8 @@ function app() {
       const r = this.modal;
       const resolve = r._resolve;
       this.modal._resolve = null;
-      if (r.kind === 'form') {
-        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
-      }
-      this.modal = Object.assign({}, this.modal, { open: false });
+      this.clearFormScratch();
+      this.modal = Object.assign({}, this.modal, { open: false, allowTest: false });
       this.$refs.gwModal.close();
       if (resolve) resolve(r.kind === 'confirm' ? false : null);
     },
@@ -2540,11 +2547,8 @@ function app() {
         r._resolve(r.kind === 'confirm' ? false : null);
         r._resolve = null;
       }
-      if (r.kind === 'form') {
-        this.upstreamModels = Object.assign({}, this.upstreamModels, { '__form__': [] });
-        this.upstreamErrors = Object.assign({}, this.upstreamErrors, { '__form__': '' });
-      }
-      this.modal = Object.assign({}, this.modal, { open: false });
+      this.clearFormScratch();
+      this.modal = Object.assign({}, this.modal, { open: false, allowTest: false });
     },
 
     fmtShortTime(iso) {
