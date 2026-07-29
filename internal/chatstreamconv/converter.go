@@ -411,9 +411,6 @@ func (c *Converter) classifyTool(name string) toolKind {
 	case toolcatalog.ChatNameCodeInterpreter:
 		return kindCodeInterpreter
 	}
-	if strings.HasPrefix(name, toolcatalog.MCPChatNamePrefix) {
-		return kindMCP
-	}
 	if _, ok := c.freeformNames[name]; ok {
 		return kindCustom
 	}

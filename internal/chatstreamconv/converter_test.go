@@ -471,7 +471,9 @@ func TestMCPOutboundShape(t *testing.T) {
 	for _, e := range c.FeedDone() {
 		types = append(types, evTypes(t, e.Data))
 	}
-	for _, w := range []string{"response.mcp_call.in_progress", "response.mcp_call.completed"} {
+	// Chat 无 server MCP 执行：mcp__* 必须回成 function_call 让客户端执行。
+	// 旧逻辑发已 completed 的空 mcp_call，客户端不会调工具。
+	for _, w := range []string{"response.function_call_arguments.delta", "response.function_call_arguments.done"} {
 		ok := false
 		for _, typ := range types {
 			if typ == w {
@@ -483,14 +485,14 @@ func TestMCPOutboundShape(t *testing.T) {
 		}
 	}
 	for _, it := range c.OutputItems() {
-		if it.Type == "mcp_call" {
-			if it.ServerLabel != "fetch" || it.Name != "get" {
+		if it.Type == "function_call" {
+			if it.Namespace != "mcp__fetch" || it.Name != "get" || it.CallID != "m1" {
 				t.Fatalf("item=%+v", it)
 			}
 			return
 		}
 	}
-	t.Fatalf("no mcp item %+v", c.OutputItems())
+	t.Fatalf("no function_call item %+v", c.OutputItems())
 }
 
 func TestToolCallNameArrivesAfterID(t *testing.T) {

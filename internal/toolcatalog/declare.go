@@ -229,7 +229,9 @@ func resolveRefs(v any, defs map[string]any) any {
 
 // SplitToolName splits a namespaced tool name into namespace and base name.
 func SplitToolName(name string) (namespace, base string) {
-	idx := strings.Index(name, "__")
+	// 用 LastIndex：Codex MCP 命名空间本身带 mcp__ 前缀（如 mcp__browser），
+	// 扁平名 mcp__browser__click 必须拆成 ns=mcp__browser / name=click。
+	idx := strings.LastIndex(name, "__")
 	if idx < 0 {
 		return "", name
 	}

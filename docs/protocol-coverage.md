@@ -342,7 +342,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `delta.tool_calls` name=`tool_search` | `tool_search_call` | `supported` | arguments 随 item done |
 | `delta.tool_calls` name=`web_search` | `web_search_call` 链 | `lossy_supported` | 无真实 sources |
 | `delta.tool_calls` name=`code_interpreter` | `code_interpreter_call` 链 | `lossy_supported` | code 从 arguments 解；无 logs |
-| `delta.tool_calls` name=`mcp__*__*` | `mcp_call` 链 | `lossy_supported` | 无 server result |
+| `delta.tool_calls` name=`mcp__*__*` | `function_call`（namespace 拆分） | `supported` | Chat 无 server MCP；必须回 client 可执行的 function_call（含 Codex `mcp__*` namespace） |
 | `finish_reason=stop` / `tool_calls` | `response.completed` | `supported` | |
 | `finish_reason=length` | `response.incomplete` reason=`max_output_tokens` | `supported` | |
 | `finish_reason=content_filter` | `response.incomplete` + refusal 事件链 | `supported` | 累积 `delta.refusal`，缺省用 fallback 文案；清掉半截 text/tool output |
