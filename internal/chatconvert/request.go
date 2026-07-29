@@ -1040,7 +1040,9 @@ func convertResponseFormat(req *oairesponses.ResponseNewParams) any {
 	case req.Text.Format.OfJSONObject != nil:
 		return map[string]any{"type": "json_object"}
 	case req.Text.Format.OfText != nil:
-		return map[string]any{"type": "text"}
+		// text 是 Chat API 默认行为，显式设置反而导致部分上游（如 JD）400。
+		// 仅 json_schema / json_object 才需要声明 response_format。
+		return nil
 	default:
 		return nil
 	}
