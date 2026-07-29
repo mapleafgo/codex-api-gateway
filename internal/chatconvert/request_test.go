@@ -172,17 +172,62 @@ func TestToChat_OrphanToolCallGetsPlaceholder(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	found := false
-	for _, m := range out.Messages {
-		if m.Role == "tool" && m.ToolCallID == "orphan" {
-			found = true
-			if !strings.Contains(m.Content.(string), "no tool output") {
-				t.Fatalf("placeholder content=%v", m.Content)
-			}
+	// user + assistant(tool_calls) + 紧邻 placeholder tool
+	if len(out.Messages) < 3 {
+		t.Fatalf("messages=%d %+v", len(out.Messages), out.Messages)
+	}
+	asstIdx := -1
+	for i, m := range out.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			asstIdx = i
+			break
 		}
 	}
-	if !found {
-		t.Fatalf("missing placeholder: %+v", out.Messages)
+	if asstIdx < 0 || asstIdx+1 >= len(out.Messages) {
+		t.Fatalf("no assistant tool_calls: %+v", out.Messages)
+	}
+	tool := out.Messages[asstIdx+1]
+	if tool.Role != "tool" || tool.ToolCallID != "orphan" {
+		t.Fatalf("placeholder not adjacent after assistant: %+v", out.Messages)
+	}
+	if !strings.Contains(tool.Content.(string), "no tool output") {
+		t.Fatalf("placeholder content=%v", tool.Content)
+	}
+}
+
+// function_call 与 function_call_output 之间夹杂 assistant 文本时，
+// convertMessages 会先 flush tool_calls assistant，导致 tool 落在文本之后；
+// ensureChatToolPaired 必须把 tool 挪回 assistant(tool_calls) 紧邻位置。
+func TestToChat_ToolResultReorderedAfterInterveningAssistant(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"run"}]},
+			{"type":"function_call","call_id":"call_x","name":"do","arguments":"{}"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"thinking aloud"}]},
+			{"type":"function_call_output","call_id":"call_x","output":"done"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	asstIdx := -1
+	for i, m := range out.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].ID == "call_x" {
+			asstIdx = i
+			break
+		}
+	}
+	if asstIdx < 0 {
+		t.Fatalf("missing tool_calls assistant: %+v", out.Messages)
+	}
+	if asstIdx+1 >= len(out.Messages) {
+		t.Fatalf("no message after tool_calls assistant: %+v", out.Messages)
+	}
+	next := out.Messages[asstIdx+1]
+	if next.Role != "tool" || next.ToolCallID != "call_x" {
+		t.Fatalf("tool not adjacent after assistant(tool_calls): idx=%d msgs=%+v", asstIdx, out.Messages)
+	}
+	if next.Content != "done" {
+		t.Fatalf("tool content=%v", next.Content)
 	}
 }
 

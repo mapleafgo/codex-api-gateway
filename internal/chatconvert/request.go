@@ -224,6 +224,7 @@ func (r *ChatRequest) IsFreeformName(name string) bool {
 	if r == nil || r.FreeformNames == nil {
 		return false
 	}
+
 	_, ok := r.FreeformNames[name]
 	return ok
 }
@@ -492,50 +493,132 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 const placeholderToolResultContent = "[no tool output available — this call's result was missing from the request history]"
 
 // ensureChatToolPaired 为缺少 role=tool 回包的 tool_call 补占位 tool 消息。
+// 同时把已有但位置不对的 tool 消息挪到对应 assistant 之后：
+// 严格 Chat 上游（如 JD）要求 assistant(tool_calls) 后必须紧跟各 tool_call_id 的 tool 消息。
 func ensureChatToolPaired(out *ChatRequest) {
-	if out == nil {
+	if out == nil || len(out.Messages) == 0 {
 		return
 	}
-	resolved := map[string]struct{}{}
+
+	// 索引 tool 消息（同 id 保留首次出现），并标记被 assistant.tool_calls 声明过的 id。
+	toolByID := make(map[string]ChatMessage)
+	claimed := make(map[string]struct{})
 	for _, m := range out.Messages {
 		if m.Role == "tool" && m.ToolCallID != "" {
-			resolved[m.ToolCallID] = struct{}{}
+			if _, ok := toolByID[m.ToolCallID]; !ok {
+				toolByID[m.ToolCallID] = m
+			}
+		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID != "" {
+					claimed[tc.ID] = struct{}{}
+				}
+			}
 		}
 	}
-	var missing []string
-	seen := map[string]struct{}{}
-	for _, m := range out.Messages {
-		if m.Role != "assistant" {
-			continue
-		}
-		for _, tc := range m.ToolCalls {
-			id := tc.ID
-			if id == "" {
-				continue
-			}
-			if _, ok := resolved[id]; ok {
-				continue
-			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) == 0 {
+
+	// 快速路径：每条含 tool_calls 的 assistant 后已紧跟其完整 tool 回包。
+	if chatToolPairingAlreadyValid(out.Messages, toolByID, claimed) {
 		return
 	}
-	for _, id := range missing {
-		out.Messages = append(out.Messages, ChatMessage{
-			Role:       "tool",
-			ToolCallID: id,
-			Content:    placeholderToolResultContent,
-		})
+
+	newMsgs := make([]ChatMessage, 0, len(out.Messages)+len(claimed))
+	emitted := make(map[string]struct{}, len(claimed))
+	missingCount := 0
+
+	for _, m := range out.Messages {
+		if m.Role == "tool" {
+			// 被 assistant 声明的 tool 统一在 assistant 后重放；这里只保留无归属的孤儿 tool。
+			if m.ToolCallID != "" {
+				if _, ok := claimed[m.ToolCallID]; ok {
+					continue
+				}
+			}
+			newMsgs = append(newMsgs, m)
+			continue
+		}
+
+		newMsgs = append(newMsgs, m)
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" {
+				continue
+			}
+			if _, ok := emitted[tc.ID]; ok {
+				continue
+			}
+			emitted[tc.ID] = struct{}{}
+			if tool, ok := toolByID[tc.ID]; ok {
+				newMsgs = append(newMsgs, tool)
+			} else {
+				newMsgs = append(newMsgs, ChatMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    placeholderToolResultContent,
+				})
+				missingCount++
+			}
+		}
 	}
-	slog.Warn("chatconvert: 补占位 tool 消息（历史缺少 tool output）",
-		"placeholder_count", len(missing),
-		"impact", "避免 Chat 上游因 tool_call 无结果而 400")
+
+	out.Messages = newMsgs
+	if missingCount > 0 {
+		slog.Warn("chatconvert: 补占位 tool 消息（历史缺少 tool output）",
+			"placeholder_count", missingCount,
+			"impact", "避免 Chat 上游因 tool_call 无结果而 400")
+	} else {
+		// 仅重排：已知协议规范化路径，不抬 Warn。
+		slog.Debug("chatconvert: 重排 tool 消息至 assistant 紧邻位置",
+			"impact", "满足严格 Chat 上游对 tool_calls 后紧跟 tool 的要求")
+	}
+}
+
+// chatToolPairingAlreadyValid 检查 assistant(tool_calls) 后是否已紧跟全部对应 tool 消息。
+func chatToolPairingAlreadyValid(msgs []ChatMessage, toolByID map[string]ChatMessage, claimed map[string]struct{}) bool {
+	// 每个 claimed id 都必须有 tool 消息。
+	for id := range claimed {
+		if _, ok := toolByID[id]; !ok {
+			return false
+		}
+	}
+	for i := 0; i < len(msgs); i++ {
+		m := msgs[i]
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		need := make(map[string]struct{})
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				need[tc.ID] = struct{}{}
+			}
+		}
+		if len(need) == 0 {
+			continue
+		}
+		j := i + 1
+		for j < len(msgs) && msgs[j].Role == "tool" {
+			id := msgs[j].ToolCallID
+			if id == "" {
+				return false
+			}
+			if _, ok := need[id]; !ok {
+				// 紧邻的 tool 不属于本条 assistant → 顺序不合法。
+				return false
+			}
+			delete(need, id)
+			j++
+		}
+		if len(need) > 0 {
+			return false
+		}
+		// 跳过已消费的 tool 段，外层 i++ 会再 +1，这里把 i 推到 tool 段末尾前一位。
+		i = j - 1
+	}
+	return true
 }
 
 func convertEasyMessage(m *oairesponses.EasyInputMessageParam) (ChatMessage, bool) {
