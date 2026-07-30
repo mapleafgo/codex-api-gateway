@@ -97,7 +97,7 @@ func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string, header
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	upstreamhttp.ApplyHeaders(httpReq, headers, log, endpoint)
+	upstreamhttp.ApplyHeaders(httpReq, headers)
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
@@ -182,7 +182,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if beta != "" {
 		httpReq.Header.Set("anthropic-beta", beta)
 	}
-	upstreamhttp.ApplyHeaders(httpReq, headers, log, endpoint)
+	upstreamhttp.ApplyHeaders(httpReq, headers)
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, 0, err

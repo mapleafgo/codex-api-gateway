@@ -683,6 +683,8 @@ html[data-theme="dark"] .ui-select {
 @media (min-width: 768px) { .ui-src-chips { display: none; } }
 .ui-src-chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 10px; font-size: 12px; color: var(--ink-soft); font-family: var(--mono); }
 .ui-src-chip.is-active { border-color: color-mix(in srgb, var(--focus) 45%, var(--line)); color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--surface)); font-weight: 650; }
+.ui-src-chip-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.ui-src-chip-dot.is-neutral { background: var(--surface-2); }
 
 /* ---------- Toast / Modal ---------- */
 .ui-toast {
@@ -976,14 +978,16 @@ html[data-theme="dark"] .ui-select {
           <p class="ui-hint" x-text="t('srcOrderHint')"></p>
           <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="addSource()">
             <span aria-hidden="true">＋</span><span x-text="t('addSrc')"></span>
-          </button>
+            </button>
         </div>
         <div class="ui-src-chips" x-show="(cfg.sources || []).length" role="navigation" :aria-label="t('srcToc')">
           <template x-for="(src, idx) in cfg.sources" :key="'chip-' + (src._id || idx)">
             <button type="button" class="ui-src-chip"
-                    :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
-                    @click="jumpToSource(src, idx)"
-                    x-text="'#' + (idx + 1) + ' ' + (src.name || t('newSource'))"></button>
+                   :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
+                   @click="jumpToSource(src, idx)">
+             <span class="ui-src-chip-dot" :style="{ background: src.disabled ? 'var(--surface-2)' : healthDotColor(src.name) }"></span>
+             <span x-text="'#' + (idx + 1) + ' ' + (src.name || t('newSource'))"></span>
+            </button>
           </template>
         </div>
      <div class="ui-stack">
@@ -1023,16 +1027,17 @@ html[data-theme="dark"] .ui-select {
                           x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
                     </span>
                   </template>
-                  <button class="ui-text-action" type="button"
-                          :disabled="testingSrc===src.name || !src.base_url"
-                          @click="testSource(src)"
-                          :title="t('testReachHint')"
-                          x-text="testingSrc===src.name ? t('testingSrc') : t('testSrc')"></button>
                  <button class="ui-text-action" type="button"
-                           :disabled="!src.name || togglingDisabled===src.name"
-                           @click="toggleSourceDisabled(idx)"
-                           x-text="togglingDisabled===src.name ? t('togglingSrc') : (src.disabled ? t('enableSrc') : t('disableSrc'))"></button>
-                 <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
+                         :disabled="testingSrc===src.name || !src.base_url"
+                         @click="testSource(src)"
+                         :title="t('testReachHint')"
+                         x-text="testingSrc===src.name ? t('testingSrc') : t('testSrc')"></button>
+                <button class="ui-text-action" type="button"
+                          :disabled="!src.name || togglingDisabled===src.name"
+                          @click="toggleSourceDisabled(idx)"
+                          x-text="togglingDisabled===src.name ? t('togglingSrc') : (src.disabled ? t('enableSrc') : t('disableSrc'))"></button>
+                 <button class="ui-text-action" type="button" @click="duplicateSource(idx)" x-text="t('duplicateSrc')"></button>
+                <button class="ui-text-action is-danger" type="button" @click="removeSource(idx)" x-text="t('delete')"></button>
                </div>
                 </div>
                 <div class="ui-grid-2">
@@ -1163,7 +1168,6 @@ html[data-theme="dark"] .ui-select {
                </fieldset>
                 <fieldset class="ui-fieldset">
                   <legend x-text="t('headers')"></legend>
-                  <p class="ui-hint" style="margin-top:0" x-text="t('headersHint')"></p>
                   <div class="ui-stack" style="gap:8px">
                     <template x-for="(pair, pi) in headerPairs(src)" :key="pi">
                       <div class="ui-map-row">
@@ -1594,8 +1598,9 @@ function app() {
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
      defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
-     headers: '自定义请求头', headersHint: '追加到上游请求的额外 header；保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖。',
-     headerName: '头名称', headerValue: '值', addHeader: '新增请求头',
+     headers: '自定义请求头',
+    headerName: '头名称', headerValue: '值', addHeader: '新增请求头',
+    duplicateSrc: '复制',
     delete: '删除', noSources: '尚未配置供应商',
      srcToc: '供应商导航', addSrcOk: '供应商已添加', addModelOk: '模型已添加',
      deleteSrcOk: '供应商已删除', deleteModelOk: '模型已删除',
@@ -1663,8 +1668,9 @@ function app() {
       apiKey: 'API key', show: 'show', hide: 'hide',
      defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
-     headers: 'Custom headers', headersHint: 'Extra headers appended to upstream requests; reserved headers (content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta) cannot be overridden.',
-     headerName: 'Header name', headerValue: 'Value', addHeader: 'Add header',
+     headers: 'Custom headers',
+    headerName: 'Header name', headerValue: 'Value', addHeader: 'Add header',
+    duplicateSrc: 'Duplicate',
     delete: 'Delete', noSources: 'No sources configured',
      srcToc: 'Sources', addSrcOk: 'Source added', addModelOk: 'Model added',
      deleteSrcOk: 'Source deleted', deleteModelOk: 'Model deleted',
@@ -2233,15 +2239,23 @@ function app() {
       if (st === 'halfOpen') return this.t('healthHalfOpen');
       return this.t('healthUnknown');
     },
-    healthBadgeClass(name) {
+   healthBadgeClass(name) {
       const st = this.healthState(name);
       if (st === 'normal') return 'ui-badge-soft-good';
       if (st === 'degraded') return 'ui-badge-soft-warn';
       if (st === 'circuitOpen') return 'ui-badge-soft-bad';
       if (st === 'halfOpen') return 'ui-badge-soft-info';
       return 'ui-badge-soft-neutral';
+   },
+    healthDotColor(name) {
+      const st = this.healthState(name);
+      if (st === 'normal') return 'var(--good-soft)';
+      if (st === 'degraded') return 'var(--warn-soft)';
+      if (st === 'circuitOpen') return 'var(--bad-soft)';
+      if (st === 'halfOpen') return 'var(--info-soft)';
+      return 'var(--surface-2)';
     },
-    healthHint(name) {
+   healthHint(name) {
       const st = this.healthState(name);
       if (st === 'degraded') return this.t('healthHintDegraded');
       if (st === 'circuitOpen') return this.t('healthHintCircuitOpen');
@@ -2418,11 +2432,11 @@ function app() {
         this.notify(this.t('promoteOk') + ': ' + name, 'success');
       } catch (e) {
         this.notify(this.t('promoteFail') + ': ' + e.message, 'error');
-      } finally {
-        this.promoting = '';
-      }
-    },
-    removeSource(idx) {
+     } finally {
+       this.promoting = '';
+     }
+   },
+   removeSource(idx) {
       this.openConfirm({
         title: this.t('delete'),
         msg: this.t('deleteSrcConfirm'),
@@ -2454,9 +2468,24 @@ function app() {
        } catch (e) {
          this.notify(this.locale === 'zh' ? '删除失败：' + e.message : 'Delete failed: ' + e.message, 'error');
         }
+     });
+   },
+   duplicateSource(idx) {
+      const src = this.cfg.sources[idx];
+      if (!src) return;
+      const copy = JSON.parse(JSON.stringify(src));
+      copy.name = (copy.name || '') + ' - copy';
+      copy._id = 'src_' + Math.random().toString(36).slice(2, 10);
+      delete copy.top;
+      this.cfg.sources.splice(idx + 1, 0, copy);
+      this.patchSnapshotAppend('sources', copy);
+      this.notify(this.locale === 'zh' ? '已复制，可修改后保存' : 'Duplicated, edit then save', 'info');
+      this.$nextTick(() => {
+        const el = document.getElementById('src-card-' + copy._id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
     },
-  moveSource(idx, delta) {
+   moveSource(idx, delta) {
     const arr = this.cfg.sources;
     const newIdx = idx + delta;
     if (newIdx < 0 || newIdx >= arr.length) return;

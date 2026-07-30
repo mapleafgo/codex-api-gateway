@@ -1,8 +1,6 @@
 package upstreamhttp
 
 import (
-	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -54,7 +52,6 @@ func TestApplyHeadersCustomAndReserved(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", "k")
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	headers := map[string]string{
 		"X-Custom":          "v1",
 		"x-custom-second":   "v2",
@@ -65,7 +62,7 @@ func TestApplyHeadersCustomAndReserved(t *testing.T) {
 		"anthropic-beta":    "hijack",
 		"Accept":            "hijack",
 	}
-	ApplyHeaders(req, headers, logger, "s1")
+	ApplyHeaders(req, headers)
 	if req.Header.Get("X-Custom") != "v1" || req.Header.Get("X-Custom-Second") != "v2" {
 		t.Fatalf("custom headers not set: %v", req.Header)
 	}
@@ -88,7 +85,7 @@ func TestApplyHeadersCustomAndReserved(t *testing.T) {
 
 func TestApplyHeadersNil(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
-	ApplyHeaders(req, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "s1")
+	ApplyHeaders(req, nil)
 	if len(req.Header) != 0 {
 		t.Fatalf("expected no headers: %v", req.Header)
 	}

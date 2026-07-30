@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -63,7 +62,7 @@ func Stream(ctx context.Context, hc *http.Client, logPrefix, url, apiKey string,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "text/event-stream")
-	ApplyHeaders(req, headers, logging.FromContext(ctx), url)
+	ApplyHeaders(req, headers)
 
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -90,7 +89,7 @@ func ListModels(ctx context.Context, hc *http.Client, logPrefix, baseURL, apiKey
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	ApplyHeaders(req, headers, logging.FromContext(ctx), url)
+	ApplyHeaders(req, headers)
 
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -136,12 +135,10 @@ var reservedUpstreamHeaders = map[string]bool{
 	"anthropic-beta":    true,
 }
 
-// applyHeaders 把 source 自定义 header 写入 req，跳过保留头并 WARN。
-func ApplyHeaders(req *http.Request, headers map[string]string, log *slog.Logger, sourceName string) {
+// ApplyHeaders 把 source 自定义 header 写入 req，跳过保留头。
+func ApplyHeaders(req *http.Request, headers map[string]string) {
 	for k, v := range headers {
 		if reservedUpstreamHeaders[strings.ToLower(k)] {
-			log.Warn("跳过保留头（由网关管理，不可通过 source.headers 覆盖）",
-				"source", sourceName, "header", k)
 			continue
 		}
 		req.Header.Set(k, v)

@@ -149,7 +149,7 @@ type Source struct {
 	Disabled      bool `koanf:"disabled" yaml:"disabled,omitempty"`
 	OriginalIndex int  `koanf:"-" yaml:"-"`
 	// Headers 是追加到上游请求的自定义 header 键值对（如 X-Api-Key、anthropic-beta 覆盖）。
-	// 保留头（content-type / authorization / accept / x-api-key / anthropic-version / anthropic-beta）不可被覆盖，会被跳过并 WARN。
+	// 保留头（content-type / authorization / accept / x-api-key / anthropic-version / anthropic-beta）不可被覆盖，静默跳过。
 	Headers map[string]string `koanf:"headers" yaml:"headers,omitempty"`
 }
 

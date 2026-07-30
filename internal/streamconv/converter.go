@@ -735,6 +735,9 @@ func (c *Converter) recordStopReason(ev *anthropic.MessageStreamEventUnion) {
 			CacheCreationInputTokens: int(ev.Usage.CacheCreationInputTokens),
 		}
 		c.usage.TotalTokens = c.usage.InputTokens + c.usage.OutputTokens
+		if think := ev.Usage.OutputTokensDetails.ThinkingTokens; think > 0 {
+			c.usage.OutputTokensDetails = &model.ResponseUsageOutputDetails{ReasoningTokens: int(think)}
+		}
 	}
 }
 
