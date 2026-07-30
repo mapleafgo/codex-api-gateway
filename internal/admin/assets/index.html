@@ -668,6 +668,22 @@ html[data-theme="dark"] .ui-select {
 .ui-savebar .msg.is-dirty { color: var(--warn); }
 .ui-savebar .actions { margin-left: auto; display: flex; gap: 8px; }
 
+/* ---------- Source TOC ---------- */
+.ui-src-toc { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ui-src-toc-label { margin: 0 10px 10px; font-size: 11px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
+.ui-src-toc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ui-src-toc-list button { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 10px; padding: 10px 12px; color: var(--ink-soft); font-size: 13.5px; font-weight: 500; position: relative; transition: background .15s ease, color .15s ease; }
+.ui-src-toc-list button:hover { background: var(--surface-2); color: var(--ink); }
+.ui-src-toc-list button.is-active { background: color-mix(in srgb, var(--focus) 12%, transparent); color: var(--focus); font-weight: 650; }
+.ui-src-toc-list button.is-active::before { content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 3px; border-radius: 0 3px 3px 0; background: var(--focus); }
+.ui-src-toc-idx { flex: 0 0 auto; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.ui-src-toc-list button.is-active .ui-src-toc-idx { color: var(--focus); }
+.ui-src-toc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-src-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; margin: 0 0 12px; scrollbar-width: thin; }
+@media (min-width: 768px) { .ui-src-chips { display: none; } }
+.ui-src-chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 10px; font-size: 12px; color: var(--ink-soft); font-family: var(--mono); }
+.ui-src-chip.is-active { border-color: color-mix(in srgb, var(--focus) 45%, var(--line)); color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--surface)); font-weight: 650; }
+
 /* ---------- Toast / Modal ---------- */
 .ui-toast {
   position: fixed; right: 18px; bottom: 18px; z-index: 100;
@@ -927,8 +943,22 @@ html[data-theme="dark"] .ui-select {
         <li><button type="button" :class="cfgTab==='sources' && 'is-active'" @click="switchCfgTab('sources')" x-text="t('sources')"></button></li>
         <li><button type="button" :class="cfgTab==='models' && 'is-active'" @click="switchCfgTab('models')" x-text="t('models')"></button></li>
         <li><button type="button" :class="cfgTab==='global' && 'is-active'" @click="switchCfgTab('global')" x-text="t('global')"></button></li>
-        <li><button type="button" :class="cfgTab==='guidance' && 'is-active'" @click="switchCfgTab('guidance')" x-text="t('guidance')"></button></li>
+       <li><button type="button" :class="cfgTab==='guidance' && 'is-active'" @click="switchCfgTab('guidance')" x-text="t('guidance')"></button></li>
       </ul>
+      <div class="ui-src-toc" x-show="cfgTab==='sources' && (cfg.sources || []).length" x-cloak>
+        <p class="ui-src-toc-label" x-text="t('srcToc')"></p>
+        <ul class="ui-src-toc-list" role="navigation" :aria-label="t('srcToc')">
+          <template x-for="(src, idx) in cfg.sources" :key="src._id || idx">
+            <li>
+              <button type="button" :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
+                      @click="jumpToSource(src, idx)">
+                <span class="ui-src-toc-idx" x-text="'#' + (idx + 1)"></span>
+                <span class="ui-src-toc-name" x-text="src.name || t('newSource')"></span>
+              </button>
+            </li>
+          </template>
+        </ul>
+      </div>
     </aside>
 
     <div class="ui-config-body">
@@ -941,16 +971,25 @@ html[data-theme="dark"] .ui-select {
       </div>
 
       <!-- Sources -->
-      <div class="ui-config-scroll" x-show="cfgTab==='sources'" x-ref="srcScroll">
+      <div class="ui-config-scroll" x-show="cfgTab==='sources'" x-ref="srcScroll" @scroll="onSrcScroll()">
         <div class="ui-row" style="margin-bottom:14px">
           <p class="ui-hint" x-text="t('srcOrderHint')"></p>
           <button class="ui-btn ui-btn-sm ui-btn-primary" type="button" @click="addSource()">
             <span aria-hidden="true">＋</span><span x-text="t('addSrc')"></span>
           </button>
         </div>
+        <div class="ui-src-chips" x-show="(cfg.sources || []).length" role="navigation" :aria-label="t('srcToc')">
+          <template x-for="(src, idx) in cfg.sources" :key="'chip-' + (src._id || idx)">
+            <button type="button" class="ui-src-chip"
+                    :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
+                    @click="jumpToSource(src, idx)"
+                    x-text="'#' + (idx + 1) + ' ' + (src.name || t('newSource'))"></button>
+          </template>
+        </div>
      <div class="ui-stack">
        <template x-for="(src, idx) in cfg.sources" :key="src._id || idx">
-         <div class="ui-card" :style="src.disabled ? 'opacity:.72' : ''" @pri-change="moveSource(idx, $event.detail - idx)">
+         <div class="ui-card" :id="'src-card-' + (src._id || idx)" :data-src-id="src._id || String(idx)"
+              :style="src.disabled ? 'opacity:.72' : ''" @pri-change="moveSource(idx, $event.detail - idx)">
            <div class="ui-card-body ui-stack">
              <div class="ui-row">
                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
@@ -1532,8 +1571,12 @@ function app() {
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
-     delete: '删除', noSources: '尚未配置供应商',
-      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
+    delete: '删除', noSources: '尚未配置供应商',
+     srcToc: '供应商导航', addSrcOk: '供应商已添加', addModelOk: '模型已添加',
+     deleteSrcOk: '供应商已删除', deleteModelOk: '模型已删除',
+     deleteSrcConfirm: '确认删除该供应商？删除后即时生效。',
+     deleteModelConfirmPrefix: '删除模型 ', deleteModelConfirmSuffix: ' ？删除后即时生效。',
+     addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
       slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
       globalParams: '服务端参数', loggingParams: '日志参数', anthropicParams: 'Anthropic', breaker: '断路器',
       anthropicDefaultMaxTokens: '默认输出额度', anthropicDefaultMaxTokensHint: '客户端未传 max_output_tokens 时写入上游 max_tokens',
@@ -1595,8 +1638,12 @@ function app() {
       apiKey: 'API key', show: 'show', hide: 'hide',
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
-     delete: 'Delete', noSources: 'No sources configured',
-      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
+    delete: 'Delete', noSources: 'No sources configured',
+     srcToc: 'Sources', addSrcOk: 'Source added', addModelOk: 'Model added',
+     deleteSrcOk: 'Source deleted', deleteModelOk: 'Model deleted',
+     deleteSrcConfirm: 'Delete this source? Takes effect immediately.',
+     deleteModelConfirmPrefix: 'Delete model ', deleteModelConfirmSuffix: '? Takes effect immediately.',
+     addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
       slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
       globalParams: 'Server Parameters', loggingParams: 'Logging', anthropicParams: 'Anthropic', breaker: 'Breaker',
       anthropicDefaultMaxTokens: 'Default output budget', anthropicDefaultMaxTokensHint: 'Used as upstream max_tokens when the client omits max_output_tokens',
@@ -1684,9 +1731,11 @@ function app() {
     upstreamModels: {},
     upstreamLoading: {},
     upstreamErrors: {},
-    modal: { open: false, kind: 'confirm', title: '', msg: '', value: '', placeholder: '', confirmText: '', cancelText: '', danger: false, allowTest: false, fields: [], _resolve: null },
+   modal: { open: false, kind: 'confirm', title: '', msg: '', value: '', placeholder: '', confirmText: '', cancelText: '', danger: false, allowTest: false, fields: [], _resolve: null },
+    activeSourceId: '',
+    _srcJumpLock: false,
 
-    ROW_H: 36,
+   ROW_H: 36,
     viewStart: 0,
     viewCount: 50,
 
@@ -1753,10 +1802,11 @@ function app() {
       }
     },
 
-    switchCfgTab(item) {
-      this.cfgTab = item;
-      if (item === 'guidance') this.loadGuidance();
-    },
+   switchCfgTab(item) {
+     this.cfgTab = item;
+     if (item === 'guidance') this.loadGuidance();
+      if (item === 'sources') this.$nextTick(() => this.onSrcScroll());
+   },
 
     get dirty() { return JSON.stringify(this.cfg) !== this.cfgSnapshot; },
 
@@ -1943,9 +1993,10 @@ function app() {
         if (data.anthropic.default_max_tokens == null || data.anthropic.default_max_tokens === 0) data.anthropic.default_max_tokens = 16384;
         if (data.anthropic.cache_enabled == null) data.anthropic.cache_enabled = true;
         if (!data.anthropic.cache_ttl) data.anthropic.cache_ttl = '5m';
-        this.cfg = data;
-        this.cfgSnapshot = JSON.stringify(this.cfg);
-      } catch (e) {
+       this.cfg = data;
+       this.cfgSnapshot = JSON.stringify(this.cfg);
+        this.activeSourceId = '';
+     } catch (e) {
         this.notify(this.locale === 'zh' ? '加载配置失败：' + e.message : 'Load config failed: ' + e.message, 'error');
       }
     },
@@ -2031,7 +2082,7 @@ function app() {
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
           { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
         ],
-      }).then((v) => {
+      }).then(async (v) => {
         if (!v) return;
         const name = (v.name || '').trim();
         const base_url = (v.base_url || '').trim();
@@ -2044,20 +2095,22 @@ function app() {
           this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
           return;
         }
-       this.cfg.sources.push({
-         name,
-         base_url,
-         backend_type: (v.backend_type || 'a'),
-         api_key: (v.api_key || '').trim(),
-         model_map: {},
-         default_model: (v.default_model || '').trim(),
-         disabled: false,
-         _id: 'src_' + Math.random().toString(36).slice(2, 10),
-       });
-        this.$nextTick(() => {
-          const el = this.$refs.srcScroll;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
+        try {
+          const r = await fetch('/admin/api/sources', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), default_model: (v.default_model || '').trim(), disabled: false }),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), model_map: {}, default_model: (v.default_model || '').trim(), disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
+          this.cfg.sources.push(item);
+          this.patchSnapshotAppend('sources', item);
+          this.notify(this.t('addSrcOk') + ': ' + name, 'success');
+          this.$nextTick(() => { const el = this.$refs.srcScroll; if (el) el.scrollTop = el.scrollHeight; });
+        } catch (e) {
+          this.notify(this.locale === 'zh' ? '添加供应商失败：' + e.message : 'Add source failed: ' + e.message, 'error');
+        }
       });
     },
     async testSource(src) {
@@ -2255,18 +2308,69 @@ function app() {
         }
         this.notify(this.locale === 'zh' ? '排序失败：' + e.message : 'Reorder failed: ' + e.message, 'error');
       }
-    },
-    patchSnapshotOrder(key, from, to) {
-      try {
-        const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
-        if (!snap || !Array.isArray(snap[key])) return;
-        if (from === to || from < 0 || to < 0 || from >= snap[key].length || to >= snap[key].length) return;
-        const [item] = snap[key].splice(from, 1);
-        snap[key].splice(to, 0, item);
-        this.cfgSnapshot = JSON.stringify(snap);
-      } catch (e) {}
-    },
-    async promoteSource(name) {
+   },
+   patchSnapshotOrder(key, from, to) {
+     try {
+       const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+       if (!snap || !Array.isArray(snap[key])) return;
+       if (from === to || from < 0 || to < 0 || from >= snap[key].length || to >= snap[key].length) return;
+       const [item] = snap[key].splice(from, 1);
+       snap[key].splice(to, 0, item);
+       this.cfgSnapshot = JSON.stringify(snap);
+    } catch (e) {}
+  },
+  savedSourceName(src, idx) {
+    try {
+      const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+      if (!snap || !Array.isArray(snap.sources)) return (src && src.name) || '';
+      const s = snap.sources[idx];
+      return (s && s.name) || (src && src.name) || '';
+    } catch (e) { return (src && src.name) || ''; }
+  },
+  savedModelSlug(m, idx) {
+    try {
+      const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+      if (!snap || !Array.isArray(snap.models)) return (m && m.slug) || '';
+      const s = snap.models[idx];
+      return (s && s.slug) || (m && m.slug) || '';
+    } catch (e) { return (m && m.slug) || ''; }
+  },
+  patchSnapshotAppend(key, item) {
+    try {
+      const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+     if (!snap || !Array.isArray(snap[key])) return;
+     snap[key].push(item);
+     this.cfgSnapshot = JSON.stringify(snap);
+   } catch (e) {}
+ },
+ onSrcScroll() {
+   if (this._srcJumpLock) return;
+    const el = this.$refs.srcScroll;
+    if (!el) return;
+    const cards = el.querySelectorAll('[data-src-id]');
+    if (!cards.length) return;
+    let best = '';
+    let bestDist = Infinity;
+    cards.forEach(c => {
+      const id = c.getAttribute('data-src-id');
+      const r = c.getBoundingClientRect();
+      const scrollRect = this.$refs.srcScroll.getBoundingClientRect();
+      const cMid = r.top - scrollRect.top + r.height / 2;
+      const dist = Math.abs(cMid - this.$refs.srcScroll.clientHeight / 2);
+      if (dist < bestDist) { bestDist = dist; best = id; }
+    });
+    if (best) this.activeSourceId = best;
+  },
+  jumpToSource(src, idx) {
+    const id = src._id || String(idx);
+    const el = document.getElementById('src-card-' + id);
+    if (!el) return;
+    this._srcJumpLock = true;
+    this.activeSourceId = id;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => { this._srcJumpLock = false; }, 600);
+  },
+  async promoteSource(name) {
       if (!name || this.promoting) return;
       this.promoting = name;
       try {
@@ -2294,10 +2398,36 @@ function app() {
     removeSource(idx) {
       this.openConfirm({
         title: this.t('delete'),
-        msg: this.locale === 'zh' ? '确认删除该供应商？此操作在保存前可放弃。' : 'Delete this source? You can discard before saving.',
+        msg: this.t('deleteSrcConfirm'),
         danger: true,
         confirmText: this.t('delete'),
-      }).then((ok) => { if (ok) this.cfg.sources.splice(idx, 1); });
+      }).then(async (ok) => {
+       if (!ok) return;
+       const src = this.cfg.sources[idx];
+       const savedName = this.savedSourceName(src, idx);
+       if (!savedName) { this.cfg.sources.splice(idx, 1); return; }
+        try {
+          const r = await fetch('/admin/api/sources/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: savedName }),
+          });
+          const j = await r.json().catch(() => ({}));
+         if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+         this.cfg.sources.splice(idx, 1);
+         try {
+           const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+           if (snap && Array.isArray(snap.sources)) {
+             const si = snap.sources.findIndex(s => s && (s.name || '') === savedName);
+             if (si >= 0) snap.sources.splice(si, 1);
+             this.cfgSnapshot = JSON.stringify(snap);
+           }
+         } catch (e) {}
+         this.notify(this.t('deleteSrcOk') + ': ' + savedName, 'success');
+       } catch (e) {
+         this.notify(this.locale === 'zh' ? '删除失败：' + e.message : 'Delete failed: ' + e.message, 'error');
+        }
+      });
     },
   moveSource(idx, delta) {
     const arr = this.cfg.sources;
@@ -2350,21 +2480,30 @@ function app() {
           { key: 'supports_image', label: this.t('supportsImage'), type: 'checkbox', value: false },
           { key: 'supports_search', label: this.t('supportsSearch'), type: 'checkbox', value: true },
         ],
-      }).then((v) => {
+      }).then(async (v) => {
         if (!v || !v.slug) return;
         const slug = v.slug.trim();
         this.cfg.models = this.cfg.models || [];
         if (this.cfg.models.some(m => (m.slug || '') === slug)) { this.notify(slug + ' exists', 'error'); return; }
-        this.cfg.models.push({
-          slug,
-          context_window: Number(v.context_window) || 0,
-          supports_image: !!v.supports_image,
-          supports_search: v.supports_search !== false,
-        });
-      });
-    },
-   moveModel(idx, delta) {
-     const arr = this.cfg.models;
+        try {
+          const r = await fetch('/admin/api/models/add', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false }),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+          const item = { slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false };
+          this.cfg.models.push(item);
+          this.patchSnapshotAppend('models', item);
+          this.notify(this.t('addModelOk') + ': ' + slug, 'success');
+        } catch (e) {
+          this.notify(this.locale === 'zh' ? '添加模型失败：' + e.message : 'Add model failed: ' + e.message, 'error');
+       }
+     });
+   },
+  moveModel(idx, delta) {
+    const arr = this.cfg.models;
      const newIdx = idx + delta;
      if (!arr || newIdx < 0 || newIdx >= arr.length) return;
      const [item] = arr.splice(idx, 1);
@@ -2372,15 +2511,39 @@ function app() {
      this.reorderModelsBackend(idx, newIdx);
    },
    removeModel(idx) {
-      const m = (this.cfg.models || [])[idx];
-      const slug = m && m.slug ? m.slug : String(idx + 1);
-      this.openConfirm({
-        title: this.t('delete'),
-        msg: this.locale === 'zh' ? '删除模型 ' + slug + ' ？此操作在保存前可放弃。' : 'Delete model ' + slug + '? You can discard before saving.',
-        danger: true,
-        confirmText: this.t('delete'),
-      }).then((ok) => { if (ok) { this.cfg.models.splice(idx, 1); } });
-    },
+    const m = (this.cfg.models || [])[idx];
+    const slug = this.savedModelSlug(m, idx) || String(idx + 1);
+    this.openConfirm({
+       title: this.t('delete'),
+       msg: this.t('deleteModelConfirmPrefix') + slug + this.t('deleteModelConfirmSuffix'),
+       danger: true,
+       confirmText: this.t('delete'),
+     }).then(async (ok) => {
+       if (!ok) return;
+       if (!slug) { this.cfg.models.splice(idx, 1); return; }
+       try {
+         const r = await fetch('/admin/api/models/delete', {
+           method: 'POST',
+           headers: { 'content-type': 'application/json' },
+           body: JSON.stringify({ slug }),
+         });
+         const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+        this.cfg.models.splice(idx, 1);
+        try {
+          const snap = this.cfgSnapshot ? JSON.parse(this.cfgSnapshot) : null;
+          if (snap && Array.isArray(snap.models)) {
+            const mi = snap.models.findIndex(m => m && (m.slug || '') === slug);
+            if (mi >= 0) snap.models.splice(mi, 1);
+            this.cfgSnapshot = JSON.stringify(snap);
+          }
+        } catch (e) {}
+        this.notify(this.t('deleteModelOk') + ': ' + slug, 'success');
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '删除模型失败：' + e.message : 'Delete model failed: ' + e.message, 'error');
+       }
+     });
+   },
 
     notify(msg, type) {
       window.dispatchEvent(new CustomEvent('notify', { detail: { msg, type } }));

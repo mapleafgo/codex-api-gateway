@@ -100,7 +100,7 @@ func (c *Checker) CheckSource(ctx context.Context, source config.Source) Result 
 			CheckedAt: checkedAt,
 		}
 	}
-	req.Header.Set("Authorization", "Bearer " + source.APIKey)
+	req.Header.Set("Authorization", "Bearer "+source.APIKey)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -140,7 +140,7 @@ func (c *Checker) fallbackMinimalProbe(ctx context.Context, source config.Source
 			CheckedAt: checkedAt,
 		}
 	}
-	req.Header.Set("Authorization", "Bearer " + source.APIKey)
+	req.Header.Set("Authorization", "Bearer "+source.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.hc.Do(req)

@@ -21,8 +21,8 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
-	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
@@ -82,7 +82,11 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/sources/disabled", wrap("source-disabled", h.handleSetSourceDisabled))
 	mux.HandleFunc("/admin/api/sources/test", wrap("source-test", h.handleSourceTest))
 	mux.HandleFunc("/admin/api/sources/reorder", wrap("source-reorder", h.handleReorderSources))
+	mux.HandleFunc("/admin/api/sources", wrap("source-add", h.handleAddSource))
+	mux.HandleFunc("/admin/api/sources/delete", wrap("source-delete", h.handleDeleteSource))
 	mux.HandleFunc("/admin/api/models/reorder", wrap("model-reorder", h.handleReorderModels))
+	mux.HandleFunc("/admin/api/models/add", wrap("model-add", h.handleAddModel))
+	mux.HandleFunc("/admin/api/models/delete", wrap("model-delete", h.handleDeleteModel))
 	mux.HandleFunc("/admin/api/version", wrap("version", h.handleVersion))
 }
 
@@ -770,6 +774,241 @@ func (h *handler) handleReorderModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 	})
+}
+
+// handleAddSource POST 追加一个供应商到 Sources 末尾，基于 holder 快照写盘，不合并前端脏字段。
+func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in sourceView
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	baseURL := strings.TrimSpace(in.BaseURL)
+	if name == "" || baseURL == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name or base_url"})
+		return
+	}
+	bt := in.BackendType
+	if bt == "" {
+		bt = "a"
+	}
+	norm, err := config.NormalizeBackendType(bt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+		return
+	}
+
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	for _, s := range cur.Sources {
+		if s.Name == name {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "source exists", Detail: name})
+			return
+		}
+	}
+	next := *cur
+	next.Sources = make([]config.Source, len(cur.Sources)+1)
+	copy(next.Sources, cur.Sources)
+	next.Sources[len(cur.Sources)] = config.Source{
+		Name:         name,
+		BaseURL:      baseURL,
+		APIKey:       strings.TrimSpace(in.APIKey),
+		BackendType:  norm,
+		ModelMap:     map[string]string{},
+		DefaultModel: strings.TrimSpace(in.DefaultModel),
+		Disabled:     in.Disabled,
+	}
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页新增供应商", "name", name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "health": h.sourcesHealth(),
+	})
+}
+
+// handleDeleteSource POST {name}：按已落盘 name 删除供应商，写盘并热重载。
+func (h *handler) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name"})
+		return
+	}
+
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	next := *cur
+	next.Sources = make([]config.Source, 0, len(cur.Sources))
+	found := false
+	for _, s := range cur.Sources {
+		if s.Name == name {
+			found = true
+			continue
+		}
+		next.Sources = append(next.Sources, s)
+	}
+	if !found {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "unknown source", Detail: name})
+		return
+	}
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页删除供应商", "name", name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "health": h.sourcesHealth(),
+	})
+}
+
+// handleAddModel POST 追加模型到顺序末尾并写入 overrides，基于 holder 快照写盘。
+// 路由为 /admin/api/models/add，避免与上游模型列表 /admin/api/models 冲突。
+func (h *handler) handleAddModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in modelViewItem
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	slug := strings.TrimSpace(in.Slug)
+	if slug == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing slug"})
+		return
+	}
+
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	if _, exists := cur.ModelOverrides[slug]; exists {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "model exists", Detail: slug})
+		return
+	}
+	for _, s := range cur.ModelSlugOrder {
+		if s == slug {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "model exists", Detail: slug})
+			return
+		}
+	}
+
+	next := *cur
+	next.ModelOverrides = make(map[string]config.ModelOverride, len(cur.ModelOverrides)+1)
+	for k, v := range cur.ModelOverrides {
+		next.ModelOverrides[k] = v
+	}
+	next.ModelSlugOrder = make([]string, len(cur.ModelSlugOrder), len(cur.ModelSlugOrder)+1)
+	copy(next.ModelSlugOrder, cur.ModelSlugOrder)
+	next.ModelSlugOrder = append(next.ModelSlugOrder, slug)
+	next.ModelOverrides[slug] = config.ModelOverride{
+		ContextWindow:               in.ContextWindow,
+		SupportsImageDetailOriginal: in.SupportsImage,
+		SupportsSearchTool:          in.SupportsSearch,
+	}
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页新增模型", "slug", slug)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleDeleteModel POST {slug}：从顺序与 overrides 中删除模型，写盘并热重载。
+func (h *handler) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
+		return
+	}
+	var in struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
+		return
+	}
+	slug := strings.TrimSpace(in.Slug)
+	if slug == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing slug"})
+		return
+	}
+
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+
+	cur := h.deps.Holder.Current()
+	_, inOverrides := cur.ModelOverrides[slug]
+	inOrder := false
+	for _, s := range cur.ModelSlugOrder {
+		if s == slug {
+			inOrder = true
+			break
+		}
+	}
+	if !inOverrides && !inOrder {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "unknown model", Detail: slug})
+		return
+	}
+
+	next := *cur
+	next.ModelOverrides = make(map[string]config.ModelOverride, len(cur.ModelOverrides))
+	for k, v := range cur.ModelOverrides {
+		if k == slug {
+			continue
+		}
+		next.ModelOverrides[k] = v
+	}
+	next.ModelSlugOrder = make([]string, 0, len(cur.ModelSlugOrder))
+	for _, s := range cur.ModelSlugOrder {
+		if s == slug {
+			continue
+		}
+		next.ModelSlugOrder = append(next.ModelSlugOrder, s)
+	}
+	if err := next.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+		return
+	}
+	if err := h.writeConfigYAMLLocked(&next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: "write config", Detail: err.Error()})
+		return
+	}
+	slog.Info("管理页删除模型", "slug", slug)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // writeConfigYAML 序列化配置并原子写盘，成功后触发热重载。内部加 writeMu。

@@ -601,3 +601,221 @@ func TestSourceTest(t *testing.T) {
 		t.Fatalf("expected ok=false without api_key, got body=%v", body2)
 	}
 }
+
+func TestAddSource(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	deps.SourceHealth = func() []SourceHealthView {
+		return []SourceHealthView{{Name: "s1", State: "normal", Priority: 1}}
+	}
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// missing fields
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", strings.NewReader(`{"name":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// success
+	resp, err = http.Post(srv.URL+"/admin/api/sources", "application/json",
+		strings.NewReader(`{"name":"s2","base_url":"https://two.example.com","api_key":"k2","backend_type":"c","default_model":"m2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	if len(cur.Sources) != 2 {
+		t.Fatalf("sources=%d", len(cur.Sources))
+	}
+	s2 := cur.Sources[1]
+	if s2.Name != "s2" || s2.BaseURL != "https://two.example.com" || s2.BackendType != "c" || s2.DefaultModel != "m2" {
+		t.Fatalf("s2=%+v", s2)
+	}
+	if len(s2.ModelMap) != 0 {
+		t.Fatalf("model_map=%v", s2.ModelMap)
+	}
+
+	// duplicate
+	resp2, err := http.Post(srv.URL+"/admin/api/sources", "application/json",
+		strings.NewReader(`{"name":"s2","base_url":"https://dup.example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 400 {
+		t.Fatalf("dup status=%d", resp2.StatusCode)
+	}
+}
+
+func TestDeleteSource(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	// seed second source via holder+disk
+	cfg := *deps.Holder.Current()
+	cfg.Sources = append(append([]config.Source{}, cfg.Sources...), config.Source{
+		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", BackendType: "a",
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInitialYAML(deps.CfgPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deps.Holder.Replace(&cfg)
+
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/sources/delete", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Post(srv.URL+"/admin/api/sources/delete", "application/json",
+		strings.NewReader(`{"name":"missing"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Post(srv.URL+"/admin/api/sources/delete", "application/json",
+		strings.NewReader(`{"name":"s2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	if len(cur.Sources) != 1 || cur.Sources[0].Name != "s1" {
+		t.Fatalf("sources=%+v", cur.Sources)
+	}
+}
+
+func TestAddModel(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	body := `{"slug":"glm-latest","context_window":200000,"supports_image":false,"supports_search":true}`
+	resp, err = http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	if len(cur.ConfiguredModelSlugs()) != 1 || cur.ConfiguredModelSlugs()[0] != "glm-latest" {
+		t.Fatalf("slugs=%v", cur.ConfiguredModelSlugs())
+	}
+	ov, ok := cur.ModelOverrides["glm-latest"]
+	if !ok || ov.ContextWindow == nil || *ov.ContextWindow != 200000 {
+		t.Fatalf("override=%+v ok=%v", ov, ok)
+	}
+	if ov.SupportsSearchTool == nil || !*ov.SupportsSearchTool {
+		t.Fatalf("supports_search=%v", ov.SupportsSearchTool)
+	}
+
+	resp2, err := http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 400 {
+		t.Fatalf("dup status=%d", resp2.StatusCode)
+	}
+}
+
+func TestDeleteModel(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	cfg := *deps.Holder.Current()
+	cfg.ModelOverrides = map[string]config.ModelOverride{
+		"glm-latest": {ContextWindow: ptrInt64(100000)},
+		"keep-me":    {ContextWindow: ptrInt64(50000)},
+	}
+	cfg.ModelSlugOrder = []string{"glm-latest", "keep-me"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInitialYAML(deps.CfgPath, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deps.Holder.Replace(&cfg)
+
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/models/delete", "application/json",
+		strings.NewReader(`{"slug":"missing"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Post(srv.URL+"/admin/api/models/delete", "application/json",
+		strings.NewReader(`{"slug":"glm-latest"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	if _, ok := cur.ModelOverrides["glm-latest"]; ok {
+		t.Fatal("glm-latest still present")
+	}
+	if len(cur.ConfiguredModelSlugs()) != 1 || cur.ConfiguredModelSlugs()[0] != "keep-me" {
+		t.Fatalf("slugs=%v", cur.ConfiguredModelSlugs())
+	}
+}
+
+func TestImmediateWriteUIMarkers(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"/admin/api/sources",
+		"/admin/api/sources/delete",
+		"/admin/api/models/add",
+		"/admin/api/models/delete",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
+}
