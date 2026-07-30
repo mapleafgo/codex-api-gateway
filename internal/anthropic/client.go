@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	aconstant "github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
+	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
 
 var streamErrorType = string(aconstant.ValueOf[aconstant.Error]())
@@ -85,7 +86,7 @@ type ModelInfo struct {
 // ListModels 调用上游 Anthropic 兼容的 GET /v1/models 接口，返回可用模型列表。
 // 认证头与 Stream 一致（同时发 x-api-key 与 Authorization: Bearer，兼容各后端）。
 // 返回的模型按上游顺序透传，不做排序或去重。
-func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]ModelInfo, error) {
+func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string, headers map[string]string) ([]ModelInfo, error) {
 	log := logging.FromContext(ctx)
 	url := modelsURL(endpoint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -96,6 +97,7 @@ func (c *Client) ListModels(ctx context.Context, endpoint, apiKey string) ([]Mod
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	upstreamhttp.ApplyHeaders(httpReq, headers, log, endpoint)
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
@@ -129,7 +131,7 @@ func truncForLog(b []byte, n int) string {
 // 传输失败返回状态码 0；HTTP/SSE 失败保留上游状态码，供观测和故障转移使用。
 // mcp 非 nil 时把 mcp_servers（顶层）+ mcp_toolset（tools[] 追加）注入请求体，
 // 并补上 beta header mcp-client-2025-11-20（与 thinking beta 共存）。
-func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection) (io.ReadCloser, int, error) {
+func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection, headers map[string]string) (io.ReadCloser, int, error) {
 	log := logging.FromContext(ctx)
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -180,6 +182,7 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if beta != "" {
 		httpReq.Header.Set("anthropic-beta", beta)
 	}
+	upstreamhttp.ApplyHeaders(httpReq, headers, log, endpoint)
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
 		return nil, 0, err

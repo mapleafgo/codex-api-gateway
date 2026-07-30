@@ -272,7 +272,7 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 	}
 	switch bt {
 	case config.BackendOpenAIChat:
-		ms, err := s.chatBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey)
+		ms, err := s.chatBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +282,7 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 		}
 		return out, nil
 	case config.BackendOpenAIResponses:
-		ms, err := s.responsesBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey)
+		ms, err := s.responsesBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
 		if err != nil {
 			return nil, err
 		}
@@ -292,7 +292,7 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 		}
 		return out, nil
 	default:
-		return s.client.ListModels(ctx, src.BaseURL, src.APIKey)
+		return s.client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
 	}
 }
 

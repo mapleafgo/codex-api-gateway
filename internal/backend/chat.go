@@ -62,7 +62,7 @@ func (b *ChatBackend) Execute(
 		"messages", len(chatReq.Messages),
 		"tools", len(chatReq.Tools))
 
-	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body)
+	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body, src.Headers)
 	if err != nil {
 		log.Warn("Chat 上游建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {

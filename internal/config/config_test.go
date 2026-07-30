@@ -76,6 +76,50 @@ func TestLoadAcceptsNoSources(t *testing.T) {
 	}
 }
 
+func TestLoadSourceHeaders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: https://api.anthropic.com
+    api_key: k
+    headers:
+      X-Custom: custom-value
+      X-Api-Key: override-me
+`), 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Sources) != 1 {
+		t.Fatalf("sources=%d", len(cfg.Sources))
+	}
+	h := cfg.Sources[0].Headers
+	if h == nil {
+		t.Fatal("Headers map should be non-nil")
+	}
+	if h["X-Custom"] != "custom-value" || h["X-Api-Key"] != "override-me" {
+		t.Fatalf("headers=%v", h)
+	}
+}
+
+func TestSourceHeadersRejectsEmptyName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: https://api.anthropic.com
+    api_key: k
+    headers:
+      "": value
+`), 0644)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected empty header name to fail validation")
+	}
+}
+
 func TestDefaultsApplied(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

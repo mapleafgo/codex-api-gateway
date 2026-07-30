@@ -36,13 +36,13 @@ type ModelInfo = upstreamhttp.ModelInfo
 // Stream sends a streaming Responses request and returns the response body on success.
 // Caller closes the body when done reading.
 // body is the already marshaled Responses JSON; stream is always true.
-func (c *Client) Stream(ctx context.Context, baseURL, apiKey string, body []byte) (io.ReadCloser, error) {
-	return upstreamhttp.Stream(ctx, c.HTTP, logPrefix, responsesURL(baseURL), apiKey, body)
+func (c *Client) Stream(ctx context.Context, baseURL, apiKey string, body []byte, headers map[string]string) (io.ReadCloser, error) {
+	return upstreamhttp.Stream(ctx, c.HTTP, logPrefix, responsesURL(baseURL), apiKey, body, headers)
 }
 
 // ListModels fetches upstream models for admin UI dropdown.
-func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]ModelInfo, error) {
-	return upstreamhttp.ListModels(ctx, c.HTTP, logPrefix, baseURL, apiKey)
+func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string, headers map[string]string) ([]ModelInfo, error) {
+	return upstreamhttp.ListModels(ctx, c.HTTP, logPrefix, baseURL, apiKey, headers)
 }
 
 // ScanSSE reads SSE frames from r and calls onEvent for each complete event.

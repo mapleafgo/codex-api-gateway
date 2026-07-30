@@ -341,7 +341,7 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	var models []anthropic.ModelInfo
 	switch bt {
 	case config.BackendOpenAIChat:
-		ms, err := chatclient.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		ms, err := chatclient.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
 			return
@@ -350,7 +350,7 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
 		}
 	case config.BackendOpenAIResponses:
-		ms, err := responsesclient.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		ms, err := responsesclient.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
 			return
@@ -359,7 +359,7 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
 		}
 	default:
-		ms, err := anthropic.New().ListModels(ctx, in.BaseURL, in.APIKey)
+		ms, err := anthropic.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
 			return
@@ -448,6 +448,7 @@ type sourceView struct {
 	DefaultModel string            `json:"default_model"`
 	Breaker      *breakerView      `json:"breaker,omitempty"`
 	Disabled     bool              `json:"disabled"`
+	Headers      map[string]string `json:"headers,omitempty"`
 }
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
@@ -517,6 +518,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			BackendType: bt,
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
 			Disabled: src.Disabled,
+			Headers:  src.Headers,
 		}
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
@@ -802,6 +804,7 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 		return
 	}
+	headers := sanitizeSourceHeaders(in.Headers)
 
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()
@@ -824,6 +827,7 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 		ModelMap:     map[string]string{},
 		DefaultModel: strings.TrimSpace(in.DefaultModel),
 		Disabled:     in.Disabled,
+		Headers:      headers,
 	}
 	if err := next.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
@@ -837,6 +841,37 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "health": h.sourcesHealth(),
 	})
+}
+
+// sanitizeSourceHeaders 规范化前端传入的自定义 header：去掉空白键、过滤保留头。
+func sanitizeSourceHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if isReservedHeader(k) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isReservedHeader 判断头名是否为网关管理的保留头（大小写不敏感）。
+func isReservedHeader(k string) bool {
+	switch strings.ToLower(k) {
+	case "content-type", "authorization", "accept", "x-api-key", "anthropic-version", "anthropic-beta":
+		return true
+	}
+	return false
 }
 
 // handleDeleteSource POST {name}：按已落盘 name 删除供应商，写盘并热重载。

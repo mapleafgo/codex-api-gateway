@@ -83,7 +83,7 @@ func (b *AnthropicBackend) Execute(
 		"endpoint", src.BaseURL,
 		"model", clientModel,
 		"resolved_model", resolved)
-	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp)
+	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp, src.Headers)
 	if err != nil {
 		log.Warn("上游源建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {

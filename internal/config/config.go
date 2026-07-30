@@ -148,6 +148,9 @@ type Source struct {
 	// Disabled 为 true 时该源不参与调度（人工停用），仍保留在配置与管理页中。
 	Disabled      bool `koanf:"disabled" yaml:"disabled,omitempty"`
 	OriginalIndex int  `koanf:"-" yaml:"-"`
+	// Headers 是追加到上游请求的自定义 header 键值对（如 X-Api-Key、anthropic-beta 覆盖）。
+	// 保留头（content-type / authorization / accept / x-api-key / anthropic-version / anthropic-beta）不可被覆盖，会被跳过并 WARN。
+	Headers map[string]string `koanf:"headers" yaml:"headers,omitempty"`
 }
 
 // NormalizeBackendType normalizes and validates the backend_type value.
@@ -579,6 +582,9 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: source %d: %w", i, err)
 		}
 		s.BackendType = norm
+		if err := validateSourceHeaders(i, s.Headers); err != nil {
+			return err
+		}
 		if s.Breaker != nil {
 			if s.Breaker.Recovery != "" &&
 				s.Breaker.Recovery != RecoveryNormal && s.Breaker.Recovery != RecoveryDegraded {
@@ -588,6 +594,19 @@ func (c *Config) validate() error {
 			if err := validateBreakerNonNegative(fmt.Sprintf("source %d breaker", i), s.Breaker); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// validateSourceHeaders 校验 source 自定义 header 名称合法性。
+func validateSourceHeaders(i int, h map[string]string) error {
+	for k := range h {
+		if k == "" {
+			return fmt.Errorf("config: source %d header name is empty", i)
+		}
+		if strings.ContainsAny(k, " \t\r\n") {
+			return fmt.Errorf("config: source %d header name invalid: %q", i, k)
 		}
 	}
 	return nil

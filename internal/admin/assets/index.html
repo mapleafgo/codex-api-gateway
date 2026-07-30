@@ -1157,13 +1157,36 @@ html[data-theme="dark"] .ui-select {
                     </template>
                     <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost" style="align-self:flex-start"
                             @click="addModelMapPair(src)">
-                      <span aria-hidden="true">＋</span><span x-text="t('addMap')"></span>
+                    <span aria-hidden="true">＋</span><span x-text="t('addMap')"></span>
+                   </button>
+                 </div>
+               </fieldset>
+                <fieldset class="ui-fieldset">
+                  <legend x-text="t('headers')"></legend>
+                  <p class="ui-hint" style="margin-top:0" x-text="t('headersHint')"></p>
+                  <div class="ui-stack" style="gap:8px">
+                    <template x-for="(pair, pi) in headerPairs(src)" :key="pi">
+                      <div class="ui-map-row">
+                        <input type="text" class="ui-input ui-input-sm mono" x-model="pair.key"
+                               @input="updateHeaderPair(src, pi, 'key', pair.key)"
+                               :placeholder="t('headerName')">
+                        <span class="t-faint" aria-hidden="true">:</span>
+                        <input type="text" class="ui-input ui-input-sm mono" x-model="pair.val"
+                               @input="updateHeaderPair(src, pi, 'val', pair.val)"
+                               :placeholder="t('headerValue')">
+                        <button type="button" class="ui-btn ui-btn-xs ui-btn-danger"
+                                @click="removeHeaderPair(src, pi)" :aria-label="t('removeMap')">✕</button>
+                      </div>
+                    </template>
+                    <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost" style="align-self:flex-start"
+                            @click="addHeaderPair(src)">
+                      <span aria-hidden="true">＋</span><span x-text="t('addHeader')"></span>
                     </button>
                   </div>
                 </fieldset>
-              </div>
-            </div>
-          </template>
+             </div>
+           </div>
+         </template>
           <div class="ui-card" x-show="cfg.sources.length === 0">
             <div class="ui-card-body ui-stack">
               <span class="t-soft" x-text="t('noSources')"></span>
@@ -1569,8 +1592,10 @@ function app() {
     testSrc: '测试', testingSrc: '测试中…', testReachable: '可达', testUnreachable: '不可达', testReachHint: '验证 base_url 可达且 api_key 有效，不发真实大模型请求',
      srcName: '源名称', srcURL: '上游地址',
       apiKey: 'API 密钥', show: '显示', hide: '隐藏',
-      defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
+     defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
+     headers: '自定义请求头', headersHint: '追加到上游请求的额外 header；保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖。',
+     headerName: '头名称', headerValue: '值', addHeader: '新增请求头',
     delete: '删除', noSources: '尚未配置供应商',
      srcToc: '供应商导航', addSrcOk: '供应商已添加', addModelOk: '模型已添加',
      deleteSrcOk: '供应商已删除', deleteModelOk: '模型已删除',
@@ -1636,8 +1661,10 @@ function app() {
     testSrc: 'Test', testingSrc: 'Testing…', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Verifies base_url reachable and api_key valid; no real LLM request sent',
      srcName: 'Source name', srcURL: 'Upstream URL',
       apiKey: 'API key', show: 'show', hide: 'hide',
-      defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
+     defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
+     headers: 'Custom headers', headersHint: 'Extra headers appended to upstream requests; reserved headers (content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta) cannot be overridden.',
+     headerName: 'Header name', headerValue: 'Value', addHeader: 'Add header',
     delete: 'Delete', noSources: 'No sources configured',
      srcToc: 'Sources', addSrcOk: 'Source added', addModelOk: 'Model added',
      deleteSrcOk: 'Source deleted', deleteModelOk: 'Model deleted',
@@ -2468,6 +2495,34 @@ function app() {
       const newMap = {};
       pairs.forEach((p, i) => { if (i !== pi) newMap[p.key] = p.val; });
       src.model_map = newMap;
+    },
+    headerPairs(src) {
+      const m = src.headers || {};
+      return Object.keys(m).map(k => ({ key: k, val: m[k] }));
+    },
+    addHeaderPair(src) {
+      src.headers = src.headers || {};
+      src.headers[''] = '';
+      src.headers = Object.assign({}, src.headers);
+    },
+    updateHeaderPair(src, pi, field, value) {
+      const pairs = this.headerPairs(src);
+      const newMap = {};
+      pairs.forEach((p, i) => {
+        if (i === pi) {
+          if (field === 'key') newMap[value] = p.val;
+          else newMap[p.key] = value;
+        } else {
+          newMap[p.key] = p.val;
+        }
+      });
+      src.headers = newMap;
+    },
+    removeHeaderPair(src, pi) {
+      const pairs = this.headerPairs(src);
+      const newMap = {};
+      pairs.forEach((p, i) => { if (i !== pi) newMap[p.key] = p.val; });
+      src.headers = newMap;
     },
 
     addModel() {

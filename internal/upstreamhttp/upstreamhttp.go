@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -54,7 +55,7 @@ type ModelInfo struct {
 
 // Stream 以 Bearer/Accept SSE 头向 url POST body，成功时返回响应体（调用方负责 Close）。
 // 4xx/5xx 时读取并截断响应体，带 logPrefix 记 Warn 后返回错误。
-func Stream(ctx context.Context, hc *http.Client, logPrefix, url, apiKey string, body []byte) (io.ReadCloser, error) {
+func Stream(ctx context.Context, hc *http.Client, logPrefix, url, apiKey string, body []byte, headers map[string]string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -62,6 +63,7 @@ func Stream(ctx context.Context, hc *http.Client, logPrefix, url, apiKey string,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "text/event-stream")
+	ApplyHeaders(req, headers, logging.FromContext(ctx), url)
 
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -80,7 +82,7 @@ func Stream(ctx context.Context, hc *http.Client, logPrefix, url, apiKey string,
 
 // ListModels fetches upstream models for admin UI dropdown.
 // Only returns the ID of each model (display_name is optional if provided by upstream).
-func ListModels(ctx context.Context, hc *http.Client, logPrefix, baseURL, apiKey string) ([]ModelInfo, error) {
+func ListModels(ctx context.Context, hc *http.Client, logPrefix, baseURL, apiKey string, headers map[string]string) ([]ModelInfo, error) {
 	url := ModelsURL(baseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -88,6 +90,7 @@ func ListModels(ctx context.Context, hc *http.Client, logPrefix, baseURL, apiKey
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	ApplyHeaders(req, headers, logging.FromContext(ctx), url)
 
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -121,4 +124,26 @@ func TruncForLog(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + fmt.Sprintf("...(+%d bytes)", len(b)-n)
+}
+
+// reservedUpstreamHeaders 是网关自身管理的上游头，source.Headers 不得覆盖。
+var reservedUpstreamHeaders = map[string]bool{
+	"content-type":      true,
+	"authorization":     true,
+	"accept":            true,
+	"x-api-key":         true,
+	"anthropic-version": true,
+	"anthropic-beta":    true,
+}
+
+// applyHeaders 把 source 自定义 header 写入 req，跳过保留头并 WARN。
+func ApplyHeaders(req *http.Request, headers map[string]string, log *slog.Logger, sourceName string) {
+	for k, v := range headers {
+		if reservedUpstreamHeaders[strings.ToLower(k)] {
+			log.Warn("跳过保留头（由网关管理，不可通过 source.headers 覆盖）",
+				"source", sourceName, "header", k)
+			continue
+		}
+		req.Header.Set(k, v)
+	}
 }

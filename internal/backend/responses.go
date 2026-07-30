@@ -181,7 +181,7 @@ func (b *ResponsesBackend) Execute(
 		"model", clientModel,
 		"resolved_model", resolved)
 
-	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body)
+	stream, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, body, src.Headers)
 	if err != nil {
 		log.Warn("Responses 上游建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {

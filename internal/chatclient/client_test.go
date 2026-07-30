@@ -72,7 +72,7 @@ func TestStreamBearerAndErrorBody(t *testing.T) {
 
 	c := New()
 	// success
-	body, err := c.Stream(context.Background(), srv.URL+"/v1", "sk-test", []byte(`{"model":"m","stream":true}`))
+	body, err := c.Stream(context.Background(), srv.URL+"/v1", "sk-test", []byte(`{"model":"m","stream":true}`), nil)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestStreamBearerAndErrorBody(t *testing.T) {
 		t.Fatalf("accept=%q", gotAccept)
 	}
 	// 4xx
-	_, err = c.Stream(context.Background(), srv.URL+"/v1", "sk-test", []byte(`{"fail":true}`))
+	_, err = c.Stream(context.Background(), srv.URL+"/v1", "sk-test", []byte(`{"fail":true}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("want 429 error, got %v", err)
 	}
@@ -105,7 +105,7 @@ func TestListModelsParsesData(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ms, err := New().ListModels(context.Background(), srv.URL+"/v1", "k")
+	ms, err := New().ListModels(context.Background(), srv.URL+"/v1", "k", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

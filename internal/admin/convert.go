@@ -39,6 +39,7 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 			Name: sv.Name, BaseURL: sv.BaseURL, APIKey: sv.APIKey,
 			BackendType: bt, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
 			Disabled: sv.Disabled,
+			Headers:  sv.Headers,
 		}
 		if sv.Breaker != nil {
 			b := breakerViewToCfg(*sv.Breaker)

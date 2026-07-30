@@ -122,7 +122,7 @@ func TestStreamAuthHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rc, statusCode, err := New().Stream(context.Background(), srv.URL, "test-key-123", &anthropic.MessageNewParams{}, nil)
+	rc, statusCode, err := New().Stream(context.Background(), srv.URL, "test-key-123", &anthropic.MessageNewParams{}, nil, nil)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestStreamExtendedCacheTTLBetaOn1h(t *testing.T) {
 			TTL:  anthropic.CacheControlEphemeralTTLTTL1h,
 		},
 	}
-	rc, _, err := New().Stream(context.Background(), srv.URL, "k", req, nil)
+	rc, _, err := New().Stream(context.Background(), srv.URL, "k", req, nil, nil)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestStreamNoExtendedCacheTTLOn5m(t *testing.T) {
 			TTL:  anthropic.CacheControlEphemeralTTLTTL5m,
 		},
 	}
-	rc, _, err := New().Stream(context.Background(), srv.URL, "k", req, nil)
+	rc, _, err := New().Stream(context.Background(), srv.URL, "k", req, nil, nil)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}

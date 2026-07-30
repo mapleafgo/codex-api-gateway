@@ -602,6 +602,58 @@ func TestSourceTest(t *testing.T) {
 	}
 }
 
+func TestSourceHeadersRoundTrip(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json",
+		strings.NewReader(`{"name":"h1","base_url":"https://h.example.com","api_key":"k","headers":{"X-Custom":"v1","X-Proxy-Auth":"v2"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	if len(cur.Sources) != 2 {
+		t.Fatalf("sources=%d", len(cur.Sources))
+	}
+	h := cur.Sources[1].Headers
+	if h["X-Custom"] != "v1" || h["X-Proxy-Auth"] != "v2" {
+		t.Fatalf("headers=%v", h)
+	}
+}
+
+func TestSourceHeadersReservedSkipped(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json",
+		strings.NewReader(`{"name":"h2","base_url":"https://h.example.com","api_key":"k","headers":{"Authorization":"Hijack","X-Foo":"bar"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	h := cur.Sources[1].Headers
+	if _, ok := h["Authorization"]; ok {
+		t.Fatalf("reserved header should be stripped: %v", h)
+	}
+	if h["X-Foo"] != "bar" {
+		t.Fatalf("custom header missing: %v", h)
+	}
+}
+
 func TestAddSource(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	deps.SourceHealth = func() []SourceHealthView {

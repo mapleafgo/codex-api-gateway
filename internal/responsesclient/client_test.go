@@ -34,7 +34,7 @@ func TestStreamUpstreamError(t *testing.T) {
 		http.Error(w, "nope", http.StatusBadGateway)
 	}))
 	defer ts.Close()
-	_, err := New().Stream(context.Background(), ts.URL+"/v1", "k", []byte(`{"stream":true}`))
+	_, err := New().Stream(context.Background(), ts.URL+"/v1", "k", []byte(`{"stream":true}`), nil)
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("err=%v", err)
 	}
@@ -90,7 +90,7 @@ func TestListModelsParsesData(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ms, err := New().ListModels(context.Background(), ts.URL+"/v1", "k")
+	ms, err := New().ListModels(context.Background(), ts.URL+"/v1", "k", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
