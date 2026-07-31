@@ -188,6 +188,8 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		return nil, err
 	}
 	out.Messages = msgs
+	normalizeToolCallIDs(out.Messages)
+	out.Messages = mergeSystemMessages(out.Messages)
 	ensureChatToolPaired(out)
 	out.Tools = convertTools(req.Tools, out.FreeformNames)
 	seen := map[string]struct{}{}
@@ -655,9 +657,11 @@ func convertInputMessage(m *oairesponses.ResponseInputItemMessageParam) (ChatMes
 		case part.OfInputText != nil:
 			b.WriteString(part.OfInputText.Text)
 		case part.OfInputImage != nil:
-			slog.Debug("chatconvert: 跳过 input_message 中的 input_image（Chat 收口仅文本）")
+			slog.Debug("chatconvert: input_message 中的 input_image 以文本占位降级")
+			b.WriteString("[image input omitted]")
 		case part.OfInputFile != nil:
-			slog.Debug("chatconvert: 跳过 input_message 中的 input_file（Chat 收口仅文本）")
+			slog.Debug("chatconvert: input_message 中的 input_file 以文本占位降级")
+			b.WriteString("[file input omitted]")
 		}
 	}
 	text := b.String()
@@ -721,9 +725,11 @@ func easyMessageText(m *oairesponses.EasyInputMessageParam) string {
 		case part.OfInputText != nil:
 			b.WriteString(part.OfInputText.Text)
 		case part.OfInputImage != nil:
-			slog.Debug("chatconvert: 跳过 message 中的 input_image（Chat 收口仅文本）")
+			slog.Debug("chatconvert: message 中的 input_image 以文本占位降级")
+			b.WriteString("[image input omitted]")
 		case part.OfInputFile != nil:
-			slog.Debug("chatconvert: 跳过 message 中的 input_file（Chat 收口仅文本）")
+			slog.Debug("chatconvert: message 中的 input_file 以文本占位降级")
+			b.WriteString("[file input omitted]")
 		}
 	}
 	return b.String()
@@ -737,8 +743,12 @@ func functionCallOutputText(fco *oairesponses.ResponseInputItemFunctionCallOutpu
 	for _, it := range fco.Output.OfResponseFunctionCallOutputItemArray {
 		if it.OfInputText != nil {
 			b.WriteString(it.OfInputText.Text)
-		} else if it.OfInputImage != nil || it.OfInputFile != nil {
-			slog.Debug("chatconvert: function_call_output 非文本 part 丢弃")
+		} else if it.OfInputImage != nil {
+			slog.Debug("chatconvert: function_call_output 中的 input_image 以文本占位降级")
+			b.WriteString("[image output omitted]")
+		} else if it.OfInputFile != nil {
+			slog.Debug("chatconvert: function_call_output 中的 input_file 以文本占位降级")
+			b.WriteString("[file output omitted]")
 		}
 	}
 	return b.String()
@@ -752,6 +762,12 @@ func customToolOutputText(c *oairesponses.ResponseCustomToolCallOutputParam) str
 	for _, it := range c.Output.OfOutputContentList {
 		if it.OfInputText != nil {
 			b.WriteString(it.OfInputText.Text)
+		} else if it.OfInputImage != nil {
+			slog.Debug("chatconvert: custom tool output 中的 input_image 以文本占位降级")
+			b.WriteString("[image output omitted]")
+		} else if it.OfInputFile != nil {
+			slog.Debug("chatconvert: custom tool output 中的 input_file 以文本占位降级")
+			b.WriteString("[file output omitted]")
 		}
 	}
 	return b.String()
@@ -897,6 +913,192 @@ func convertTools(tools []oairesponses.ToolUnionParam, freeform map[string]struc
 	return out
 }
 
+// normalizeToolCallIDs 归一化出站 tool_call_id（仅允许 [a-zA-Z0-9_-] 且 <=40），
+// 同一原始 id 在 assistant 与 tool 消息中保持一致；碰撞时追加 _N 后缀。
+func normalizeToolCallIDs(msgs []ChatMessage) {
+	used := map[string]struct{}{}
+	byOriginal := map[string]string{}
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		for j := range m.ToolCalls {
+			tc := &m.ToolCalls[j]
+			if tc.ID == "" {
+				continue
+			}
+			norm, ok := byOriginal[tc.ID]
+			if !ok {
+				norm = uniqueToolCallID(sanitizeToolCallID(tc.ID), used)
+				byOriginal[tc.ID] = norm
+			}
+			tc.ID = norm
+		}
+	}
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != "tool" || m.ToolCallID == "" {
+			continue
+		}
+		if norm, ok := byOriginal[m.ToolCallID]; ok {
+			m.ToolCallID = norm
+			continue
+		}
+		m.ToolCallID = uniqueToolCallID(sanitizeToolCallID(m.ToolCallID), used)
+	}
+}
+
+func sanitizeToolCallID(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	s := b.String()
+	if s == "" {
+		return "call"
+	}
+	if len(s) > 40 {
+		s = s[:40]
+	}
+	return s
+}
+
+func uniqueToolCallID(base string, used map[string]struct{}) string {
+	if _, ok := used[base]; !ok {
+		used[base] = struct{}{}
+		return base
+	}
+	for i := 2; ; i++ {
+		suffix := fmt.Sprintf("_%d", i)
+		candidate := base
+		if len(candidate)+len(suffix) > 40 {
+			candidate = candidate[:40-len(suffix)]
+		}
+		candidate += suffix
+		if _, ok := used[candidate]; !ok {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+	}
+}
+
+// mergeSystemMessages 只合并相邻 system 消息：紧跟 user 的折入 user，
+// 相邻的 system 并入前一条 system，避免严格 Chat 上游对多条 system 消息 400；
+// 出现在 assistant/tool 之后的 system 保持原位，不做跨消息重排。
+func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
+	out := make([]ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			out = append(out, m)
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == "user" {
+			last := &out[len(out)-1]
+			last.Content = joinTextContent(last.Content, m.Content)
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == "system" {
+			last := &out[len(out)-1]
+			last.Content = joinTextContent(last.Content, m.Content)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func joinTextContent(a, b any) any {
+	as, aok := a.(string)
+	bs, bok := b.(string)
+	if !aok || !bok {
+		return a
+	}
+	switch {
+	case as == "":
+		return bs
+	case bs == "":
+		return as
+	default:
+		return as + "\n" + bs
+	}
+}
+
+// normalizeToolSchema 保守投影 Chat 工具 schema：递归移除 anyOf/type 数组中的 null 变体，
+// 避免严格上游对 nullable schema 400；不强制 additionalProperties（严格模式可后续开）。
+func normalizeToolSchema(v any) any {
+	switch m := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(m))
+		for k, child := range m {
+			out[k] = normalizeToolSchema(child)
+		}
+		if types, ok := out["type"].([]any); ok {
+			cleaned := removeNullType(types)
+			switch len(cleaned) {
+			case 0:
+				delete(out, "type")
+			case 1:
+				out["type"] = cleaned[0]
+			default:
+				out["type"] = cleaned
+			}
+		}
+		if anyOf, ok := out["anyOf"].([]any); ok {
+			cleaned := removeNullSchema(anyOf)
+			if len(cleaned) == 0 {
+				delete(out, "anyOf")
+			} else {
+				out["anyOf"] = cleaned
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(m))
+		for i, child := range m {
+			out[i] = normalizeToolSchema(child)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func removeNullType(types []any) []any {
+	out := make([]any, 0, len(types))
+	for _, t := range types {
+		if t != "null" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func removeNullSchema(items []any) []any {
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			switch t := m["type"].(type) {
+			case string:
+				if t == "null" {
+					continue
+				}
+			case []any:
+				if len(t) == 1 && t[0] == "null" {
+					continue
+				}
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}) []ChatTool {
 	switch {
 	case t.OfFunction != nil:
@@ -904,7 +1106,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 		fn := ChatFunction{
 			Name:        f.Name,
 			Description: optString(f.Description),
-			Parameters:  f.Parameters,
+			Parameters:  normalizeToolSchema(f.Parameters),
 		}
 		if f.Strict.Valid() {
 			fn.Strict = ptr(f.Strict.Value)
@@ -947,7 +1149,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 			Function: ChatFunction{
 				Name:        "tool_search",
 				Description: optString(s.Description),
-				Parameters:  s.Parameters,
+				Parameters:  normalizeToolSchema(s.Parameters),
 			},
 		}}
 	case t.OfNamespace != nil:
@@ -960,7 +1162,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 				cf := ChatFunction{
 					Name:        toolcatalog.ToolName(ns.Name, nestedFn.Name),
 					Description: optString(nestedFn.Description),
-					Parameters:  nestedFn.Parameters,
+					Parameters:  normalizeToolSchema(nestedFn.Parameters),
 				}
 				if nestedFn.Strict.Valid() {
 					cf.Strict = ptr(nestedFn.Strict.Value)

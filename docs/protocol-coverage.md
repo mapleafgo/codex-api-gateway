@@ -265,10 +265,10 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `model` | `model` | `supported` | 经 source ModelMap / DefaultModel |
 | `input` string | user message | `supported` | |
 | `input` item list | `messages` | `lossy_supported` | 见下表；无 Chat 等价 item DEBUG/WARN 跳过 |
-| `instructions` | system message（首条） | `supported` | 与 developer/system item 可合并 |
+| `instructions` | system message（首条） | `supported` | 与 developer/system item 可合并；出站后处理：连续 system 并入首条，紧跟 user 的折入 user |
 | `max_output_tokens` | `max_tokens` + `max_completion_tokens` | `supported` | 双写兼容旧上游与新模型 |
 | `temperature` / `top_p` | 同名 | `supported` | |
-| `top_k` | `top_k` | `supported` | Chat 同名透传；a 路径仍忽略 |
+| `top_k` | `top_k` | `none` | 客户端 Responses 请求无此来源；Chat 请求体亦无对应字段；矩阵原列为 supported 是错误的 |
 | `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
 | `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过 |
 | `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search/code_interpreter 映射为同名 function 强制选择，其余与 mcp/programmatic DEBUG 后忽略 |
@@ -297,8 +297,8 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 |---|---|---|---|
 | `message` / EasyInputMessage | role + content 文本 | `lossy_supported` | `developer`→`system`；保留 `system`/`user`/`assistant`；content 取 text / input_text / **output_text**（经 Decode 归一） |
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
-| `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant |
-| `function_call_output` | role=tool | `supported` | content 数组拼文本；图片丢弃 |
+| `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；出站 `id` 归一化 `[a-zA-Z0-9_-]` <=40 且请求内唯一（回程不还原） |
+| `function_call_output` | role=tool | `supported` | content 数组拼文本；图片/文件以 `[image output omitted]` / `[file output omitted]` 占位 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"input":...}` freeform；相邻合并 |
 | `custom_tool_call_output` | role=tool | `supported` | |
 | `shell_call` / `local_shell_call` | tool_calls name=`shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema |
@@ -318,12 +318,12 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | Responses tool | Chat tools[] | 状态 | 说明 |
 |---|---|---|---|
-| `function` | function | `supported` | name/description/parameters/**strict** |
+| `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做保守投影（递归移除 type/anyOf 中的 null） |
 | `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；grammar 丢失 |
 | `shell` / `local_shell` | function name=`shell` freeform | `lossy_supported` | |
 | `apply_patch` | function name=`apply_patch` freeform | `lossy_supported` | description 强调 V4A |
 | `tool_search` | function name=`tool_search` | `supported` | |
-| `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项 |
+| `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项；嵌套 function 同样做 schema 投影 |
 | `web_search` / `web_search_preview` | function `web_search` | `lossy_supported` | 无 server 搜索 |
 | `code_interpreter` | function `code_interpreter` | `lossy_supported` | 无 sandbox；container 丢弃 |
 | `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | 无连接/审批；filter 不展开 |
@@ -354,7 +354,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | 项 | 说明 |
 |---|---|
-| 多模态 image/file 输入 | content 仅文本（image/file part DEBUG 跳过） |
+| 多模态 image/file 输入 | content 仅文本：`[image input omitted]` / `[file input omitted]` 占位，不真传图 |
 | 厂商 `reasoning_content` 无 encrypted/signature | 明文 reasoning 有损（summary 承载全文）；a 路径 signature/encrypted 不在 c 复现 |
 | Chat 原生 Anthropic 式 `citations_delta` | 五家主路径无官方等价；联网多走 tool_calls；非标 annotations 本期不做 |
 | hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
