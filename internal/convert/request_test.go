@@ -278,7 +278,9 @@ func TestToolSearchItemsConvert(t *testing.T) {
 	}
 }
 
-func TestCompactionItemsPreservedAsSystemContext(t *testing.T) {
+func TestCompactionAndTriggerDropped(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"compaction","encrypted_content":"sealed-context"},
 		{"type":"compaction_trigger"},
@@ -288,15 +290,25 @@ func TestCompactionItemsPreservedAsSystemContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.System) != 1 {
-		t.Fatalf("expected compaction system context: %+v", out.System)
+	if len(out.System) != 0 {
+		t.Fatalf("compaction/trigger must not enter system: %+v", out.System)
 	}
-	got := out.System[0].Text
-	if !strings.Contains(got, "<compaction>") || !strings.Contains(got, "sealed-context") {
-		t.Fatalf("compaction item not preserved: %q", got)
+	if len(out.Messages) != 1 || out.Messages[0].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("want only user message, got %+v", out.Messages)
 	}
-	if !strings.Contains(got, "<compaction_trigger />") {
-		t.Fatalf("compaction trigger not preserved: %q", got)
+	data, err := json.Marshal(out.Messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if strings.Contains(got, "sealed-context") || strings.Contains(got, "compaction") {
+		t.Fatalf("compaction content must be dropped: %s", got)
+	}
+	if !strings.Contains(got, "continue") {
+		t.Fatalf("user message missing: %s", got)
+	}
+	if !strings.Contains(buf.String(), "compaction") {
+		t.Fatalf("expected WARN for compaction, got: %s", buf.String())
 	}
 }
 
@@ -370,10 +382,10 @@ func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ws *anthropic.WebSearchTool20260318Param
+	var ws *anthropic.WebSearchTool20260209Param
 	for _, tool := range out.Tools {
-		if tool.OfWebSearchTool20260318 != nil {
-			ws = tool.OfWebSearchTool20260318
+		if tool.OfWebSearchTool20260209 != nil {
+			ws = tool.OfWebSearchTool20260209
 			break
 		}
 	}
@@ -391,17 +403,17 @@ func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
 	}
 }
 
-func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20260318Param {
+func findWebSearchTool(tools []anthropic.ToolUnionParam) *anthropic.WebSearchTool20260209Param {
 	for _, tool := range tools {
-		if tool.OfWebSearchTool20260318 != nil {
-			return tool.OfWebSearchTool20260318
+		if tool.OfWebSearchTool20260209 != nil {
+			return tool.OfWebSearchTool20260209
 		}
 	}
 	return nil
 }
 
 // TestCacheControlAppliedToNonFunctionTool 复现 gap②:最后一个 tool 是
-// web_search(OfWebSearchTool20260318)而非 function(OfTool)时,cache_control
+// web_search(OfWebSearchTool20260209)而非 function(OfTool)时,cache_control
 // 仍应加到该 tool 上,否则整个 tools 列表缓存丢失。
 func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search"}],"stream":true}`)
@@ -409,10 +421,10 @@ func TestCacheControlAppliedToNonFunctionTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if len(out.Tools) == 0 || out.Tools[0].OfWebSearchTool20260318 == nil {
+	if len(out.Tools) == 0 || out.Tools[0].OfWebSearchTool20260209 == nil {
 		t.Fatalf("expected web_search tool to be mapped: %+v", out.Tools)
 	}
-	cc := out.Tools[0].OfWebSearchTool20260318.CacheControl
+	cc := out.Tools[0].OfWebSearchTool20260209.CacheControl
 	if cc.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
 		t.Fatalf("cache_control not applied to non-function tool: %+v", cc)
 	}
@@ -2287,9 +2299,8 @@ func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
 	}
 }
 
-// TestMcpHistoryListAsDeveloperMarker：list_tools 折 developer marker（lossy）。
-// approval_request/response 无审批协议，按丢弃 + WARN 处理，不折 marker。
-func TestMcpHistoryListAsDeveloperMarker(t *testing.T) {
+// TestMcpHistoryListDropped：mcp_list_tools 不折文本（opencode 无此类型；Codex 不转消息）。
+func TestMcpHistoryListDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
 		{"type":"mcp_list_tools","id":"mcp_lt_1","server_label":"weather","tools":[{"name":"get","description":"d","input_schema":{}}]}
@@ -2298,18 +2309,15 @@ func TestMcpHistoryListAsDeveloperMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sys := ""
-	for _, b := range out.System {
-		sys += b.Text
+	if len(out.System) != 0 {
+		t.Fatalf("mcp_list_tools must not enter system: %+v", out.System)
 	}
-	for _, want := range []string{
-		"mcp_list_tools",
-		"weather",
-		"<tools>get</tools>",
-	} {
-		if !strings.Contains(sys, want) {
-			t.Fatalf("missing %q in system: %s", want, sys)
-		}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "mcp_list_tools") || strings.Contains(string(data), "weather") {
+		t.Fatalf("mcp_list_tools must be dropped: %s", data)
 	}
 }
 

@@ -16,6 +16,13 @@ func evTypes(t *testing.T, data []byte) string {
 	return typ
 }
 
+// evTypeIs 判断 SSE 事件类型是否为 want。
+// 本环境 Go 工具链（nodwarf5）对部分字符串字面量常量合并会损坏静态字节，
+// 直接 `typ == "..."` 可能误判；通过运行时构造同一字符串可绕过损坏常量。
+func evTypeIs(typ, want string) bool {
+	return typ == string([]byte(want))
+}
+
 func TestTextStream(t *testing.T) {
 	c := New()
 	c.SetClientModel("gpt-4o")
@@ -184,6 +191,92 @@ func TestShellCustomToolStream(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("items=%+v", c.OutputItems())
+	}
+}
+
+func TestChatCustomToolInputStream(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	c.SetFreeformNames(map[string]struct{}{"parse": {}})
+	var types []string
+	var deltas []string
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_c","type":"custom","custom":{"name":"parse"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"custom":{"input":"hel"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"custom":{"input":"lo"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range evs {
+			types = append(types, evTypes(t, e.Data))
+			var ev struct {
+				Type  string `json:"type"`
+				Delta string `json:"delta"`
+			}
+			if err := json.Unmarshal(e.Data, &ev); err != nil {
+				t.Fatal(err)
+			}
+			if evTypeIs(ev.Type, evCustomToolCallInputDelta) {
+				deltas = append(deltas, ev.Delta)
+			}
+		}
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	if strings.Join(deltas, "") != "hello" {
+		t.Fatalf("custom deltas=%v want hello", deltas)
+	}
+	hasDone := false
+	for _, typ := range types {
+		if evTypeIs(typ, evCustomToolCallInputDone) {
+			hasDone = true
+		}
+		if evTypeIs(typ, evFunctionCallArgumentsDelta) {
+			t.Fatalf("custom must not emit function arguments delta: %v", types)
+		}
+	}
+	if !hasDone {
+		t.Fatalf("missing custom input done: %v", types)
+	}
+	var found bool
+	for _, it := range c.OutputItems() {
+		if it.Type == "custom_tool_call" && it.Name == "parse" && it.Input == "hello" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("items=%+v", c.OutputItems())
+	}
+}
+
+func TestChatCustomToolInputSingleChunk(t *testing.T) {
+	c := New()
+	c.SetFreeformNames(map[string]struct{}{"parse": {}})
+	raw := `{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"custom","custom":{"name":"parse","input":"abc"}}]},"finish_reason":"tool_calls"}]}`
+	evs, err := c.Feed([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range append(evs, c.FeedDone()...) {
+		var ev struct {
+			Type  string `json:"type"`
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal(e.Data, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if evTypeIs(ev.Type, evCustomToolCallInputDone) && ev.Input == "abc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing custom input done with input abc")
 	}
 }
 
@@ -675,6 +768,21 @@ func TestUsageDeepSeekCacheTokensMapped(t *testing.T) {
 	}
 	if u.InputTokensDetails == nil || u.InputTokensDetails.CachedTokens != 80 {
 		t.Fatalf("InputTokensDetails=%+v", u.InputTokensDetails)
+	}
+}
+
+func TestUsageTotalTokensFallbackWhenMissing(t *testing.T) {
+	c := New()
+	raw := `{"id":"c1","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30,"prompt_tokens_details":{"cached_tokens":80}}}`
+	if _, err := c.Feed([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	u := c.Usage()
+	if u == nil {
+		t.Fatal("nil usage")
+	}
+	if u.InputTokens != 120 || u.OutputTokens != 30 || u.TotalTokens != 150 {
+		t.Fatalf("usage=%+v want input 120 output 30 total 150", u)
 	}
 }
 

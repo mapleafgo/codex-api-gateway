@@ -16,9 +16,12 @@ import (
 // ChatRequest 是 Chat Completions 流式请求的最小结构。
 // FreeformNames 不进 wire，仅供 chatstreamconv 识别 shell/apply_patch/custom 回程形态。
 type ChatRequest struct {
-	Model               string              `json:"model"`
-	Messages            []ChatMessage       `json:"messages"`
-	Tools               []ChatTool          `json:"tools,omitempty"`
+	Model    string        `json:"model"`
+	Messages []ChatMessage `json:"messages"`
+	Tools    []ChatTool    `json:"tools,omitempty"`
+	// sendEmptyTools 置位后 wire 输出 tools: []：Anthropic 代理型 Chat 上游
+	// 要求消息含工具历史时 tools 字段必须存在（可为空数组）。
+	sendEmptyTools      bool
 	ToolChoice          any                 `json:"tool_choice,omitempty"`
 	Temperature         *float64            `json:"temperature,omitempty"`
 	TopP                *float64            `json:"top_p,omitempty"`
@@ -26,7 +29,6 @@ type ChatRequest struct {
 	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
 	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey      *string             `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions  *PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 	ResponseFormat      any                 `json:"response_format,omitempty"`
 	Verbosity           *string             `json:"verbosity,omitempty"`
 	ServiceTier         *string             `json:"service_tier,omitempty"`
@@ -40,12 +42,6 @@ type ChatRequest struct {
 	Stream              bool                `json:"stream"`
 	StreamOptions       *StreamOptions      `json:"stream_options,omitempty"`
 	FreeformNames       map[string]struct{} `json:"-"`
-}
-
-// PromptCacheOptions 对齐 OpenAI Chat prompt_cache_options 子集。
-type PromptCacheOptions struct {
-	Mode string `json:"mode,omitempty"`
-	TTL  string `json:"ttl,omitempty"`
 }
 
 // StreamOptions 控制流式 usage / obfuscation。
@@ -81,10 +77,59 @@ type ChatMessage struct {
 	ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
 }
 
-// ChatTool 是 function 工具声明（Chat 无 custom type，freeform 也落 function）。
+// ChatContentPart 是 user 消息的多模态内容项（text | image_url）。
+type ChatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+}
+
+// ChatImageURL 承载图片地址（URL 或 data URL），对齐 opencode lowerMedia 的形状透传。
+type ChatImageURL struct {
+	URL string `json:"url"`
+}
+
+// MarshalJSON 按 opencode wire 规则输出：
+// assistant 无文本显式 content:null，tool 空输出显式 content:""，
+// 其余角色沿用 omitempty（避免 user/system 出现多余字段）。
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	switch m.Role {
+	case "assistant":
+		return json.Marshal(struct {
+			Role             string         `json:"role"`
+			Content          any            `json:"content"`
+			ReasoningContent string         `json:"reasoning_content,omitempty"`
+			ToolCallID       string         `json:"tool_call_id,omitempty"`
+			ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
+		}{m.Role, m.Content, m.ReasoningContent, m.ToolCallID, m.ToolCalls})
+	case "tool":
+		content := m.Content
+		if content == nil {
+			content = ""
+		}
+		return json.Marshal(struct {
+			Role             string         `json:"role"`
+			Content          any            `json:"content"`
+			ReasoningContent string         `json:"reasoning_content,omitempty"`
+			ToolCallID       string         `json:"tool_call_id,omitempty"`
+			ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
+		}{m.Role, content, m.ReasoningContent, m.ToolCallID, m.ToolCalls})
+	default:
+		return json.Marshal(struct {
+			Role             string         `json:"role"`
+			Content          any            `json:"content,omitempty"`
+			ReasoningContent string         `json:"reasoning_content,omitempty"`
+			ToolCallID       string         `json:"tool_call_id,omitempty"`
+			ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
+		}{m.Role, m.Content, m.ReasoningContent, m.ToolCallID, m.ToolCalls})
+	}
+}
+
+// ChatTool 是 function 或 custom 工具声明；无 grammar 的 custom 仍降级 function。
 type ChatTool struct {
-	Type     string       `json:"type"`
-	Function ChatFunction `json:"function"`
+	Type     string          `json:"type"`
+	Function ChatFunction    `json:"-"`
+	Custom   *ChatCustomTool `json:"-"`
 }
 
 // ChatFunction 是 function 定义。
@@ -95,11 +140,89 @@ type ChatFunction struct {
 	Strict      *bool  `json:"strict,omitempty"`
 }
 
+// ChatCustomTool 是 Chat custom 工具声明（含 grammar 输入格式）。
+type ChatCustomTool struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Format      *ChatCustomFormat `json:"format,omitempty"`
+}
+
+// ChatCustomFormat 是 custom 工具的输入格式声明。
+type ChatCustomFormat struct {
+	Type    string             `json:"type"`
+	Grammar *ChatCustomGrammar `json:"grammar,omitempty"`
+}
+
+// ChatCustomGrammar 对齐 pi / Chat SDK 的 custom grammar（lark | regex）。
+type ChatCustomGrammar struct {
+	Syntax     string `json:"syntax"`
+	Definition string `json:"definition"`
+}
+
+// MarshalJSON 按 type 输出 function/custom 单边 wire，避免 custom 工具带空的 function 对象。
+func (t ChatTool) MarshalJSON() ([]byte, error) {
+	if t.Type == "custom" && t.Custom != nil {
+		return json.Marshal(struct {
+			Type   string          `json:"type"`
+			Custom *ChatCustomTool `json:"custom"`
+		}{t.Type, t.Custom})
+	}
+	return json.Marshal(struct {
+		Type     string       `json:"type"`
+		Function ChatFunction `json:"function"`
+	}{t.Type, t.Function})
+}
+
 // ChatToolCall 是 assistant 侧 tool_calls 项。
 type ChatToolCall struct {
-	ID       string           `json:"id,omitempty"`
-	Type     string           `json:"type,omitempty"`
-	Function ChatToolCallFunc `json:"function"`
+	ID       string              `json:"id,omitempty"`
+	Type     string              `json:"type,omitempty"`
+	Function ChatToolCallFunc    `json:"-"`
+	Custom   *ChatCustomToolCall `json:"-"`
+}
+
+// MarshalJSON 按 type 输出 function/custom 单边 wire，避免 custom 工具带空的 function 对象。
+func (t ChatToolCall) MarshalJSON() ([]byte, error) {
+	if t.Type == "custom" && t.Custom != nil {
+		return json.Marshal(struct {
+			ID     string              `json:"id,omitempty"`
+			Type   string              `json:"type"`
+			Custom *ChatCustomToolCall `json:"custom"`
+		}{t.ID, t.Type, t.Custom})
+	}
+	return json.Marshal(struct {
+		ID       string           `json:"id,omitempty"`
+		Type     string           `json:"type,omitempty"`
+		Function ChatToolCallFunc `json:"function"`
+	}{t.ID, t.Type, t.Function})
+}
+
+// ChatCustomToolChoice 是 tool_choice 的 custom 强制选择形态，与 ChatTool 的
+// 自定义 MarshalJSON 一致，确保 type 在 custom 之前（字母序 map 会反转）。
+type ChatCustomToolChoice struct {
+	Name string
+}
+
+// MarshalJSON 输出 {"type":"custom","custom":{"name":...}}，保持与 ChatTool 相同的字段顺序。
+func (c ChatCustomToolChoice) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type   string `json:"type"`
+		Custom struct {
+			Name string `json:"name"`
+		} `json:"custom"`
+	}{
+		Type: "custom",
+		Custom: struct {
+			Name string `json:"name"`
+		}{c.Name},
+	})
+}
+
+// ChatCustomToolCall 是 tool_calls 历史项的 custom 形态（grammar 工具回程），
+// 仅承载 custom 内层字段；外层 id/type 由 ChatToolCall.MarshalJSON 负责。
+type ChatCustomToolCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
 }
 
 // ChatToolCallFunc 承载 name/arguments。
@@ -131,6 +254,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 	}
 	if req.MaxOutputTokens.Valid() && req.MaxOutputTokens.Value > 0 {
 		n := int(req.MaxOutputTokens.Value)
+		// max_tokens + max_completion_tokens 双写：兼容旧上游与新模型。
 		out.MaxTokens = ptr(n)
 		out.MaxCompletionTokens = ptr(n)
 	}
@@ -141,10 +265,10 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		out.PromptCacheKey = ptr(req.PromptCacheKey.Value)
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
-		out.PromptCacheOptions = &PromptCacheOptions{
-			Mode: req.PromptCacheOptions.Mode,
-			TTL:  req.PromptCacheOptions.Ttl,
-		}
+		// Chat 请求体无 prompt_cache_options 槽位（仅 content part 的
+		// prompt_cache_breakpoint），不透传，保留 prompt_cache_key。
+		slog.Debug("chatconvert: 丢弃 prompt_cache_options（Chat 无顶层等价字段）",
+			"mode", req.PromptCacheOptions.Mode, "ttl", req.PromptCacheOptions.Ttl)
 	}
 	if rf := convertResponseFormat(req); rf != nil {
 		out.ResponseFormat = rf
@@ -168,6 +292,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		out.Moderation = m
 	}
 	if e := string(req.Reasoning.Effort); e != "" {
+		// reasoning_effort 任意值原样透传，不替上游校验/拒绝。
 		out.ReasoningEffort = ptr(e)
 	}
 	if req.TopLogprobs.Valid() {
@@ -183,24 +308,23 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 	}
 
 	var dynamicTools []ChatTool
-	msgs, err := convertMessages(req, out.FreeformNames, &dynamicTools)
+	grammarCustomNames := collectGrammarCustomNames(req.Tools)
+	msgs, err := convertMessages(req, out.FreeformNames, grammarCustomNames, &dynamicTools)
 	if err != nil {
 		return nil, err
 	}
 	out.Messages = msgs
-	normalizeToolCallIDs(out.Messages)
-	out.Messages = mergeSystemMessages(out.Messages)
 	ensureChatToolPaired(out)
 	out.Tools = convertTools(req.Tools, out.FreeformNames)
 	seen := map[string]struct{}{}
 	for _, t := range out.Tools {
-		seen[t.Function.Name] = struct{}{}
+		seen[chatToolName(t)] = struct{}{}
 	}
 	for _, t := range dynamicTools {
-		if _, ok := seen[t.Function.Name]; ok {
+		if _, ok := seen[chatToolName(t)]; ok {
 			continue
 		}
-		seen[t.Function.Name] = struct{}{}
+		seen[chatToolName(t)] = struct{}{}
 		out.Tools = append(out.Tools, t)
 	}
 	if req.ToolChoice.OfAllowedTools != nil {
@@ -210,12 +334,36 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 	} else if tc := convertToolChoice(req.ToolChoice); tc != nil {
 		out.ToolChoice = tc
 	}
+	if req.ToolChoice.OfCustomTool != nil && hasChatCustomTool(out.Tools, req.ToolChoice.OfCustomTool.Name) {
+		out.ToolChoice = ChatCustomToolChoice{Name: req.ToolChoice.OfCustomTool.Name}
+	}
+	if len(out.Tools) == 0 && hasChatToolHistory(out.Messages) {
+		out.sendEmptyTools = true
+	}
 	return out, nil
 }
 
 // Marshal 将 ChatRequest 编成可 POST 的 JSON（不含 FreeformNames）。
 func Marshal(req *ChatRequest) ([]byte, error) {
 	return json.Marshal(req)
+}
+
+// MarshalJSON 保留 tools 的 nil/空数组差异：无工具且无工具历史时省略，
+// 有工具历史但无活动工具时显式输出 tools: []（对齐 pi 的 Anthropic 代理兼容）。
+func (r *ChatRequest) MarshalJSON() ([]byte, error) {
+	type alias ChatRequest
+	a := (*alias)(r)
+	var tools *[]ChatTool
+	switch {
+	case r.sendEmptyTools:
+		tools = &[]ChatTool{}
+	case len(r.Tools) > 0:
+		tools = &r.Tools
+	}
+	return json.Marshal(struct {
+		*alias
+		Tools *[]ChatTool `json:"tools,omitempty"`
+	}{a, tools})
 }
 
 // IsFreeformName 判断工具名是否应按 custom_tool_call 回程。
@@ -240,7 +388,99 @@ func isBuiltinFreeform(name string) bool {
 	}
 }
 
-func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]struct{}, dynamicTools *[]ChatTool) ([]ChatMessage, error) {
+// hasChatToolHistory 判断 Chat 消息是否含历史工具环（assistant.tool_calls 或 role=tool）。
+func hasChatToolHistory(msgs []ChatMessage) bool {
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			return true
+		}
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func chatToolName(t ChatTool) string {
+	if t.Custom != nil {
+		return t.Custom.Name
+	}
+	return t.Function.Name
+}
+
+func hasChatCustomTool(tools []ChatTool, name string) bool {
+	for _, t := range tools {
+		if t.Type == "custom" && t.Custom != nil && t.Custom.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// chatCustomGrammar 从 Responses custom tool format 提取 Chat grammar；无 grammar 返回 nil。
+func chatCustomGrammar(c *oairesponses.CustomToolParam) *ChatCustomGrammar {
+	if c == nil || c.Format.OfGrammar == nil {
+		return nil
+	}
+	g := c.Format.OfGrammar
+	if g.Syntax == "" || g.Definition == "" {
+		return nil
+	}
+	return &ChatCustomGrammar{Syntax: g.Syntax, Definition: g.Definition}
+}
+
+// collectGrammarCustomNames 收集声明为 Chat type=custom 的 grammar 工具名（含 namespace 前缀）。
+// 供历史 custom_tool_call 决定走 custom 还是 function 降级，对齐 pi 的 grammarToolInputProperties。
+func collectGrammarCustomNames(tools []oairesponses.ToolUnionParam) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, t := range tools {
+		switch {
+		case t.OfCustom != nil:
+			if chatCustomGrammar(t.OfCustom) != nil {
+				out[t.OfCustom.Name] = struct{}{}
+			}
+		case t.OfNamespace != nil:
+			ns := t.OfNamespace
+			for _, nested := range ns.Tools {
+				if nested.OfCustom == nil {
+					continue
+				}
+				if chatCustomGrammar(nested.OfCustom) == nil {
+					continue
+				}
+				out[toolcatalog.ToolName(ns.Name, nested.OfCustom.Name)] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+// customChatTool 构造 Chat 工具声明：带 grammar 走 custom，否则维持 function 降级（同 pi 默认）。
+func customChatTool(name, description string, grammar *ChatCustomGrammar) ChatTool {
+	if grammar == nil {
+		return ChatTool{
+			Type: "function",
+			Function: ChatFunction{
+				Name:        name,
+				Description: description,
+				Parameters:  toolcatalog.FreeformInputSchema(),
+			},
+		}
+	}
+	return ChatTool{
+		Type: "custom",
+		Custom: &ChatCustomTool{
+			Name:        name,
+			Description: description,
+			Format: &ChatCustomFormat{
+				Type:    "grammar",
+				Grammar: grammar,
+			},
+		},
+	}
+}
+
+func convertMessages(req *oairesponses.ResponseNewParams, freeform, grammarCustomNames map[string]struct{}, dynamicTools *[]ChatTool) ([]ChatMessage, error) {
 	var out []ChatMessage
 	if req.Instructions.Valid() && req.Instructions.Value != "" {
 		out = append(out, ChatMessage{Role: "system", Content: req.Instructions.Value})
@@ -253,6 +493,9 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 	var pending *ChatMessage
 	// pendingReasoning 暂存 Responses reasoning，挂到下一条/当前 assistant 的 reasoning_content。
 	var pendingReasoning string
+	// pendingImages 暂存工具结果中的图片，按 opencode 语义在下一个
+	// user/assistant 消息前（或流尾）合并成独立 user 消息。
+	var pendingImages []ChatContentPart
 	takeReasoning := func() string {
 		s := pendingReasoning
 		pendingReasoning = ""
@@ -277,6 +520,47 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			pending = nil
 		}
 	}
+	flushImages := func() {
+		if len(pendingImages) == 0 {
+			return
+		}
+		out = append(out, ChatMessage{Role: "user", Content: pendingImages})
+		pendingImages = nil
+	}
+	appendToolMessage := func(id, text string, images []ChatContentPart) {
+		out = append(out, ChatMessage{Role: "tool", ToolCallID: id, Content: text})
+		if len(images) > 0 {
+			pendingImages = append(pendingImages, images...)
+		}
+	}
+	// appendSystemUpdate 把时序 system 更新折成 <system-update> user 文本：
+	// 有未 flush 的图片时合并进同一条 user，否则折入前一条 user（字符串或 parts）。
+	appendSystemUpdate := func(text string) {
+		wrapped := wrapSystemUpdate(text)
+		if len(pendingImages) > 0 {
+			parts := make([]ChatContentPart, 0, len(pendingImages)+1)
+			parts = append(parts, pendingImages...)
+			parts = append(parts, ChatContentPart{Type: "text", Text: wrapped})
+			out = append(out, ChatMessage{Role: "user", Content: parts})
+			pendingImages = nil
+			return
+		}
+		if n := len(out); n > 0 && out[n-1].Role == "user" {
+			last := &out[n-1]
+			switch c := last.Content.(type) {
+			case string:
+				if c == "" {
+					last.Content = wrapped
+				} else {
+					last.Content = c + "\n" + wrapped
+				}
+			case []ChatContentPart:
+				last.Content = append(c, ChatContentPart{Type: "text", Text: wrapped})
+			}
+			return
+		}
+		out = append(out, ChatMessage{Role: "user", Content: wrapped})
+	}
 	appendToolCall := func(id, name, args string) {
 		if pending == nil {
 			pending = &ChatMessage{Role: "assistant"}
@@ -293,28 +577,67 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			},
 		})
 	}
+	appendCustomToolCall := func(id, name, input string) {
+		if pending == nil {
+			pending = &ChatMessage{Role: "assistant"}
+			attachReasoning(pending)
+		}
+		pending.ToolCalls = append(pending.ToolCalls, ChatToolCall{
+			ID:   id,
+			Type: "custom",
+			Custom: &ChatCustomToolCall{
+				Name:  name,
+				Input: input,
+			},
+		})
+	}
 
 	for i := range req.Input.OfInputItemList {
 		item := &req.Input.OfInputItemList[i]
 		switch {
 		case item.OfMessage != nil:
 			flushPending()
-			if msg, ok := convertEasyMessage(item.OfMessage); ok {
-				if msg.Role == "assistant" {
-					attachReasoning(&msg)
-				}
-				out = append(out, msg)
+			msg, ok, err := convertEasyMessage(item.OfMessage)
+			if err != nil {
+				return nil, err
 			}
+			if !ok {
+				continue
+			}
+			if msg.Role == "system" {
+				if s, isStr := msg.Content.(string); isStr && s != "" {
+					appendSystemUpdate(s)
+				}
+				continue
+			}
+			flushImages()
+			if msg.Role == "assistant" {
+				attachReasoning(&msg)
+			}
+			out = append(out, msg)
 		case item.OfInputMessage != nil:
 			flushPending()
-			if msg, ok := convertInputMessage(item.OfInputMessage); ok {
-				if msg.Role == "assistant" {
-					attachReasoning(&msg)
-				}
-				out = append(out, msg)
+			msg, ok, err := convertInputMessage(item.OfInputMessage)
+			if err != nil {
+				return nil, err
 			}
+			if !ok {
+				continue
+			}
+			if msg.Role == "system" {
+				if s, isStr := msg.Content.(string); isStr && s != "" {
+					appendSystemUpdate(s)
+				}
+				continue
+			}
+			flushImages()
+			if msg.Role == "assistant" {
+				attachReasoning(&msg)
+			}
+			out = append(out, msg)
 		case item.OfOutputMessage != nil:
 			flushPending()
+			flushImages()
 			if msg, ok := convertOutputMessage(item.OfOutputMessage); ok {
 				attachReasoning(&msg)
 				out = append(out, msg)
@@ -325,23 +648,29 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		case item.OfFunctionCallOutput != nil:
 			flushPending()
 			fco := item.OfFunctionCallOutput
-			out = append(out, ChatMessage{
-				Role:       "tool",
-				ToolCallID: fco.CallID,
-				Content:    functionCallOutputText(fco),
-			})
+			text, images, err := functionCallOutputParts(fco)
+			if err != nil {
+				return nil, err
+			}
+			appendToolMessage(fco.CallID, text, images)
 		case item.OfCustomToolCall != nil:
 			c := item.OfCustomToolCall
 			freeform[c.Name] = struct{}{}
-			appendToolCall(c.CallID, c.Name, freeformArgsJSON(c.Input))
+			// 与 pi 对齐：仅 grammar custom 工具声明走 Chat type=custom；
+			// 无 grammar 的 freeform custom 仍降级为 function + {"input":...}。
+			if _, ok := grammarCustomNames[c.Name]; ok {
+				appendCustomToolCall(c.CallID, c.Name, c.Input)
+			} else {
+				appendToolCall(c.CallID, c.Name, freeformArgsJSON(c.Input))
+			}
 		case item.OfCustomToolCallOutput != nil:
 			flushPending()
 			c := item.OfCustomToolCallOutput
-			out = append(out, ChatMessage{
-				Role:       "tool",
-				ToolCallID: c.CallID,
-				Content:    customToolOutputText(c),
-			})
+			text, images, err := customToolOutputParts(c)
+			if err != nil {
+				return nil, err
+			}
+			appendToolMessage(c.CallID, text, images)
 		case item.OfShellCall != nil:
 			call := item.OfShellCall
 			freeform[toolcatalog.ChatNameShell] = struct{}{}
@@ -349,11 +678,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		case item.OfShellCallOutput != nil:
 			flushPending()
 			o := item.OfShellCallOutput
-			out = append(out, ChatMessage{
-				Role:       "tool",
-				ToolCallID: o.CallID,
-				Content:    shellCallOutputText(o),
-			})
+			appendToolMessage(o.CallID, shellCallOutputText(o), nil)
 		case item.OfLocalShellCall != nil:
 			call := item.OfLocalShellCall
 			freeform[toolcatalog.ChatNameShell] = struct{}{}
@@ -365,11 +690,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		case item.OfLocalShellCallOutput != nil:
 			flushPending()
 			o := item.OfLocalShellCallOutput
-			out = append(out, ChatMessage{
-				Role:       "tool",
-				ToolCallID: o.ID,
-				Content:    localShellOutputText(o),
-			})
+			appendToolMessage(o.ID, localShellOutputText(o), nil)
 		case item.OfApplyPatchCall != nil:
 			call := item.OfApplyPatchCall
 			freeform[toolcatalog.ChatNameApplyPatch] = struct{}{}
@@ -383,11 +704,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		case item.OfApplyPatchCallOutput != nil:
 			flushPending()
 			o := item.OfApplyPatchCallOutput
-			out = append(out, ChatMessage{
-				Role:       "tool",
-				ToolCallID: o.CallID,
-				Content:    applyPatchOutputText(o),
-			})
+			appendToolMessage(o.CallID, applyPatchOutputText(o), nil)
 		case item.OfToolSearchCall != nil:
 			call := item.OfToolSearchCall
 			callID := call.CallID.Value
@@ -407,17 +724,17 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			}
 			appendToolCall(id, toolcatalog.ChatNameWebSearch, args)
 			flushPending()
-			out = append(out, ChatMessage{Role: "tool", ToolCallID: id, Content: result})
+			appendToolMessage(id, result, nil)
 		case item.OfCodeInterpreterCall != nil:
 			call := item.OfCodeInterpreterCall
-			args, result := codeInterpreterHistory(call)
+			args, result, images := codeInterpreterHistory(call)
 			id := call.ID
 			if id == "" {
 				id = "ci_hist"
 			}
 			appendToolCall(id, toolcatalog.ChatNameCodeInterpreter, args)
 			flushPending()
-			out = append(out, ChatMessage{Role: "tool", ToolCallID: id, Content: result})
+			appendToolMessage(id, result, images)
 		case item.OfMcpCall != nil:
 			call := item.OfMcpCall
 			if call.ID == "" {
@@ -427,7 +744,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			name, args, result := mcpHistoryArgs(call)
 			appendToolCall(call.ID, name, args)
 			flushPending()
-			out = append(out, ChatMessage{Role: "tool", ToolCallID: call.ID, Content: result})
+			appendToolMessage(call.ID, result, nil)
 		case item.OfMcpListTools != nil:
 			list := item.OfMcpListTools
 			names := make([]string, 0, len(list.Tools))
@@ -437,11 +754,10 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 					*dynamicTools = append(*dynamicTools, mcpToolDecl(list.ServerLabel, tl.Name))
 				}
 			}
-			flushPending()
-			out = append(out, ChatMessage{
-				Role:    "system",
-				Content: fmt.Sprintf("[mcp_list_tools server=%s tools=%s]", list.ServerLabel, strings.Join(names, ",")),
-			})
+			// mcp_list_tools 是历史工具列表结果，不转模型文本：opencode 无此类型，
+			// Codex 不把 AdditionalTools 转消息（工具经请求 tools/ToolSpec 声明）。
+			slog.Debug("chatconvert: 历史 mcp_list_tools 不转文本，仅注入工具声明",
+				"server_label", list.ServerLabel, "tool_count", len(names))
 		case item.OfMcpApprovalRequest != nil, item.OfMcpApprovalResponse != nil:
 			slog.Warn("chatconvert: 丢弃 MCP 审批历史（Chat 无审批协议）",
 				"type", itemType(item), "impact", "审批上下文不会发给 Chat 上游")
@@ -452,14 +768,13 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			slog.Warn("chatconvert: 跳过无 Chat 等价的重要历史 item",
 				"type", itemType(item), "impact", "对应上下文不会发给 Chat 上游")
 		case item.OfCompaction != nil:
-			flushPending()
-			out = append(out, ChatMessage{
-				Role:    "system",
-				Content: "<compaction>\n" + item.OfCompaction.EncryptedContent + "\n</compaction>",
-			})
+			// compaction 密文只对生成它的服务端有意义；Codex 在非 OpenAI provider 下走
+			// local 压缩，摘要以明文 user 消息回灌，不会携带该 item。无法解读则丢弃。
+			slog.Warn("chatconvert: 丢弃历史 compaction（密文不可解读，非本网关可用的压缩产物）",
+				"type", itemType(item), "impact", "压缩历史不会发给 Chat 上游；Codex local 压缩以明文摘要 user 消息回灌")
 		case item.OfCompactionTrigger != nil:
-			flushPending()
-			out = append(out, ChatMessage{Role: "system", Content: "<compaction_trigger />"})
+			// 请求控制信号，不是模型输入；Codex 明确丢弃，不转发。
+			slog.Debug("chatconvert: 丢弃 compaction_trigger（请求控制信号，非模型输入）")
 		case item.OfReasoning != nil:
 			// 明文 reasoning 折入 assistant.reasoning_content（工具环同框）；encrypted 无 Chat 槽位丢弃。
 			t := reasoningContentText(item.OfReasoning)
@@ -485,9 +800,10 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		}
 	}
 	flushPending()
+	flushImages()
 	if pendingReasoning != "" {
-		slog.Debug("chatconvert: 孤立 reasoning 无后续 assistant，丢弃",
-			"chars", len(pendingReasoning))
+		// reasoning-only 历史也发 assistant（content:null + reasoning_content），对齐 opencode。
+		out = append(out, ChatMessage{Role: "assistant", ReasoningContent: pendingReasoning})
 	}
 	return out, nil
 }
@@ -623,52 +939,137 @@ func chatToolPairingAlreadyValid(msgs []ChatMessage, toolByID map[string]ChatMes
 	return true
 }
 
-func convertEasyMessage(m *oairesponses.EasyInputMessageParam) (ChatMessage, bool) {
-	// developer → system：官方 Chat 有 developer，但多数兼容层（如 OpenCode）会 400。
-	role := chatRole(string(m.Role))
-	text := easyMessageText(m)
-	if text == "" && role != "assistant" {
-		return ChatMessage{}, false
-	}
-	if role == "assistant" && text == "" {
-		return ChatMessage{}, false
-	}
-	return ChatMessage{Role: role, Content: text}, true
-}
-
-func chatRole(role string) string {
-	if role == "developer" {
-		return "system"
-	}
-	return role
-}
-
-func convertInputMessage(m *oairesponses.ResponseInputItemMessageParam) (ChatMessage, bool) {
+// convertEasyMessage 把 Responses 的 message item 转成 Chat 消息：
+// system/developer 以 role=system 返回（由调用方折成 <system-update> user），
+// user 可带 []ChatContentPart 多模态内容，assistant 保持纯文本。
+func convertEasyMessage(m *oairesponses.EasyInputMessageParam) (ChatMessage, bool, error) {
 	if m == nil {
-		return ChatMessage{}, false
+		return ChatMessage{}, false, nil
 	}
-	role := chatRole(m.Role)
+	role := string(m.Role)
 	if role == "" {
 		role = "user"
 	}
-	var b strings.Builder
-	for _, part := range m.Content {
-		switch {
-		case part.OfInputText != nil:
-			b.WriteString(part.OfInputText.Text)
-		case part.OfInputImage != nil:
-			slog.Debug("chatconvert: input_message 中的 input_image 以文本占位降级")
-			b.WriteString("[image input omitted]")
-		case part.OfInputFile != nil:
-			slog.Debug("chatconvert: input_message 中的 input_file 以文本占位降级")
-			b.WriteString("[file input omitted]")
-		}
+	text, parts, err := easyMessageText(m)
+	return convertMessageRole(role, text, parts, err)
+}
+
+func convertInputMessage(m *oairesponses.ResponseInputItemMessageParam) (ChatMessage, bool, error) {
+	if m == nil {
+		return ChatMessage{}, false, nil
 	}
-	text := b.String()
+	role := m.Role
+	if role == "" {
+		role = "user"
+	}
+	text, parts, err := convertInputContent(m.Content)
+	return convertMessageRole(role, text, parts, err)
+}
+
+// convertMessageRole 按角色组装消息；system/developer 只取文本（包装由调用方负责）。
+func convertMessageRole(role string, text string, parts []ChatContentPart, err error) (ChatMessage, bool, error) {
+	if err != nil {
+		return ChatMessage{}, false, err
+	}
+	switch role {
+	case "system", "developer":
+		if text == "" {
+			return ChatMessage{}, false, nil
+		}
+		return ChatMessage{Role: "system", Content: text}, true, nil
+	case "user":
+		msg, ok := buildUserMessage(text, parts)
+		return msg, ok, nil
+	case "assistant":
+		if text == "" {
+			return ChatMessage{}, false, nil
+		}
+		return ChatMessage{Role: "assistant", Content: text}, true, nil
+	default:
+		return ChatMessage{}, false, fmt.Errorf("chatconvert: 不支持的 message role %q", role)
+	}
+}
+
+// buildUserMessage 纯文本消息用 string，含图片时用有序 []ChatContentPart（对齐 opencode）。
+func buildUserMessage(text string, parts []ChatContentPart) (ChatMessage, bool) {
+	if len(parts) > 0 {
+		return ChatMessage{Role: "user", Content: parts}, true
+	}
 	if text == "" {
 		return ChatMessage{}, false
 	}
-	return ChatMessage{Role: role, Content: text}, true
+	return ChatMessage{Role: "user", Content: text}, true
+}
+
+// imagePart 构造 Chat image_url part。
+func imagePart(url string) ChatContentPart {
+	return ChatContentPart{Type: "image_url", ImageURL: &ChatImageURL{URL: url}}
+}
+
+// inputImagePart 仅接受 image_url（file_id 无 Chat 槽位，报协议不可映射错误）。
+func inputImagePart(img *oairesponses.ResponseInputImageParam) (ChatContentPart, error) {
+	if img == nil {
+		return ChatContentPart{}, nil
+	}
+	url := ""
+	if img.ImageURL.Valid() {
+		url = img.ImageURL.Value
+	}
+	if url == "" && img.FileID.Valid() && img.FileID.Value != "" {
+		return ChatContentPart{}, fmt.Errorf("chatconvert: input_image file_id 无法映射到 Chat（仅支持 image_url）")
+	}
+	if url == "" {
+		return ChatContentPart{}, fmt.Errorf("chatconvert: input_image 缺少 image_url，无法映射到 Chat")
+	}
+	return imagePart(url), nil
+}
+
+// inputImageContentPart 与 inputImagePart 同规则，针对 function_call_output 的图片项。
+func inputImageContentPart(img *oairesponses.ResponseInputImageContentParam) (ChatContentPart, error) {
+	if img == nil {
+		return ChatContentPart{}, nil
+	}
+	url := ""
+	if img.ImageURL.Valid() {
+		url = img.ImageURL.Value
+	}
+	if url == "" && img.FileID.Valid() && img.FileID.Value != "" {
+		return ChatContentPart{}, fmt.Errorf("chatconvert: tool output image file_id 无法映射到 Chat（仅支持 image_url）")
+	}
+	if url == "" {
+		return ChatContentPart{}, fmt.Errorf("chatconvert: tool output image 缺少 image_url，无法映射到 Chat")
+	}
+	return imagePart(url), nil
+}
+
+// convertInputContent 把 input content 列表转成文本与有序多模态 parts。
+// input_file 在 Chat 无等价槽位，报错而非占位降级。
+func convertInputContent(parts []oairesponses.ResponseInputContentUnionParam) (string, []ChatContentPart, error) {
+	var b strings.Builder
+	var out []ChatContentPart
+	hasImage := false
+	for _, part := range parts {
+		switch {
+		case part.OfInputText != nil:
+			if part.OfInputText.Text != "" {
+				b.WriteString(part.OfInputText.Text)
+				out = append(out, ChatContentPart{Type: "text", Text: part.OfInputText.Text})
+			}
+		case part.OfInputImage != nil:
+			hasImage = true
+			p, err := inputImagePart(part.OfInputImage)
+			if err != nil {
+				return "", nil, err
+			}
+			out = append(out, p)
+		case part.OfInputFile != nil:
+			return "", nil, fmt.Errorf("chatconvert: input_file 无法映射到 Chat（仅支持 input_text/input_image）")
+		}
+	}
+	if !hasImage {
+		return b.String(), nil, nil
+	}
+	return b.String(), out, nil
 }
 
 // reasoningContentText 从 Responses reasoning item 提取明文推理文本。
@@ -715,62 +1116,82 @@ func convertOutputMessage(m *oairesponses.ResponseOutputMessageParam) (ChatMessa
 	return ChatMessage{Role: "assistant", Content: text}, true
 }
 
-func easyMessageText(m *oairesponses.EasyInputMessageParam) string {
+func easyMessageText(m *oairesponses.EasyInputMessageParam) (string, []ChatContentPart, error) {
 	if m.Content.OfString.Valid() {
-		return m.Content.OfString.Value
+		return m.Content.OfString.Value, nil, nil
 	}
-	var b strings.Builder
-	for _, part := range m.Content.OfInputItemContentList {
-		switch {
-		case part.OfInputText != nil:
-			b.WriteString(part.OfInputText.Text)
-		case part.OfInputImage != nil:
-			slog.Debug("chatconvert: message 中的 input_image 以文本占位降级")
-			b.WriteString("[image input omitted]")
-		case part.OfInputFile != nil:
-			slog.Debug("chatconvert: message 中的 input_file 以文本占位降级")
-			b.WriteString("[file input omitted]")
-		}
-	}
-	return b.String()
+	return convertInputContent(m.Content.OfInputItemContentList)
 }
 
-func functionCallOutputText(fco *oairesponses.ResponseInputItemFunctionCallOutputParam) string {
+// functionCallOutputParts 提取工具输出文本与图片：
+// 文本留在 role=tool，图片收集为独立 user 消息（对齐 opencode lowerToolMessages）。
+func functionCallOutputParts(fco *oairesponses.ResponseInputItemFunctionCallOutputParam) (string, []ChatContentPart, error) {
+	if fco == nil {
+		return "", nil, nil
+	}
 	if fco.Output.OfString.Valid() {
-		return fco.Output.OfString.Value
+		return fco.Output.OfString.Value, nil, nil
 	}
-	var b strings.Builder
+	var textParts []string
+	var images []ChatContentPart
 	for _, it := range fco.Output.OfResponseFunctionCallOutputItemArray {
-		if it.OfInputText != nil {
-			b.WriteString(it.OfInputText.Text)
-		} else if it.OfInputImage != nil {
-			slog.Debug("chatconvert: function_call_output 中的 input_image 以文本占位降级")
-			b.WriteString("[image output omitted]")
-		} else if it.OfInputFile != nil {
-			slog.Debug("chatconvert: function_call_output 中的 input_file 以文本占位降级")
-			b.WriteString("[file output omitted]")
+		switch {
+		case it.OfInputText != nil:
+			if it.OfInputText.Text != "" {
+				textParts = append(textParts, it.OfInputText.Text)
+			}
+		case it.OfInputImage != nil:
+			p, err := inputImageContentPart(it.OfInputImage)
+			if err != nil {
+				return "", nil, err
+			}
+			images = append(images, p)
+		case it.OfInputFile != nil:
+			return "", nil, fmt.Errorf("chatconvert: function_call_output 含 input_file，无法映射到 Chat")
 		}
 	}
-	return b.String()
+	return strings.Join(textParts, "\n"), images, nil
 }
 
-func customToolOutputText(c *oairesponses.ResponseCustomToolCallOutputParam) string {
-	if c.Output.OfString.Valid() {
-		return c.Output.OfString.Value
+func customToolOutputParts(c *oairesponses.ResponseCustomToolCallOutputParam) (string, []ChatContentPart, error) {
+	if c == nil {
+		return "", nil, nil
 	}
-	var b strings.Builder
+	if c.Output.OfString.Valid() {
+		return c.Output.OfString.Value, nil, nil
+	}
+	var textParts []string
+	var images []ChatContentPart
 	for _, it := range c.Output.OfOutputContentList {
-		if it.OfInputText != nil {
-			b.WriteString(it.OfInputText.Text)
-		} else if it.OfInputImage != nil {
-			slog.Debug("chatconvert: custom tool output 中的 input_image 以文本占位降级")
-			b.WriteString("[image output omitted]")
-		} else if it.OfInputFile != nil {
-			slog.Debug("chatconvert: custom tool output 中的 input_file 以文本占位降级")
-			b.WriteString("[file output omitted]")
+		switch {
+		case it.OfInputText != nil:
+			if it.OfInputText.Text != "" {
+				textParts = append(textParts, it.OfInputText.Text)
+			}
+		case it.OfInputImage != nil:
+			p, err := inputImagePart(it.OfInputImage)
+			if err != nil {
+				return "", nil, err
+			}
+			images = append(images, p)
+		case it.OfInputFile != nil:
+			return "", nil, fmt.Errorf("chatconvert: custom tool output 含 input_file，无法映射到 Chat")
 		}
 	}
-	return b.String()
+	return strings.Join(textParts, "\n"), images, nil
+}
+
+// escapeSystemUpdateText 与 opencode wrapSystemUpdate 一致：XML 转义 & < >，
+// 避免时序 system 更新内容关闭 wrapper。
+func escapeSystemUpdateText(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+func wrapSystemUpdate(text string) string {
+	return "<system-update>\n" + escapeSystemUpdateText(text) + "\n</system-update>"
 }
 
 func shellCallOutputText(out *oairesponses.ResponseInputItemShellCallOutputParam) string {
@@ -885,7 +1306,7 @@ func appendToolSearchOutput(out *[]ChatMessage, output *oairesponses.ResponseToo
 	for _, t := range output.Tools {
 		for _, ct := range toolUnionToChat(t, freeform) {
 			*dynamicTools = append(*dynamicTools, ct)
-			names = append(names, ct.Function.Name)
+			names = append(names, chatToolName(ct))
 		}
 	}
 	body := "tool_search_output: " + strings.Join(names, ",")
@@ -903,140 +1324,101 @@ func convertTools(tools []oairesponses.ToolUnionParam, freeform map[string]struc
 	seen := map[string]struct{}{}
 	for _, t := range tools {
 		for _, ct := range toolUnionToChat(t, freeform) {
-			if _, ok := seen[ct.Function.Name]; ok {
+			if _, ok := seen[chatToolName(ct)]; ok {
 				continue
 			}
-			seen[ct.Function.Name] = struct{}{}
+			seen[chatToolName(ct)] = struct{}{}
 			out = append(out, ct)
 		}
 	}
 	return out
 }
 
-// normalizeToolCallIDs 归一化出站 tool_call_id（仅允许 [a-zA-Z0-9_-] 且 <=40），
-// 同一原始 id 在 assistant 与 tool 消息中保持一致；碰撞时追加 _N 后缀。
-func normalizeToolCallIDs(msgs []ChatMessage) {
-	used := map[string]struct{}{}
-	byOriginal := map[string]string{}
-	for i := range msgs {
-		m := &msgs[i]
-		if m.Role != "assistant" {
-			continue
-		}
-		for j := range m.ToolCalls {
-			tc := &m.ToolCalls[j]
-			if tc.ID == "" {
-				continue
-			}
-			norm, ok := byOriginal[tc.ID]
-			if !ok {
-				norm = uniqueToolCallID(sanitizeToolCallID(tc.ID), used)
-				byOriginal[tc.ID] = norm
-			}
-			tc.ID = norm
-		}
-	}
-	for i := range msgs {
-		m := &msgs[i]
-		if m.Role != "tool" || m.ToolCallID == "" {
-			continue
-		}
-		if norm, ok := byOriginal[m.ToolCallID]; ok {
-			m.ToolCallID = norm
-			continue
-		}
-		m.ToolCallID = uniqueToolCallID(sanitizeToolCallID(m.ToolCallID), used)
-	}
-}
-
-func sanitizeToolCallID(id string) string {
-	var b strings.Builder
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	s := b.String()
-	if s == "" {
-		return "call"
-	}
-	if len(s) > 40 {
-		s = s[:40]
-	}
-	return s
-}
-
-func uniqueToolCallID(base string, used map[string]struct{}) string {
-	if _, ok := used[base]; !ok {
-		used[base] = struct{}{}
-		return base
-	}
-	for i := 2; ; i++ {
-		suffix := fmt.Sprintf("_%d", i)
-		candidate := base
-		if len(candidate)+len(suffix) > 40 {
-			candidate = candidate[:40-len(suffix)]
-		}
-		candidate += suffix
-		if _, ok := used[candidate]; !ok {
-			used[candidate] = struct{}{}
-			return candidate
-		}
-	}
-}
-
-// mergeSystemMessages 只合并相邻 system 消息：紧跟 user 的折入 user，
-// 相邻的 system 并入前一条 system，避免严格 Chat 上游对多条 system 消息 400；
-// 出现在 assistant/tool 之后的 system 保持原位，不做跨消息重排。
-func mergeSystemMessages(msgs []ChatMessage) []ChatMessage {
-	out := make([]ChatMessage, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role != "system" {
-			out = append(out, m)
-			continue
-		}
-		if len(out) > 0 && out[len(out)-1].Role == "user" {
-			last := &out[len(out)-1]
-			last.Content = joinTextContent(last.Content, m.Content)
-			continue
-		}
-		if len(out) > 0 && out[len(out)-1].Role == "system" {
-			last := &out[len(out)-1]
-			last.Content = joinTextContent(last.Content, m.Content)
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
-func joinTextContent(a, b any) any {
-	as, aok := a.(string)
-	bs, bok := b.(string)
-	if !aok || !bok {
-		return a
-	}
-	switch {
-	case as == "":
-		return bs
-	case bs == "":
-		return as
-	default:
-		return as + "\n" + bs
-	}
-}
-
-// normalizeToolSchema 保守投影 Chat 工具 schema：递归移除 anyOf/type 数组中的 null 变体，
-// 避免严格上游对 nullable schema 400；不强制 additionalProperties（严格模式可后续开）。
+// normalizeToolSchema 完整投影 Chat 工具 schema（对齐 opencode ToolSchemaProjection.openAI）：
+// 顶层强制 type=object；anyOf 的 record 变体展平进 properties 并强制
+// additionalProperties=false；递归移除 anyOf/type 数组中的 null 变体，
+// 单个 anyOf 变体直接并入父级。
 func normalizeToolSchema(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return map[string]any{"type": "object"}
+	}
+	flattened := make(map[string]any, len(m))
+	anyOf, hasAnyOf := m["anyOf"]
+	for k, child := range m {
+		if k == "anyOf" {
+			continue
+		}
+		flattened[k] = child
+	}
+	flattened["type"] = "object"
+	var variants []any
+	if arr, ok := anyOf.([]any); ok {
+		for _, variant := range arr {
+			if _, ok := variant.(map[string]any); ok {
+				variants = append(variants, variant)
+			}
+		}
+	}
+	if len(variants) > 0 {
+		props := map[string]any{}
+		for _, variant := range variants {
+			vm := variant.(map[string]any)
+			if vp, ok := vm["properties"].(map[string]any); ok {
+				for pk, pv := range vp {
+					props[pk] = pv
+				}
+			}
+		}
+		flattened["properties"] = props
+		flattened["additionalProperties"] = false
+	} else if hasAnyOf {
+		flattened["anyOf"] = anyOf
+	}
+	normalized, ok := normalizeToolSchemaNode(flattened).(map[string]any)
+	if !ok {
+		return map[string]any{"type": "object"}
+	}
+	if _, ok := normalized["additionalProperties"]; !ok {
+		normalized["additionalProperties"] = false
+	}
+	return normalized
+}
+
+// normalizeToolSchemaNode 递归归一化 schema 节点：先去除 anyOf 并合并唯一
+// 非 null 变体，再收敛 type 数组中的 null。
+func normalizeToolSchemaNode(v any) any {
 	switch m := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(m))
 		for k, child := range m {
-			out[k] = normalizeToolSchema(child)
+			if k == "anyOf" {
+				continue
+			}
+			out[k] = normalizeToolSchemaNode(child)
+		}
+		if anyOf, ok := m["anyOf"].([]any); ok {
+			variants := make([]any, 0, len(anyOf))
+			for _, variant := range anyOf {
+				if vm, ok := variant.(map[string]any); ok && isNullSchemaType(vm["type"]) {
+					continue
+				}
+				variants = append(variants, normalizeToolSchemaNode(variant))
+			}
+			switch len(variants) {
+			case 1:
+				if vm, ok := variants[0].(map[string]any); ok {
+					for k, val := range vm {
+						out[k] = val
+					}
+				} else {
+					out["anyOf"] = variants
+				}
+			default:
+				if len(variants) > 0 {
+					out["anyOf"] = variants
+				}
+			}
 		}
 		if types, ok := out["type"].([]any); ok {
 			cleaned := removeNullType(types)
@@ -1049,19 +1431,11 @@ func normalizeToolSchema(v any) any {
 				out["type"] = cleaned
 			}
 		}
-		if anyOf, ok := out["anyOf"].([]any); ok {
-			cleaned := removeNullSchema(anyOf)
-			if len(cleaned) == 0 {
-				delete(out, "anyOf")
-			} else {
-				out["anyOf"] = cleaned
-			}
-		}
 		return out
 	case []any:
 		out := make([]any, len(m))
 		for i, child := range m {
-			out[i] = normalizeToolSchema(child)
+			out[i] = normalizeToolSchemaNode(child)
 		}
 		return out
 	default:
@@ -1079,24 +1453,16 @@ func removeNullType(types []any) []any {
 	return out
 }
 
-func removeNullSchema(items []any) []any {
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		if m, ok := item.(map[string]any); ok {
-			switch t := m["type"].(type) {
-			case string:
-				if t == "null" {
-					continue
-				}
-			case []any:
-				if len(t) == 1 && t[0] == "null" {
-					continue
-				}
-			}
-		}
-		out = append(out, item)
+// isNullSchemaType 判断 schema 节点是否为 null 类型（字符串或 ["null"] 数组）。
+func isNullSchemaType(t any) bool {
+	switch v := t.(type) {
+	case string:
+		return v == "null"
+	case []any:
+		return len(v) == 1 && v[0] == "null"
+	default:
+		return false
 	}
-	return out
 }
 
 func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}) []ChatTool {
@@ -1115,14 +1481,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 	case t.OfCustom != nil:
 		c := t.OfCustom
 		freeform[c.Name] = struct{}{}
-		return []ChatTool{{
-			Type: "function",
-			Function: ChatFunction{
-				Name:        c.Name,
-				Description: optString(c.Description),
-				Parameters:  toolcatalog.FreeformInputSchema(),
-			},
-		}}
+		return []ChatTool{customChatTool(c.Name, optString(c.Description), chatCustomGrammar(c))}
 	case t.OfShell != nil, t.OfLocalShell != nil:
 		freeform[toolcatalog.ChatNameShell] = struct{}{}
 		return []ChatTool{{
@@ -1172,14 +1531,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 				c := nested.OfCustom
 				name := toolcatalog.ToolName(ns.Name, c.Name)
 				freeform[name] = struct{}{}
-				out = append(out, ChatTool{
-					Type: "function",
-					Function: ChatFunction{
-						Name:        name,
-						Description: optString(c.Description),
-						Parameters:  toolcatalog.FreeformInputSchema(),
-					},
-				})
+				out = append(out, customChatTool(name, optString(c.Description), chatCustomGrammar(c)))
 			default:
 				slog.Debug("chatconvert: 跳过 namespace 内不支持的子工具")
 			}
@@ -1267,7 +1619,7 @@ func applyChatAllowedTools(out *ChatRequest, declared []oairesponses.ToolUnionPa
 	}
 	var filtered []ChatTool
 	for _, t := range out.Tools {
-		if allowedNames[t.Function.Name] {
+		if allowedNames[chatToolName(t)] {
 			filtered = append(filtered, t)
 		}
 	}

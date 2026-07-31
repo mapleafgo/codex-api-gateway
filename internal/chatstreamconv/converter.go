@@ -93,11 +93,15 @@ type Converter struct {
 type toolAccum struct {
 	id, name string
 	args     strings.Builder
-	itemID   string
-	outIdx   int
-	opened   bool
-	closed   bool
-	kind     toolKind // function | custom | tool_search
+	// customInput 承载原生 Chat custom.input 裸字符串累积；与 args 互斥。
+	customInput strings.Builder
+	// nativeCustom 标记是否收到过 custom.input（pi 的 grammar 工具走 custom 分片）。
+	nativeCustom bool
+	itemID       string
+	outIdx       int
+	opened       bool
+	closed       bool
+	kind         toolKind // function | custom | tool_search
 }
 
 type toolKind int
@@ -140,6 +144,10 @@ type chatChoice struct {
 				Name      string `json:"name"`
 				Arguments string `json:"arguments"`
 			} `json:"function"`
+			Custom struct {
+				Name  string `json:"name"`
+				Input string `json:"input"`
+			} `json:"custom"`
 		} `json:"tool_calls"`
 	} `json:"delta"`
 	FinishReason *string `json:"finish_reason"`
@@ -207,8 +215,13 @@ func mapChatUsage(u *chatUsage) *model.ResponseUsage {
 	out := &model.ResponseUsage{
 		InputTokens:  u.PromptTokens,
 		OutputTokens: u.CompletionTokens,
-		TotalTokens:  u.TotalTokens,
 	}
+	total := u.TotalTokens
+	if total == 0 {
+		// 部分兼容上游缺 total_tokens，按 prompt + completion 兜底（同 opencode/pi）。
+		total = u.PromptTokens + u.CompletionTokens
+	}
+	out.TotalTokens = total
 	cacheRead := u.PromptCacheHitTokens
 	cacheCreate := 0
 	if d := u.PromptTokensDetails; d != nil {
@@ -357,7 +370,7 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 		out = append(out, c.feedText(content, lps)...)
 	}
 	for _, tc := range ch.Delta.ToolCalls {
-		out = append(out, c.feedToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments)...)
+		out = append(out, c.feedToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments, tc.Custom.Name, tc.Custom.Input)...)
 	}
 	if ch.FinishReason != nil && *ch.FinishReason != "" {
 		c.stopReason = *ch.FinishReason
@@ -563,7 +576,7 @@ func (c *Converter) closeReasoning() []model.SSEEvent {
 	return out
 }
 
-func (c *Converter) feedToolCall(index int, id, name, args string) []model.SSEEvent {
+func (c *Converter) feedToolCall(index int, id, name, args, customName, customInput string) []model.SSEEvent {
 	var out []model.SSEEvent
 	if c.reasonOpen {
 		out = append(out, c.closeReasoning()...)
@@ -596,7 +609,14 @@ func (c *Converter) feedToolCall(index int, id, name, args string) []model.SSEEv
 		acc.name = name
 		acc.kind = c.classifyTool(name)
 	}
-	if args != "" {
+	if customName != "" {
+		acc.name = customName
+		acc.kind = c.classifyTool(customName)
+	}
+	if customInput != "" {
+		acc.customInput.WriteString(customInput)
+		acc.nativeCustom = true
+	} else if args != "" {
 		acc.args.WriteString(args)
 	}
 	// 必须先有 name 再 open：兼容上游「先 id、后 name」分片，否则会按空 name 误判 function_call。
@@ -623,14 +643,28 @@ func (c *Converter) feedToolCall(index int, id, name, args string) []model.SSEEv
 					OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: buffered,
 				}))
 			}
+		} else if acc.kind == kindCustom && acc.nativeCustom {
+			buffered := acc.customInput.String()
+			if buffered != "" {
+				out = append(out, model.MarshalEvent(evCustomToolCallInputDelta, model.CustomToolCallInputDeltaEvent{
+					Type: evCustomToolCallInputDelta, SequenceNumber: c.nextSeq(),
+					OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: buffered,
+				}))
+			}
 		}
 		return out
 	}
-	// function 流式 arguments delta；hosted/custom/tool_search 在 stop 一次性给出
-	if args != "" && acc.opened && acc.kind == kindFunction {
+	// function 流式 arguments delta；原生 custom.input 走 custom input delta
+	if acc.opened && acc.kind == kindFunction && args != "" {
 		out = append(out, model.MarshalEvent(evFunctionCallArgumentsDelta, model.FunctionCallArgumentsDeltaEvent{
 			Type: evFunctionCallArgumentsDelta, SequenceNumber: c.nextSeq(),
 			OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: args,
+		}))
+	}
+	if acc.opened && acc.kind == kindCustom && customInput != "" && acc.nativeCustom {
+		out = append(out, model.MarshalEvent(evCustomToolCallInputDelta, model.CustomToolCallInputDeltaEvent{
+			Type: evCustomToolCallInputDelta, SequenceNumber: c.nextSeq(),
+			OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: customInput,
 		}))
 	}
 	return out
@@ -807,7 +841,11 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 	var out []model.SSEEvent
 	switch acc.kind {
 	case kindCustom:
-		input := toolcatalog.SanitizeClientToolInput(acc.name, true, rawArgs)
+		input := acc.customInput.String()
+		if !acc.nativeCustom {
+			// 函数降级形态（shell/apply_patch/无 grammar custom）：仍按 {"input":...} 解包。
+			input = toolcatalog.SanitizeClientToolInput(acc.name, true, rawArgs)
+		}
 		item := model.OutputItem{
 			Type:   model.ItemTypeCustomToolCall,
 			ID:     acc.itemID,
@@ -818,7 +856,10 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 		if acc.outIdx < len(c.outputItems) {
 			c.outputItems[acc.outIdx] = item
 		}
-		if input != "" {
+		// 若 upstream 已通过原生 custom.input 分片逐级投递过 input delta
+		//（nativeCustom），close 阶段只发最终 done 事件，不再重发完整
+		// input 作为 delta，避免与流式片段重复。
+		if input != "" && !acc.nativeCustom {
 			out = append(out, model.MarshalEvent(evCustomToolCallInputDelta, model.CustomToolCallInputDeltaEvent{
 				Type: evCustomToolCallInputDelta, SequenceNumber: c.nextSeq(),
 				OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: input,

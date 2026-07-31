@@ -660,12 +660,12 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		// 与 prompt_cache_key 同属可控协议差异，网关已自主 cache_control → DEBUG。
-		// a 路径：自主 cache_control；c 路径：chatconvert 透传 prompt_cache_options。
-		log.Debug("prompt_cache_options 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
+		// a 路径：自主 cache_control；c 路径：Chat 请求体无顶层槽位，chatconvert 丢弃。
+		log.Debug("prompt_cache_options 按后端分流（a 忽略/自主 cache_control；c 丢弃）",
 			"field", "prompt_cache_options",
 			"mode", req.PromptCacheOptions.Mode,
 			"ttl", req.PromptCacheOptions.Ttl,
-			"impact", "Anthropic 源不按 OpenAI options 调缓存；Chat 源由 chatconvert 写入 prompt_cache_options")
+			"impact", "Anthropic 源不按 OpenAI options 调缓存；Chat 请求体无 prompt_cache_options 槽位")
 	}
 	if req.PromptCacheRetention != "" {
 		// deprecated 字段且语义不等价；网关用 anthropic.cache_ttl 配置，DEBUG 即可。
@@ -693,16 +693,16 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 			"field", "conversation",
 			"impact", "不会使用 conversation 拉取历史")
 	}
-	// context_management：OpenAI 服务端自动压缩，Anthropic 无等价请求参数。
+	// context_management：OpenAI 服务端自动压缩；网关不做服务端压缩，压缩由 Codex local 承担。
 	if len(req.ContextManagement) > 0 {
 		types := make([]string, 0, len(req.ContextManagement))
 		for _, cm := range req.ContextManagement {
 			types = append(types, cm.Type)
 		}
-		log.Warn("忽略 context_management（Anthropic 无等价请求参数，网关未实现 compaction），对应数据被丢弃",
+		log.Warn("忽略 context_management（服务端自动压缩不适用，压缩由 Codex 客户端 local 完成），对应数据被丢弃",
 			"field", "context_management",
 			"types", strings.Join(types, ","),
-			"impact", "上下文管理策略不生效")
+			"impact", "服务端压缩策略不生效；客户端按模型目录 context_window/auto_compact_token_limit 自行压缩")
 	}
 	// max_tool_calls：Anthropic 无直接请求参数。
 	if req.MaxToolCalls.Valid() {

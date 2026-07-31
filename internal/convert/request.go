@@ -567,7 +567,9 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return nil
 	}
 	if item.OfMcpListTools != nil {
-		return appendMcpListToolsMarker(sysParts, item.OfMcpListTools)
+		slog.Debug("丢弃历史 mcp_list_tools（opencode 无此类型；Codex 不把 AdditionalTools 转文本，工具经 ToolSpec/请求 tools 声明）",
+			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
+		return nil
 	}
 	if item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
 		slog.Warn("丢弃历史 MCP 审批 item（Anthropic 无审批协议，网关不实现）",
@@ -612,17 +614,17 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return appendToolResult(out, item.OfApplyPatchCallOutput.CallID, applyPatchOutputText(item.OfApplyPatchCallOutput))
 	}
 	if item.OfCompaction != nil {
-		*sysParts = append(*sysParts, instructionPart{
-			role: model.RoleSystem,
-			text: "<compaction>\n" + item.OfCompaction.EncryptedContent + "\n</compaction>",
-		})
+		// compaction 密文只对生成它的服务端有意义；Codex 在非 OpenAI provider 下走 local
+		// 压缩，摘要以明文 user 消息回灌，不会携带该 item。无法解读则丢弃，禁止污染上游。
+		slog.Warn("丢弃历史 compaction（密文不可解读，非本网关可用的压缩产物）",
+			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item),
+			"impact", "压缩历史不会发给 Anthropic 上游；Codex local 压缩以明文摘要 user 消息回灌")
 		return nil
 	}
 	if item.OfCompactionTrigger != nil {
-		*sysParts = append(*sysParts, instructionPart{
-			role: model.RoleSystem,
-			text: "<compaction_trigger />",
-		})
+		// 请求控制信号，不是模型输入；Codex 明确丢弃。
+		slog.Debug("丢弃历史 compaction_trigger（请求控制信号，非模型输入）",
+			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
 		return nil
 	}
 	if part, ok := unknownInputItemPart(item); ok {
@@ -1228,39 +1230,6 @@ func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseI
 	last = &out.Messages[len(out.Messages)-1]
 	last.Content = append(last.Content, aparam.Override[anthropic.ContentBlockParamUnion](json.RawMessage(resultRaw)))
 	return true, nil
-}
-
-// appendMcpListToolsMarker 把历史 mcp_list_tools 折成 developer marker（工具名列表 + 可选 error）。
-// Anthropic Messages 无 mcp_list_tools 等价块；作为文本上下文比整段丢弃更利于模型判断可用工具。
-func appendMcpListToolsMarker(sysParts *[]instructionPart, list *oairesponses.ResponseInputItemMcpListToolsParam) error {
-	names := make([]string, 0, len(list.Tools))
-	for _, t := range list.Tools {
-		if t.Name != "" {
-			names = append(names, t.Name)
-		}
-	}
-	buf := &strings.Builder{}
-	buf.WriteString("<mcp_list_tools server=\"")
-	buf.WriteString(list.ServerLabel)
-	buf.WriteString("\">")
-	if list.Error.Valid() && list.Error.Value != "" {
-		buf.WriteString("\n<error>")
-		buf.WriteString(list.Error.Value)
-		buf.WriteString("</error>")
-	}
-	if len(names) > 0 {
-		buf.WriteString("\n<tools>")
-		buf.WriteString(strings.Join(names, ","))
-		buf.WriteString("</tools>")
-	}
-	buf.WriteString("\n</mcp_list_tools>")
-	*sysParts = append(*sysParts, instructionPart{
-		role: model.RoleDeveloper,
-		text: buf.String(),
-	})
-	slog.Debug("mcp_list_tools 折成 developer marker（Anthropic 无等价历史块）",
-		"server_label", list.ServerLabel, "tool_count", len(names))
-	return nil
 }
 
 // appendWebSearchCall 把历史 web_search_call 回放为 Anthropic

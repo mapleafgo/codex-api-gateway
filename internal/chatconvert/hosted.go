@@ -147,7 +147,7 @@ func webSearchQueryAndURLs(call *oairesponses.ResponseFunctionWebSearchParam) (s
 	return query, urls
 }
 
-func codeInterpreterHistory(call *oairesponses.ResponseCodeInterpreterToolCallParam) (argsJSON, resultText string) {
+func codeInterpreterHistory(call *oairesponses.ResponseCodeInterpreterToolCallParam) (argsJSON, resultText string, images []ChatContentPart) {
 	code := ""
 	if call.Code.Valid() {
 		code = call.Code.Value
@@ -155,19 +155,19 @@ func codeInterpreterHistory(call *oairesponses.ResponseCodeInterpreterToolCallPa
 	b, _ := json.Marshal(map[string]string{"code": code})
 	var logs []string
 	for _, o := range call.Outputs {
-		if o.OfLogs != nil && o.OfLogs.Logs != "" {
+		switch {
+		case o.OfLogs != nil && o.OfLogs.Logs != "":
 			logs = append(logs, o.OfLogs.Logs)
-		} else if o.OfImage != nil {
-			slog.Warn("chatconvert: 丢弃 code_interpreter 历史 image 输出",
-				"url", o.OfImage.URL, "impact", "Chat 路径无 image 槽位")
-			logs = append(logs, "[code_interpreter image output omitted]")
+		case o.OfImage != nil && o.OfImage.URL != "":
+			// 对齐 opencode：code_interpreter 图片转为后续独立 user image 消息。
+			images = append(images, imagePart(o.OfImage.URL))
 		}
 	}
 	body := strings.Join(logs, "\n")
-	if body == "" {
+	if body == "" && len(images) == 0 {
 		body = "[code_interpreter]"
 	}
-	return string(b), body
+	return string(b), body, images
 }
 
 func mcpHistoryArgs(call *oairesponses.ResponseInputItemMcpCallParam) (name, args, result string) {

@@ -327,7 +327,7 @@ models: 同理拼接 "/models"（已含则不重复）
 
 | 差异 | MVP 策略 |
 |---|---|
-| `max_tokens` vs `max_completion_tokens` | 出站优先发 **`max_tokens`**（= Responses `max_output_tokens`）；首版不引入 per-vendor 配置 |
+| `max_tokens` vs `max_completion_tokens` | 出站优先发 **`max_tokens`**（= Responses `max_output_tokens`），并双写 `max_completion_tokens` 兼容新模型；首版不引入 per-vendor 配置 |
 | `reasoning_content` / thinking 扩展 | 流中出现则忽略（DEBUG）；不映射 Responses reasoning item |
 | 厂商扩展请求字段 | 不主动发送 |
 | tool_calls 分片 / 并行 index | 按 OpenAI 标准按 `index` 累积 |

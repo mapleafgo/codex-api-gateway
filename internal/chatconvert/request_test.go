@@ -25,6 +25,15 @@ func mustChat(t *testing.T, body, model string) *ChatRequest {
 	return out
 }
 
+func chatParts(t *testing.T, v any) []ChatContentPart {
+	t.Helper()
+	parts, ok := v.([]ChatContentPart)
+	if !ok {
+		t.Fatalf("content type=%T, want []ChatContentPart: %v", v, v)
+	}
+	return parts
+}
+
 func TestToChat_SimpleUserText(t *testing.T) {
 	out := mustChat(t, `{"model":"gpt-4o","input":"Hello world","stream":true}`, "gpt-4o")
 	if out.Model != "gpt-4o" {
@@ -56,11 +65,15 @@ func TestToChat_InstructionsAndMessageList(t *testing.T) {
 	}
 }
 
-func TestToChat_DeveloperRoleMapsToSystem(t *testing.T) {
+func TestToChat_DeveloperRoleWrapsAsUser(t *testing.T) {
 	body := `{"model":"gpt-4o","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev rules"}]}]}`
 	out := mustChat(t, body, "gpt-4o")
-	if len(out.Messages) != 1 || out.Messages[0].Role != "system" {
-		t.Fatalf("developer should map to system: %+v", out.Messages)
+	if len(out.Messages) != 1 || out.Messages[0].Role != "user" {
+		t.Fatalf("developer should wrap as user: %+v", out.Messages)
+	}
+	content, _ := out.Messages[0].Content.(string)
+	if !strings.Contains(content, "<system-update>") || !strings.Contains(content, "dev rules") {
+		t.Fatalf("developer not wrapped: %q", content)
 	}
 }
 
@@ -161,6 +174,119 @@ func TestToChat_CustomNoSuffix(t *testing.T) {
 	}
 	if !out.IsFreeformName("mytool") {
 		t.Fatal("custom should be freeform")
+	}
+}
+
+func TestToChat_CustomGrammarToolMapsToChatCustom(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"custom","name":"parse","description":"parse csv","format":{"type":"grammar","definition":"start: /[0-9]+/","syntax":"lark"}}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 1 || out.Tools[0].Type != "custom" {
+		t.Fatalf("tools=%+v", out.Tools)
+	}
+	ct := out.Tools[0].Custom
+	if ct == nil || ct.Name != "parse" || ct.Format == nil || ct.Format.Type != "grammar" || ct.Format.Grammar == nil {
+		t.Fatalf("custom=%+v", ct)
+	}
+	if ct.Format.Grammar.Syntax != "lark" || ct.Format.Grammar.Definition != "start: /[0-9]+/" {
+		t.Fatalf("grammar=%+v", ct.Format.Grammar)
+	}
+	if !out.IsFreeformName("parse") {
+		t.Fatal("custom should be freeform")
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"type":"custom","custom":{"name":"parse","description":"parse csv","format":{"type":"grammar","grammar":{"syntax":"lark","definition":"start: /[0-9]+/"}}}`) {
+		t.Fatalf("wire missing custom grammar: %s", raw)
+	}
+}
+
+func TestToChat_NamespaceCustomGrammarToolMapsToChatCustom(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"namespace","name":"ns","tools":[{"type":"custom","name":"parse","description":"d","format":{"type":"grammar","definition":"x","syntax":"regex"}}]}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 1 || out.Tools[0].Type != "custom" {
+		t.Fatalf("tools=%+v", out.Tools)
+	}
+	ct := out.Tools[0].Custom
+	if ct == nil || ct.Name != "ns__parse" || ct.Format == nil || ct.Format.Grammar == nil || ct.Format.Grammar.Syntax != "regex" {
+		t.Fatalf("custom=%+v", ct)
+	}
+	if !out.IsFreeformName("ns__parse") {
+		t.Fatal("namespaced custom should be freeform")
+	}
+}
+
+func TestToChat_CustomGrammarToolChoiceUsesCustom(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"custom","name":"parse","format":{"type":"grammar","definition":"x","syntax":"lark"}}],
+		"tool_choice":{"type":"custom","name":"parse"},
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"tool_choice":{"type":"custom","custom":{"name":"parse"}}`) {
+		t.Fatalf("custom tool_choice missing: %s", raw)
+	}
+}
+
+func TestToChat_CustomToolCallHistoryRoundTrip(t *testing.T) {
+	// grammar custom 工具声明必须在 wire 上输出 type=custom。
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"custom","name":"parse","format":{"type":"grammar","definition":"start: /[0-9]+/","syntax":"lark"}}],
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"parse 42"}]},
+			{"type":"custom_tool_call","call_id":"call_parse","name":"parse","input":"42"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"id":"call_parse","type":"custom","custom":{"name":"parse","input":"42"}`
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("custom tool_call history wire missing %s: %s", want, raw)
+	}
+	if strings.Contains(string(raw), `"function":`) {
+		t.Fatalf("grammar custom tool_call history must not emit function side: %s", raw)
+	}
+}
+
+func TestToChat_FreeformCustomToolCallHistoryDegradesToFunction(t *testing.T) {
+	// 无 grammar 的 custom 工具声明，在历史回程降级为 type=function。
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"custom","name":"mytool","description":"d"}],
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"x"}]},
+			{"type":"custom_tool_call","call_id":"call_mt","name":"mytool","input":"hello"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"id":"call_mt","type":"function","function":{"name":"mytool","arguments":"{\"input\":\"hello\"}"}`
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("freeform custom tool_call history wire missing %s: %s", want, raw)
+	}
+	if strings.Contains(string(raw), `"custom":{"name":"mytool"`) {
+		t.Fatalf("freeform custom tool_call must not emit custom side: %s", raw)
 	}
 }
 
@@ -323,7 +449,11 @@ func TestToChat_UnsupportedHostedHistoryWarns(t *testing.T) {
 	}
 }
 
-func TestToChat_CompactionHistoryAsSystem(t *testing.T) {
+func TestToChat_CompactionDroppedWarns(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -332,16 +462,15 @@ func TestToChat_CompactionHistoryAsSystem(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	found := false
-	for _, m := range out.Messages {
-		if m.Role == "system" {
-			if s, ok := m.Content.(string); ok && strings.Contains(s, "<compaction>") {
-				found = true
-			}
-		}
+	if len(out.Messages) != 1 || out.Messages[0].Role != "user" {
+		t.Fatalf("want only user message, got %+v", out.Messages)
 	}
-	if !found {
-		t.Fatalf("compaction marker missing: %+v", out.Messages)
+	first, _ := out.Messages[0].Content.(string)
+	if first != "continue" || strings.Contains(first, "enc-blob") {
+		t.Fatalf("compaction must be dropped: %q", first)
+	}
+	if !strings.Contains(buf.String(), "compaction") {
+		t.Fatalf("want WARN for compaction, logs=%s", buf.String())
 	}
 }
 
@@ -464,6 +593,39 @@ func TestToChat_MarshalStreamTrue(t *testing.T) {
 	}
 }
 
+func TestToChat_ToolHistoryWithoutActiveToolsSendsEmptyTools(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"weather?"}]},
+			{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"18 C"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 0 {
+		t.Fatalf("tools should stay empty: %+v", out.Tools)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"tools":[]`) {
+		t.Fatalf("want tools:[] on wire with tool history: %s", raw)
+	}
+}
+
+func TestToChat_NoToolsOmittedWithoutHistory(t *testing.T) {
+	out := mustChat(t, `{"model":"gpt-4o","input":"hi"}`, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"tools"`) {
+		t.Fatalf("tools must be omitted without history: %s", raw)
+	}
+}
+
 func TestToChat_OutputMessageDefensive(t *testing.T) {
 	in := &oairesponses.ResponseInputItemMessageParam{
 		Role: "user",
@@ -471,7 +633,10 @@ func TestToChat_OutputMessageDefensive(t *testing.T) {
 			oairesponses.ResponseInputContentParamOfInputText("via input_message"),
 		},
 	}
-	msg, ok := convertInputMessage(in)
+	msg, ok, err := convertInputMessage(in)
+	if err != nil {
+		t.Fatalf("convertInputMessage: %v", err)
+	}
 	if !ok || msg.Role != "user" || msg.Content != "via input_message" {
 		t.Fatalf("convertInputMessage=%+v ok=%v", msg, ok)
 	}
@@ -577,7 +742,7 @@ func TestToChat_ToolSearchCallAndOutput(t *testing.T) {
 	}
 }
 
-func TestToChat_ParallelToolCallsAndPromptCacheOptions(t *testing.T) {
+func TestToChat_ParallelToolCallsAndPromptCacheOptionsDropped(t *testing.T) {
 	body := `{
 		"model":"gpt-4o","input":"hi",
 		"parallel_tool_calls":false,
@@ -587,8 +752,12 @@ func TestToChat_ParallelToolCallsAndPromptCacheOptions(t *testing.T) {
 	if out.ParallelToolCalls == nil || *out.ParallelToolCalls {
 		t.Fatalf("parallel_tool_calls=%v", out.ParallelToolCalls)
 	}
-	if out.PromptCacheOptions == nil || out.PromptCacheOptions.Mode != "explicit" || out.PromptCacheOptions.TTL != "30m" {
-		t.Fatalf("prompt_cache_options=%+v", out.PromptCacheOptions)
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "prompt_cache_options") {
+		t.Fatalf("prompt_cache_options must not reach wire: %s", raw)
 	}
 }
 
@@ -796,7 +965,7 @@ func TestToChat_ReasoningHistorySkipped(t *testing.T) {
 	}
 }
 
-func TestToChat_ImagePartPlaceholderInMessage(t *testing.T) {
+func TestToChat_ImageInputTextAndImageParts(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[{"type":"message","role":"user","content":[
@@ -808,9 +977,12 @@ func TestToChat_ImagePartPlaceholderInMessage(t *testing.T) {
 	if len(out.Messages) != 1 {
 		t.Fatalf("messages=%+v", out.Messages)
 	}
-	content, _ := out.Messages[0].Content.(string)
-	if content != "see [image input omitted]" {
-		t.Fatalf("content=%q (image should be placeholder)", content)
+	parts := chatParts(t, out.Messages[0].Content)
+	if len(parts) != 2 || parts[0].Type != "text" || parts[0].Text != "see " {
+		t.Fatalf("want text+image parts, got %+v", parts)
+	}
+	if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "https://example.com/a.png" {
+		t.Fatalf("image part=%+v", parts[1])
 	}
 }
 
@@ -917,7 +1089,7 @@ func TestToChat_ToolChoiceHostedEndToEnd(t *testing.T) {
 	}
 }
 
-func TestToChat_CompactionTrigger(t *testing.T) {
+func TestToChat_CompactionTriggerDropped(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -926,16 +1098,8 @@ func TestToChat_CompactionTrigger(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	found := false
-	for _, m := range out.Messages {
-		if m.Role == "system" {
-			if s, ok := m.Content.(string); ok && strings.Contains(s, "compaction_trigger") {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Fatalf("compaction_trigger missing: %+v", out.Messages)
+	if len(out.Messages) != 1 || out.Messages[0].Content != "hi" {
+		t.Fatalf("compaction_trigger must be dropped, got %+v", out.Messages)
 	}
 }
 
@@ -1110,21 +1274,7 @@ func TestChatFunctionArgumentsValidJSONPassthrough(t *testing.T) {
 	}
 }
 
-func validChatToolCallID(id string) bool {
-	if id == "" || len(id) > 40 {
-		return false
-	}
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func TestToChat_ToolCallIDNormalized(t *testing.T) {
+func TestToChat_ToolCallIDPassthrough(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1143,15 +1293,15 @@ func TestToChat_ToolCallIDNormalized(t *testing.T) {
 			toolID = m.ToolCallID
 		}
 	}
-	if !validChatToolCallID(asstID) {
-		t.Fatalf("assistant id invalid after normalize: %q", asstID)
+	if asstID != "call_123|abc def" {
+		t.Fatalf("assistant tool_call_id must pass through unchanged: %q", asstID)
 	}
 	if toolID != asstID {
-		t.Fatalf("tool id %q must match normalized assistant id %q", toolID, asstID)
+		t.Fatalf("tool id %q must match assistant id %q", toolID, asstID)
 	}
 }
 
-func TestToChat_ToolCallIDLongTruncated(t *testing.T) {
+func TestToChat_ToolCallIDLongPassthrough(t *testing.T) {
 	long := "call_" + strings.Repeat("x", 60)
 	body := fmt.Sprintf(`{
 		"model":"gpt-4o",
@@ -1163,17 +1313,17 @@ func TestToChat_ToolCallIDLongTruncated(t *testing.T) {
 	out := mustChat(t, body, "gpt-4o")
 	for _, m := range out.Messages {
 		for _, tc := range m.ToolCalls {
-			if !validChatToolCallID(tc.ID) {
-				t.Fatalf("long id not normalized: %q", tc.ID)
+			if tc.ID != long {
+				t.Fatalf("long tool_call_id must pass through unchanged: %q", tc.ID)
 			}
 		}
-		if m.Role == "tool" && !validChatToolCallID(m.ToolCallID) {
-			t.Fatalf("long tool id not normalized: %q", m.ToolCallID)
+		if m.Role == "tool" && m.ToolCallID != long {
+			t.Fatalf("long tool id must pass through unchanged: %q", m.ToolCallID)
 		}
 	}
 }
 
-func TestToChat_ToolCallIDCollisionUnique(t *testing.T) {
+func TestToChat_ToolCallIDCollisionPassthrough(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1187,14 +1337,17 @@ func TestToChat_ToolCallIDCollisionUnique(t *testing.T) {
 	seen := map[string]struct{}{}
 	for _, m := range out.Messages {
 		for _, tc := range m.ToolCalls {
-			if _, ok := seen[tc.ID]; ok {
-				t.Fatalf("collision not disambiguated: %q", tc.ID)
+			if tc.ID != "call_a|1" && tc.ID != "call_a_1" {
+				t.Fatalf("tool_call_id must pass through unchanged: %q", tc.ID)
 			}
 			seen[tc.ID] = struct{}{}
-			if !validChatToolCallID(tc.ID) {
-				t.Fatalf("invalid id after collision fix: %q", tc.ID)
-			}
 		}
+	}
+	if _, ok := seen["call_a|1"]; !ok {
+		t.Fatalf("original id call_a|1 missing: %v", seen)
+	}
+	if _, ok := seen["call_a_1"]; !ok {
+		t.Fatalf("original id call_a_1 missing: %v", seen)
 	}
 }
 
@@ -1230,12 +1383,14 @@ func TestToChat_ToolSchemaNullAnyOfNormalized(t *testing.T) {
 	if !ok {
 		t.Fatalf("b schema=%v", props["b"])
 	}
-	anyOf, ok := b["anyOf"].([]any)
-	if !ok || len(anyOf) != 1 {
-		t.Fatalf("anyOf null variant not removed: %v", b["anyOf"])
+	if b["type"] != "integer" {
+		t.Fatalf("single anyOf variant should merge into b: %v", b)
 	}
-	if first, ok := anyOf[0].(map[string]any); !ok || first["type"] != "integer" {
-		t.Fatalf("anyOf variant=%v", anyOf[0])
+	if _, ok := b["anyOf"]; ok {
+		t.Fatalf("b anyOf should be merged away: %v", b)
+	}
+	if params["additionalProperties"] != false {
+		t.Fatalf("additionalProperties not forced false: %v", params)
 	}
 }
 
@@ -1256,6 +1411,9 @@ func TestToChat_NamespaceToolSchemaNormalized(t *testing.T) {
 	if !ok || params["type"] != "object" {
 		t.Fatalf("namespace parameters not normalized: %v", out.Tools[0].Function.Parameters)
 	}
+	if params["additionalProperties"] != false {
+		t.Fatalf("namespace additionalProperties not forced false: %v", params)
+	}
 }
 
 func TestToChat_AdjacentSystemMerged(t *testing.T) {
@@ -1268,19 +1426,23 @@ func TestToChat_AdjacentSystemMerged(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	if len(out.Messages) != 2 {
-		t.Fatalf("want system+user, got %d messages=%+v", len(out.Messages), out.Messages)
+	if len(out.Messages) != 3 {
+		t.Fatalf("want system+user(wrapped)+user, got %d messages=%+v", len(out.Messages), out.Messages)
 	}
 	if out.Messages[0].Role != "system" {
 		t.Fatalf("first role=%q", out.Messages[0].Role)
 	}
-	content, _ := out.Messages[0].Content.(string)
-	if !strings.Contains(content, "be brief") || !strings.Contains(content, "dev rules") {
-		t.Fatalf("system not merged: %q", content)
+	system, _ := out.Messages[0].Content.(string)
+	if !strings.Contains(system, "be brief") {
+		t.Fatalf("system instructions missing: %q", system)
+	}
+	dev, _ := out.Messages[1].Content.(string)
+	if out.Messages[1].Role != "user" || !strings.Contains(dev, "<system-update>") || !strings.Contains(dev, "dev rules") {
+		t.Fatalf("developer not wrapped as user: %+v", out.Messages[1])
 	}
 }
 
-func TestToChat_SystemAfterUserFoldedIntoUser(t *testing.T) {
+func TestToChat_CompactionBetweenUsersDropped(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1291,33 +1453,41 @@ func TestToChat_SystemAfterUserFoldedIntoUser(t *testing.T) {
 	}`
 	out := mustChat(t, body, "gpt-4o")
 	if len(out.Messages) != 2 {
-		t.Fatalf("want 2 user messages, got %d messages=%+v", len(out.Messages), out.Messages)
+		t.Fatalf("want before/continue user messages, got %d messages=%+v", len(out.Messages), out.Messages)
+	}
+	for i, m := range out.Messages {
+		if m.Role != "user" {
+			t.Fatalf("message %d role=%q: %+v", i, m.Role, out.Messages)
+		}
 	}
 	first, _ := out.Messages[0].Content.(string)
-	if !strings.Contains(first, "before") || !strings.Contains(first, "<compaction>") {
-		t.Fatalf("compaction not folded into preceding user: %q", first)
+	second, _ := out.Messages[1].Content.(string)
+	if first != "before" || second != "continue" || strings.Contains(second, "enc-blob") {
+		t.Fatalf("compaction must be dropped: %q / %q", first, second)
 	}
 }
 
-func TestToChat_ImageInputPlaceholder(t *testing.T) {
+func TestToChat_ImageInputDataURLPassthrough(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[{"type":"message","role":"user","content":[
-			{"type":"input_text","text":"look at "},
-			{"type":"input_image","image_url":"https://example.com/a.png"}
+			{"type":"input_image","image_url":"data:image/png;base64,AAEC"}
 		]}]
 	}`
 	out := mustChat(t, body, "gpt-4o")
 	if len(out.Messages) != 1 || out.Messages[0].Role != "user" {
 		t.Fatalf("messages=%+v", out.Messages)
 	}
-	content, _ := out.Messages[0].Content.(string)
-	if !strings.Contains(content, "[image input omitted]") {
-		t.Fatalf("want image input placeholder, got %q", content)
+	parts := chatParts(t, out.Messages[0].Content)
+	if len(parts) != 1 || parts[0].Type != "image_url" || parts[0].ImageURL == nil {
+		t.Fatalf("parts=%+v", parts)
+	}
+	if parts[0].ImageURL.URL != "data:image/png;base64,AAEC" {
+		t.Fatalf("data url not preserved: %q", parts[0].ImageURL.URL)
 	}
 }
 
-func TestToChat_ImageToolResultPlaceholder(t *testing.T) {
+func TestToChat_ImageToolResultAggregatesUserMessage(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1329,13 +1499,299 @@ func TestToChat_ImageToolResultPlaceholder(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	var toolContent string
+	if len(out.Messages) != 3 {
+		t.Fatalf("want assistant+tool+user, got %d messages=%+v", len(out.Messages), out.Messages)
+	}
+	if out.Messages[1].Role != "tool" || out.Messages[1].Content != "ok" {
+		t.Fatalf("tool msg=%+v", out.Messages[1])
+	}
+	if out.Messages[2].Role != "user" {
+		t.Fatalf("want trailing image user msg: %+v", out.Messages[2])
+	}
+	parts := chatParts(t, out.Messages[2].Content)
+	if len(parts) != 1 || parts[0].Type != "image_url" || parts[0].ImageURL == nil ||
+		parts[0].ImageURL.URL != "https://example.com/a.png" {
+		t.Fatalf("image user content=%+v", parts)
+	}
+}
+
+func mustToChatErr(t *testing.T, body string) error {
+	t.Helper()
+	req, err := convert.DecodeResponseNewParams([]byte(body))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_, err = ToChat(req, "gpt-4o")
+	return err
+}
+
+func TestToChat_AssistantToolCallMarshalsNullContent(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"gen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":"done"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"role":"assistant","content":null`) {
+		t.Fatalf("assistant content must marshal null: %s", raw)
+	}
+}
+
+func TestToChat_ReasoningOnlyHistoryBecomesAssistant(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"think hard"}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Messages) != 2 {
+		t.Fatalf("want user+assistant, got %+v", out.Messages)
+	}
+	asst := out.Messages[1]
+	if asst.Role != "assistant" || asst.Content != nil || asst.ReasoningContent != "think hard" {
+		t.Fatalf("reasoning assistant=%+v", asst)
+	}
+}
+
+func TestToChat_CompactionAfterToolResultDropped(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"before"}]},
+			{"type":"function_call","call_id":"c1","name":"gen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":"done"},
+			{"type":"compaction","encrypted_content":"enc"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	last := out.Messages[len(out.Messages)-1]
+	if last.Role != "tool" {
+		t.Fatalf("want tool result as last, got %+v", last)
+	}
+	s, ok := last.Content.(string)
+	if !ok || !strings.Contains(s, "done") || strings.Contains(s, "enc") {
+		t.Fatalf("compaction must be dropped, last=%+v", last.Content)
+	}
 	for _, m := range out.Messages {
-		if m.Role == "tool" {
-			toolContent, _ = m.Content.(string)
+		if m.Role == "system" {
+			t.Fatalf("mid-conversation system role must not remain: %+v", out.Messages)
 		}
 	}
-	if !strings.Contains(toolContent, "[image output omitted]") {
-		t.Fatalf("want image output placeholder, got %q", toolContent)
+}
+
+func TestToChat_ToolResultImagesFlushedCompactionDropped(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"read","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":[
+				{"type":"input_text","text":"ok"},
+				{"type":"input_image","image_url":"https://example.com/1.png"}
+			]},
+			{"type":"function_call","call_id":"c2","name":"read","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c2","output":[
+				{"type":"input_image","image_url":"https://example.com/2.png"}
+			]},
+			{"type":"compaction","encrypted_content":"check"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Messages) < 2 {
+		t.Fatalf("want tool ring + vision user, got %+v", out.Messages)
+	}
+	vision := out.Messages[len(out.Messages)-1]
+	if vision.Role != "user" {
+		t.Fatalf("want vision user as last, got %+v", out.Messages)
+	}
+	parts := chatParts(t, vision.Content)
+	if len(parts) != 2 {
+		t.Fatalf("want 2 images flushed, got %+v", parts)
+	}
+	if parts[0].ImageURL == nil || parts[0].ImageURL.URL != "https://example.com/1.png" {
+		t.Fatalf("first image=%+v", parts[0])
+	}
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "https://example.com/2.png" {
+		t.Fatalf("second image=%+v", parts[1])
+	}
+	for _, m := range out.Messages {
+		if s, ok := m.Content.(string); ok && strings.Contains(s, "check") {
+			t.Fatalf("compaction content must be dropped: %+v", out.Messages)
+		}
+	}
+}
+
+func TestToChat_McpListToolsHistoryNoText(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"mcp_list_tools","id":"lt_1","server_label":"weather","tools":[{"name":"get","description":"d","input_schema":{}}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, m := range out.Messages {
+		if s, ok := m.Content.(string); ok && strings.Contains(s, "mcp_list_tools") {
+			t.Fatalf("mcp_list_tools must not become model text: %+v", m)
+		}
+	}
+	if len(out.Messages) != 0 {
+		t.Fatalf("mcp_list_tools must not emit messages, got %+v", out.Messages)
+	}
+}
+
+func TestToChat_CodeInterpreterImageOutputBecomesUserImage(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"code_interpreter_call","id":"ci1","call_id":"ci1","code":"plot()","outputs":[
+				{"type":"logs","logs":"ran"},
+				{"type":"image","url":"https://example.com/plot.png"}
+			]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	var tool *ChatMessage
+	for i := range out.Messages {
+		if out.Messages[i].Role == "tool" {
+			tool = &out.Messages[i]
+		}
+	}
+	if tool == nil || !strings.Contains(tool.Content.(string), "ran") {
+		t.Fatalf("tool msg=%+v", tool)
+	}
+	last := out.Messages[len(out.Messages)-1]
+	if last.Role != "user" {
+		t.Fatalf("want trailing image user msg: %+v", out.Messages)
+	}
+	parts := chatParts(t, last.Content)
+	if len(parts) != 1 || parts[0].ImageURL == nil || parts[0].ImageURL.URL != "https://example.com/plot.png" {
+		t.Fatalf("image parts=%+v", parts)
+	}
+}
+
+func TestToChat_InputFileUnsupportedError(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[{"type":"message","role":"user","content":[
+			{"type":"input_file","file_url":"https://example.com/a.pdf"}
+		]}]
+	}`
+	err := mustToChatErr(t, body)
+	if err == nil || !strings.Contains(err.Error(), "input_file") {
+		t.Fatalf("want input_file error, got %v", err)
+	}
+}
+
+func TestToChat_InputImageFileIDOnlyError(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[{"type":"message","role":"user","content":[
+			{"type":"input_image","file_id":"file_x"}
+		]}]
+	}`
+	err := mustToChatErr(t, body)
+	if err == nil || !strings.Contains(err.Error(), "file_id") {
+		t.Fatalf("want file_id error, got %v", err)
+	}
+}
+
+func TestToChat_ReasoningEffortMaxPassedThrough(t *testing.T) {
+	out := mustChat(t, `{"model":"gpt-4o","reasoning":{"effort":"max"},"input":"x"}`, "gpt-4o")
+	if out.ReasoningEffort == nil || *out.ReasoningEffort != "max" {
+		t.Fatalf("reasoning_effort must pass through, got %v", out.ReasoningEffort)
+	}
+}
+
+func TestToChat_ReasoningEffortArbitraryPassedThrough(t *testing.T) {
+	out := mustChat(t, `{"model":"gpt-4o","reasoning":{"effort":"custom-strong"},"input":"x"}`, "gpt-4o")
+	if out.ReasoningEffort == nil || *out.ReasoningEffort != "custom-strong" {
+		t.Fatalf("reasoning_effort must pass through unchanged, got %v", out.ReasoningEffort)
+	}
+}
+
+func TestToChat_ReasoningEffortLowAccepted(t *testing.T) {
+	body := `{"model":"gpt-4o","reasoning":{"effort":"low"},"input":"x"}`
+	out := mustChat(t, body, "gpt-4o")
+	if out.ReasoningEffort == nil || *out.ReasoningEffort != "low" {
+		t.Fatalf("reasoning_effort=%v", out.ReasoningEffort)
+	}
+}
+
+func TestToChat_ToolSchemaAnyOfMergedIntoProperties(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{
+			"type":"function","name":"f",
+			"parameters":{
+				"type":"object",
+				"anyOf":[
+					{"properties":{"a":{"type":"string"}}},
+					{"properties":{"b":{"type":"integer"}}}
+				],
+				"required":["a"]
+			}
+		}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	params, ok := out.Tools[0].Function.Parameters.(map[string]any)
+	if !ok {
+		t.Fatalf("parameters type=%T", out.Tools[0].Function.Parameters)
+	}
+	if params["type"] != "object" || params["additionalProperties"] != false {
+		t.Fatalf("projection headers missing: %v", params)
+	}
+	if _, ok := params["anyOf"]; ok {
+		t.Fatalf("anyOf must be flattened: %v", params)
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%v", params["properties"])
+	}
+	if _, ok := props["a"]; !ok {
+		t.Fatalf("a missing: %v", props)
+	}
+	if _, ok := props["b"]; !ok {
+		t.Fatalf("b missing: %v", props)
+	}
+}
+
+func TestToChat_FunctionSchemaForcedObject(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"function","name":"f","parameters":{"type":"string"}}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	params, ok := out.Tools[0].Function.Parameters.(map[string]any)
+	if !ok || params["type"] != "object" {
+		t.Fatalf("schema not forced object: %v", out.Tools[0].Function.Parameters)
+	}
+}
+
+func TestToChat_ToolMessageEmptyContentMarshaledEmptyString(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"function_call","call_id":"c1","name":"gen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":[
+				{"type":"input_image","image_url":"https://example.com/a.png"}
+			]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"role":"tool","content":""`) {
+		t.Fatalf("tool content must marshal empty string: %s", raw)
 	}
 }

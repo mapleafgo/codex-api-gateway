@@ -29,8 +29,8 @@
 
 详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
 
-- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key/options`、usage（含 details）、`finish_reason` 终态。
-- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）/ 多模态 image/file；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；compaction system marker。
+- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key`、usage（含 details）、`finish_reason` 终态。
+- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger / mcp_list_tools 历史 **丢弃**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
@@ -177,6 +177,16 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 ## 变更记录
 
+### 2026-08-01
+
+- **compaction 行为修正（Codex local 压缩确认）**：`supports_remote_compaction()` 仅对 provider 名为 OpenAI/Azure 成立；本网关面向第三方 provider（如 deepseek）时 Codex 走 **local 压缩**，摘要生成请求与摘要回灌均为普通明文消息，网关按常规转换透传。真实 `compaction` item 的 `encrypted_content` 只对生成它的服务端可解，a/c 路径无法解读，改为 **WARN + 丢弃**（移除原先折独立 user `<compaction>` 密文文本的降级）；`compaction_trigger` 保持丢弃（请求控制信号）。
+
+### 2026-07-31
+
+- **Chat 字段裁剪（对齐 opencode）**：`prompt_cache_options` 无 Chat 顶层槽位，删除透传、DEBUG 丢弃；`max_output_tokens` 出站保留 `max_tokens` + `max_completion_tokens` 双写（兼容旧上游与新模型）。
+- **compaction 类历史收口（Codex/opencode 对照）**：`compaction` 折独立 user `<compaction>` 密文文本（opencode 对应物是 user `<conversation-checkpoint>`，不再走 `<system-update>`；a 路径在 Anthropic 交替约束下并入相邻 user）；`compaction_trigger` 是请求控制信号，Codex 明确丢弃；`mcp_list_tools` 不转模型文本（opencode 无此类型，Codex 不把 AdditionalTools 转消息，工具经 ToolSpec/请求 tools 声明）。
+- **透传收口（用户决策）**：`reasoning_effort` 任意值原样透传，不再拒绝 `max`；`tool_call_id` 原样透传，移除出站归一化（对齐 opencode，不改写客户端可见 call_id）。
+
 ### 2026-07-22
 
 - **Responses 透传（`backend_type: r`）**：最小改写透传 + T2 model 回写 + warn 收口。
@@ -265,16 +275,16 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `model` | `model` | `supported` | 经 source ModelMap / DefaultModel |
 | `input` string | user message | `supported` | |
 | `input` item list | `messages` | `lossy_supported` | 见下表；无 Chat 等价 item DEBUG/WARN 跳过 |
-| `instructions` | system message（首条） | `supported` | 与 developer/system item 可合并；出站后处理：连续 system 并入首条，紧跟 user 的折入 user |
+| `instructions` | system message（首条） | `supported` | 对齐 opencode：`instructions` 是唯一 `role=system`；会话中的 developer/system item 折 `<system-update>` user（XML 转义，按原时序折入前一条 user 或独立 user 消息） |
 | `max_output_tokens` | `max_tokens` + `max_completion_tokens` | `supported` | 双写兼容旧上游与新模型 |
 | `temperature` / `top_p` | 同名 | `supported` | |
 | `top_k` | `top_k` | `none` | 客户端 Responses 请求无此来源；Chat 请求体亦无对应字段；矩阵原列为 supported 是错误的 |
 | `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
-| `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过 |
+| `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过；**无活动工具但消息含工具历史时显式发 `tools: []`**（对齐 pi 的 Anthropic 代理兼容） |
 | `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search/code_interpreter 映射为同名 function 强制选择，其余与 mcp/programmatic DEBUG 后忽略 |
 | `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
-| `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
+| `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`（任意值透传，不拒绝）；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
 | `text.format` structured | `response_format` | `supported` | `json_schema`/`json_object`/`text` 原生透传 Chat；含 `strict`；不做 a 路径 synthetic tool |
 | `text.verbosity` | `verbosity` | `supported` | low/medium/high 透传；a 路径仍忽略 |
 | `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |
@@ -282,12 +292,12 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `metadata` | `metadata` | `supported` | Chat 整表透传；a 路径仅 user_id + echo |
 | `store` | `store` | `supported` | Chat 透传；响应 echo 仍保留 |
 | `moderation` | `moderation` | `supported` | model + policy modes 同形透传；a 路径忽略 |
-| `reasoning.effort` | `reasoning_effort` | `supported` | 仅 effort；summary/context 无 Chat 顶层等价 |
+| `reasoning.effort` | `reasoning_effort` | `lossy_supported` | 任意值原样透传（`max` 也透传，不替上游拒绝）；summary/context 无 Chat 顶层等价 |
 | `top_logprobs` | `logprobs=true` + `top_logprobs` | `supported` | Chat 透传；a 路径忽略；出站见 SSE 表 |
 | `stream_options.include_obfuscation` | 同名 | `supported` | 强制 `include_usage=true` 并透传 obfuscation；a 路径忽略 |
 | `previous_response_id` 等平台字段 | none | `unsupported_by_backend` | 与 a 路径同产品边界 |
 | `prompt_cache_key` | `prompt_cache_key` | `supported` | Chat 官方字段透传 |
-| `prompt_cache_options` | `prompt_cache_options` | `supported` | mode/ttl 透传；content `prompt_cache_breakpoint` 不支持 |
+| `prompt_cache_options` | none | `dropped` | Chat 请求体无顶层等价（仅 content part `prompt_cache_breakpoint`）；mode/ttl 非空时 **DEBUG + 丢弃**，`prompt_cache_key` 不受影响 |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated，不映射 |
 | `user`（deprecated） | none | `dropped` | 与 a 一致不映射；请用 safety_identifier / metadata.user_id |
 
@@ -295,10 +305,10 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | Responses item | Chat 映射 | 状态 | 说明 |
 |---|---|---|---|
-| `message` / EasyInputMessage | role + content 文本 | `lossy_supported` | `developer`→`system`；保留 `system`/`user`/`assistant`；content 取 text / input_text / **output_text**（经 Decode 归一） |
+| `message` / EasyInputMessage | role + content | `lossy_supported` | `user` 纯文本为 string、含图片为 `[text,image_url]` parts；`developer`/`system` 折 `<system-update>` user；assistant 无文本跳过 |
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
-| `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；出站 `id` 归一化 `[a-zA-Z0-9_-]` <=40 且请求内唯一（回程不还原） |
-| `function_call_output` | role=tool | `supported` | content 数组拼文本；图片/文件以 `[image output omitted]` / `[file output omitted]` 占位 |
+| `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；`id` / `tool_call_id` 原样透传（不归一化） |
+| `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"input":...}` freeform；相邻合并 |
 | `custom_tool_call_output` | role=tool | `supported` | |
 | `shell_call` / `local_shell_call` | tool_calls name=`shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema |
@@ -307,18 +317,19 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `apply_patch_call_output` | role=tool | `lossy_supported` | |
 | `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
-| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；与 `tool_calls` 同框；`encrypted_content` 丢弃（DEBUG）；孤立无后续 assistant 时 DEBUG 丢弃 |
+| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；与 `tool_calls` 同框；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
-| `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) | `lossy_supported` | image 丢弃 |
+| `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) + user image | `lossy_supported` | image 输出转后续独立 user `image_url` 消息（同 opencode） |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
 | computer / file_search / image_generation / program / program_output / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
-| `compaction` / `compaction_trigger` | system marker | `raw_preserved` | 对齐 a 路径：`<compaction>` / `<compaction_trigger />` 文本 |
+| `compaction` | none | `dropped` | 密文不可解读（只对生成它的服务端有效），WARN 丢弃；Codex local 压缩以明文摘要 user 消息回灌，不经 compaction item |
+| `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
 
 ### Tool 声明（c）
 
 | Responses tool | Chat tools[] | 状态 | 说明 |
 |---|---|---|---|
-| `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做保守投影（递归移除 type/anyOf 中的 null） |
+| `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做完整投影（对齐 opencode `ToolSchemaProjection.openAI`：强制 `type=object`，anyOf record 变体展平进 properties，递归去 null，强制 `additionalProperties=false`） |
 | `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；grammar 丢失 |
 | `shell` / `local_shell` | function name=`shell` freeform | `lossy_supported` | |
 | `apply_patch` | function name=`apply_patch` freeform | `lossy_supported` | description 强调 V4A |
@@ -337,7 +348,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
-| `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name） |
+| `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
 | `delta.tool_calls` freeform 名（shell/apply_patch/custom） | `custom_tool_call` + input delta/done | `supported` | 同上；`SanitizeClientToolInput` 解包/归一 |
 | `delta.tool_calls` name=`tool_search` | `tool_search_call` | `supported` | arguments 随 item done |
 | `delta.tool_calls` name=`web_search` | `web_search_call` 链 | `lossy_supported` | 无真实 sources |
@@ -346,7 +357,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `finish_reason=stop` / `tool_calls` | `response.completed` | `supported` | |
 | `finish_reason=length` | `response.incomplete` reason=`max_output_tokens` | `supported` | |
 | `finish_reason=content_filter` | `response.incomplete` + refusal 事件链 | `supported` | 累积 `delta.refusal`，缺省用 fallback 文案；清掉半截 text/tool output |
-| usage 末包（空 choices） | 填 `usage` | `supported` | totals + `input_tokens_details.cached_tokens` + `output_tokens_details.reasoning_tokens`；并写 `cache_read_input_tokens` 兼容 a 路径字段名 |
+| usage 末包（空 choices） | 填 `usage` | `supported` | `input_tokens` 为含 cache 总量（同 opencode/Responses 官方）；totals + `input_tokens_details.cached_tokens` + `output_tokens_details.reasoning_tokens`；缺 `total_tokens` 时按 prompt+completion 兜底；并写 `cache_read_input_tokens` 兼容 a 路径字段名 |
 | `[DONE]` 且无 finish_reason | 补 completed/incomplete | `supported` | FeedDone |
 | 流中断 | `response.failed` | `supported` | Backend Fail |
 
@@ -354,7 +365,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | 项 | 说明 |
 |---|---|
-| 多模态 image/file 输入 | content 仅文本：`[image input omitted]` / `[file input omitted]` 占位，不真传图 |
+| 多模态输入 | `input_image`（URL/data URL）真传 `image_url`；`input_file` / 仅 `file_id` 图片无 Chat 槽位，转换报错（不占位降级） |
 | 厂商 `reasoning_content` 无 encrypted/signature | 明文 reasoning 有损（summary 承载全文）；a 路径 signature/encrypted 不在 c 复现 |
 | Chat 原生 Anthropic 式 `citations_delta` | 五家主路径无官方等价；联网多走 tool_calls；非标 annotations 本期不做 |
 | hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
@@ -370,23 +381,28 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 |---|---|
 | Chat `reasoning_content` 出站 + 入站回灌 | 出站→Responses reasoning + `reasoning_text.*`；入站折 `assistant.reasoning_content`（工具环同框）；无 encrypted |
 | computer/file_search/image_generation 等历史 | 显式 WARN + drop（非 unknown 静默） |
-| compaction 历史 | system marker 回灌 |
+| compaction 历史 | WARN + 丢弃（密文不可解读；Codex local 压缩以明文摘要 user 消息回灌，不走 compaction item） |
+| compaction_trigger / mcp_list_tools 历史 | DEBUG 丢弃：前者是请求控制信号（Codex 明确不保留）；后者 opencode 无此类型、Codex 不转文本（工具经 ToolSpec/请求 tools 声明） |
 | tool_calls 分片 name 晚到 | 有 name 再 `output_item.added`，避免误判 function |
 | `delta.content` 数组 | 解析 text part，不整段 Feed 失败 |
-| `developer` role | 压成 `system`（兼容 OpenCode 等对 developer 400 的上游） |
+| `developer` role | 会话中折 `<system-update>` user；`instructions` 才是唯一 `role=system`（对齐 opencode） |
 | `tool_choice.allowed_tools` | 精确过滤 tools + mode（auto/required） |
-| `prompt_cache_key` / `prompt_cache_options` | 透传到 Chat body（retention 仍忽略） |
+| `prompt_cache_key` | 透传到 Chat body（官方字段） |
+| `prompt_cache_options` | Chat 无顶层槽位，DEBUG + 丢弃（2026-07-31） |
 | structured `text.format` | → Chat `response_format`（含 strict） |
 | `function.strict` | → Chat `tools[].function.strict` |
 | `text.verbosity` / `service_tier` | → Chat 同名字段透传 |
 | `safety_identifier` / `metadata` / `store` / `moderation` | → Chat 同形透传 |
-| `reasoning.effort` | → Chat `reasoning_effort` |
+| `reasoning.effort` | → Chat `reasoning_effort`，任意值透传（`max` 也透传） |
 | `top_logprobs` | → Chat `logprobs` + `top_logprobs` |
 | `stream_options.include_obfuscation` | 透传；始终 `include_usage` |
 | usage details | `cached_tokens` + `reasoning_tokens` 出站明细 + `cache_read_input_tokens` 兼容字段 |
+| 工具历史无活动工具 | 显式发 `tools: []`（对齐 pi 的 Anthropic 代理兼容；无工具历史仍省略） |
+| usage 缺 `total_tokens` | 按 `prompt + completion` 兜底（同 opencode/pi） |
 | 出站 token logprobs | Chat `choices[].logprobs` → `response.output_text.delta/done.logprobs` + content part |
 | OfInputMessage / OfOutputMessage | chatconvert 防御分支（SDK 极少落点） |
-| `developer`→`system` | OpenCode/Console 等兼容上游对 developer 400 |
+| assistant 无文本 | wire 显式 `content:null`（工具环/reasoning-only，对齐 opencode） |
+| tool 空输出 | wire 显式 `content:""` |
 
 ### 实现包
 
@@ -436,7 +452,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力；`prompt.id` 非空时 **WARN + 忽略** |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
 | `conversation` | none | `unsupported_by_backend` | 本地 store 不是 OpenAI Conversation API |
-| `context_management` | none | `unsupported_by_backend` | 请求级上下文管理（含 compaction）；OpenAI 服务端压缩，网关不做；非空时 **WARN + 忽略**。历史 `compaction` item 仍见 Input Item（`raw_preserved` marker） |
+| `context_management` | none | `unsupported_by_backend` | 请求级上下文管理（含 compaction）；OpenAI 服务端压缩，网关不做（压缩由 Codex 客户端 local 完成，明文摘要 user 消息回灌）；非空时 **WARN + 忽略**。历史 `compaction` item 密文不可解读，WARN 丢弃；`compaction_trigger` 丢弃 |
 | `max_tool_calls` | none | `unsupported_by_backend` | Anthropic 无直接请求参数；多轮 tool 环由客户端控制，网关单请求内不做计数截断；非空时 **WARN + 忽略** |
 | `service_tier` | none | `dropped` | a 忽略；Chat 见 c 专节 |
 | `safety_identifier` | none | `unsupported_by_backend` | 后端无等价字段 |
@@ -478,7 +494,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_search_output` | dynamic tools + tool_result | `supported` | 工具注入并记录 developer marker |
 | `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现，移除转换分支 |
 | `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 优先，空则回退 content[].reasoning_text；有 encrypted 无文本→redacted；无 encrypted 丢弃 |
-| `compaction` | system marker | `raw_preserved` | Anthropic 无 OpenAI compaction item |
+| `compaction` | none | `dropped` | 密文不可解读（只对生成它的服务端有效），WARN 丢弃；Codex local 压缩以明文摘要 user 消息回灌，不经 compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；**image 输出无法真映射**（见收口策略 §8），丢弃 + WARN，logs 可含 `image output omitted` 占位 |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user`/`status` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
@@ -487,13 +503,13 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr + `[status]`/`[max_output_length]`/`[exit_code]`/`[timeout]` 折文本；caller 不映射 |
 | `apply_patch_call` | assistant freeform `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete → V4A 文本（`*** Begin/End Patch`）；`status`/`caller` 无 Anthropic 字段（丢失） |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | `[status=…]` + 可选日志文本；caller 不映射 |
-| `mcp_list_tools` | developer marker | `lossy_supported` | 无 Anthropic 列表块；折成 `<mcp_list_tools>` developer 文本（server + tool names + error） |
+| `mcp_list_tools` | none | `dropped` | opencode 无此类型；Codex 不把 AdditionalTools 转文本（工具经 ToolSpec/请求 tools 声明）；DEBUG 丢弃 |
 | `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_call` | beta `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | param.Override 注入 messages；需 beta header；error→is_error |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
 | `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
-| `compaction_trigger` | system marker | `raw_preserved` | Anthropic 无等价事件 |
+| `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
 | `item_reference` | none | `dropped` | 网关无 session store；历史回灌 WARN + 丢弃 |
 | `program` | none | `dropped` | 历史回灌 WARN + 丢弃 |
 | `program_output` | none | `dropped` | 同上 |
@@ -577,7 +593,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `apply_patch_call` | `custom_tool_call` name=`apply_patch` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `apply_patch_call` item type |
 | `apply_patch_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `mcp_call` | Anthropic beta MCP `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | server_tool_use(mcp_tool_use) + mcp_tool_result 映射为 mcp_call 事件链；error 变体并入 failed（is_error） |
-| `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史见 Input Item（developer marker） |
+| `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史丢弃（DEBUG） |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 出站不生成；`require_approval≠never` 降级 never + WARN；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 | `mcp_approval_response` | none | `unsupported_by_backend` | 出站不生成；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 
