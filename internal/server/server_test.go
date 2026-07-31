@@ -807,6 +807,10 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 			}
 		}
 	}
+	// default_reasoning_summary 固定返回 "auto"，客户端不得省略推断
+	if drs, ok := m0["default_reasoning_summary"]; !ok || strings.TrimSpace(string(drs)) != `"auto"` {
+		t.Fatalf(`default_reasoning_summary 应为 "auto", got: %v (present=%v)`, string(m0["default_reasoning_summary"]), ok)
+	}
 	// truncation_policy.limit 对齐官方固定 10000（工具输出截断阈值，不随 context_window 变化）
 	if tp, ok := m0["truncation_policy"]; !ok || !strings.Contains(string(tp), "10000") {
 		t.Fatalf("truncation_policy.limit 应为 10000, got: %v (present=%v)", string(m0["truncation_policy"]), ok)

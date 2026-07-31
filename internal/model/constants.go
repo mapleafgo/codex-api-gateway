@@ -71,6 +71,7 @@ const (
 	IncompleteReasonMaxOutputTokens = "max_output_tokens"
 	IncompleteReasonContentFilter   = "content_filter"
 
+	ReasoningSummaryAuto    = string(oairesponses.ReasoningSummaryAuto)
 	ReasoningSummaryConcise = string(oairesponses.ReasoningSummaryConcise)
 	ReasoningEffortNone     = string(oairesponses.ReasoningEffortNone)
 	ReasoningEffortLow      = string(oairesponses.ReasoningEffortLow)

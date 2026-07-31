@@ -140,6 +140,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	  - include_skills_usage_instructions=true（注入 skills 使用说明块，引导 skill 发现）
 //	  - web_search_tool_type="text_and_image"（声明支持文本+图片 web 搜索）
 //	  - input_modalities=["text","image"]（默认按多模态声明）
+//	  - default_reasoning_summary="auto"（固定声明默认 summary 模式，不让客户端省略推断）
 //	  - tool_mode="direct"：强制标准工具模式（function 工具独立发送、模型直接调用），
 //	    覆盖 Codex features.code_mode* 配置。第三方上游（GLM 等）无 code_mode DSL
 //	    训练，显式 direct 比依赖客户端默认更稳，避免误走 code_mode 造成降级。
@@ -175,6 +176,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		Upgrade:                    nil,
 		BaseInstructions:           s.holder.Current().BaseInstructions,
 		SupportsReasoningSummaries: true,
+		DefaultReasoningSummary:    model.ReasoningSummaryAuto,
 		SupportVerbosity:           false,
 		DefaultVerbosity:           nil,
 		ApplyPatchToolType:         &freeformApplyPatch,

@@ -44,7 +44,8 @@ type CodexModelsResponse struct {
 //   - web_search_tool_type: web search 能力类型 text|text_and_image（仅声明，不自动注册工具）
 //   - input_modalities: 支持的输入模态 ["text","image"]
 //   - effective_context_window_percent: 输入 token 占窗口百分比
-//   - default_reasoning_summary: 默认 reasoning summary auto|none|detailed|concise（省略=auto）
+//   - default_reasoning_summary: 默认 reasoning summary auto|none|detailed|concise（网关固定返回 auto；
+//     字段无 omitempty，始终显式返回，不让客户端靠 serde default 推断）
 //   - use_responses_lite: Responses Lite 协议路径（*bool，硬编码 false）。该模式是
 //     Codex→OpenAI 后端的内部传输优化：启用后 Codex 把工具从顶层 tools 挪进 input 的
 //     additional_tools item、清空 instructions、注入 responses-lite header，且不支持
@@ -85,7 +86,7 @@ type CodexModelInfo struct {
 	DefaultServiceTier             *string  `json:"default_service_tier,omitempty"`
 	ModelMessages                  *any     `json:"model_messages,omitempty"`
 	IncludeSkillsUsageInstructions bool     `json:"include_skills_usage_instructions,omitempty"`
-	DefaultReasoningSummary        string   `json:"default_reasoning_summary,omitempty"`
+	DefaultReasoningSummary        string   `json:"default_reasoning_summary"`
 	WebSearchToolType              string   `json:"web_search_tool_type,omitempty"`
 	SupportsImageDetailOriginal    bool     `json:"supports_image_detail_original"`
 	ContextWindow                  *int64   `json:"context_window,omitempty"`
