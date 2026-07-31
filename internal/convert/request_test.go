@@ -33,6 +33,18 @@ func mustReq(t *testing.T, body string) *oairesponses.ResponseNewParams {
 	return r
 }
 
+func lastMessageBlockCacheControl(t *testing.T, out *anthropic.MessageNewParams) *anthropic.CacheControlEphemeralParam {
+	t.Helper()
+	if len(out.Messages) == 0 {
+		return nil
+	}
+	last := out.Messages[len(out.Messages)-1]
+	if len(last.Content) == 0 {
+		return nil
+	}
+	return last.Content[len(last.Content)-1].GetCacheControl()
+}
+
 func TestTextRequestConverts(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
@@ -2114,22 +2126,30 @@ func TestRedactedThinkingFromEncryptedContent(t *testing.T) {
 	}
 }
 
-// TestTopLevelCacheControlForMessageHistory 复现 gap①:顶层 cache_control
-// 必须设置,Anthropic 才会自动缓存 messages 历史(system/tools 已有显式
-// breakpoint,顶层 marker 覆盖到 messages 末尾)。
+// TestTopLevelCacheControlForMessageHistory 验证 cache_control 写到最后一
+// 个 message 的末 content block,而非顶层(顶层会被 opencode-go 等兼容后端
+// 400 拒绝)。
 func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
 	out, _, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.CacheControl.TTL == "" {
-		t.Fatalf("top-level cache_control not set; message history won't be cached")
+	if len(out.Messages) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	last := out.Messages[len(out.Messages)-1]
+	if len(last.Content) == 0 {
+		t.Fatal("expected last message to have content")
+	}
+	cc := last.Content[len(last.Content)-1].GetCacheControl()
+	if cc == nil || cc.TTL == "" {
+		t.Fatalf("last message block cache_control not set; message history won't be cached")
 	}
 }
 
-// TestCacheControlTTLFromConfig 复现 gap④:TTL 必须从 config.Anthropic.CacheTTL 读,
-// "1h" 时顶层 cache_control 用 1h,默认 5m。
+// TestCacheControlTTLFromConfig 验证 TTL 从 config.Anthropic.CacheTTL 读,
+// 默认 5m,"1h" 时用 1h,并写到最后一个 message block 的 cache_control。
 func TestCacheControlTTLFromConfig(t *testing.T) {
 	t.Run("default 5m", func(t *testing.T) {
 		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
@@ -2137,8 +2157,9 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
-			t.Fatalf("default TTL want 5m, got %v", out.CacheControl.TTL)
+		cc := lastMessageBlockCacheControl(t, out)
+		if cc == nil || cc.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
+			t.Fatalf("default TTL want 5m, got %v", cc)
 		}
 	})
 	t.Run("1h from config", func(t *testing.T) {
@@ -2147,8 +2168,9 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL1h {
-			t.Fatalf("configured TTL want 1h, got %v", out.CacheControl.TTL)
+		cc := lastMessageBlockCacheControl(t, out)
+		if cc == nil || cc.TTL != anthropic.CacheControlEphemeralTTLTTL1h {
+			t.Fatalf("configured TTL want 1h, got %v", cc)
 		}
 	})
 	t.Run("disabled", func(t *testing.T) {
