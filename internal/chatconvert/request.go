@@ -628,6 +628,9 @@ func convertEasyMessage(m *oairesponses.EasyInputMessageParam) (ChatMessage, boo
 	if text == "" && role != "assistant" {
 		return ChatMessage{}, false
 	}
+	if role == "assistant" && text == "" {
+		return ChatMessage{}, false
+	}
 	return ChatMessage{Role: role, Content: text}, true
 }
 
@@ -701,7 +704,11 @@ func convertOutputMessage(m *oairesponses.ResponseOutputMessageParam) (ChatMessa
 			}
 		}
 	}
-	return ChatMessage{Role: "assistant", Content: b.String()}, true
+	text := b.String()
+	if text == "" {
+		return ChatMessage{}, false
+	}
+	return ChatMessage{Role: "assistant", Content: text}, true
 }
 
 func easyMessageText(m *oairesponses.EasyInputMessageParam) string {

@@ -1026,6 +1026,26 @@ func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
 	}
 }
 
+func TestToChat_EmptyAssistantOutputSkipped(t *testing.T) {
+	out := mustChat(t, `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]},
+			{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}
+		]
+	}`, "gpt-4o")
+	if len(out.Messages) != 3 {
+		t.Fatalf("expected 2 messages, got %+v", out.Messages)
+	}
+	if out.Messages[1].Role != "assistant" || len(out.Messages[1].ToolCalls) != 1 || out.Messages[1].ToolCalls[0].Function.Name != "noop" {
+		t.Fatalf("want noop tool call, got %+v", out.Messages[1])
+	}
+	if out.Messages[2].Role != "tool" || out.Messages[2].ToolCallID != "c1" {
+		t.Fatalf("want placeholder tool result, got %+v", out.Messages[2])
+	}
+}
+
 func TestChatFunctionArgumentsNonJSONPassthrough(t *testing.T) {
 	out := mustChat(t, `{
 		"model":"gpt-5",

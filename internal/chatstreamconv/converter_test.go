@@ -215,6 +215,36 @@ func TestFinishReasonLengthIncomplete(t *testing.T) {
 	}
 }
 
+// TestFinishReasonFunctionCallMapsToCompleted 兼容上游把工具终态写作 function_call。
+func TestFinishReasonFunctionCallMapsToCompleted(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var types []string
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		types = append(types, evTypes(t, e.Data))
+	}
+	evs, err = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"function_call"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		types = append(types, evTypes(t, e.Data))
+	}
+	for _, e := range c.FeedDone() {
+		types = append(types, evTypes(t, e.Data))
+	}
+	if !c.Done() {
+		t.Fatalf("expected Done, got %v", types)
+	}
+	if c.Usage() == nil || c.Usage().OutputTokens != 2 {
+		t.Fatalf("usage not propagated: %v", c.Usage())
+	}
+}
+
 func TestFinishReasonContentFilter(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")
