@@ -161,8 +161,8 @@ func (c *Checker) fallbackMinimalProbe(ctx context.Context, source config.Source
 	elapsed := time.Since(start).Milliseconds()
 
 	// 只要不是 401/403，就说明 key 有效（404 的 /v1/models 后端通常对正确路径返回 400/422 等）
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
 		return Result{
 			Status:         StatusFailed,
 			Success:        false,
@@ -171,7 +171,7 @@ func (c *Checker) fallbackMinimalProbe(ctx context.Context, source config.Source
 			HTTPStatus:     resp.StatusCode,
 			CheckedAt:      checkedAt,
 		}
-	case resp.StatusCode == http.StatusForbidden:
+	case http.StatusForbidden:
 		return Result{
 			Status:         StatusFailed,
 			Success:        false,
