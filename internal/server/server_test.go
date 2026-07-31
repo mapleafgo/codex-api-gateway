@@ -779,6 +779,11 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	if sst, ok := m0["supports_search_tool"]; !ok || strings.TrimSpace(string(sst)) != "true" {
 		t.Fatalf("supports_search_tool 应为 true, got: %v (present=%v)", string(m0["supports_search_tool"]), ok)
 	}
+	// supports_image_detail_original 去掉 omitempty 后必须显式返回（gpt-5 未
+	// override，默认 false 也出现，而非被省略让客户端靠 serde default 推断）
+	if sido, ok := m0["supports_image_detail_original"]; !ok || strings.TrimSpace(string(sido)) != "false" {
+		t.Fatalf("supports_image_detail_original 应显式返回 false, got: %v (present=%v)", string(m0["supports_image_detail_original"]), ok)
+	}
 	// include_skills_usage_instructions=true
 	if isui, ok := m0["include_skills_usage_instructions"]; !ok || strings.TrimSpace(string(isui)) != "true" {
 		t.Fatalf("include_skills_usage_instructions 应为 true, got: %v (present=%v)", string(m0["include_skills_usage_instructions"]), ok)
@@ -1444,6 +1449,49 @@ func TestModelsEndpointSupportsSearchOverride(t *testing.T) {
 	}
 	if m0.WebSearchToolType != "" {
 		t.Fatalf("web_search_tool_type should clear when search disabled, got %q", m0.WebSearchToolType)
+	}
+}
+
+// TestModelsEndpointCapabilityFieldsAlwaysExplicit 验证 supports_image_detail_original
+// 与 supports_search_tool 去掉 omitempty 后，即使值为 false 也必须在 JSON 里显式
+// 出现，而非被省略让客户端靠 serde default 推断（Go struct decode 区分不了
+// 缺失与 false，故用 raw map 检查 key 存在性）。
+func TestModelsEndpointCapabilityFieldsAlwaysExplicit(t *testing.T) {
+	off := false
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:0"}},
+		ModelOverrides: map[string]config.ModelOverride{
+			"basic": {
+				SupportsImageDetailOriginal: &off,
+				SupportsSearchTool:          &off,
+			},
+		},
+		ModelSlugOrder: []string{"basic"},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw.Models) != 1 {
+		t.Fatalf("models=%d", len(raw.Models))
+	}
+	m := raw.Models[0]
+	if v, ok := m["supports_image_detail_original"]; !ok || strings.TrimSpace(string(v)) != "false" {
+		t.Fatalf("supports_image_detail_original 应显式返回 false, got: %v (present=%v)", string(m["supports_image_detail_original"]), ok)
+	}
+	if v, ok := m["supports_search_tool"]; !ok || strings.TrimSpace(string(v)) != "false" {
+		t.Fatalf("supports_search_tool 应显式返回 false, got: %v (present=%v)", string(m["supports_search_tool"]), ok)
 	}
 }
 

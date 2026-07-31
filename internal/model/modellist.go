@@ -36,8 +36,10 @@ type CodexModelsResponse struct {
 // 可选字段（有 #[serde(default)]，零值省略；网关只在必要时给值）：
 //   - context_window / max_context_window: 上下文窗口大小（必须告知，Codex 默认 None）
 //   - auto_compact_token_limit: 自动压缩阈值
-//   - supports_search_tool: 启用 tool_search + MCP deferred（网关核心，必须 true）
-//   - supports_image_detail_original: 是否支持图片识别（原尺寸 detail），默认 false
+//   - supports_search_tool: 启用 tool_search + MCP deferred（网关核心，必须 true）；
+//     去掉 omitempty 始终显式返回（含 false），让客户端明确搜索能力而非靠 serde default 推断
+//   - supports_image_detail_original: 是否支持图片原尺寸 detail，默认 false；
+//     与 input_modalities 含 image（能接受图片输入）是不同维度，始终显式返回
 //   - include_skills_usage_instructions: 注入 skills 使用说明块，默认 true（启用 skill 发现引导）
 //   - web_search_tool_type: web search 能力类型 text|text_and_image（仅声明，不自动注册工具）
 //   - input_modalities: 支持的输入模态 ["text","image"]
@@ -85,14 +87,14 @@ type CodexModelInfo struct {
 	IncludeSkillsUsageInstructions bool     `json:"include_skills_usage_instructions,omitempty"`
 	DefaultReasoningSummary        string   `json:"default_reasoning_summary,omitempty"`
 	WebSearchToolType              string   `json:"web_search_tool_type,omitempty"`
-	SupportsImageDetailOriginal    bool     `json:"supports_image_detail_original,omitempty"`
+	SupportsImageDetailOriginal    bool     `json:"supports_image_detail_original"`
 	ContextWindow                  *int64   `json:"context_window,omitempty"`
 	MaxContextWindow               *int64   `json:"max_context_window,omitempty"`
 	AutoCompactTokenLimit          *int64   `json:"auto_compact_token_limit,omitempty"`
 	CompHash                       *string  `json:"comp_hash,omitempty"`
 	EffectiveContextWindowPercent  int64    `json:"effective_context_window_percent,omitempty"`
 	InputModalities                []string `json:"input_modalities,omitempty"`
-	SupportsSearchTool             bool     `json:"supports_search_tool,omitempty"`
+	SupportsSearchTool             bool     `json:"supports_search_tool"`
 	UseResponsesLite               *bool    `json:"use_responses_lite,omitempty"`
 	AutoReviewModelOverride        *string  `json:"auto_review_model_override,omitempty"`
 	ToolMode                       *string  `json:"tool_mode,omitempty"`
