@@ -339,6 +339,33 @@ func TestUsageChunkAfterFinishReason(t *testing.T) {
 	_ = terminalUsage
 }
 
+// TestChoiceUsageFallback 兼容 Moonshot 等把 usage 放在 choice 上的兼容端点。
+func TestChoiceUsageFallback(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"content":"hi"},"finish_reason":"stop","usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal []byte
+	for _, e := range evs {
+		if typ := evTypes(t, e.Data); typ == "response.completed" || typ == "response.incomplete" {
+			terminal = e.Data
+		}
+	}
+	for _, e := range c.FeedDone() {
+		if typ := evTypes(t, e.Data); typ == "response.completed" || typ == "response.incomplete" {
+			terminal = e.Data
+		}
+	}
+	if u := c.Usage(); u == nil || u.InputTokens != 7 || u.OutputTokens != 3 || u.TotalTokens != 10 {
+		t.Fatalf("choice usage not mapped: %+v", u)
+	}
+	if terminal == nil {
+		t.Fatalf("want terminal event, got %d events", len(evs))
+	}
+}
+
 func TestContentFilterEmitsRefusalChain(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")
@@ -897,6 +924,32 @@ func TestReasoningContentAliasField(t *testing.T) {
 		joined += string(e.Data)
 	}
 	if !strings.Contains(joined, "alias") {
+		t.Fatalf("want closed reasoning text: %s", joined)
+	}
+}
+
+// TestReasoningTextAliasField 兼容 llama.cpp 等端点用 delta.reasoning_text 的别名。
+func TestReasoningTextAliasField(t *testing.T) {
+	c := New()
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"delta":{"role":"assistant","reasoning_text":"text-alias"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if evTypes(t, e.Data) == "response.reasoning_text.delta" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want reasoning_text.delta for delta.reasoning_text, got %v", evs)
+	}
+	evs, _ = c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`))
+	joined := ""
+	for _, e := range evs {
+		joined += string(e.Data)
+	}
+	if !strings.Contains(joined, "text-alias") {
 		t.Fatalf("want closed reasoning text: %s", joined)
 	}
 }

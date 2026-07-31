@@ -113,51 +113,60 @@ const (
 
 // chatChunk 是 Chat Completions 流式 chunk 的精简视图。
 type chatChunk struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index int `json:"index"`
-		Delta struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"` // string | content part array | null
-			// ReasoningContent 是 DeepSeek / 火山 / 阿里 / 智谱 / Kimi 等的推理扩展字段。
-			ReasoningContent string `json:"reasoning_content"`
-			// Reasoning 是部分上游（ollama / OpenRouter）的别名。
-			Reasoning string `json:"reasoning"`
-			Refusal   string `json:"refusal"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-		// Logprobs 与 delta 同包；官方 shape: content/refusal 数组。
-		Logprobs *struct {
-			Content []chatTokenLogprob `json:"content"`
-			Refusal []chatTokenLogprob `json:"refusal"`
-		} `json:"logprobs"`
-	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-		// DeepSeek 等 OpenAI-compatible 上游使用顶层 cache hit/miss 字段。
-		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
-		// 官方 stream usage 可带 details；映射到 Responses usage 的 cache/reasoning 字段。
-		PromptTokensDetails *struct {
-			CachedTokens     int `json:"cached_tokens"`
-			CacheWriteTokens int `json:"cache_write_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails *struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-	} `json:"usage"`
+	ID      string       `json:"id"`
+	Model   string       `json:"model"`
+	Choices []chatChoice `json:"choices"`
+	Usage   *chatUsage   `json:"usage"`
+}
+
+// chatChoice 是 choices 数组项；usage 非官方，仅兼容 Moonshot 等放在 choice 上的端点。
+type chatChoice struct {
+	Index int `json:"index"`
+	Delta struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"` // string | content part array | null
+		// ReasoningContent 是 DeepSeek / 火山 / 阿里 / 智谱 / Kimi 等的推理扩展字段。
+		ReasoningContent string `json:"reasoning_content"`
+		// Reasoning 是部分上游（ollama / OpenRouter）的别名。
+		Reasoning string `json:"reasoning"`
+		// ReasoningText 是 llama.cpp 等本地兼容端点的别名。
+		ReasoningText string `json:"reasoning_text"`
+		Refusal       string `json:"refusal"`
+		ToolCalls     []struct {
+			Index    int    `json:"index"`
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+	// Logprobs 与 delta 同包；官方 shape: content/refusal 数组。
+	Logprobs *struct {
+		Content []chatTokenLogprob `json:"content"`
+		Refusal []chatTokenLogprob `json:"refusal"`
+	} `json:"logprobs"`
+	Usage *chatUsage `json:"usage"`
+}
+
+// chatUsage 是 Chat 流式 usage 精简视图（顶层官方 + choice 兼容共用）。
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+	// DeepSeek 等 OpenAI-compatible 上游使用顶层 cache hit/miss 字段。
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	// 官方 stream usage 可带 details；映射到 Responses usage 的 cache/reasoning 字段。
+	PromptTokensDetails *struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 // chatTokenLogprob 是 Chat Completions 流式 token logprob 子集（忽略 bytes）。
@@ -186,6 +195,38 @@ func mapChatTokenLogprobs(in []chatTokenLogprob) []model.TokenLogprob {
 			}
 		}
 		out = append(out, item)
+	}
+	return out
+}
+
+// mapChatUsage 把 Chat 流式 usage 映射为 Responses usage；顶层缺失时可由 choice 兜底。
+func mapChatUsage(u *chatUsage) *model.ResponseUsage {
+	if u == nil {
+		return nil
+	}
+	out := &model.ResponseUsage{
+		InputTokens:  u.PromptTokens,
+		OutputTokens: u.CompletionTokens,
+		TotalTokens:  u.TotalTokens,
+	}
+	cacheRead := u.PromptCacheHitTokens
+	cacheCreate := 0
+	if d := u.PromptTokensDetails; d != nil {
+		if d.CachedTokens > 0 {
+			cacheRead = d.CachedTokens
+		}
+		cacheCreate = d.CacheWriteTokens
+	}
+	if cacheRead > 0 || cacheCreate > 0 {
+		out.CacheReadInputTokens = cacheRead
+		out.CacheCreationInputTokens = cacheCreate
+		out.InputTokensDetails = &model.ResponseUsageInputDetails{
+			CachedTokens:     cacheRead,
+			CacheWriteTokens: cacheCreate,
+		}
+	}
+	if d := u.CompletionTokensDetails; d != nil && d.ReasoningTokens > 0 {
+		out.OutputTokensDetails = &model.ResponseUsageOutputDetails{ReasoningTokens: d.ReasoningTokens}
 	}
 	return out
 }
@@ -285,32 +326,12 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 		out = append(out, c.openResponse(chunk)...)
 		c.started = true
 	}
-	if chunk.Usage != nil {
-		u := &model.ResponseUsage{
-			InputTokens:  chunk.Usage.PromptTokens,
-			OutputTokens: chunk.Usage.CompletionTokens,
-			TotalTokens:  chunk.Usage.TotalTokens,
-		}
-		cacheRead := chunk.Usage.PromptCacheHitTokens
-		cacheCreate := 0
-		if d := chunk.Usage.PromptTokensDetails; d != nil {
-			if d.CachedTokens > 0 {
-				cacheRead = d.CachedTokens
-			}
-			cacheCreate = d.CacheWriteTokens
-		}
-		if cacheRead > 0 || cacheCreate > 0 {
-			u.CacheReadInputTokens = cacheRead
-			u.CacheCreationInputTokens = cacheCreate
-			u.InputTokensDetails = &model.ResponseUsageInputDetails{
-				CachedTokens:     cacheRead,
-				CacheWriteTokens: cacheCreate,
-			}
-		}
-		if d := chunk.Usage.CompletionTokensDetails; d != nil && d.ReasoningTokens > 0 {
-			u.OutputTokensDetails = &model.ResponseUsageOutputDetails{ReasoningTokens: d.ReasoningTokens}
-		}
-		c.usage = u
+	usage := chunk.Usage
+	if usage == nil && len(chunk.Choices) > 0 {
+		usage = chunk.Choices[0].Usage
+	}
+	if usage != nil {
+		c.usage = mapChatUsage(usage)
 	}
 	// 已见 finish_reason 后，只接受 usage 末包（空 choices）
 	if c.streamEnded {
@@ -324,7 +345,7 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 		c.refusalBuf.WriteString(ch.Delta.Refusal)
 	}
 	// reasoning 通常先于 content；content/tool 开时在 feed 路径内关闭。
-	if rc := firstNonEmpty(ch.Delta.ReasoningContent, ch.Delta.Reasoning); rc != "" {
+	if rc := firstNonEmpty(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.ReasoningText); rc != "" {
 		out = append(out, c.feedReasoning(rc)...)
 	}
 	var lps []model.TokenLogprob
