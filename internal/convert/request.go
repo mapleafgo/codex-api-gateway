@@ -2055,30 +2055,11 @@ func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Con
 	}
 	cacheControl := anthropic.NewCacheControlEphemeralParam()
 	cacheControl.TTL = ttl
+	out.CacheControl = cacheControl
 	if len(out.System) > 0 {
 		out.System[len(out.System)-1].CacheControl = cacheControl
 	}
 	setLastToolCacheControl(out.Tools, cacheControl)
-	// 顶层 cache_control 会被部分兼容后端（如 opencode-go）400 拒绝，
-	// 改为显式写到最后一个 message block 的末 content block。
-	setLastMessageBlockCacheControl(out, cacheControl)
-}
-
-// setLastMessageBlockCacheControl 给最后一个 message 的末 content block 加
-// cache_control。部分兼容后端（如 opencode-go）不认顶层 cache_control 字段，
-// 必须把断点写在 content block 上才能缓存 message history。
-func setLastMessageBlockCacheControl(out *anthropic.MessageNewParams, cc anthropic.CacheControlEphemeralParam) {
-	if len(out.Messages) == 0 {
-		return
-	}
-	last := &out.Messages[len(out.Messages)-1]
-	if len(last.Content) == 0 {
-		return
-	}
-	lastBlock := &last.Content[len(last.Content)-1]
-	if p := lastBlock.GetCacheControl(); p != nil {
-		*p = cc
-	}
 }
 
 // applyMetadata 把 OpenAI metadata 中的 user_id 透传到 Anthropic metadata.user_id。
