@@ -672,7 +672,7 @@ html[data-theme="dark"] .ui-select {
 .ui-src-toc { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .ui-src-toc-label { margin: 0 10px 10px; font-size: 11px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
 .ui-src-toc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.ui-src-toc-list button { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 10px; padding: 10px 12px; color: var(--ink-soft); font-size: 13.5px; font-weight: 500; position: relative; transition: background .15s ease, color .15s ease; }
+.ui-src-toc-list button { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 10px; padding: 10px 12px; color: var(--ink-soft); font-size: 13.5px; font-weight: 500; position: relative; display: flex; align-items: center; gap: 8px; transition: background .15s ease, color .15s ease; }
 .ui-src-toc-list button:hover { background: var(--surface-2); color: var(--ink); }
 .ui-src-toc-list button.is-active { background: color-mix(in srgb, var(--focus) 12%, transparent); color: var(--focus); font-weight: 650; }
 .ui-src-toc-list button.is-active::before { content: ""; position: absolute; left: 0; top: 22%; bottom: 22%; width: 3px; border-radius: 0 3px 3px 0; background: var(--focus); }
@@ -683,8 +683,7 @@ html[data-theme="dark"] .ui-select {
 @media (min-width: 768px) { .ui-src-chips { display: none; } }
 .ui-src-chip { flex: 0 0 auto; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 10px; font-size: 12px; color: var(--ink-soft); font-family: var(--mono); }
 .ui-src-chip.is-active { border-color: color-mix(in srgb, var(--focus) 45%, var(--line)); color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--surface)); font-weight: 650; }
-.ui-src-chip-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.ui-src-chip-dot.is-neutral { background: var(--surface-2); }
+.ui-src-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
 /* ---------- Toast / Modal ---------- */
 .ui-toast {
@@ -816,7 +815,13 @@ html[data-theme="dark"] .ui-select {
           <tbody>
             <template x-for="g in (snap.by_group || [])" :key="g.source + '/' + g.model">
               <tr>
-                <td x-text="g.source"></td>
+                <td>
+                  <span class="ui-status"
+                        :style="healthDotStyle(g.source, srcDisabled(g.source))"
+                        :title="g.source ? healthDotTitle(g.source, srcDisabled(g.source)) : ''"
+                        aria-hidden="true"></span>
+                  <span x-text="g.source" style="margin-left:6px"></span>
+                </td>
                 <td class="mono" style="font-size:12px" x-text="g.model"></td>
                 <td class="num" x-text="fmtTokens(g.requests)"></td>
                 <td class="num t-good" x-text="fmtTokens(g.completed)"></td>
@@ -954,6 +959,8 @@ html[data-theme="dark"] .ui-select {
             <li>
               <button type="button" :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
                       @click="jumpToSource(src, idx)">
+                <span class="ui-src-dot" :style="healthDotStyle(src.name, src.disabled)"
+                      :title="healthDotTitle(src.name, src.disabled)"></span>
                 <span class="ui-src-toc-idx" x-text="'#' + (idx + 1)"></span>
                 <span class="ui-src-toc-name" x-text="src.name || t('newSource')"></span>
               </button>
@@ -985,7 +992,8 @@ html[data-theme="dark"] .ui-select {
             <button type="button" class="ui-src-chip"
                    :class="activeSourceId === (src._id || String(idx)) && 'is-active'"
                    @click="jumpToSource(src, idx)">
-             <span class="ui-src-chip-dot" :style="{ background: src.disabled ? 'var(--surface-2)' : healthDotColor(src.name) }"></span>
+             <span class="ui-src-dot" :style="healthDotStyle(src.name, src.disabled)"
+                   :title="healthDotTitle(src.name, src.disabled)"></span>
              <span x-text="'#' + (idx + 1) + ' ' + (src.name || t('newSource'))"></span>
             </button>
           </template>
@@ -2239,23 +2247,33 @@ function app() {
       if (st === 'halfOpen') return this.t('healthHalfOpen');
       return this.t('healthUnknown');
     },
-   healthBadgeClass(name) {
+    healthBadgeClass(name) {
       const st = this.healthState(name);
       if (st === 'normal') return 'ui-badge-soft-good';
       if (st === 'degraded') return 'ui-badge-soft-warn';
       if (st === 'circuitOpen') return 'ui-badge-soft-bad';
       if (st === 'halfOpen') return 'ui-badge-soft-info';
       return 'ui-badge-soft-neutral';
-   },
+    },
     healthDotColor(name) {
       const st = this.healthState(name);
-      if (st === 'normal') return 'var(--good-soft)';
-      if (st === 'degraded') return 'var(--warn-soft)';
-      if (st === 'circuitOpen') return 'var(--bad-soft)';
-      if (st === 'halfOpen') return 'var(--info-soft)';
-      return 'var(--surface-2)';
+      if (st === 'normal') return 'var(--good)';
+      if (st === 'degraded') return 'var(--warn)';
+      if (st === 'circuitOpen') return 'var(--bad)';
+      if (st === 'halfOpen') return 'var(--info)';
+      return 'var(--ink-soft)';
     },
-   healthHint(name) {
+    healthDotStyle(name, disabled) {
+      return { background: disabled ? 'var(--surface-2)' : this.healthDotColor(name) };
+    },
+    healthDotTitle(name, disabled) {
+      return disabled ? this.t('healthDisabled') : this.healthLabel(name);
+    },
+    srcDisabled(name) {
+      const s = this.cfg.sources.find(x => x && x.name === name);
+      return !!(s && s.disabled);
+    },
+    healthHint(name) {
       const st = this.healthState(name);
       if (st === 'degraded') return this.t('healthHintDegraded');
       if (st === 'circuitOpen') return this.t('healthHintCircuitOpen');
