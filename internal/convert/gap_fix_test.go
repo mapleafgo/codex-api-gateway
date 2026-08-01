@@ -120,10 +120,9 @@ func TestUnsupportedHistoryItemsDroppedWithWarn(t *testing.T) {
 	}
 }
 
-// TestCodeInterpreterImageOutputWarns：logs 保留，image 输出丢弃时 WARN。
-func TestCodeInterpreterImageOutputWarns(t *testing.T) {
-	buf, restore := captureWarnLogger(t)
-	defer restore()
+// TestCodeInterpreterHistoryDropped：code_interpreter_call 整体丢弃（含 image/logs），
+// 不再回灌 code_execution block。
+func TestCodeInterpreterHistoryDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"code_interpreter_call","id":"ci1","status":"completed","code":"plot()","outputs":[{"type":"image","url":"https://x/y.png"},{"type":"logs","logs":"done"}]}
 	],"stream":true}`)
@@ -131,39 +130,9 @@ func TestCodeInterpreterImageOutputWarns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// stdout 仍应有 logs
-	foundLogs := false
-	for _, msg := range out.Messages {
-		for _, b := range msg.Content {
-			if b.OfCodeExecutionToolResult != nil {
-				// content is union; marshal to check
-				raw, _ := json.Marshal(b.OfCodeExecutionToolResult)
-				if strings.Contains(string(raw), "done") {
-					foundLogs = true
-				}
-			}
-		}
-	}
-	if !foundLogs {
-		t.Fatalf("logs should be preserved: %+v", out.Messages)
-	}
-	// image 丢弃后 logs 文本应带可读占位（与真实 logs 共存）。
-	foundPlaceholder := false
-	for _, msg := range out.Messages {
-		for _, b := range msg.Content {
-			if b.OfCodeExecutionToolResult != nil {
-				raw, _ := json.Marshal(b.OfCodeExecutionToolResult)
-				if strings.Contains(string(raw), "image output omitted") {
-					foundPlaceholder = true
-				}
-			}
-		}
-	}
-	if !foundPlaceholder {
-		t.Fatalf("expected image-omitted placeholder in result logs: %+v", out.Messages)
-	}
-	if !strings.Contains(buf.String(), "image") {
-		t.Fatalf("expected WARN for image output, got: %s", buf.String())
+	raw, _ := json.Marshal(out.Messages)
+	if strings.Contains(string(raw), "code_execution") {
+		t.Fatalf("code_interpreter_call history must be dropped: %s", raw)
 	}
 }
 

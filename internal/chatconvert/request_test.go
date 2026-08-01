@@ -492,15 +492,15 @@ func TestToChat_MaxCompletionTokensDualWrite(t *testing.T) {
 	}
 }
 
-func TestToChat_WebSearchAndCodeInterpreterDecl(t *testing.T) {
-	body := `{"model":"gpt-4o","tools":[{"type":"web_search"},{"type":"code_interpreter"}],"input":"x"}`
+func TestToChat_WebSearchDecl(t *testing.T) {
+	body := `{"model":"gpt-4o","tools":[{"type":"web_search"}],"input":"x"}`
 	out := mustChat(t, body, "gpt-4o")
 	names := map[string]bool{}
 	for _, t0 := range out.Tools {
 		names[t0.Function.Name] = true
 	}
-	if !names["web_search"] || !names["code_interpreter"] {
-		t.Fatalf("hosted tools missing: %v", names)
+	if !names["web_search"] {
+		t.Fatalf("web_search tool missing: %v", names)
 	}
 }
 
@@ -612,12 +612,8 @@ func TestToChat_ResponseFormatJSONSchema(t *testing.T) {
 		"text":{"format":{"type":"json_schema","name":"person","strict":true,"schema":{"type":"object"}}}
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	if out.ResponseFormat == nil {
-		t.Fatal("nil response_format")
-	}
-	raw, _ := json.Marshal(out.ResponseFormat)
-	if !strings.Contains(string(raw), "json_schema") || !strings.Contains(string(raw), "person") {
-		t.Fatalf("response_format=%s", raw)
+	if out.ResponseFormat != nil {
+		t.Fatalf("网关不支持 structured output，response_format 应为 nil，got %+v", out.ResponseFormat)
 	}
 }
 
@@ -888,9 +884,8 @@ func TestToChat_ParallelToolCallsAndPromptCacheOptionsDropped(t *testing.T) {
 func TestToChat_ResponseFormatJSONObject(t *testing.T) {
 	body := `{"model":"gpt-4o","input":"hi","text":{"format":{"type":"json_object"}}}`
 	out := mustChat(t, body, "gpt-4o")
-	raw, _ := json.Marshal(out.ResponseFormat)
-	if !strings.Contains(string(raw), `"json_object"`) {
-		t.Fatalf("response_format=%s", raw)
+	if out.ResponseFormat != nil {
+		t.Fatalf("网关不支持 structured output，response_format 应为 nil，got %+v", out.ResponseFormat)
 	}
 }
 
@@ -1265,9 +1260,9 @@ func TestConvertToolChoiceHosted(t *testing.T) {
 			wantName: "web_search",
 		},
 		{
-			name:     "code_interpreter 强制选择映射为同名 function",
+			name:     "code_interpreter 无映射，降级为 nil（网关不支持）",
 			tc:       hosted(oairesponses.ToolChoiceTypesTypeCodeInterpreter),
-			wantName: "code_interpreter",
+			wantName: "",
 		},
 		{
 			name:     "image_generation hosted 无映射，降级为 nil",
@@ -1894,7 +1889,7 @@ func TestToChat_McpListToolsHistoryNoText(t *testing.T) {
 	}
 }
 
-func TestToChat_CodeInterpreterImageOutputBecomesUserImage(t *testing.T) {
+func TestToChat_CodeInterpreterHistoryDropped(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1905,22 +1900,8 @@ func TestToChat_CodeInterpreterImageOutputBecomesUserImage(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	var tool *ChatMessage
-	for i := range out.Messages {
-		if out.Messages[i].Role == "tool" {
-			tool = &out.Messages[i]
-		}
-	}
-	if tool == nil || !strings.Contains(tool.Content.(string), "ran") {
-		t.Fatalf("tool msg=%+v", tool)
-	}
-	last := out.Messages[len(out.Messages)-1]
-	if last.Role != "user" {
-		t.Fatalf("want trailing image user msg: %+v", out.Messages)
-	}
-	parts := chatParts(t, last.Content)
-	if len(parts) != 1 || parts[0].ImageURL == nil || parts[0].ImageURL.URL != "https://example.com/plot.png" {
-		t.Fatalf("image parts=%+v", parts)
+	if len(out.Messages) != 0 {
+		t.Fatalf("code_interpreter_call 历史应被丢弃，got %+v", out.Messages)
 	}
 }
 

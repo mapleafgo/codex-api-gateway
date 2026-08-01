@@ -82,8 +82,6 @@ func (c *Converter) serverToolKindByID(id toolcatalog.Identity) callKind {
 	switch id.OpenAIType {
 	case "web_search":
 		return webSearchCallKind{}
-	case "code_interpreter":
-		return codeInterpreterCallKind{}
 	}
 	return nil
 }

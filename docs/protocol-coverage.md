@@ -29,7 +29,7 @@
 
 详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
 
-- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`text.format`/`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key`、usage（含 details）、`finish_reason` 终态。
+- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key`、usage（含 details）、`finish_reason` 终态。
 - **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger / mcp_list_tools 历史 **丢弃**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
@@ -84,7 +84,7 @@
 | Anthropic 无 OpenAI `search_context_size` 字段 | **不得假映射**；请求带该字段时 WARN + 忽略 |
 | Anthropic 无 output logprobs / stream obfuscation | WARN + 忽略 |
 | Anthropic MCP 仅 `authorization_token` | 非 Bearer 的自定义 headers WARN + 丢弃 |
-| Anthropic code_execution 无 container / 生成文件 URL / image 输出字段 | 丢弃 + WARN；logs 文本尽量保留 |
+| code_interpreter 整体（含 container / 生成文件 URL / image） | 网关不支持；a/c 声明 fail-fast，历史/回程静默忽略或 skip |
 | 未知 Anthropic server tool（web_fetch 等） | 流式 **WARN + skip**，不 `response.failed` |
 
 ### 4. Deprecated 字段（一律丢弃）
@@ -110,7 +110,7 @@
 
 1. web_search：`user_location` 映射；`search_context_size` WARN + 忽略（无 Anthropic 字段）。
 2. shell / local_shell / apply_patch **历史**：env、cwd、timeout、limits、status、caller、exit/timeout outcome 折入 `tool_use.input` 或 tool_result 文本。
-3. code_interpreter：image 丢弃 + logs 占位；声明侧 container **WARN + 丢弃**。
+3. code_interpreter：**网关不再支持**（声明 fail-fast；历史/回程静默忽略；DeepSeek 等兼容端点不受 code_execution 变体影响）。
 4. MCP：string allowlist 已支持；filter / 审批 / 非 Bearer headers 保持降级（硬限制）。
 
 ### 7. 收口内不再打磨（硬限制 / 协议天花板）
@@ -118,7 +118,7 @@
 | 项 | 原因 |
 |---|---|
 | `search_context_size` 真映射 | Anthropic web_search 无字段 |
-| code container / 生成文件 URL / image 真映射 | Anthropic code_execution 无等价 |
+| code_interpreter 全功能（container / 生成文件 URL / image 真映射） | 网关整体不支持 code_interpreter |
 | MCP 审批协议 / filter AST / 任意 headers | 后端无能力或成本/边界外 |
 | custom `format` grammar 完整保留 | Anthropic custom tool 无 OpenAI grammar 等价 |
 | structured output 非 tool 模拟 | 无原生 json_schema 强制 |
@@ -128,58 +128,24 @@
 | SSE citation 非 web 类 → file_citation | OpenAI 无更细等价 |
 
 
-### 8. 为何 `code_interpreter` image 输出无法真映射
+### 8. 为何网关不支持 `code_interpreter`
 
-本条是收口内**硬限制**的详细依据，不是实现遗漏。
+网关对 `code_interpreter` 整体 fail-fast（a/c 声明报错；历史 item 与上游回程静默忽略），
+不再做 Anthropic code_execution 映射。原因：
 
-#### 协议形状不对齐
-
-| 侧 | 形态 |
-|---|---|
-| OpenAI `code_interpreter` 输出 | union：`logs`（文本）与 **`image`（必填 `url` URI）** |
-| Anthropic `code_execution` 结果 | `stdout` / `stderr` / `return_code`，可选 `content[]` 的 **`file_id`**；**没有** `type=image` + `url` 输出项 |
-
-OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；Anthropic 标准 code_execution 结果是**文本（+ 文件句柄）**，不是同构的 image URL 项。
-
-#### 双向都缺关键能力
-
-**入站（历史回灌 OpenAI → Anthropic）**
-
-- 历史可能含 `outputs: [{type:image, url:...}]`。
-- Anthropic `code_execution_tool_result` **无 image 槽位**，无法语义级写入。
-- 把 URL 塞进 stdout 只是字符串，不是 image 输出。
-- 下载 URL 再当 `image` content 塞进其它消息：网关变成文件代理，越界且仍对不齐 code_execution result 形态。
-
-**出站（Anthropic → OpenAI SSE）**
-
-- 上游若产出文件，多为 **`file_id`**，不是 OpenAI 的 `outputs[].image.url`。
-- 要变成真 image 项，需：Files 凭据拉取 → 可访问 URL/data URI → 填 `outputs[{type:image,url}]`。
-- 本网关**纯协议转换**，不做 Anthropic/OpenAI Files 托管与拉文件，无法凭空生成客户端可用 URL。
-
-当前实现：入站 image **丢弃 + WARN + logs 占位**（`image output omitted`）；出站仅 `outputs[{type:logs}]`，对生成 `file_id` **WARN + 丢弃**。
-
-#### 与「shell env 折进 input」的差别
-
-| | shell 元数据 | code_interpreter image |
-|---|---|---|
-| 目标 | `tool_use.input` 任意 JSON 线索 | OpenAI **专用** `image` output 类型 |
-| 对端槽位 | 有 | Anthropic result **无** image 槽 |
-| 是否要托管资源 | 否 | 要（URL / 文件拉取） |
-
-因此 env/limits/caller 可打磨；真·image **缺协议槽位 + 缺 Files 基础设施**，收口内不做。
-
-#### 若未来要做（须先扩产品边界）
-
-1. 配置上游 Files 读权限；出站 `file_id` → 下载 → 签名 URL 或 data URI → `outputs[].image`。
-2. 入站历史 image：下载/缓存后以明确 lossy 策略回灌（仍可能非 code_execution 标准形态）。
-3. 处理过期 URL、体积、隐私与失败路径。
-
-在边界未扩大前，矩阵状态保持 `lossy_supported`，行为保持丢弃 + 可观测，**禁止**编造假 image URL 宣称语义支持。
+- DeepSeek 等 Anthropic 兼容端点的工具表只接受普通 `name + input_schema` 与
+  `web_search` server tool，`code_execution_20250522` 变体不在支持表内（消息侧
+  `code_execution_tool_result` 明确 Not Supported），声明即可能 400。
+- OpenAI `code_interpreter` 输出的 `image`+`url` 与 Anthropic code_execution 的
+  `stdout`/`file_id` 协议不对齐（此前 §8 已登记为硬限制）。
+- 移除后请求侧不再产生 code_execution 变体，官方/兼容端点均不会主动调用未声明工具，
+  回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
 
 ### 2026-08-01
 
+- **DeepSeek 兼容收口（用户决策）**：a/c 路径不再转换 `text.format`（`json_schema` / `json_object` 统一忽略，`output_config` 仅保留 `effort`）；`code_interpreter` 整体移除（a/c 声明 fail-fast，历史 item 与上游 code_execution 回程静默忽略/skip，不再映射 `code_execution_20250522`）；**网关只接受明文 thinking**：出站 `redacted_thinking` 块跳过（不生成 reasoning item），入站无 summary 文本的 `encrypted_content`（redacted 密文）静默忽略，明文 thinking 的 signature 回灌保留。
 - **compaction 行为修正（Codex local 压缩确认）**：`supports_remote_compaction()` 仅对 provider 名为 OpenAI/Azure 成立；本网关面向第三方 provider（如 deepseek）时 Codex 走 **local 压缩**，摘要生成请求与摘要回灌均为普通明文消息，网关按常规转换透传。真实 `compaction` item 的 `encrypted_content` 只对生成它的服务端可解，a/c 路径无法解读，改为 **WARN + 丢弃**（移除原先折独立 user `<compaction>` 密文文本的降级）；`compaction_trigger` 保持丢弃（请求控制信号）。
 - **DeepSeek a 端点工具限制**：DeepSeek Anthropic 兼容端点只接受 `web_search_20250305` / `web_search_20260209` server tool，`custom` 工具返回 400；带 21+ 工具的 Codex 请求实测 400 后 failover 到 Chat 源。DeepSeek 改为 `backend_type: r` 透传后全部 200，登记到 r 专节。
 - **freeform 单键任意键名解包**：opencode 等 Chat 上游把工具文本包在 `input`/`patch`/`cmd` 等不同键下，Codex 会把整段 JSON 当入参导致校验失败；`SanitizeClientToolInput` 对 freeform 工具改为单键 JSON 对象直接取唯一字符串值，键名不敏感；多键 structured 形态仍走 apply_patch V4A 兜底，r 透传实测返回裸文本不受影响。
@@ -271,7 +237,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | 与 a 源混排 failover / 熔断 | hosted **真实** server 执行（Chat 仅 shape） |
 | `finish_reason` 终态对齐（stop/tool_calls/length/content_filter） | Chat `reasoning_content` 与 a 路径 thinking **完整等价**（无 encrypted/signature） |
 | 出站 `reasoning_content` → Responses reasoning（有损） + 入站回灌 `reasoning_content` | Anthropic 式 `citations_delta` 完整等价（五家 Chat 无官方字段） |
-| structured output / 文本工具环 | 多模态 image / OpenAI Files |
+| 文本工具环 | 多模态 image / OpenAI Files |
 
 ### Request 参数（c）
 
@@ -285,12 +251,12 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `temperature` / `top_p` | 同名 | `supported` | |
 | `top_k` | `top_k` | `none` | 客户端 Responses 请求无此来源；Chat 请求体亦无对应字段；矩阵原列为 supported 是错误的 |
 | `parallel_tool_calls` | `parallel_tool_calls` | `supported` | 直接透传 |
-| `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/code_interpreter/mcp__*）；file_search/computer/image_generation 跳过；**无活动工具但消息含工具历史时显式发 `tools: []`**（对齐 pi 的 Anthropic 代理兼容） |
-| `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search/code_interpreter 映射为同名 function 强制选择，其余与 mcp/programmatic DEBUG 后忽略 |
+| `tools` | `tools` | `lossy_supported` | function + freeform + hosted function 化（web_search/mcp__*）；file_search/computer/image_generation/code_interpreter 跳过或 fail-fast；**无活动工具但消息含工具历史时显式发 `tools: []`**（对齐 pi 的 Anthropic 代理兼容） |
+| `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search 映射为同名 function 强制选择，其余（含 code_interpreter）与 mcp/programmatic DEBUG 后忽略 |
 | `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
 | `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`（任意值透传，不拒绝）；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
-| `text.format` structured | `response_format` | `supported` | `json_schema`/`json_object`/`text` 原生透传 Chat；含 `strict`；不做 a 路径 synthetic tool |
+| `text.format` structured | none | `dropped` | 网关不支持 structured output；`json_schema`/`json_object` 忽略，不写 `response_format` |
 | `text.verbosity` | `verbosity` | `supported` | low/medium/high 透传；a 路径仍忽略 |
 | `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |
 | `safety_identifier` | `safety_identifier` | `supported` | Chat 透传；a 路径忽略 |
@@ -324,7 +290,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
 | `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；与 `tool_calls` 同框；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
-| `code_interpreter_call` 历史 | tool_calls(code) + tool(logs) + user image | `lossy_supported` | image 输出转后续独立 user `image_url` 消息（同 opencode） |
+| `code_interpreter_call` 历史 | none | `dropped` | 网关不支持 code_interpreter；静默忽略 |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
 | computer / file_search / image_generation / program / program_output / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
 | `compaction` | none | `dropped` | 密文不可解读（只对生成它的服务端有效），WARN 丢弃；Codex local 压缩以明文摘要 user 消息回灌，不经 compaction item |
@@ -341,7 +307,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_search` | function name=`tool_search` | `supported` | |
 | `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项；嵌套 function 同样做 schema 投影 |
 | `web_search` / `web_search_preview` | function `web_search` | `lossy_supported` | 无 server 搜索 |
-| `code_interpreter` | function `code_interpreter` | `lossy_supported` | 无 sandbox；container 丢弃 |
+| `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明跳过（Debug） |
 | `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | 无连接/审批；filter 不展开 |
 | file_search / computer / image_generation / programmatic | none | `unsupported_by_backend` | 声明跳过 |
 
@@ -358,7 +324,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `delta.tool_calls` freeform custom 名 | `custom_tool_call` + input delta/done | `supported` | `SanitizeClientToolInput` 解包/归一 |
 | `delta.tool_calls` name=`tool_search` | `tool_search_call` | `supported` | arguments 随 item done |
 | `delta.tool_calls` name=`web_search` | `web_search_call` 链 | `lossy_supported` | 无真实 sources |
-| `delta.tool_calls` name=`code_interpreter` | `code_interpreter_call` 链 | `lossy_supported` | code 从 arguments 解；无 logs |
+| `delta.tool_calls` name=`code_interpreter` | `function_call` | `lossy_supported` | 网关不识别 code_interpreter，按普通 function_call 回程 |
 | `delta.tool_calls` name=`mcp__*__*` | `function_call`（按声明还原 namespace） | `supported` | Chat 无 server MCP；必须回 client 可执行的 function_call（含 Codex `mcp__*` namespace）；先查请求声明映射，未声明才回退 `__` 拆分 |
 | `finish_reason=stop` / `tool_calls` | `response.completed` | `supported` | |
 | `finish_reason=length` | `response.incomplete` reason=`max_output_tokens` | `supported` | |
@@ -395,7 +361,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_choice.allowed_tools` | 精确过滤 tools + mode（auto/required） |
 | `prompt_cache_key` | 透传到 Chat body（官方字段） |
 | `prompt_cache_options` | Chat 无顶层槽位，DEBUG + 丢弃（2026-07-31） |
-| structured `text.format` | → Chat `response_format`（含 strict） |
+| structured `text.format` | 忽略（网关不支持 structured output） |
 | `function.strict` | → Chat `tools[].function.strict` |
 | `text.verbosity` / `service_tier` | → Chat 同名字段透传 |
 | `safety_identifier` / `metadata` / `store` / `moderation` | → Chat 同形透传 |
@@ -444,15 +410,15 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `reasoning.summary` | thinking display / summary events | `lossy_supported` | `concise` 映射到 summarized 输出 |
 | `reasoning.generate_summary` | thinking display | `unsupported_by_backend` | deprecated，被 `reasoning.summary` 取代；非空时 **WARN + 忽略**，不复用 `summary` 路径 |
 | `metadata` | response echo + Anthropic `metadata.user_id` | `lossy_supported` | `metadata.user_id` 透传到 Anthropic `metadata.user_id`；其余键值对无 Anthropic 等价能力，仅响应 echo 回显。未透传的键值对触发 WARN |
-| `text.format.json_schema` | `OutputConfig.Format` | `supported` | 使用 Anthropic 原生 `output_config.format`（JSON Schema），不再需要合成工具；与 tool_choice 正交共存 |
-| `text.format.json_object` | forced `json_object` tool | `lossy_supported` | 通过工具调用模拟；与不等价的显式 function/custom/specific/allowed_tools choice 组合明确转换失败；hosted/mcp/programmatic choice 本身被忽略（见 Tool Choice Union），不阻断 structured output |
+| `text.format.json_schema` | none | `dropped` | 网关不支持 structured output；忽略，不写 `output_config.format`（DeepSeek 等端点 `output_config` 仅支持 `effort`） |
+| `text.format.json_object` | none | `dropped` | 网关不支持 structured output；忽略，不再注入合成工具 |
 | `text.verbosity` | none | `unsupported_by_backend` | a 忽略；Chat 见 c 专节 |
 | `tools` | `tools` | `lossy_supported` | 仅部分工具类型支持，详见 Tool Union |
 | `tool_choice` | `tool_choice` | `lossy_supported` | 仅部分 choice 支持；具体工具选择必须精确匹配声明的 type/name，详见 Tool Choice Union |
 | `previous_response_id` | none | `unsupported_by_backend` | 网关无 session store，不做 enrich；Codex 主路径不传此字段（客户端完整回灌 `input`）。若请求携带非空值则 WARN + 忽略 |
 | `store` | response echo only | `raw_preserved` | 无本地会话存储/回填；仅在响应对象 echo 请求值 |
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
-| `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`code_interpreter_call.outputs`、`message.input_image.image_url`；`message.output_text.logprobs` 仅 Chat 源 satisfied；其余（file_search/computer 等）WARN + 忽略 |
+| `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`message.input_image.image_url`；`message.output_text.logprobs` 仅 Chat 源 satisfied；其余（file_search/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **DEBUG + 忽略**（Codex 常发，可控协议差异） |
 | `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **DEBUG + 忽略** |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **DEBUG + 忽略**（不映射 TTL） |
@@ -500,10 +466,10 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
 | `tool_search_output` | dynamic tools + tool_result | `supported` | 工具注入并记录 developer marker |
 | `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现，移除转换分支 |
-| `reasoning` | `thinking` / `redacted_thinking` | `supported` | summary 优先，空则回退 content[].reasoning_text；有 encrypted 无文本→redacted；无 encrypted 丢弃 |
+| `reasoning` | `thinking` | `lossy_supported` | 网关只接受明文 thinking：summary 优先，空则回退 content[].reasoning_text；有 encrypted 且有文本→thinking 签名回灌；无文本（redacted 密文）静默忽略；无 encrypted 丢弃 |
 | `compaction` | none | `dropped` | 密文不可解读（只对生成它的服务端有效），WARN 丢弃；Codex local 压缩以明文摘要 user 消息回灌，不经 compaction item |
 | `image_generation_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
-| `code_interpreter_call` | Anthropic code execution tool | `lossy_supported` | 映射为 `code_execution_20250522` tool use/result；`container` / 生成文件 `file_id`→`url` 不可转换；**image 输出无法真映射**（见收口策略 §8），丢弃 + WARN，logs 可含 `image output omitted` 占位 |
+| `code_interpreter_call` | none | `dropped` | 网关不支持 code_interpreter；历史回灌静默忽略，不产生 code_execution block |
 | `local_shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `env`/`working_directory`/`timeout_ms`/`user`/`status` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 文本 tool_result；可前缀 `[status=…]`；item.id 作 tool_use_id |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `environment_type` + `timeout_ms`/`max_output_length`/`status`/`caller_type`/`caller_id` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
@@ -531,7 +497,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | 保证项 | 触发条件 | 处理 | 说明 |
 |---|---|---|---|
-| orphan `tool_use` 兜底 | input 历史含 `function_call`/`custom_tool_call`/`shell`/`apply_patch`/`tool_search_call` 但缺对应 `*_output`（中断后 resume / failover 丢历史 / 客户端 bug） | 补 `is_error=true` 占位 `tool_result` | 避免上游 Anthropic 以 `tool_use without tool_result` 400 拒绝整请求。占位补在该 tool_use 后的首个 user message 前部；无后续 user message 则新建。`server_tool_use`（`code_interpreter`，item 内自合成 result）不受影响。实现见 `internal/convert/request.go` `ensureToolUsePaired`；WARN 暴露该客户端异常 |
+| orphan `tool_use` 兜底 | input 历史含 `function_call`/`custom_tool_call`/`shell`/`apply_patch`/`tool_search_call` 但缺对应 `*_output`（中断后 resume / failover 丢历史 / 客户端 bug） | 补 `is_error=true` 占位 `tool_result` | 避免上游 Anthropic 以 `tool_use without tool_result` 400 拒绝整请求。占位补在该 tool_use 后的首个 user message 前部；无后续 user message 则新建。code_interpreter_call 已整体丢弃，不参与配对。实现见 `internal/convert/request.go` `ensureToolUsePaired`；WARN 暴露该客户端异常 |
 
 ## Tool Union
 
@@ -544,7 +510,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
 | `mcp` | 扁平 client tool `mcp__<server>__<tool>` | `lossy_supported` | `allowed_tools: string[]` → 逐个展开为 function 声明；`allowed_tools: filter`/空列表 → 不声明（经 tool_search 动态提供）；连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不再注入或 fail-fast，交给 Codex 客户端本地连接执行 |
-| `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明 `code_execution_20250522`；`container`（id/auto file_ids/memory）**WARN + 丢弃**（Anthropic 无 container） |
+| `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明时明确转换错误（fail-fast） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无 Anthropic 等价物；DEBUG + 忽略，透传上游自行决定 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
@@ -565,8 +531,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `custom` | `tool_choice.tool(name)` | `supported` | 仅在声明了相同 type/name 的 custom 时映射，否则明确转换失败 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 仅在已声明 `apply_patch` 时映射，否则明确转换失败 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 仅在已声明 `shell` 时映射；`local_shell` 不是此 specific choice 的等价声明 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错；不能与 structured output 同时使用 |
-| structured output + explicit incompatible choice | none | `unsupported_by_backend` | synthetic structured-output tool 已被强制时，`none`、`auto`、`required`、其他 specific choice、`allowed_tools` 和未知 choice 均无等价语义，明确转换失败 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错 |
 | hosted tool choice | none | `lossy_supported` | 无 Anthropic 等价 choice：DEBUG 后忽略，声明的工具照常下发，是否调用由上游决定（不代劳拒绝） |
 | `mcp` | none | `lossy_supported` | 无等价 MCP choice：DEBUG 后忽略，交上游决定（不代劳拒绝） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |
@@ -576,7 +541,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | OpenAI output item | Anthropic 来源 | 当前状态 | 说明 |
 |---|---|---|---|
 | `message` | text block | `supported` | 输出 text message |
-| `reasoning` | thinking/redacted thinking block | `supported` | 支持 summary/signature/encrypted |
+| `reasoning` | thinking block | `lossy_supported` | 有 summary/文本 + signature 时回灌 thinking；redacted_thinking 不再回灌（静默忽略） |
 | `function_call` | `tool_use` | `supported` | 回程 arguments 把整数值 `N.0` 收成整数，避免 Codex serde 失败 | 普通 tool use |
 | `function_call_output` | request replay only | `supported` | 作为 input item 回放（含 content 数组形态） |
 | `custom_tool_call` | custom `tool_use` | `supported` | freeform 单键对象按任意键名取值解包（shell/custom/apply_patch），多键 structured 形态 apply_patch 兜底折 V4A |
@@ -592,7 +557,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `program` | none | `unsupported_by_backend` | 无等价 |
 | `program_output` | none | `unsupported_by_backend` | 无等价 |
 | `image_generation_call` | none | `unsupported_by_backend` | 无等价 |
-| `code_interpreter_call` | Anthropic code execution | `lossy_supported` | server_tool_use + code_execution_tool_result → 事件链；outputs 仅 logs；`file_id`/image 真映射不可（§8）；stderr/return_code 并入 logs |
+| `code_interpreter_call` | none | `unsupported_by_backend` | 网关不支持 code_interpreter；上游 code_execution 回程按 skip 处理，不产生该 item |
 | `local_shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `local_shell_call` item type |
 | `local_shell_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `shell_call` | `custom_tool_call` name=`shell` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `shell_call` item type |
@@ -640,11 +605,11 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `response.web_search_call.searching` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
 | `response.web_search_call.in_progress` | Anthropic web search | `supported` | server_tool_use(web_search) 触发 |
 | `response.web_search_call.completed` | Anthropic web search | `supported` | web_search_tool_result 触发 |
-| `response.code_interpreter_call_code.delta` | Anthropic code execution | `lossy_supported` | code_execution server_tool_use 的 input_json_delta 映射 |
-| `response.code_interpreter_call_code.done` | Anthropic code execution | `lossy_supported` | server_tool_use block stop 映射 |
-| `response.code_interpreter_call.in_progress` | Anthropic code execution | `lossy_supported` | server_tool_use(code_execution) 触发 |
-| `response.code_interpreter_call.interpreting` | Anthropic code execution | `lossy_supported` | input_json_delta 结束后触发 |
-| `response.code_interpreter_call.completed` | Anthropic code execution | `lossy_supported` | `code_execution_tool_result` 触发；`code_execution_tool_result_error` 无对应 completed 语义，不映射 |
+| `response.code_interpreter_call_code.delta` | none | `unsupported_by_backend` | 网关不支持 code_interpreter，不再生成 |
+| `response.code_interpreter_call_code.done` | none | `unsupported_by_backend` | 网关不支持 code_interpreter，不再生成 |
+| `response.code_interpreter_call.in_progress` | none | `unsupported_by_backend` | 网关不支持 code_interpreter，不再生成 |
+| `response.code_interpreter_call.interpreting` | none | `unsupported_by_backend` | 网关不支持 code_interpreter，不再生成 |
+| `response.code_interpreter_call.completed` | none | `unsupported_by_backend` | 网关不支持 code_interpreter，不再生成 |
 | `response.image_generation_call.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.generating` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.partial_image` | none | `unsupported_by_backend` | 无等价 |
@@ -670,17 +635,17 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | request `image` | input_image | `supported` | OpenAI URL/data URI 到 Anthropic image |
 | request `document` | input_file | `supported` | 文件输入 |
 | request `thinking` | reasoning | `supported` | 用于回放 thinking signature |
-| request `redacted_thinking` | reasoning encrypted | `supported` | 用于回放 redacted thinking |
+| request `redacted_thinking` | none | `dropped` | 网关只接受明文 thinking；redacted 密文静默忽略，不回灌 |
 | request `tool_use` | function/custom/tool call | `supported` | 常用工具路径 |
 | request `tool_result` | tool call output | `supported` | 常用工具结果 |
 | stream `text` | output message | `supported` | 已输出 output_text |
 | stream `thinking` | reasoning | `supported` | 已输出 reasoning events |
-| stream `redacted_thinking` | reasoning encrypted | `supported` | 已存 encrypted_content |
+| stream `redacted_thinking` | none | `dropped` | 网关只接受明文 thinking；静默跳过，不生成 reasoning item |
 | stream `tool_use` | function/custom tool call | `supported` | 已输出 tool call events |
-| stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call（code_execution 见 catalog）；未登记的 server tool（如 web_fetch）及对应 result：**WARN + skip，不中断流**（非 response.failed） |
+| stream `server_tool_use` | built-in tool call | `supported` | name=web_search 映射为 web_search_call；code_execution 未登记（网关不支持 code_interpreter）；未登记的 server tool（如 web_fetch）及对应 result：**WARN + skip，不中断流**（非 response.failed） |
 | stream `web_search_tool_result` | web search call result | `supported` | 完成 web_search_call（completed + output_item.done） |
 | stream `web_fetch_tool_result` | web fetch result | `unsupported_by_backend` | OpenAI Responses 无直接等价 |
-| stream `code_execution_tool_result` | code interpreter output | `supported` | 映射为 code_interpreter_call completed + outputs(logs)；`file_id` 丢弃 + WARN；`code_execution_tool_result_error` 无法转 completed |
+| stream `code_execution_tool_result` | none | `unsupported_by_backend` | 网关不支持 code_interpreter；skip + WARN，不中断流（同其它无等价 server result） |
 | stream `bash_code_execution_tool_result` | none | `unsupported_by_backend` | Anthropic 托管 shell 执行结果，OpenAI Responses 无等价输出 item；对应 server_tool_use 在 start 阶段已 skip，result 阶段同步 skip + WARN，不中断流 |
 | stream `text_editor_code_execution_tool_result` | none | `unsupported_by_backend` | Anthropic 托管 text editor 执行结果，OpenAI Responses 无等价；对应 server_tool_use start 阶段已 skip，result 同步 skip + WARN |
 | stream `tool_search_tool_result` | none | `unsupported_by_backend` | Anthropic 服务端 tool_search 结果，网关的 tool_search 走客户端工具语义（非 server tool），此 server-side result 无等价；start 阶段已 skip，result 同步 skip + WARN |

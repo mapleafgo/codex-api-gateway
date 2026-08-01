@@ -219,9 +219,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		slog.Debug("chatconvert: 丢弃 prompt_cache_options（Chat 无顶层等价字段）",
 			"mode", req.PromptCacheOptions.Mode, "ttl", req.PromptCacheOptions.Ttl)
 	}
-	if rf := convertResponseFormat(req); rf != nil {
-		out.ResponseFormat = rf
-	}
+	// text.format（json_schema/json_object）不支持，静默忽略，不写 response_format。
 	if v := string(req.Text.Verbosity); v != "" {
 		out.Verbosity = ptr(v)
 	}
@@ -400,8 +398,8 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 	// pendingImages 暂存工具结果中的图片，按 opencode 语义在下一个
 	// user/assistant 消息前（或流尾）合并成独立 user 消息。
 	var pendingImages []ChatContentPart
-	// web_search / code_interpreter 历史缺 id 时用带序号的 fallback，避免多轮碰撞。
-	var wsHistSeq, ciHistSeq int
+	// web_search 历史缺 id 时用带序号的 fallback，避免多轮碰撞。
+	var wsHistSeq int
 	takeReasoning := func() string {
 		s := pendingReasoning
 		pendingReasoning = ""
@@ -623,16 +621,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			flushPending()
 			appendToolMessage(id, result, nil)
 		case item.OfCodeInterpreterCall != nil:
-			call := item.OfCodeInterpreterCall
-			args, result, images := codeInterpreterHistory(call)
-			id := call.ID
-			if id == "" {
-				ciHistSeq++
-				id = fmt.Sprintf("ci_hist_%d", ciHistSeq)
-			}
-			appendToolCall(id, toolcatalog.ChatNameCodeInterpreter, args)
-			flushPending()
-			appendToolMessage(id, result, images)
+			// 不支持 code_interpreter，静默忽略
 		case item.OfMcpCall != nil:
 			call := item.OfMcpCall
 			if call.ID == "" {
@@ -1459,12 +1448,6 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 		return out
 	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
 		return []ChatTool{webSearchToolDecl()}
-	case t.OfCodeInterpreter != nil:
-		if t.OfCodeInterpreter.Container.OfString.Valid() && t.OfCodeInterpreter.Container.OfString.Value != "" {
-			slog.Warn("chatconvert: 丢弃 code_interpreter.container（Chat 无 container）",
-				"container_id", t.OfCodeInterpreter.Container.OfString.Value)
-		}
-		return []ChatTool{codeInterpreterToolDecl()}
 	case t.OfMcp != nil:
 		return mcpDeclsFromTool(t.OfMcp)
 	default:
@@ -1495,38 +1478,6 @@ func convertChatModeration(req *oairesponses.ResponseNewParams) *ChatModeration 
 		m.Policy = &policy
 	}
 	return m
-}
-
-func convertResponseFormat(req *oairesponses.ResponseNewParams) any {
-	if req == nil {
-		return nil
-	}
-	switch {
-	case req.Text.Format.OfJSONSchema != nil:
-		f := req.Text.Format.OfJSONSchema
-		js := map[string]any{
-			"name":   f.Name,
-			"schema": f.Schema,
-		}
-		if f.Description.Valid() && f.Description.Value != "" {
-			js["description"] = f.Description.Value
-		}
-		if f.Strict.Valid() {
-			js["strict"] = f.Strict.Value
-		}
-		return map[string]any{
-			"type":        "json_schema",
-			"json_schema": js,
-		}
-	case req.Text.Format.OfJSONObject != nil:
-		return map[string]any{"type": "json_object"}
-	case req.Text.Format.OfText != nil:
-		// text 是 Chat API 默认行为，显式设置反而导致部分上游（如 JD）400。
-		// 仅 json_schema / json_object 才需要声明 response_format。
-		return nil
-	default:
-		return nil
-	}
 }
 
 func applyChatAllowedTools(out *ChatRequest, declared []oairesponses.ToolUnionParam, allowed *oairesponses.ToolChoiceAllowedParam) error {
@@ -1654,16 +1605,14 @@ func convertToolChoice(tc oairesponses.ResponseNewParamsToolChoiceUnion) any {
 }
 
 // convertHostedToolChoice 把 hosted tool_choice 映射为 Chat 强制 function 选择。
-// c 路径已把 web_search / code_interpreter 声明为同名 synthetic function（见
-// hosted.go / toolcatalog/chatnames.go），强制选择按同名 function 下发即可。
+// c 路径已把 web_search 声明为同名 synthetic function（见 hosted.go /
+// toolcatalog/chatnames.go），强制选择按同名 function 下发即可。
 func convertHostedToolChoice(hosted *oairesponses.ToolChoiceTypesParam) any {
 	switch hosted.Type {
 	case oairesponses.ToolChoiceTypesType(toolcatalog.ChatNameWebSearch),
 		oairesponses.ToolChoiceTypesTypeWebSearchPreview,
 		oairesponses.ToolChoiceTypesTypeWebSearchPreview2025_03_11:
 		return namedFunctionChoice(toolcatalog.ChatNameWebSearch)
-	case oairesponses.ToolChoiceTypesTypeCodeInterpreter:
-		return namedFunctionChoice(toolcatalog.ChatNameCodeInterpreter)
 	default:
 		slog.Debug("chatconvert: tool_choice hosted 类型无 Chat 等价，降级为默认选择",
 			"type", string(hosted.Type))
@@ -1696,8 +1645,6 @@ func openaiToolType(t oairesponses.ToolUnionParam) string {
 		return "mcp"
 	case t.OfWebSearch != nil:
 		return "web_search"
-	case t.OfCodeInterpreter != nil:
-		return "code_interpreter"
 	default:
 		return "unknown"
 	}

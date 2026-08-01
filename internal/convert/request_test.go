@@ -1228,40 +1228,25 @@ func TestShellAndApplyPatchOutputsConvertToToolResults(t *testing.T) {
 	}
 }
 
-func TestStructuredOutputSetsOutputConfigFormat(t *testing.T) {
+func TestStructuredOutputDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object","properties":{"v":{"type":"number"}}}}},"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.OutputConfig.Format.Schema == nil {
-		t.Fatalf("expected OutputConfig.Format to be set for json_schema, got %+v", out.OutputConfig.Format)
-	}
-	if out.OutputConfig.Format.Schema["type"] != "object" {
-		t.Fatalf("schema not preserved: %+v", out.OutputConfig.Format.Schema)
-	}
-	// 不应注入合成工具或覆写 tool_choice
-	if out.ToolChoice.OfTool != nil {
-		t.Fatalf("tool_choice should not be modified: %+v", out.ToolChoice)
-	}
-	for _, tool := range out.Tools {
-		if tool.OfTool != nil && tool.OfTool.Name == "answer" {
-			t.Fatalf("should not inject synthetic tool: %+v", out.Tools)
-		}
+	if out.OutputConfig.Format.Schema != nil {
+		t.Fatalf("网关不支持 structured output，OutputConfig.Format 不应设置: %+v", out.OutputConfig.Format)
 	}
 }
 
-func TestJsonObjectFormatInjectsTool(t *testing.T) {
+func TestJsonObjectFormatDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"give me json"}]}],"text":{"format":{"type":"json_object"}},"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Tools) != 1 || out.Tools[0].OfTool.Name != "json_object" {
-		t.Fatalf("json_object tool not injected: %+v", out.Tools)
-	}
-	if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "json_object" {
-		t.Fatalf("bad tool_choice: %+v", out.ToolChoice)
+	if len(out.Tools) != 0 {
+		t.Fatalf("json_object 不应注入合成工具: %+v", out.Tools)
 	}
 }
 
@@ -1533,15 +1518,12 @@ func TestAllowedToolsRejectsCrossTypeSameName(t *testing.T) {
 	}
 }
 
-func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
+func TestAllowedToolsRejectsUndeclaredMCPIdentity(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
 		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
 		Tools: []oairesponses.ToolUnionParam{
 			{OfFunction: &oairesponses.FunctionToolParam{Name: "available", Parameters: map[string]any{"type": "object"}}},
-		},
-		Text: oairesponses.ResponseTextConfigParam{
-			Format: oairesponses.ResponseFormatTextConfigParamOfJSONSchema("result", map[string]any{"type": "object"}),
 		},
 		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
 			OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
@@ -1553,18 +1535,17 @@ func TestStructuredOutputStillValidatesAllowedTools(t *testing.T) {
 
 	_, err := ToAnthropic(req, &config.Config{})
 	if err == nil || !strings.Contains(err.Error(), `unsupported tool_choice`) {
-		t.Fatalf("expected structured output to validate unsupported allowed tool, got %v", err)
+		t.Fatalf("expected allowed_tools to reject unsupported identity, got %v", err)
 	}
 }
 
-func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
+func TestAllowedToolsMappedToAutoAny(t *testing.T) {
 	for _, mode := range []string{"auto", "required"} {
 		t.Run(mode, func(t *testing.T) {
 			req := mustReq(t, `{
 				"model":"gpt-5",
 				"input":"hi",
 				"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
-				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
 				"tool_choice":{"type":"allowed_tools","mode":"`+mode+`","tools":[{"type":"function","name":"lookup"}]}
 			}`)
 
@@ -1572,16 +1553,16 @@ func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 			if err != nil {
 				t.Fatalf("expected success, got %v", err)
 			}
-			if out.OutputConfig.Format.Schema == nil {
-				t.Fatalf("expected OutputConfig.Format schema, got %+v", out.OutputConfig.Format)
-			}
 			// Anthropic 无 allowed_tools；convertToolChoice 已将 allowed_tools 映射为
-			// OfAuto（mode=auto）或 OfAny（mode=required）。确认不因 format 而中断。
+			// OfAuto（mode=auto）或 OfAny（mode=required）。
 			if out.ToolChoice.OfAuto == nil && out.ToolChoice.OfAny == nil {
 				t.Fatalf("tool_choice should be mapped from allowed_tools, got %+v", out.ToolChoice)
 			}
 		})
 	}
+}
+
+func TestToolChoiceModes(t *testing.T) {
 	tests := []struct {
 		name       string
 		tools      string
@@ -1597,8 +1578,7 @@ func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 		{name: "shell", tools: `[{"type":"shell"}]`, toolChoice: `{"type":"shell"}`},
 		{name: "unknown mode", toolChoice: `"unsupported"`},
 		{name: "unknown type", toolChoice: `{"type":"unsupported"}`, wantErr: true},
-		// hosted tool_choice 现在被正确恢复为 OfHostedTool（此前误落 OfAllowedTools
-		// 才撞上 fail-fast）：a 路径按「不代劳拒绝」Debug 后忽略，structured output 照常。
+		// hosted tool_choice 恢复为 OfHostedTool：a 路径按「不代劳拒绝」Debug 后忽略。
 		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`},
 	}
 
@@ -1612,10 +1592,9 @@ func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 				"model":"gpt-5",
 				"input":"hi",
 				"tools":`+tools+`,
-				"text":{"format":{"type":"json_schema","name":"result","schema":{"type":"object"}}},
 				"tool_choice":`+tt.toolChoice+`
 			}`)
-			out, err := ToAnthropic(req, &config.Config{})
+			_, err := ToAnthropic(req, &config.Config{})
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for tool_choice %s", tt.toolChoice)
@@ -1624,10 +1603,6 @@ func TestStructuredOutputCoexistsWithAllowedTools(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("expected success, got %v", err)
-			}
-			// OutputConfig.Format 应始终携带 schema
-			if out.OutputConfig.Format.Schema == nil {
-				t.Fatalf("expected OutputConfig.Format schema, got %+v", out.OutputConfig.Format)
 			}
 		})
 	}
@@ -2121,24 +2096,21 @@ func TestReasoningEncryptedContentAsSignatureZDR(t *testing.T) {
 	}
 }
 
-// redacted thinking（无 summary 文本）的 encrypted_content 应转为 redacted_thinking block。
-func TestRedactedThinkingFromEncryptedContent(t *testing.T) {
+// redacted thinking（无 summary 文本）不再回灌：网关丢弃 encrypted_content，
+// 避免兼容端点（如 DeepSeek）因 redacted_thinking block 400。
+func TestRedactedThinkingDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"reasoning","id":"rs_0","encrypted_content":"redactedData"},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	for _, msg := range out.Messages {
 		for _, blk := range msg.Content {
-			if blk.OfRedactedThinking != nil && blk.OfRedactedThinking.Data == "redactedData" {
-				found = true
+			if blk.OfRedactedThinking != nil {
+				b, _ := json.Marshal(out)
+				t.Fatalf("redacted_thinking block must be dropped: %s", b)
 			}
 		}
-	}
-	if !found {
-		b, _ := json.Marshal(out)
-		t.Fatalf("redacted_thinking block not found: %s", b)
 	}
 }
 
@@ -2285,33 +2257,20 @@ func TestWebSearchCallHistoryOpenPageLossy(t *testing.T) {
 	}
 }
 
-// code_interpreter_call input item 回放为 Anthropic 历史内容块：
-// server_tool_use(code_execution, input={code}) + code_execution_tool_result。
-// container_id 必须丢弃（Anthropic code execution 无 container 概念）。
-func TestCodeInterpreterCallInputReplaysAsServerToolUseAndResult(t *testing.T) {
+// code_interpreter_call input item 不再回放：网关不支持 code_interpreter，
+// 历史 item 整体 WARN + 丢弃，避免向兼容端点发出 code_execution block。
+func TestCodeInterpreterCallHistoryDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"run"}]},
 		{"type":"code_interpreter_call","id":"ci_1","status":"completed","container_id":"cntr_x","code":"print(2)","outputs":[{"type":"logs","logs":"2\n"}]}
 	],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
-		t.Fatalf("replay must not fail: %v", err)
+		t.Fatalf("drop must not fail: %v", err)
 	}
 	raw, _ := json.Marshal(out.Messages)
-	if !strings.Contains(string(raw), `"code_execution"`) {
-		t.Fatalf("server_tool_use(code_execution) not replayed: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"code_execution_result"`) {
-		t.Fatalf("code_execution_tool_result not replayed: %s", raw)
-	}
-	if strings.Contains(string(raw), `"cntr_x"`) {
-		t.Fatalf("container_id must be dropped on replay: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"print(2)"`) {
-		t.Fatalf("code text must be preserved in server_tool_use input: %s", raw)
-	}
-	if !strings.Contains(string(raw), `"2\n"`) {
-		t.Fatalf("logs stdout must be preserved in code_execution_tool_result: %s", raw)
+	if strings.Contains(string(raw), `"code_execution"`) || strings.Contains(string(raw), `"print(2)"`) {
+		t.Fatalf("code_interpreter_call 历史必须整体丢弃: %s", raw)
 	}
 }
 

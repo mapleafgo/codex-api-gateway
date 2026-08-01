@@ -45,12 +45,6 @@ var (
 	evWebSearchCallInProgress    = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
 	evWebSearchCallSearching     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
 	evWebSearchCallCompleted     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
-
-	evCodeInterpreterCallInProgress   = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInProgress]())
-	evCodeInterpreterCallInterpreting = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInterpreting]())
-	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
-	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
-	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
 )
 
 var (
@@ -137,13 +131,12 @@ type Converter struct {
 	thinkItemIdx    int
 	thinkSummaryIdx int
 	summarized      bool // thinking display=summarized
-	thinkRedacted   bool // current thinking block is redacted
 
 	// Tool call state
 	customToolNames map[string]bool
 
 	// callByBlockIdx 是通用 call 流水线的进行中状态（block index → *callState），
-	// 覆盖全部 6 类 call（function/custom/tool_search/web_search/code_interpreter/mcp）。
+	// 覆盖全部 5 类 call（function/custom/tool_search/web_search/mcp）。
 	callByBlockIdx map[int]*callState
 
 	// declaredServerTools 是请求侧声明的标准 server tool 身份（去重）。回程
@@ -157,9 +150,6 @@ type Converter struct {
 
 	// Web search state: Anthropic tool_use id -> output item index.
 	webSearchByToolUseID map[string]int
-
-	// Code execution state: Anthropic tool_use id -> output item index.
-	codeExecutionByToolUseID map[string]int
 
 	// skippedBlocks tracks block indices for server tools that have no
 	// Responses equivalent (web_fetch, uncatalogued future tools, ...).
@@ -189,10 +179,9 @@ func New() *Converter {
 			"apply_patch": true,
 			"shell":       true,
 		},
-		webSearchByToolUseID:     map[string]int{},
-		codeExecutionByToolUseID: map[string]int{},
-		skippedBlocks:            map[int]bool{},
-		declaredToolNames:        map[string]toolcatalog.Identity{},
+		webSearchByToolUseID: map[string]int{},
+		skippedBlocks:        map[int]bool{},
+		declaredToolNames:    map[string]toolcatalog.Identity{},
 	}
 }
 
@@ -348,9 +337,11 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 	case anBlockText:
 		return c.handleTextStart()
 	case anBlockThinking:
-		return c.handleThinkingStart(ev, false)
+		return c.handleThinkingStart(ev)
 	case anBlockRedactedThinking:
-		return c.handleThinkingStart(ev, true)
+		// 只接受明文 thinking，redacted 密文静默跳过。
+		c.skippedBlocks[int(ev.Index)] = true
+		return nil
 	case anBlockToolUse:
 		return c.handleCallStart(ev, c.dispatchCallKind(ev))
 	case anBlockServerToolUse:
@@ -370,14 +361,10 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 			return c.handleCallResult(ev)
 		}
 		return c.handleSkippedBlockStart(ev)
-	case anBlockCodeExecutionToolResult:
-		if _, ok := c.codeExecutionByToolUseID[ev.ContentBlock.ToolUseID]; ok {
-			return c.handleCallResult(ev)
-		}
-		return c.handleSkippedBlockStart(ev)
 	case anBlockWebFetchToolResult,
 		anBlockWebFetchToolResultError,
 		anBlockWebSearchToolResultError,
+		anBlockCodeExecutionToolResult,
 		anBlockCodeExecutionToolResultError,
 		anBlockBashCodeExecutionToolResult,
 		anBlockBashCodeExecutionToolResultError,
@@ -450,11 +437,10 @@ func (c *Converter) handleTextStart() []model.SSEEvent {
 	return out
 }
 
-func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion, redacted bool) []model.SSEEvent {
+func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	idx := c.itemOrder
 	c.itemOrder++
 	c.openThinking = true
-	c.thinkRedacted = redacted
 	c.thinkItemIdx = idx
 	c.thinkSummaryIdx = 0
 	c.thinkBuilder.Reset()
@@ -462,23 +448,15 @@ func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion, r
 	// GLM 把 thinking signature 放在 content_block_start 的 content_block.signature
 	// 字段中，而非像官方 Anthropic API 那样通过 signature_delta 事件流式下发。
 	// 在此预取，使两种后端的 signature 都能被正确捕获。
-	if !redacted && ev.ContentBlock.Signature != "" {
+	if ev.ContentBlock.Signature != "" {
 		c.sigBuilder.WriteString(ev.ContentBlock.Signature)
 	}
 
 	itemID := fmt.Sprintf("rs_%d", idx)
-
-	if redacted {
-		c.outputItems = append(c.outputItems, model.OutputItem{
-			Type: model.ItemTypeReasoning, ID: itemID, Status: model.ResponseStatusInProgress,
-			EncryptedContent: ev.ContentBlock.Data,
-		})
-	} else {
-		c.outputItems = append(c.outputItems, model.OutputItem{
-			Type: model.ItemTypeReasoning, ID: itemID, Status: model.ResponseStatusInProgress,
-			Summary: []model.OutputText{},
-		})
-	}
+	c.outputItems = append(c.outputItems, model.OutputItem{
+		Type: model.ItemTypeReasoning, ID: itemID, Status: model.ResponseStatusInProgress,
+		Summary: []model.OutputText{},
+	})
 
 	return []model.SSEEvent{model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{
 		Type: evOutputItemAdded, SequenceNumber: c.nextSeq(),
@@ -673,18 +651,16 @@ func (c *Converter) handleBlockStop(ev *anthropic.MessageStreamEventUnion) []mod
 		sigText := c.sigBuilder.String()
 		// handleThinkingStart guarantees the item exists at c.thinkItemIdx,
 		// so no bounds check is needed here (consistent with text/tool branches).
-		if !c.thinkRedacted {
-			c.outputItems[c.thinkItemIdx].Summary = []model.OutputText{
-				{Type: model.ContentTypeSummaryText, Text: thinkText},
-			}
-			c.outputItems[c.thinkItemIdx].Signature = sigText
-			// 把 signature 同步到 encrypted_content，使 disable_response_storage=true
-			// 时 Codex 能通过标准字段在 ZDR transcript 中保存并回传 thinking signature。
-			c.outputItems[c.thinkItemIdx].EncryptedContent = sigText
+		c.outputItems[c.thinkItemIdx].Summary = []model.OutputText{
+			{Type: model.ContentTypeSummaryText, Text: thinkText},
 		}
-		if c.summarized && !c.thinkRedacted {
+		c.outputItems[c.thinkItemIdx].Signature = sigText
+		// 把 signature 同步到 encrypted_content，使 disable_response_storage=true
+		// 时 Codex 能通过标准字段在 ZDR transcript 中保存并回传 thinking signature。
+		c.outputItems[c.thinkItemIdx].EncryptedContent = sigText
+		if c.summarized {
 			out = append(out, c.emitSummaryEvents(itemID, thinkText)...)
-		} else if !c.thinkRedacted {
+		} else {
 			out = append(out, model.MarshalEvent(evReasoningTextDone, model.ReasoningTextDoneEvent{
 				Type: evReasoningTextDone, SequenceNumber: c.nextSeq(),
 				OutputIndex: c.thinkItemIdx, ItemID: itemID, Text: thinkText,

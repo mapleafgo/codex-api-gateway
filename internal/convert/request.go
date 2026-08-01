@@ -377,9 +377,6 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	if err := convertTools(out, req); err != nil {
 		return nil, err
 	}
-	if err := injectStructuredOutput(out, req); err != nil {
-		return nil, err
-	}
 	if err := convertToolChoice(out, req); err != nil {
 		return nil, err
 	}
@@ -445,7 +442,7 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return appendToolSearchOutput(out, sysParts, item.OfToolSearchOutput)
 	}
 	if item.OfCodeInterpreterCall != nil {
-		return appendCodeInterpreterCall(out, item.OfCodeInterpreterCall)
+		return nil // 不支持 code_interpreter，静默忽略
 	}
 	if item.OfWebSearchCall != nil {
 		return appendWebSearchCall(out, item.OfWebSearchCall)
@@ -677,16 +674,11 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 			}
 		}
 	}
-	// encrypted_content 有值时，需要区分两种来源：
-	//   1) redacted_thinking（无 summary 文本）-> attachRedactedThinking
-	//   2) plaintext thinking 的 signature（有 summary 文本）-> attachThinking
-	//     这是为 disable_response_storage=true 场景设计的：converter 把 thinking
-	//     signature 写入 encrypted_content，让 Codex 通过标准字段回传。
+	// encrypted_content 有值时：有文本 → attachThinking（明文 signature）；
+	// 无文本（redacted 密文）→ 只接受明文 thinking，静默忽略。
 	if r.EncryptedContent.Valid() && r.EncryptedContent.Value != "" {
 		if text != "" {
 			attachThinking(out, text, r.EncryptedContent.Value)
-		} else {
-			attachRedactedThinking(out, r.EncryptedContent.Value)
 		}
 		return nil
 	}
@@ -701,16 +693,6 @@ func appendReasoning(out *anthropic.MessageNewParams, r *oairesponses.ResponseRe
 		"reasoning_id", r.ID,
 		"impact", "该 reasoning item 不转递给上游（signature 为空，不符合 round-trip 要求）")
 	return nil
-}
-
-func attachRedactedThinking(out *anthropic.MessageNewParams, data string) {
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
-		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
-	}
-	last := &out.Messages[len(out.Messages)-1]
-	last.Content = append([]anthropic.ContentBlockParamUnion{{
-		OfRedactedThinking: &anthropic.RedactedThinkingBlockParam{Data: data},
-	}}, last.Content...)
 }
 
 func attachThinking(out *anthropic.MessageNewParams, text, signature string) {
@@ -1057,30 +1039,6 @@ func appendToolSearchOutput(out *anthropic.MessageNewParams, sysParts *[]instruc
 	return appendToolResult(out, output.CallID.Value, names)
 }
 
-// appendCodeInterpreterCall 把历史 code_interpreter_call input item 回放为 Anthropic
-// 历史 content block：server_tool_use(code_execution, input={code}) + code_execution_tool_result。
-// container_id 丢弃（Anthropic code execution 无 container 概念）。
-// image 输出（OfImage）不可转换，丢弃 + WARN。
-func appendCodeInterpreterCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCodeInterpreterToolCallParam) error {
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
-		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
-	}
-	last := &out.Messages[len(out.Messages)-1]
-	last.Content = append(last.Content, anthropic.NewServerToolUseBlock(
-		call.ID, map[string]any{"code": call.Code.Value}, anthropic.ServerToolUseBlockParamNameCodeExecution,
-	))
-
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
-		out.Messages = append(out.Messages, anthropic.NewUserMessage())
-	}
-	last = &out.Messages[len(out.Messages)-1]
-	last.Content = append(last.Content, anthropic.NewCodeExecutionToolResultBlock(
-		anthropic.CodeExecutionResultBlockParam{Stdout: codeInterpreterLogs(call.Outputs)},
-		call.ID,
-	))
-	return nil
-}
-
 // appendMcpCall 把历史 mcp_call 直接回填为标准 tool_use + tool_result。
 // MCP 由 Codex 客户端本地执行，历史形态与回程一致走扁平名
 // mcp__<server>__<tool>，不再重建 beta mcp_tool_use/mcp_tool_result。
@@ -1190,25 +1148,6 @@ func webSearchCallReplay(call *oairesponses.ResponseFunctionWebSearchParam) (str
 		}
 	}
 	return query, urls
-}
-
-// codeInterpreterLogs 把 code_interpreter_call 的 logs outputs 拼成单段 stdout 文本。
-func codeInterpreterLogs(outputs []oairesponses.ResponseCodeInterpreterToolCallOutputUnionParam) string {
-	var parts []string
-	for _, o := range outputs {
-		if o.OfLogs != nil && o.OfLogs.Logs != "" {
-			parts = append(parts, o.OfLogs.Logs)
-		} else if o.OfImage != nil {
-			// image 输出无 Anthropic code_execution_result 等价字段，丢弃 + WARN。
-			// URL 仅进 WARN；logs 放简短占位，避免空 result 被误读为「无输出」。
-			url := o.OfImage.URL
-			slog.Warn("丢弃 code_interpreter_call 的 image 输出（Anthropic code_execution 无等价字段），对应数据被丢弃",
-				"url", url,
-				"impact", "图片不会出现在 code_execution_tool_result 中")
-			parts = append(parts, "[code_interpreter image output omitted: no Anthropic equivalent]")
-		}
-	}
-	return strings.Join(parts, "\n")
 }
 
 // mcpHistoryItemType 返回历史 MCP input item 的人类可读类型标签，用于 WARN 日志。
@@ -1404,7 +1343,8 @@ func coalesceSameRoleMessages(out *anthropic.MessageNewParams) {
 // ensureToolUsePaired 扫描产出 messages，为没有配对 tool_result 的 tool_use 补一个
 // is_error 占位 tool_result。占位 result 插在该 tool_use 之后的第一个 user message 前部；
 // 若其后没有 user message（assistant 是最后一条），则新建一个 user message 承载。
-// server_tool_use（code_interpreter 等）自带配对 result，不受影响。
+// code_interpreter_call 已整体丢弃，不参与配对；web_search 等 server_tool_use
+// 自带配对 result，不受影响。
 func ensureToolUsePaired(out *anthropic.MessageNewParams) {
 	// 第一遍：收集所有已被 tool_result 引用的 tool_use id。
 	resolved := map[string]struct{}{}
@@ -1598,17 +1538,6 @@ func appendToolList(out *anthropic.MessageNewParams, tools []oairesponses.ToolUn
 	return nil
 }
 
-func appendConvertedTool(out *anthropic.MessageNewParams, name string, schema map[string]any, description *string, custom bool) error {
-	if name == "" {
-		return fmt.Errorf("tool conversion requires a name")
-	}
-	if hasTool(out, name) {
-		return fmt.Errorf("tool conversion name conflict for %q", name)
-	}
-	out.Tools = append(out.Tools, toolcatalog.ClientTool(name, schema, description, custom))
-	return nil
-}
-
 func hasTool(out *anthropic.MessageNewParams, name string) bool {
 	for _, tool := range out.Tools {
 		if tool.OfTool != nil && tool.OfTool.Name == name {
@@ -1616,30 +1545,6 @@ func hasTool(out *anthropic.MessageNewParams, name string) bool {
 		}
 	}
 	return false
-}
-
-func injectStructuredOutput(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
-	if req.Text.Format.OfJSONSchema != nil {
-		f := req.Text.Format.OfJSONSchema
-		// 使用 Anthropic 原生 output_config.format 表达 JSON Schema 约束，
-		// 替代之前创建合成工具 + 强制 tool_choice 的有损方式。
-		// 原生方式下模型产出 text block（JSON 文本），由 streamconv 正常转为
-		// output_text.delta/done 事件，不再需要 tool_use→function_call 转换。
-		out.OutputConfig.Format = anthropic.JSONOutputFormatParam{
-			Schema: f.Schema,
-		}
-		return nil
-	}
-	if req.Text.Format.OfJSONObject != nil {
-		// Anthropic 无 json_object 等价格式，保持 forced tool 方式。
-		if err := appendConvertedTool(out, model.StructuredOutputJSONObjectTool, map[string]any{"type": "object"}, nil, false); err != nil {
-			return err
-		}
-		out.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfTool: &anthropic.ToolChoiceToolParam{Name: model.StructuredOutputJSONObjectTool},
-		}
-	}
-	return nil
 }
 
 func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) error {
@@ -1665,33 +1570,9 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 		return nil
 	}
 	if tc.OfAllowedTools != nil {
-		if out.ToolChoice.OfTool != nil {
-			_, err := allowedToolNames(req.Tools, tc.OfAllowedTools)
-			if err != nil {
-				return err
-			}
-			// Anthropic 无法同时表达 schema 强制工具 + allowed_tools：优先保留 structured output。
-			slog.Warn("structured output 与 allowed_tools 冲突，保留 schema 强制工具并忽略 allowed_tools",
-				"structured_tool", out.ToolChoice.OfTool.Name)
-			applyParallelToolChoice(out, req)
-			return nil
-		}
 		if err := applyAllowedTools(out, req.Tools, tc.OfAllowedTools); err != nil {
 			return err
 		}
-		applyParallelToolChoice(out, req)
-		return nil
-	}
-	if out.ToolChoice.OfTool != nil {
-		if !toolChoiceExplicit(tc) {
-			return nil
-		}
-		if structuredToolChoiceEquivalent(out.ToolChoice.OfTool.Name, tc) {
-			return nil
-		}
-		// Anthropic 无法同时表达 schema 强制工具与其它显式 tool_choice：优先保留 structured output，保证可转发。
-		slog.Warn("structured output 与显式 tool_choice 冲突，保留 schema 强制工具并忽略 tool_choice",
-			"structured_tool", out.ToolChoice.OfTool.Name)
 		applyParallelToolChoice(out, req)
 		return nil
 	}
@@ -1737,10 +1618,6 @@ func toolChoiceExplicit(tc oairesponses.ResponseNewParamsToolChoiceUnion) bool {
 		tc.OfSpecificApplyPatchToolChoice != nil ||
 		tc.OfSpecificShellToolChoice != nil ||
 		tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil
-}
-
-func structuredToolChoiceEquivalent(name string, tc oairesponses.ResponseNewParamsToolChoiceUnion) bool {
-	return tc.OfFunctionTool != nil && tc.OfFunctionTool.Name == name
 }
 
 func applySpecificToolChoice(out *anthropic.MessageNewParams, declared []oairesponses.ToolUnionParam, want toolcatalog.Identity) error {

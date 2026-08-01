@@ -537,9 +537,9 @@ func TestIntegrationReasoningSummarized(t *testing.T) {
 	}
 }
 
-// TestIntegrationRedactedThinking verifies that redacted_thinking blocks
-// store EncryptedContent for round-trip.
-func TestIntegrationRedactedThinking(t *testing.T) {
+// TestIntegrationRedactedThinkingSkipped verifies that redacted_thinking blocks
+// are skipped (gateway 只接受明文 thinking)，不生成 reasoning item。
+func TestIntegrationRedactedThinkingSkipped(t *testing.T) {
 	lines := []string{
 		`{"type":"message_start","message":{"id":"m_redact1","model":"claude"}}`,
 		`{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"ENCRYPTED_BLOB_123"}}`,
@@ -566,21 +566,18 @@ func TestIntegrationRedactedThinking(t *testing.T) {
 	// Should complete normally.
 	requireEvent(t, events, "response.completed")
 
-	// Verify EncryptedContent is stored in output and session.
+	// redacted_thinking 不产生 reasoning item；仅 text 输出存在。
 	completed := findEvent(t, events, "response.completed")
 	resp := completed.data["response"].(map[string]any)
 	output := resp["output"].([]any)
-	var foundEncrypted bool
 	for _, item := range output {
 		m := item.(map[string]any)
 		if m["type"] == "reasoning" {
-			if m["encrypted_content"] == "ENCRYPTED_BLOB_123" {
-				foundEncrypted = true
-			}
+			t.Fatalf("redacted_thinking must not produce reasoning item: %+v", m)
 		}
 	}
-	if !foundEncrypted {
-		t.Fatalf("encrypted_content not stored: %+v", output)
+	if len(output) != 1 || output[0].(map[string]any)["type"] != "message" {
+		t.Fatalf("expected only text message output, got %+v", output)
 	}
 }
 

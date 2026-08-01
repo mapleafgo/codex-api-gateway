@@ -587,7 +587,7 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 	// 不触发 WARN（AGENTS.md 的静默跳过约定针对丢弃场景，不针对 echo）。
 
 	// include：按 include 项分档处理。
-	//   - satisfied：网关默认已发出对应字段（如 web_search sources、code_interpreter outputs），
+	//   - satisfied：网关默认已发出对应字段（如 web_search sources），
 	//     无需额外行为，也不 WARN；
 	//   - encrypted_content：已通过 disable_response_storage 路径处理，不 WARN；
 	//   - chat_only：仅 Chat 上游可映射（如 message.output_text.logprobs）；
@@ -596,7 +596,6 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 		satisfied := map[string]bool{
 			"reasoning.encrypted_content":    true, // ZDR 路径已处理
 			"web_search_call.action.sources": true, // action.sources 默认下发
-			"code_interpreter_call.outputs":  true, // outputs 默认下发
 			"message.input_image.image_url":  true, // 输入 image_url 原样保留
 		}
 		chatOnly := map[string]bool{

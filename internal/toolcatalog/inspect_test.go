@@ -19,7 +19,6 @@ func TestInspectClientTools(t *testing.T) {
 		{"local_shell", oairesponses.ToolUnionParam{OfLocalShell: &oairesponses.ToolLocalShellParam{}}, Identity{OpenAIType: "local_shell", Name: "shell", Freeform: true}},
 		{"tool_search", oairesponses.ToolUnionParam{OfToolSearch: &oairesponses.ToolSearchToolParam{}}, Identity{OpenAIType: "tool_search", Name: "tool_search"}},
 		{"web_search", oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{}}, Identity{OpenAIType: "web_search", Name: "web_search"}},
-		{"code_interpreter", oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}}, Identity{OpenAIType: "code_interpreter", Name: "code_interpreter"}},
 		{"mcp", oairesponses.ToolUnionParam{OfMcp: &oairesponses.ToolMcpParam{ServerLabel: "s"}}, Identity{OpenAIType: "mcp", Name: "mcp"}},
 	}
 	for _, tc := range tests {
@@ -32,6 +31,12 @@ func TestInspectClientTools(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", ids, tc.want)
 			}
 		})
+	}
+}
+
+func TestInspectCodeInterpreterUnsupported(t *testing.T) {
+	if _, err := Inspect(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}}); err == nil {
+		t.Fatal("code_interpreter must fail fast (gateway 不支持)")
 	}
 }
 

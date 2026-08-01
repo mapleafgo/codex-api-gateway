@@ -118,13 +118,9 @@ func TestDeclareWebSearchPreviewNoDomains(t *testing.T) {
 	}
 }
 
-func TestDeclareCodeInterpreterMapsToCodeExecution(t *testing.T) {
-	decls, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}})
-	if err != nil {
-		t.Fatalf("code_interpreter must not fail fast: %v", err)
-	}
-	if decls[0].OfCodeExecutionTool20250522 == nil {
-		t.Fatalf("code_interpreter not mapped to code_execution: %+v", decls)
+func TestDeclareCodeInterpreterUnsupported(t *testing.T) {
+	if _, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}}); err == nil {
+		t.Fatal("code_interpreter must fail fast (gateway 不支持)")
 	}
 }
 
@@ -236,29 +232,5 @@ func TestDeclareWebSearchPreviewMapsUserLocation(t *testing.T) {
 	ws := decls[0].OfWebSearchTool20260209
 	if ws == nil || !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Beijing" {
 		t.Fatalf("preview user_location not mapped: %+v", decls)
-	}
-}
-
-func TestDeclareCodeInterpreterContainerWarns(t *testing.T) {
-	var logs bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(old) })
-
-	decls, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{
-		Container: oairesponses.ToolCodeInterpreterContainerUnionParam{
-			OfCodeInterpreterToolAuto: &oairesponses.ToolCodeInterpreterContainerCodeInterpreterContainerAutoParam{
-				FileIDs: []string{"file_1"},
-			},
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decls[0].OfCodeExecutionTool20250522 == nil {
-		t.Fatal("expected code_execution tool")
-	}
-	if !strings.Contains(logs.String(), "container") {
-		t.Fatalf("expected container WARN, logs: %s", logs.String())
 	}
 }

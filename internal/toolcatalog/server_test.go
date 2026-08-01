@@ -11,9 +11,8 @@ func TestServerToolByAnthropicName(t *testing.T) {
 	if !ok || id.Name != "web_search" {
 		t.Fatalf("web_search must be registered: %+v ok=%v", id, ok)
 	}
-	id, ok = ServerToolByAnthropicName("code_execution")
-	if !ok || id.OpenAIType != "code_interpreter" {
-		t.Fatalf("code_execution must be registered: %+v ok=%v", id, ok)
+	if _, ok := ServerToolByAnthropicName("code_execution"); ok {
+		t.Fatal("code_execution must not be registered (gateway 不支持 code_interpreter)")
 	}
 }
 
@@ -23,7 +22,7 @@ func TestIsServerTool(t *testing.T) {
 		want bool
 	}{
 		{Identity{OpenAIType: "web_search"}, true},
-		{Identity{OpenAIType: "code_interpreter"}, true},
+		{Identity{OpenAIType: "code_interpreter"}, false},
 		{Identity{OpenAIType: "function"}, false},
 		{Identity{OpenAIType: "custom"}, false},
 		{Identity{OpenAIType: "shell"}, false},

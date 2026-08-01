@@ -35,24 +35,6 @@ func webSearchToolDecl() ChatTool {
 	}
 }
 
-func codeInterpreterToolDecl() ChatTool {
-	return ChatTool{
-		Type: "function",
-		Function: ChatFunction{
-			Name:        toolcatalog.ChatNameCodeInterpreter,
-			Description: "Run code (Chat backend: shape-only; no sandbox).",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"code": map[string]any{"type": "string"},
-				},
-				"required":             []string{"code"},
-				"additionalProperties": false,
-			},
-		},
-	}
-}
-
 func mcpToolDecl(serverLabel, toolName string) ChatTool {
 	return ChatTool{
 		Type: "function",
@@ -152,29 +134,6 @@ func webSearchQueryAndURLs(call *oairesponses.ResponseFunctionWebSearchParam) (s
 		query = strings.Join(parts, "\n")
 	}
 	return query, urls
-}
-
-func codeInterpreterHistory(call *oairesponses.ResponseCodeInterpreterToolCallParam) (argsJSON, resultText string, images []ChatContentPart) {
-	code := ""
-	if call.Code.Valid() {
-		code = call.Code.Value
-	}
-	b, _ := json.Marshal(map[string]string{"code": code})
-	var logs []string
-	for _, o := range call.Outputs {
-		switch {
-		case o.OfLogs != nil && o.OfLogs.Logs != "":
-			logs = append(logs, o.OfLogs.Logs)
-		case o.OfImage != nil && o.OfImage.URL != "":
-			// 对齐 opencode：code_interpreter 图片转为后续独立 user image 消息。
-			images = append(images, imagePart(o.OfImage.URL))
-		}
-	}
-	body := strings.Join(logs, "\n")
-	if body == "" && len(images) == 0 {
-		body = "[code_interpreter]"
-	}
-	return string(b), body, images
 }
 
 func mcpHistoryArgs(call *oairesponses.ResponseInputItemMcpCallParam) (name, args, result string) {

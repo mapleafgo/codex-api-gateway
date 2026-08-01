@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -130,13 +131,9 @@ func TestEnsureToolUsePairedNormalUntouched(t *testing.T) {
 	}
 }
 
-// TestEnsureToolUsePairedServerToolUnaffected：code_interpreter_call（server_tool_use）
-// 在 item 内自合成 server_tool_use + code_execution_tool_result，ensureToolUsePaired
-// 只处理普通 OfToolUse，不应误动 server tool 结构。
-func TestEnsureToolUsePairedServerToolUnaffected(t *testing.T) {
-	buf, restore := captureWarnLogger(t)
-	defer restore()
-
+// TestCodeInterpreterCallHistoryIgnored：code_interpreter_call 历史整体静默忽略，
+// 不产生 server_tool_use，也不参与 ensureToolUsePaired 占位。
+func TestCodeInterpreterCallHistoryIgnored(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"code_interpreter_call","id":"ci_1","code":"print(1)","outputs":[]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
@@ -145,22 +142,9 @@ func TestEnsureToolUsePairedServerToolUnaffected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), "补占位") {
-		t.Errorf("server_tool_use must not be placeheld: %s", buf.String())
-	}
-	var hasServerToolUse, hasCodeExecResult bool
-	for i := range out.Messages {
-		for _, b := range out.Messages[i].Content {
-			if b.OfServerToolUse != nil {
-				hasServerToolUse = true
-			}
-			if b.OfCodeExecutionToolResult != nil {
-				hasCodeExecResult = true
-			}
-		}
-	}
-	if !hasServerToolUse || !hasCodeExecResult {
-		t.Errorf("server_tool_use + code_execution_tool_result pair missing: %+v", out.Messages)
+	raw, _ := json.Marshal(out.Messages)
+	if strings.Contains(string(raw), "code_execution") {
+		t.Errorf("code_interpreter_call history must be ignored: %s", raw)
 	}
 }
 

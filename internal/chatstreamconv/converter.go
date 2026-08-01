@@ -14,33 +14,28 @@ import (
 )
 
 var (
-	evResponseCreated                 = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
-	evResponseInProgress              = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
-	evResponseCompleted               = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
-	evResponseIncomplete              = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
-	evResponseFailed                  = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
-	evOutputItemAdded                 = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
-	evOutputItemDone                  = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemDone]())
-	evContentPartAdded                = string(oaconstant.ValueOf[oaconstant.ResponseContentPartAdded]())
-	evContentPartDone                 = string(oaconstant.ValueOf[oaconstant.ResponseContentPartDone]())
-	evOutputTextDelta                 = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
-	evOutputTextDone                  = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
-	evFunctionCallArgumentsDelta      = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
-	evFunctionCallArgumentsDone       = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
-	evCustomToolCallInputDelta        = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
-	evCustomToolCallInputDone         = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
-	evRefusalDelta                    = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDelta]())
-	evRefusalDone                     = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDone]())
-	evReasoningTextDelta              = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
-	evReasoningTextDone               = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
-	evWebSearchCallInProgress         = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
-	evWebSearchCallSearching          = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
-	evWebSearchCallCompleted          = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
-	evCodeInterpreterCallInProgress   = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInProgress]())
-	evCodeInterpreterCallInterpreting = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallInterpreting]())
-	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
-	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
-	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
+	evResponseCreated            = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
+	evResponseInProgress         = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
+	evResponseCompleted          = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
+	evResponseIncomplete         = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
+	evResponseFailed             = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
+	evOutputItemAdded            = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
+	evOutputItemDone             = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemDone]())
+	evContentPartAdded           = string(oaconstant.ValueOf[oaconstant.ResponseContentPartAdded]())
+	evContentPartDone            = string(oaconstant.ValueOf[oaconstant.ResponseContentPartDone]())
+	evOutputTextDelta            = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
+	evOutputTextDone             = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
+	evFunctionCallArgumentsDelta = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
+	evFunctionCallArgumentsDone  = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
+	evCustomToolCallInputDelta   = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
+	evCustomToolCallInputDone    = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
+	evRefusalDelta               = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDelta]())
+	evRefusalDone                = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDone]())
+	evReasoningTextDelta         = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
+	evReasoningTextDone          = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
+	evWebSearchCallInProgress    = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
+	evWebSearchCallSearching     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
+	evWebSearchCallCompleted     = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
 )
 
 const refusalFallback = "I can't help with that."
@@ -111,7 +106,6 @@ const (
 	kindCustom
 	kindToolSearch
 	kindWebSearch
-	kindCodeInterpreter
 )
 
 // chatChunk 是 Chat Completions 流式 chunk 的精简视图。
@@ -466,8 +460,6 @@ func (c *Converter) classifyTool(name string) toolKind {
 		return kindCustom
 	case toolcatalog.ChatNameWebSearch:
 		return kindWebSearch
-	case toolcatalog.ChatNameCodeInterpreter:
-		return kindCodeInterpreter
 	}
 	if _, ok := c.freeformNames[name]; ok {
 		return kindCustom
@@ -720,12 +712,6 @@ func (c *Converter) buildToolItem(acc *toolAccum) model.OutputItem {
 			Status: model.ResponseStatusInProgress,
 			Action: &model.WebSearchAction{Type: "search"},
 		}
-	case kindCodeInterpreter:
-		return model.OutputItem{
-			Type:   model.ItemTypeCodeInterpreterCall,
-			ID:     acc.itemID,
-			Status: model.ResponseStatusInProgress,
-		}
 	default:
 		ns, name := c.resolveToolName(acc.name)
 		return model.OutputItem{
@@ -749,13 +735,6 @@ func (c *Converter) hostedStartEvents(acc *toolAccum) []model.SSEEvent {
 			}),
 			model.MarshalEvent(evWebSearchCallSearching, model.WebSearchCallEvent{
 				Type: evWebSearchCallSearching, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, ItemID: acc.itemID,
-			}),
-		}
-	case kindCodeInterpreter:
-		return []model.SSEEvent{
-			model.MarshalEvent(evCodeInterpreterCallInProgress, model.CodeInterpreterCallEvent{
-				Type: evCodeInterpreterCallInProgress, SequenceNumber: c.nextSeq(),
 				OutputIndex: acc.outIdx, ItemID: acc.itemID,
 			}),
 		}
@@ -912,51 +891,6 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 				OutputIndex: acc.outIdx, Item: item,
 			}),
 		)
-	case kindCodeInterpreter:
-		code := jsonStringField(rawArgs, "code")
-		item := model.OutputItem{
-			Type:    model.ItemTypeCodeInterpreterCall,
-			ID:      acc.itemID,
-			Status:  model.ResponseStatusCompleted,
-			Code:    code,
-			Outputs: []model.CodeInterpreterOutput{},
-		}
-		if acc.outIdx < len(c.outputItems) {
-			c.outputItems[acc.outIdx] = item
-		}
-		if code != "" {
-			out = append(out,
-				model.MarshalEvent(evCodeInterpreterCallCodeDelta, model.CodeInterpreterCallCodeDeltaEvent{
-					Type: evCodeInterpreterCallCodeDelta, SequenceNumber: c.nextSeq(),
-					OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: code,
-				}),
-				model.MarshalEvent(evCodeInterpreterCallCodeDone, model.CodeInterpreterCallCodeDoneEvent{
-					Type: evCodeInterpreterCallCodeDone, SequenceNumber: c.nextSeq(),
-					OutputIndex: acc.outIdx, ItemID: acc.itemID, Code: code,
-				}),
-			)
-		}
-		out = append(out,
-			model.MarshalEvent(evCodeInterpreterCallInterpreting, model.CodeInterpreterCallEvent{
-				Type: evCodeInterpreterCallInterpreting, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, ItemID: acc.itemID,
-			}),
-			model.MarshalEvent(evCodeInterpreterCallCompleted, model.CodeInterpreterCallEvent{
-				Type: evCodeInterpreterCallCompleted, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, ItemID: acc.itemID,
-			}),
-			model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, Item: item,
-			}),
-		)
-		if acc.outIdx < len(c.outputItems) {
-			c.outputItems[acc.outIdx] = item
-		}
-		out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-			OutputIndex: acc.outIdx, Item: item,
-		}))
 	default:
 		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
 		ns, name := c.resolveToolName(acc.name)

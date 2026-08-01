@@ -845,7 +845,7 @@ func TestWebSearchResultSurfacesSources(t *testing.T) {
 	}
 }
 
-func TestCodeExecutionServerToolUseEmitsCodeInterpreterCall(t *testing.T) {
+func TestCodeExecutionServerToolUseSkipped(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
 	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
@@ -858,21 +858,9 @@ func TestCodeExecutionServerToolUseEmitsCodeInterpreterCall(t *testing.T) {
 			Input: map[string]any{"code": "print(3)"},
 		},
 	})
-	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
-	item := added["item"].(map[string]any)
-	if item["type"] != "code_interpreter_call" {
-		t.Fatalf("expected code_interpreter_call, got %v", item["type"])
+	if len(evs) != 0 {
+		t.Fatalf("code_execution server_tool_use must be skipped, got %+v", evs)
 	}
-	if item["code"] != "print(3)" {
-		t.Fatalf("bad code: %v", item["code"])
-	}
-	if item["container_id"] == "" {
-		t.Fatal("container_id must be synthesized")
-	}
-	eventByType(t, evs, "response.code_interpreter_call.in_progress")
-	eventByType(t, evs, "response.code_interpreter_call.interpreting")
-	eventByType(t, evs, "response.code_interpreter_call_code.delta")
-	eventByType(t, evs, "response.code_interpreter_call_code.done")
 
 	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_start",
@@ -884,18 +872,12 @@ func TestCodeExecutionServerToolUseEmitsCodeInterpreterCall(t *testing.T) {
 			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{Stdout: "3\n"},
 		},
 	})
-	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
-	doneItem := done["item"].(map[string]any)
-	if doneItem["status"] != "completed" {
-		t.Fatalf("expected completed, got %v", doneItem["status"])
-	}
-	outputs := doneItem["outputs"].([]any)
-	if outputs[0].(map[string]any)["logs"] != "3\n" {
-		t.Fatalf("bad logs output: %v", outputs[0])
+	if len(evs2) != 0 {
+		t.Fatalf("code_execution_tool_result must be skipped, got %+v", evs2)
 	}
 }
 
-func TestCodeExecutionResultStderrFoldedIntoLogs(t *testing.T) {
+func TestCodeExecutionResultStderrSkipped(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
 	c.Feed(&anthropic.MessageStreamEventUnion{
@@ -911,10 +893,8 @@ func TestCodeExecutionResultStderrFoldedIntoLogs(t *testing.T) {
 			Content: anthropic.ContentBlockStartEventContentBlockUnionContent{Stdout: "out", Stderr: "err"},
 		},
 	})
-	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
-	logs := done["item"].(map[string]any)["outputs"].([]any)[0].(map[string]any)["logs"]
-	if !strings.Contains(logs.(string), "out") || !strings.Contains(logs.(string), "err") {
-		t.Fatalf("stdout+stderr must fold into logs: %v", logs)
+	if len(evs) != 0 {
+		t.Fatalf("code_execution_tool_result must be skipped, got %+v", evs)
 	}
 }
 
@@ -1280,44 +1260,33 @@ func TestSummarizedEmitsSummaryEvents(t *testing.T) {
 	}
 }
 
-func TestRedactedThinkingStoredAsEncrypted(t *testing.T) {
+func TestRedactedThinkingSkipped(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:    "message_start",
 		Message: anthropic.Message{ID: "m", Model: "x"},
 	})
-	c.Feed(&anthropic.MessageStreamEventUnion{
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:         "content_block_start",
 		Index:        0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "redacted_thinking", Data: "ENCRYPTED_DATA"},
 	})
-	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+	if len(evs) != 0 {
+		t.Fatalf("redacted_thinking start must be skipped, got %+v", evs)
+	}
+	evs, _ = c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_stop",
 		Index: 0,
 	})
 
 	items := c.OutputItems()
-	if len(items) != 1 || items[0].Type != "reasoning" {
-		t.Fatalf("expected one reasoning item, got %+v", items)
-	}
-	if items[0].EncryptedContent != "ENCRYPTED_DATA" {
-		t.Fatalf("redacted data not stored: %q", items[0].EncryptedContent)
-	}
-	hasDone := false
-	for _, e := range evs {
-		if e.Type == "response.output_item.done" {
-			hasDone = true
-		}
-	}
-	if !hasDone {
-		t.Fatalf("expected output_item.done for redacted_thinking")
+	if len(items) != 0 {
+		t.Fatalf("redacted_thinking must not produce reasoning item, got %+v", items)
 	}
 }
 
-// TestRedactedSummarizedNoSummaryEvents verifies Fix B: when summarized mode
-// is active and a redacted_thinking block arrives, no reasoning_summary_*
-// events are emitted (the guard checks EncryptedContent == "").
-func TestRedactedSummarizedNoSummaryEvents(t *testing.T) {
+// TestRedactedSummarizedSkipped：summarized 模式下 redacted_thinking 同样跳过。
+func TestRedactedSummarizedSkipped(t *testing.T) {
 	c := New()
 	c.SetSummarized(true)
 	c.Feed(&anthropic.MessageStreamEventUnion{
@@ -1344,8 +1313,8 @@ func TestRedactedSummarizedNoSummaryEvents(t *testing.T) {
 	}
 
 	items := c.OutputItems()
-	if len(items) != 1 || items[0].EncryptedContent != "SECRET" {
-		t.Fatalf("redacted data must still be stored, got %+v", items)
+	if len(items) != 0 {
+		t.Fatalf("redacted_thinking must not produce reasoning item, got %+v", items)
 	}
 }
 

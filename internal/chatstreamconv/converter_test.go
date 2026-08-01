@@ -987,7 +987,7 @@ func TestLogprobsOnlyChunkAccumulates(t *testing.T) {
 	}
 }
 
-func TestCodeInterpreterOutboundShape(t *testing.T) {
+func TestCodeInterpreterOutboundFallsBackToFunctionCall(t *testing.T) {
 	c := New()
 	chunks := []string{
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"ci1","type":"function","function":{"name":"code_interpreter","arguments":""}}]}}]}`,
@@ -1004,11 +1004,14 @@ func TestCodeInterpreterOutboundShape(t *testing.T) {
 			joined += string(e.Data)
 		}
 	}
-	if !strings.Contains(joined, "code_interpreter_call") {
-		t.Fatalf("want code_interpreter_call events: %s", joined)
+	if !strings.Contains(joined, "function_call") {
+		t.Fatalf("want function_call fallback events: %s", joined)
+	}
+	if strings.Contains(joined, "code_interpreter_call") {
+		t.Fatalf("must not emit code_interpreter_call: %s", joined)
 	}
 	if !strings.Contains(joined, "print(1)") {
-		t.Fatalf("want code in events: %s", joined)
+		t.Fatalf("want args in events: %s", joined)
 	}
 }
 

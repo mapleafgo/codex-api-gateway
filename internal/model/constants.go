@@ -44,20 +44,16 @@ var (
 	ContentTypeRefusal     = string(oaconstant.ValueOf[oaconstant.Refusal]())
 	ContentTypeSummaryText = string(oaconstant.ValueOf[oaconstant.SummaryText]())
 
-	ToolTypeFunction        = string(oaconstant.ValueOf[oaconstant.Function]())
-	ToolTypeCustom          = string(oaconstant.ValueOf[oaconstant.Custom]())
-	ToolTypeApplyPatch      = string(oaconstant.ValueOf[oaconstant.ApplyPatch]())
-	ToolTypeShell           = string(oaconstant.ValueOf[oaconstant.Shell]())
-	ToolTypeLocalShell      = string(oaconstant.ValueOf[oaconstant.LocalShell]())
-	ToolTypeToolSearch      = string(oaconstant.ValueOf[oaconstant.ToolSearch]())
-	ToolTypeNamespace       = string(oaconstant.ValueOf[oaconstant.Namespace]())
-	ToolTypeMcp             = string(oaconstant.ValueOf[oaconstant.Mcp]())
-	ToolTypeCodeInterpreter = string(oaconstant.ValueOf[oaconstant.CodeInterpreter]())
-
+	ToolTypeFunction           = string(oaconstant.ValueOf[oaconstant.Function]())
+	ToolTypeCustom             = string(oaconstant.ValueOf[oaconstant.Custom]())
+	ToolTypeApplyPatch         = string(oaconstant.ValueOf[oaconstant.ApplyPatch]())
+	ToolTypeShell              = string(oaconstant.ValueOf[oaconstant.Shell]())
+	ToolTypeLocalShell         = string(oaconstant.ValueOf[oaconstant.LocalShell]())
+	ToolTypeToolSearch         = string(oaconstant.ValueOf[oaconstant.ToolSearch]())
+	ToolTypeNamespace          = string(oaconstant.ValueOf[oaconstant.Namespace]())
+	ToolTypeMcp                = string(oaconstant.ValueOf[oaconstant.Mcp]())
 	AnnotationTypeFileCitation = string(oaconstant.ValueOf[oaconstant.FileCitation]())
 	AnnotationTypeURLCitation  = string(oaconstant.ValueOf[oaconstant.URLCitation]())
-
-	StructuredOutputJSONObjectTool = string(oaconstant.ValueOf[oaconstant.JSONObject]())
 )
 
 // Response status and request option values mirror the OpenAI Responses SDK

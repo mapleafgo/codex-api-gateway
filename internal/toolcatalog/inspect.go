@@ -39,8 +39,6 @@ func Inspect(t oairesponses.ToolUnionParam) ([]Identity, error) {
 			}
 		}
 		return out, nil
-	case t.OfCodeInterpreter != nil:
-		return []Identity{{OpenAIType: model.ToolTypeCodeInterpreter, Name: "code_interpreter"}}, nil
 	case t.OfMcp != nil:
 		return inspectMCP(t.OfMcp), nil
 	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:

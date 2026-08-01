@@ -12,7 +12,7 @@ import (
 // lookupHostedCallByResult 按 result block 类型选对应的 byToolUseID map + callKind。
 // 返回 (itemIdx, kind)；kind 为 nil 表示该 result block 无关联的 hosted call。
 //
-// hosted call（web_search/code_interpreter）在 content_block_start 时注册到
+// hosted call（web_search）在 content_block_start 时注册到
 // byToolUseID；其 server_tool_use block 的 content_block_stop 只从 callByBlockIdx 删除，
 // byToolUseID map 保留到 result 抵达——真实 SSE 流里 result block 是独立的
 // content_block，出现在 server_tool_use stop 之后。tool_result（GLM 方言回传 web search
@@ -25,12 +25,6 @@ func (c *Converter) lookupHostedCallByResult(ev *anthropic.MessageStreamEventUni
 			return 0, nil
 		}
 		return idx, webSearchCallKind{}
-	case anBlockCodeExecutionToolResult:
-		idx, ok := c.codeExecutionByToolUseID[toolUseID]
-		if !ok {
-			return 0, nil
-		}
-		return idx, codeInterpreterCallKind{}
 	default:
 		return 0, nil
 	}
@@ -55,13 +49,11 @@ func (c *Converter) handleCallStart(ev *anthropic.MessageStreamEventUnion, kind 
 		name:       ev.ContentBlock.Name,
 		argBuilder: &strings.Builder{},
 	}
-	// hosted call（web_search/code_interpreter）注册 byToolUseID 关联 result block。
+	// hosted call（web_search）注册 byToolUseID 关联 result block。
 	if kind.tracksToolUseID() {
 		switch kind.(type) {
 		case webSearchCallKind:
 			c.webSearchByToolUseID[ev.ContentBlock.ID] = idx
-		case codeInterpreterCallKind:
-			c.codeExecutionByToolUseID[ev.ContentBlock.ID] = idx
 		}
 	}
 

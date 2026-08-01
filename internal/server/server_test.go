@@ -134,7 +134,7 @@ func TestIncludeSatisfiedNoWarn(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	body := `{"model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.action.sources","code_interpreter_call.outputs"],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
+	body := `{"model":"gpt-5","include":["reasoning.encrypted_content","web_search_call.action.sources"],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true}`
 	resp, err := http.Post(ts.URL+"/v1/responses", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
