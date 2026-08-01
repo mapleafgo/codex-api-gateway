@@ -8,7 +8,7 @@ import (
 
 // customCallKind 把 tool_use（customToolNames 命中，含 shell/apply_patch）映射为
 // custom_tool_call。input 在 stop 时一次性给出（custom_tool_call.input.delta/done），
-// input 经 customToolInput 从累积 args 解析（{"input": ...}）。无 result block。
+// input 经 customToolInput 从累积 args 解析（{"s": ...}）。无 result block。
 type customCallKind struct{}
 
 func (customCallKind) itemType() string      { return model.ItemTypeCustomToolCall }
@@ -35,7 +35,7 @@ func (customCallKind) consumeDelta(_ *Converter, _ *callState, _ string) []model
 
 func (customCallKind) finish(c *Converter, st *callState, args string) (model.OutputItem, []model.SSEEvent) {
 	item := c.outputItems[st.itemIdx]
-	// 统一 freeform 出口：解包 {"input"} + 工具契约归一（apply_patch V4A 等）
+	// 统一 freeform 出口：解包 {"s"} + 工具契约归一（apply_patch V4A 等）
 	input := toolcatalog.SanitizeClientToolInput(st.name, true, args)
 	item.Input = input
 	var evts []model.SSEEvent

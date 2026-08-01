@@ -18,22 +18,22 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 	switch {
 	case t.OfFunction != nil:
 		fn := t.OfFunction
-		return []anthropic.ToolUnionParam{ClientTool(fn.Name, schemaFromAny(fn.Parameters), optionalString(fn.Description), false)}, nil
+		return []anthropic.ToolUnionParam{ClientTool(fn.Name, schemaFromAny(fn.Parameters), optionalString(fn.Description))}, nil
 	case t.OfCustom != nil:
 		c := t.OfCustom
-		return []anthropic.ToolUnionParam{ClientTool(c.Name, FreeformInputSchema(), optionalString(c.Description), true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool(c.Name, FreeformInputSchema(customInputDescription(c)), optionalString(c.Description))}, nil
 	case t.OfApplyPatch != nil:
-		// Codex 的 apply_patch 只消费 V4A 文本：声明 freeform {"input":...}，
+		// Codex 的 apply_patch 只消费 V4A 文本：声明 freeform {"s":...}，
 		// 回程 custom_tool_call.input 才能直接交给客户端执行。历史回灌虽按
 		// 客户端原始 operation/path/diff 直接回填，但声明必须驱动模型输出文本。
-		return []anthropic.ToolUnionParam{ClientTool("apply_patch", FreeformInputSchema(), nil, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("apply_patch", FreeformInputSchema(""), nil)}, nil
 	case t.OfShell != nil:
-		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(), nil, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(""), nil)}, nil
 	case t.OfLocalShell != nil:
-		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(), nil, true)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(""), nil)}, nil
 	case t.OfToolSearch != nil:
 		s := t.OfToolSearch
-		return []anthropic.ToolUnionParam{ClientTool("tool_search", schemaFromAny(s.Parameters), optionalString(s.Description), false)}, nil
+		return []anthropic.ToolUnionParam{ClientTool("tool_search", schemaFromAny(s.Parameters), optionalString(s.Description))}, nil
 	case t.OfNamespace != nil:
 		ns := t.OfNamespace
 		out := make([]anthropic.ToolUnionParam, 0, len(ns.Tools))
@@ -41,10 +41,10 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 			switch {
 			case nested.OfFunction != nil:
 				fn := nested.OfFunction
-				out = append(out, ClientTool(ToolName(ns.Name, fn.Name), schemaFromAny(fn.Parameters), optionalString(fn.Description), false))
+				out = append(out, ClientTool(ToolName(ns.Name, fn.Name), schemaFromAny(fn.Parameters), optionalString(fn.Description)))
 			case nested.OfCustom != nil:
 				c := nested.OfCustom
-				out = append(out, ClientTool(ToolName(ns.Name, c.Name), FreeformInputSchema(), optionalString(c.Description), true))
+				out = append(out, ClientTool(ToolName(ns.Name, c.Name), FreeformInputSchema(customInputDescription(c)), optionalString(c.Description)))
 			default:
 				return nil, fmt.Errorf("unsupported namespace tool: Anthropic backend has no safe equivalent")
 			}
@@ -102,7 +102,7 @@ func mcpClientToolDecls(m *oairesponses.ToolMcpParam) []anthropic.ToolUnionParam
 		if name == "" {
 			continue
 		}
-		out = append(out, ClientTool(ToolName("mcp__"+m.ServerLabel, name), nil, nil, false))
+		out = append(out, ClientTool(ToolName("mcp__"+m.ServerLabel, name), nil, optionalString(m.ServerDescription)))
 	}
 	return out
 }
@@ -149,10 +149,9 @@ func webSearchTool(allowed []string, city, country, region, timezone oparam.Opt[
 	return anthropic.ToolUnionParam{OfWebSearchTool20260209: p}
 }
 
-// ClientTool 构造一个 Anthropic client tool（ToolParam）。
-// custom=true 标记为 freeform custom tool（shell / custom）。
-// 被 Declare 与 convert 的 structured-output 注入共用。
-func ClientTool(name string, schema map[string]any, description *string, custom bool) anthropic.ToolUnionParam {
+// ClientTool 构造一个 Anthropic client tool（ToolParam），统一省略 type 字段，
+// 与官方自定义工具的缺省形态一致（name + description + input_schema）。
+func ClientTool(name string, schema map[string]any, description *string) anthropic.ToolUnionParam {
 	if schema == nil {
 		schema = map[string]any{"type": "object", "properties": map[string]any{}}
 	}
@@ -163,21 +162,7 @@ func ClientTool(name string, schema map[string]any, description *string, custom 
 	if description != nil {
 		tool.Description = aparam.NewOpt(*description)
 	}
-	if custom {
-		tool.Type = anthropic.ToolTypeCustom
-	}
 	return anthropic.ToolUnionParam{OfTool: tool}
-}
-
-// StripToolType 清空 client tool（OfTool）的 type 字段，server tool 保持不变。
-// DeepSeek 等 Anthropic 兼容端点的 serde 只接受缺省形态的工具声明，
-// 显式 type:"custom" 会 400（实测 "unknown variant `custom`"）。
-func StripToolType(tools []anthropic.ToolUnionParam) {
-	for i := range tools {
-		if tools[i].OfTool != nil {
-			tools[i].OfTool.Type = ""
-		}
-	}
 }
 
 // ToolName 返回 namespace 工具的转换后名（namespace 为空时原样返回）。
@@ -200,14 +185,35 @@ func schemaFromAny(v any) map[string]any {
 	return s
 }
 
+// customInputDescription 生成 freeform input 字段的 description：
+// 只说明该字段必须遵循的格式（format.definition），不携带工具级 description。
+func customInputDescription(c *oairesponses.CustomToolParam) string {
+	if c == nil {
+		return ""
+	}
+	if g := c.Format.OfGrammar; g != nil && g.Definition != "" {
+		return FormatRequirementDescription(g.Definition)
+	}
+	return ""
+}
+
+// FormatRequirementDescription 返回 freeform input 字段的必填格式说明（英文 wire 文本）。
+func FormatRequirementDescription(definition string) string {
+	return "Required format:\n" + definition
+}
+
 // FreeformInputSchema 返回 freeform 工具（shell/custom）的通用 input schema。
-func FreeformInputSchema() map[string]any {
+// description 为空时使用默认字段描述，保证 input 属性始终携带 description。
+func FreeformInputSchema(description string) map[string]any {
+	if description == "" {
+		description = "The freeform text input to pass to the tool."
+	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"input": map[string]any{"type": "string"},
+			"s": map[string]any{"type": "string", "description": description},
 		},
-		"required":             []string{"input"},
+		"required":             []string{"s"},
 		"additionalProperties": false,
 	}
 }

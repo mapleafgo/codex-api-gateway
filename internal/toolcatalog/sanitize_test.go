@@ -6,7 +6,7 @@ import (
 )
 
 func TestSanitizeClientToolInputFreeformPassthrough(t *testing.T) {
-	raw := `{"input":"echo hi"}`
+	raw := `{"s":"echo hi"}`
 	got := SanitizeClientToolInput("shell", true, raw)
 	if got != "echo hi" {
 		t.Fatalf("shell freeform unwrap: %q", got)
@@ -52,7 +52,7 @@ func TestSanitizeApplyPatchStructuredFallback(t *testing.T) {
 }
 
 func TestSanitizeApplyPatchFreeformPassthrough(t *testing.T) {
-	raw := `{"input":"*** Begin Patch\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch"}`
+	raw := `{"s":"*** Begin Patch\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch"}`
 	got := SanitizeClientToolInput("apply_patch", true, raw)
 	want := "*** Begin Patch\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch"
 	if got != want {

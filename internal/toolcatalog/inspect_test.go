@@ -160,3 +160,20 @@ func TestInspectAllowedErrors(t *testing.T) {
 		t.Fatal("expected error for unsupported type")
 	}
 }
+
+func TestInspectAllowedMcp(t *testing.T) {
+	ids, err := InspectAllowed(map[string]any{"type": "mcp", "server_label": "srv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0].OpenAIType != "mcp" || ids[0].Namespace != "mcp__srv" || ids[0].Name != "" {
+		t.Fatalf("mcp allowed identity=%+v", ids)
+	}
+	ids, err = InspectAllowed(map[string]any{"type": "mcp", "server_label": "srv", "name": "fn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0].Name != "fn" {
+		t.Fatalf("mcp named allowed identity=%+v", ids)
+	}
+}

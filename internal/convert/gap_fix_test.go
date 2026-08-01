@@ -57,6 +57,7 @@ func TestWebSearchHistoryResultEmptyWithoutEncrypted(t *testing.T) {
 	}
 	var useID string
 	var result *anthropic.WebSearchToolResultBlockParam
+	var resultRole anthropic.MessageParamRole
 	for _, msg := range out.Messages {
 		for _, b := range msg.Content {
 			if b.OfServerToolUse != nil && b.OfServerToolUse.Name == anthropic.ServerToolUseBlockParamNameWebSearch {
@@ -64,6 +65,7 @@ func TestWebSearchHistoryResultEmptyWithoutEncrypted(t *testing.T) {
 			}
 			if b.OfWebSearchToolResult != nil {
 				result = b.OfWebSearchToolResult
+				resultRole = msg.Role
 			}
 		}
 	}
@@ -72,6 +74,9 @@ func TestWebSearchHistoryResultEmptyWithoutEncrypted(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("missing web_search_tool_result")
+	}
+	if resultRole != anthropic.MessageParamRoleAssistant {
+		t.Fatalf("web_search_tool_result role=%q, want assistant", resultRole)
 	}
 	if result.ToolUseID != "ws_1" {
 		t.Fatalf("tool_use_id=%q", result.ToolUseID)

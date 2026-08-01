@@ -366,18 +366,19 @@ func chatCustomGrammar(c *oairesponses.CustomToolParam) *ChatCustomGrammar {
 
 // customChatTool 统一把 custom 工具降级为 function（Chat 上游无 custom 槽位，
 // opencode2api 会把 custom 转 function 且丢弃 grammar，历史回程还会把裸文本
-// 当 arguments 导致上游 400）。grammar definition 拼入 description，
-// 让上游模型仍能看到 V4A 等自由文本格式约束。
+// 当 arguments 导致上游 400）。function description 保持客户端原文，
+// grammar 格式约束只写进 parameters.properties.s.description。
 func customChatTool(name, description string, grammar *ChatCustomGrammar) ChatTool {
+	inputDesc := ""
 	if grammar != nil && grammar.Definition != "" {
-		description += "\n\n" + name + " 输入必须是自由文本（grammar 模板）：\n" + grammar.Definition
+		inputDesc = toolcatalog.FormatRequirementDescription(grammar.Definition)
 	}
 	return ChatTool{
 		Type: "function",
 		Function: ChatFunction{
 			Name:        name,
 			Description: description,
-			Parameters:  toolcatalog.FreeformInputSchema(),
+			Parameters:  toolcatalog.FreeformInputSchema(inputDesc),
 		},
 	}
 }
@@ -551,10 +552,11 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			appendToolMessage(fco.CallID, text, images)
 		case item.OfCustomToolCall != nil:
 			c := item.OfCustomToolCall
-			freeform[c.Name] = struct{}{}
+			name := toolcatalog.ToolName(c.Namespace.Value, c.Name)
+			freeform[name] = struct{}{}
 			// Chat 上游无 custom 槽位：所有 custom 工具历史统一降级为
-			// function + {"input":...}，避免 opencode2api 把裸文本当 arguments。
-			appendToolCall(c.CallID, c.Name, freeformArgsJSON(c.Input))
+			// function + {"s":...}，避免 opencode2api 把裸文本当 arguments。
+			appendToolCall(c.CallID, name, freeformArgsJSON(c.Input))
 		case item.OfCustomToolCallOutput != nil:
 			flushPending()
 			c := item.OfCustomToolCallOutput
@@ -638,7 +640,7 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			for _, tl := range list.Tools {
 				if tl.Name != "" {
 					names = append(names, tl.Name)
-					*dynamicTools = append(*dynamicTools, mcpToolDecl(list.ServerLabel, tl.Name))
+					*dynamicTools = append(*dynamicTools, mcpToolDecl(list.ServerLabel, tl.Name, ""))
 				}
 			}
 			// mcp_list_tools 是历史工具列表结果，不转模型文本：opencode 无此类型，
@@ -1170,9 +1172,9 @@ func applyPatchArgs(call *oairesponses.ResponseInputItemApplyPatchCallParam) (st
 }
 
 func freeformArgsJSON(input string) string {
-	b, err := json.Marshal(map[string]string{"input": input})
+	b, err := json.Marshal(map[string]string{"s": input})
 	if err != nil {
-		return `{"input":""}`
+		return `{"s":""}`
 	}
 	return string(b)
 }
@@ -1399,7 +1401,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 			Type: "function",
 			Function: ChatFunction{
 				Name:       name,
-				Parameters: toolcatalog.FreeformInputSchema(),
+				Parameters: toolcatalog.FreeformInputSchema(""),
 			},
 		}}
 	case t.OfApplyPatch != nil:
@@ -1407,7 +1409,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 			Type: "function",
 			Function: ChatFunction{
 				Name:       toolcatalog.ChatNameApplyPatch,
-				Parameters: toolcatalog.FreeformInputSchema(),
+				Parameters: toolcatalog.FreeformInputSchema(""),
 			},
 		}}
 	case t.OfToolSearch != nil:
@@ -1532,6 +1534,24 @@ func chatAllowedToolNames(declared []oairesponses.ToolUnionParam, allowed *oaire
 			return nil, err
 		}
 		for _, id := range ids {
+			if id.OpenAIType == model.ToolTypeMcp && id.Name == "" {
+				matched := false
+				for _, d := range declaredIDs {
+					if d.Namespace == id.Namespace {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					return nil, fmt.Errorf("chatconvert: tool_choice allowed_tools entry %s is not declared", id)
+				}
+				for _, d := range declaredIDs {
+					if d.Namespace == id.Namespace {
+						allowedNames[d.ConvertedName()] = true
+					}
+				}
+				continue
+			}
 			matched := false
 			for _, d := range declaredIDs {
 				if d.Equal(id) {

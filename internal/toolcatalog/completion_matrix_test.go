@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
@@ -16,15 +15,14 @@ func TestCompletionMatrixDeclareClientTools(t *testing.T) {
 		name     string
 		tool     oairesponses.ToolUnionParam
 		wantName string
-		custom   bool
 		freeform bool
 	}{
-		{"function", oairesponses.ToolUnionParam{OfFunction: &oairesponses.FunctionToolParam{Name: "exec_command", Parameters: map[string]any{"type": "object"}}}, "exec_command", false, false},
-		{"custom", oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{Name: "my_raw"}}, "my_raw", true, true},
-		{"apply_patch", oairesponses.ToolUnionParam{OfApplyPatch: &oairesponses.ApplyPatchToolParam{}}, "apply_patch", true, true},
-		{"shell", oairesponses.ToolUnionParam{OfShell: &oairesponses.FunctionShellToolParam{}}, "shell", true, true},
-		{"local_shell", oairesponses.ToolUnionParam{OfLocalShell: &oairesponses.ToolLocalShellParam{}}, "shell", true, true},
-		{"tool_search", oairesponses.ToolUnionParam{OfToolSearch: &oairesponses.ToolSearchToolParam{}}, "tool_search", false, false},
+		{"function", oairesponses.ToolUnionParam{OfFunction: &oairesponses.FunctionToolParam{Name: "exec_command", Parameters: map[string]any{"type": "object"}}}, "exec_command", false},
+		{"custom", oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{Name: "my_raw"}}, "my_raw", true},
+		{"apply_patch", oairesponses.ToolUnionParam{OfApplyPatch: &oairesponses.ApplyPatchToolParam{}}, "apply_patch", true},
+		{"shell", oairesponses.ToolUnionParam{OfShell: &oairesponses.FunctionShellToolParam{}}, "shell", true},
+		{"local_shell", oairesponses.ToolUnionParam{OfLocalShell: &oairesponses.ToolLocalShellParam{}}, "shell", true},
+		{"tool_search", oairesponses.ToolUnionParam{OfToolSearch: &oairesponses.ToolSearchToolParam{}}, "tool_search", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -39,8 +37,8 @@ func TestCompletionMatrixDeclareClientTools(t *testing.T) {
 			if tool.Name != tc.wantName {
 				t.Fatalf("name=%q want %q", tool.Name, tc.wantName)
 			}
-			if tc.custom && tool.Type != anthropic.ToolTypeCustom {
-				t.Fatalf("want custom type, got %q", tool.Type)
+			if tool.Type != "" {
+				t.Fatalf("client tool 应省略 type 字段，got %q", tool.Type)
 			}
 			ids, err := Inspect(tc.tool)
 			if err != nil {
@@ -52,11 +50,11 @@ func TestCompletionMatrixDeclareClientTools(t *testing.T) {
 		})
 	}
 
-	// apply_patch 使用 freeform {input:string} schema（Codex 只消费 V4A 文本）
+	// apply_patch 使用 freeform {s:string} schema（Codex 只消费 V4A 文本）
 	decls, _ := Declare(oairesponses.ToolUnionParam{OfApplyPatch: &oairesponses.ApplyPatchToolParam{}})
 	props, _ := decls[0].OfTool.InputSchema.Properties.(map[string]any)
-	if props["input"] == nil {
-		t.Fatalf("apply_patch schema missing freeform input: %#v", props)
+	if props["s"] == nil {
+		t.Fatalf("apply_patch schema missing freeform s: %#v", props)
 	}
 	if _, ok := props["operation"]; ok {
 		t.Fatalf("apply_patch must not declare structured operation schema: %#v", props)

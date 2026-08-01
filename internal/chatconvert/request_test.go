@@ -190,8 +190,8 @@ func TestToChat_ShellAndApplyPatchTools(t *testing.T) {
 		}
 		params, _ := t0.Function.Parameters.(map[string]any)
 		props, _ := params["properties"].(map[string]any)
-		if _, ok := props["input"]; !ok {
-			t.Fatalf("apply_patch must use freeform input schema: %v", params)
+		if _, ok := props["s"]; !ok {
+			t.Fatalf("apply_patch must use freeform s schema: %v", params)
 		}
 		if _, ok := props["operation"]; ok {
 			t.Fatalf("apply_patch must not declare operation/path/diff: %v", params)
@@ -250,8 +250,14 @@ func TestToChat_CustomGrammarToolMapsToChatFunction(t *testing.T) {
 	if out.Tools[0].Function.Name != "parse" {
 		t.Fatalf("function=%+v", out.Tools[0].Function)
 	}
-	if !strings.Contains(out.Tools[0].Function.Description, "start: /[0-9]+/") {
-		t.Fatalf("grammar definition must be merged into description: %q", out.Tools[0].Function.Description)
+	if out.Tools[0].Function.Description != "parse csv" {
+		t.Fatalf("root description must keep original: %q", out.Tools[0].Function.Description)
+	}
+	params, _ := out.Tools[0].Function.Parameters.(map[string]any)
+	props, _ := params["properties"].(map[string]any)
+	input, _ := props["s"].(map[string]any)
+	if input["description"] != "Required format:\nstart: /[0-9]+/" {
+		t.Fatalf("grammar definition must be merged into input property description: %#v", input)
 	}
 	if !out.IsFreeformName("parse") {
 		t.Fatal("custom should be freeform")
@@ -278,11 +284,70 @@ func TestToChat_NamespaceCustomGrammarToolMapsToChatFunction(t *testing.T) {
 	if out.Tools[0].Function.Name != "ns__parse" {
 		t.Fatalf("function=%+v", out.Tools[0].Function)
 	}
-	if !strings.Contains(out.Tools[0].Function.Description, "x") {
-		t.Fatalf("grammar definition must be merged into description: %q", out.Tools[0].Function.Description)
+	if out.Tools[0].Function.Description != "d" {
+		t.Fatalf("root description must keep original: %q", out.Tools[0].Function.Description)
+	}
+	params, _ := out.Tools[0].Function.Parameters.(map[string]any)
+	props, _ := params["properties"].(map[string]any)
+	input, _ := props["s"].(map[string]any)
+	if input["description"] != "Required format:\nx" {
+		t.Fatalf("namespace custom input description missing format: %#v", input)
 	}
 	if !out.IsFreeformName("ns__parse") {
 		t.Fatal("namespaced custom should be freeform")
+	}
+}
+
+func TestToChat_ToolSearchPreservesPropertyDescription(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"tool_search","name":"tool_search","description":"search deferred tools","parameters":{"type":"object","properties":{"q":{"type":"string","description":"the search query"}},"required":["q"]}}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 1 || out.Tools[0].Type != "function" {
+		t.Fatalf("tools=%+v", out.Tools)
+	}
+	params, _ := out.Tools[0].Function.Parameters.(map[string]any)
+	props, _ := params["properties"].(map[string]any)
+	q, _ := props["q"].(map[string]any)
+	if q["description"] != "the search query" {
+		t.Fatalf("tool_search property description lost: %#v", q)
+	}
+}
+
+func TestToChat_McpDeclarationCarriesServerDescription(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"mcp","server_label":"browser","server_description":"Browser automation MCP server","allowed_tools":["click"]}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, td := range out.Tools {
+		if td.Function.Name != "mcp__browser__click" {
+			continue
+		}
+		if !strings.Contains(td.Function.Description, "Browser automation MCP server") {
+			t.Fatalf("mcp server_description not carried: %q", td.Function.Description)
+		}
+		return
+	}
+	t.Fatalf("mcp__browser__click declaration missing: %+v", out.Tools)
+}
+
+func TestToChat_McpAllowedToolsEntry(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"mcp","server_label":"srv","allowed_tools":["get","list"]}],
+		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"mcp","server_label":"srv"}]},
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 2 {
+		t.Fatalf("server-level mcp allowed_tools should keep both, got %+v", out.Tools)
+	}
+	if out.ToolChoice != "auto" {
+		t.Fatalf("allowed_tools mode auto expected, got %#v", out.ToolChoice)
 	}
 }
 
@@ -318,7 +383,7 @@ func TestToChat_CustomToolCallHistoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `"id":"call_parse","type":"function","function":{"name":"parse","arguments":"{\"input\":\"42\"}"}`
+	want := `"id":"call_parse","type":"function","function":{"name":"parse","arguments":"{\"s\":\"42\"}"}`
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("custom tool_call history wire missing %s: %s", want, raw)
 	}
@@ -342,7 +407,7 @@ func TestToChat_FreeformCustomToolCallHistoryDegradesToFunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `"id":"call_mt","type":"function","function":{"name":"mytool","arguments":"{\"input\":\"hello\"}"}`
+	want := `"id":"call_mt","type":"function","function":{"name":"mytool","arguments":"{\"s\":\"hello\"}"}`
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("freeform custom tool_call history wire missing %s: %s", want, raw)
 	}
@@ -368,7 +433,7 @@ func TestToChat_ApplyPatchCustomGrammarDeclDegradesToFunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `"id":"call_ap","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: a.txt\\n+x\\n*** End Patch\"}"}`
+	want := `"id":"call_ap","type":"function","function":{"name":"apply_patch","arguments":"{\"s\":\"*** Begin Patch\\n*** Update File: a.txt\\n+x\\n*** End Patch\"}"}`
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("apply_patch custom grammar history must degrade to function: %s", raw)
 	}
@@ -376,15 +441,7 @@ func TestToChat_ApplyPatchCustomGrammarDeclDegradesToFunction(t *testing.T) {
 		t.Fatalf("apply_patch must not emit custom side: %s", raw)
 	}
 	// 工具声明同样保持 function + FreeformInputSchema。
-	var tools []struct {
-		Function struct {
-			Name        string         `json:"name"`
-			Description string         `json:"description"`
-			Parameters  map[string]any `json:"parameters"`
-		} `json:"function"`
-		Custom *json.RawMessage `json:"custom"`
-	}
-	if err := json.Unmarshal([]byte(raw), &struct {
+	var parsed struct {
 		Tools []struct {
 			Function struct {
 				Name        string         `json:"name"`
@@ -393,23 +450,43 @@ func TestToChat_ApplyPatchCustomGrammarDeclDegradesToFunction(t *testing.T) {
 			} `json:"function"`
 			Custom *json.RawMessage `json:"custom"`
 		} `json:"tools"`
-	}{Tools: tools}); err != nil {
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatal(err)
 	}
-	for _, td := range tools {
+	for _, td := range parsed.Tools {
 		if td.Function.Name != "apply_patch" {
 			continue
 		}
 		props, _ := td.Function.Parameters["properties"].(map[string]any)
-		if _, ok := props["input"]; !ok {
-			t.Fatalf("apply_patch decl must keep freeform input schema: %v", td.Function.Parameters)
+		if _, ok := props["s"]; !ok {
+			t.Fatalf("apply_patch decl must keep freeform s schema: %v", td.Function.Parameters)
 		}
-		wantDesc := "The apply_patch tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.\n\napply_patch 输入必须是 V4A 补丁文本（grammar 模板）：\nstart: /[a-z]+/"
+		wantDesc := ""
 		if td.Function.Description != wantDesc {
 			t.Fatalf("apply_patch decl description mismatch:\n got=%q\nwant=%q", td.Function.Description, wantDesc)
 		}
 		if td.Custom != nil {
 			t.Fatalf("apply_patch decl must not carry custom wire: %v", string(*td.Custom))
+		}
+	}
+}
+
+func TestToChat_NamespacedCustomHistoryFlattensName(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"namespace","name":"ns","tools":[{"type":"custom","name":"wait","description":"d"}]}],
+		"input":[{"type":"custom_tool_call","call_id":"c1","name":"wait","namespace":"ns","input":"abc"}]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if !out.IsFreeformName("ns__wait") {
+		t.Fatalf("freeform map missing flattened name: %+v", out.FreeformNames)
+	}
+	for _, m := range out.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "c1" && tc.Function.Name != "ns__wait" {
+				t.Fatalf("namespaced custom history name = %q, want ns__wait", tc.Function.Name)
+			}
 		}
 	}
 }

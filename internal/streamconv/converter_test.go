@@ -425,7 +425,7 @@ func TestConverterOutputItemsCustomToolCall(t *testing.T) {
 	c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_delta",
 		Index: 0,
-		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"input":"*** Begin`},
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"s":"*** Begin`},
 	})
 	c.Feed(&anthropic.MessageStreamEventUnion{
 		Type:  "content_block_delta",
@@ -1973,7 +1973,7 @@ func TestConverterApplyPatchPassesThrough(t *testing.T) {
 		Type: "content_block_start", Index: 0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_patch", Name: "apply_patch"},
 	})
-	raw := `{"input":"*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***"}`
+	raw := `{"s":"*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***"}`
 	c.Feed(&anthropic.MessageStreamEventUnion{
 		Type: "content_block_delta", Index: 0,
 		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: raw},

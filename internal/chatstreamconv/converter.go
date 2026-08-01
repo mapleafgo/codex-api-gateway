@@ -820,7 +820,7 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 	case kindCustom:
 		input := acc.customInput.String()
 		if !acc.nativeCustom {
-			// 函数降级形态（shell/apply_patch/无 grammar custom）：仍按 {"input":...} 解包。
+			// 函数降级形态（shell/apply_patch/无 grammar custom）：仍按 {"s":...} 解包。
 			input = toolcatalog.SanitizeClientToolInput(acc.name, true, rawArgs)
 		}
 		ns, name := c.resolveToolName(acc.name)

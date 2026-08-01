@@ -33,8 +33,8 @@ func TestCustomToolNotDropped(t *testing.T) {
 	if !names["apply_patch"] {
 		t.Fatalf("apply_patch tool lost, names=%v", names)
 	}
-	if tool := findTool(out.Tools, "apply_patch"); tool == nil || tool.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("custom tool should be converted as Anthropic custom tool: %+v", tool)
+	if tool := findTool(out.Tools, "apply_patch"); tool == nil || tool.Type != "" {
+		t.Fatalf("custom tool should omit Anthropic type: %+v", tool)
 	}
 }
 
@@ -50,13 +50,13 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	if tool == nil {
 		t.Fatalf("apply_patch tool lost: %+v", out.Tools)
 	}
-	if tool.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("apply_patch should be exposed as Anthropic custom tool, got %q", tool.Type)
+	if tool.Type != "" {
+		t.Fatalf("apply_patch should omit Anthropic type, got %q", tool.Type)
 	}
-	// freeform schema：properties.input，不得是 structured operation/path/diff。
+	// freeform schema：properties.s，不得是 structured operation/path/diff。
 	props, _ := tool.InputSchema.Properties.(map[string]any)
-	if props == nil || props["input"] == nil {
-		t.Fatalf("apply_patch must use freeform {input:string} schema, got %#v", tool.InputSchema.Properties)
+	if props == nil || props["s"] == nil {
+		t.Fatalf("apply_patch must use freeform {s:string} schema, got %#v", tool.InputSchema.Properties)
 	}
 	if _, ok := props["operation"]; ok {
 		t.Fatalf("apply_patch must not declare structured operation schema: %#v", props)
@@ -79,8 +79,8 @@ func TestShellToolNotDroppedAndCanBeForced(t *testing.T) {
 	if tool == nil {
 		t.Fatalf("shell tool lost: %+v", out.Tools)
 	}
-	if tool.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("shell should be exposed as Anthropic custom tool, got %q", tool.Type)
+	if tool.Type != "" {
+		t.Fatalf("shell should omit Anthropic type, got %q", tool.Type)
 	}
 	if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "shell" {
 		t.Fatalf("shell tool_choice not preserved: %+v", out.ToolChoice)
@@ -99,8 +99,8 @@ func TestLocalShellToolNotDropped(t *testing.T) {
 	if tool == nil {
 		t.Fatalf("local_shell tool lost: %+v", out.Tools)
 	}
-	if tool.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("local_shell should be exposed as Anthropic custom shell tool, got %q", tool.Type)
+	if tool.Type != "" {
+		t.Fatalf("local_shell should omit Anthropic type, got %q", tool.Type)
 	}
 }
 
@@ -144,8 +144,8 @@ func TestNamespaceFunctionAndCustomToolsNotDropped(t *testing.T) {
 	if raw == nil {
 		t.Fatalf("namespace custom tool lost: %+v", out.Tools)
 	}
-	if raw.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("namespace custom should be Anthropic custom tool, got %q", raw.Type)
+	if raw.Type != "" {
+		t.Fatalf("namespace custom should omit Anthropic type, got %q", raw.Type)
 	}
 }
 

@@ -773,7 +773,7 @@ func TestCustomToolCallInputAndOutputConvert(t *testing.T) {
 	if err := json.Unmarshal(inputData, &input); err != nil {
 		t.Fatalf("custom tool input is not JSON object: %v", err)
 	}
-	if input["input"] != "*** Begin Patch\n*** End Patch" {
+	if input["s"] != "*** Begin Patch\n*** End Patch" {
 		t.Fatalf("custom input not wrapped: %+v", input)
 	}
 	toolResult := out.Messages[2].Content[0].OfToolResult
@@ -908,7 +908,7 @@ func TestLocalShellCallPreservesEnvInToolUseInput(t *testing.T) {
 	if !ok {
 		t.Fatalf("input type %T", toolUse.Input)
 	}
-	if got := fmt.Sprint(in["input"]); !strings.Contains(got, "echo hi") {
+	if got := fmt.Sprint(in["s"]); !strings.Contains(got, "echo hi") {
 		t.Fatalf("command text lost: %#v", in)
 	}
 	env, _ := in["env"].(map[string]string)
@@ -963,8 +963,8 @@ func TestShellCallRecordsEnvironmentType(t *testing.T) {
 	if in["environment_type"] != "local" {
 		t.Fatalf("environment_type: %#v", in["environment_type"])
 	}
-	if fmt.Sprint(in["input"]) != "ls" {
-		t.Fatalf("input text: %#v", in["input"])
+	if fmt.Sprint(in["s"]) != "ls" {
+		t.Fatalf("input text: %#v", in["s"])
 	}
 }
 
@@ -1010,8 +1010,8 @@ func TestShellCallPreservesLimitsAndCaller(t *testing.T) {
 	if in["caller_type"] != "program" || in["caller_id"] != "prog_1" {
 		t.Fatalf("caller: %#v", in)
 	}
-	if got := fmt.Sprint(in["input"]); !strings.Contains(got, "ls") {
-		t.Fatalf("commands: %#v", in["input"])
+	if got := fmt.Sprint(in["s"]); !strings.Contains(got, "ls") {
+		t.Fatalf("commands: %#v", in["s"])
 	}
 }
 
@@ -1357,6 +1357,71 @@ func TestMcpToolChoiceMapsToStandardTool(t *testing.T) {
 	}
 }
 
+func TestMcpToolChoiceWithMcpDeclarationMapsToStandardTool(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{{
+			OfMcp: &oairesponses.ToolMcpParam{
+				ServerLabel: "srv",
+				AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{
+					OfMcpAllowedTools: []string{"fn"},
+				},
+			},
+		}},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfMcpTool: &oairesponses.ToolChoiceMcpParam{
+				ServerLabel: "srv",
+				Name:        oparam.NewOpt("fn"),
+			},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("mcp tool_choice with mcp declaration must not fail: %v", err)
+	}
+	if out.ToolChoice.OfTool == nil || out.ToolChoice.OfTool.Name != "mcp__srv__fn" {
+		t.Fatalf("expected tool_choice name mcp__srv__fn, got %+v", out.ToolChoice)
+	}
+}
+
+func TestMcpAllowedToolsEntryFiltersDeclaredTools(t *testing.T) {
+	base := func(allowed map[string]any) *oairesponses.ResponseNewParams {
+		return &oairesponses.ResponseNewParams{
+			Model: "gpt-5",
+			Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+			Tools: []oairesponses.ToolUnionParam{{
+				OfMcp: &oairesponses.ToolMcpParam{
+					ServerLabel: "srv",
+					AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{
+						OfMcpAllowedTools: []string{"fn1", "fn2"},
+					},
+				},
+			}},
+			ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+				OfAllowedTools: &oairesponses.ToolChoiceAllowedParam{
+					Mode:  oairesponses.ToolChoiceAllowedModeAuto,
+					Tools: []map[string]any{allowed},
+				},
+			},
+		}
+	}
+	out, err := ToAnthropic(base(map[string]any{"type": "mcp", "server_label": "srv"}), &config.Config{})
+	if err != nil {
+		t.Fatalf("server-level mcp allowed_tools failed: %v", err)
+	}
+	if len(out.Tools) != 2 {
+		t.Fatalf("server-level mcp should allow both tools, got %+v", out.Tools)
+	}
+	out, err = ToAnthropic(base(map[string]any{"type": "mcp", "server_label": "srv", "name": "fn1"}), &config.Config{})
+	if err != nil {
+		t.Fatalf("named mcp allowed_tools failed: %v", err)
+	}
+	if len(out.Tools) != 1 || out.Tools[0].OfTool == nil || out.Tools[0].OfTool.Name != "mcp__srv__fn1" {
+		t.Fatalf("named mcp allowed_tools filter failed: %+v", out.Tools)
+	}
+}
+
 func TestUnsupportedToolDefinitionReturnsError(t *testing.T) {
 	req := &oairesponses.ResponseNewParams{
 		Model: "gpt-5",
@@ -1440,7 +1505,6 @@ func TestAllowedToolsRejectsUnsupportedAllowedEntries(t *testing.T) {
 		name string
 		tool map[string]any
 	}{
-		{name: "mcp", tool: map[string]any{"type": "mcp", "server_label": "deepwiki"}},
 		{name: "image_generation", tool: map[string]any{"type": "image_generation"}},
 	}
 
@@ -1534,8 +1598,8 @@ func TestAllowedToolsRejectsUndeclaredMCPIdentity(t *testing.T) {
 	}
 
 	_, err := ToAnthropic(req, &config.Config{})
-	if err == nil || !strings.Contains(err.Error(), `unsupported tool_choice`) {
-		t.Fatalf("expected allowed_tools to reject unsupported identity, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `not declared`) {
+		t.Fatalf("expected allowed_tools to reject undeclared mcp identity, got %v", err)
 	}
 }
 
@@ -2192,11 +2256,13 @@ func TestWebSearchCallHistoryReplay(t *testing.T) {
 	var foundUse, foundResult bool
 	var useID string
 	var foundSourceText bool
-	for _, msg := range out.Messages {
+	useMsgIdx, resultMsgIdx := -1, -1
+	for msgIdx, msg := range out.Messages {
 		for _, b := range msg.Content {
 			if b.OfServerToolUse != nil && b.OfServerToolUse.Name == anthropic.ServerToolUseBlockParamNameWebSearch {
 				foundUse = true
 				useID = b.OfServerToolUse.ID
+				useMsgIdx = msgIdx
 				raw, _ := json.Marshal(b.OfServerToolUse.Input)
 				if !strings.Contains(string(raw), "golang tutorial") {
 					t.Fatalf("server_tool_use input missing query: %s", raw)
@@ -2204,6 +2270,7 @@ func TestWebSearchCallHistoryReplay(t *testing.T) {
 			}
 			if b.OfWebSearchToolResult != nil {
 				foundResult = true
+				resultMsgIdx = msgIdx
 				if b.OfWebSearchToolResult.ToolUseID != "ws_1" {
 					t.Fatalf("tool_use_id = %q, want ws_1", b.OfWebSearchToolResult.ToolUseID)
 				}
@@ -2220,6 +2287,10 @@ func TestWebSearchCallHistoryReplay(t *testing.T) {
 	if !foundUse || !foundResult {
 		b, _ := json.Marshal(out.Messages)
 		t.Fatalf("missing server_tool_use/result (use=%v result=%v id=%q): %s", foundUse, foundResult, useID, b)
+	}
+	if useMsgIdx != resultMsgIdx || out.Messages[resultMsgIdx].Role != anthropic.MessageParamRoleAssistant {
+		t.Fatalf("web_search_tool_result must live in the same assistant message, use=%d result=%d role=%q",
+			useMsgIdx, resultMsgIdx, out.Messages[resultMsgIdx].Role)
 	}
 	if !foundSourceText {
 		t.Fatal("source URLs should be preserved as visible text alongside empty result")

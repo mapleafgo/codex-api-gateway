@@ -14,7 +14,6 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
-	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 var (
@@ -60,11 +59,6 @@ func (b *AnthropicBackend) Execute(
 	anthReq, err := convert.ToAnthropic(req, cfg)
 	if err != nil {
 		return fmt.Errorf("toanthropic: %w", err)
-	}
-	// DeepSeek 等兼容端点只接受缺省形态的工具声明（type:"custom" 会 400），
-	// 按 source.tools_type=omit 清空 client tool 的 type 字段。
-	if tt, err := config.NormalizeToolsType(src.ToolsType); err == nil && tt == config.ToolsTypeOmit {
-		toolcatalog.StripToolType(anthReq.Tools)
 	}
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)

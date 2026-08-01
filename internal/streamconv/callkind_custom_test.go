@@ -12,7 +12,7 @@ import (
 // 修改正文——尤其空内容行 "+"（单加号）必须原样保留。
 func TestCustomToolInputPreservesV4APatch(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: /tmp/x\n+# title\n+\n+body line\n*** End Patch"
-	rawBytes, err := json.Marshal(map[string]string{"input": patch})
+	rawBytes, err := json.Marshal(map[string]string{"s": patch})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestCustomToolInputPreservesV4APatch(t *testing.T) {
 // TestCustomToolInputPreservesBlankLines 验证含连续空行的 patch 也能原样透传。
 func TestCustomToolInputPreservesBlankLines(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: /tmp/x\n+# title\n\n+\n\n+## section\n*** End Patch"
-	rawBytes, _ := json.Marshal(map[string]string{"input": patch})
+	rawBytes, _ := json.Marshal(map[string]string{"s": patch})
 	got := toolcatalog.SanitizeClientToolInput("apply_patch", true, string(rawBytes))
 	if got != patch {
 		t.Fatalf("blank-line patch not preserved:\nwant=%q\ngot =%q", patch, got)
@@ -34,7 +34,7 @@ func TestCustomToolInputPreservesBlankLines(t *testing.T) {
 
 func TestApplyPatchSanitizePassesThrough(t *testing.T) {
 	rawBytes, _ := json.Marshal(map[string]string{
-		"input": "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***",
+		"s": "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***",
 	})
 	got := toolcatalog.SanitizeClientToolInput("apply_patch", true, string(rawBytes))
 	want := "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***"

@@ -750,12 +750,12 @@ func toolUseInputJSON(s string) (json.RawMessage, bool) {
 }
 
 func appendCustomToolCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseCustomToolCallParam) error {
-	return appendToolUse(out, call.CallID, toolcatalog.ToolName(call.Namespace.Value, call.Name), map[string]any{"input": call.Input})
+	return appendToolUse(out, call.CallID, toolcatalog.ToolName(call.Namespace.Value, call.Name), map[string]any{"s": call.Input})
 }
 
 func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemShellCallParam) error {
 	input := map[string]any{
-		"input": strings.Join(call.Action.Commands, "\n"),
+		"s": strings.Join(call.Action.Commands, "\n"),
 	}
 	// Environment 是 local/container 身份线索（非 env map）；只记 type，不 dump 整 union。
 	switch {
@@ -779,7 +779,7 @@ func appendShellCall(out *anthropic.MessageNewParams, call *oairesponses.Respons
 
 func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemLocalShellCallParam) error {
 	input := map[string]any{
-		"input": strings.Join(call.Action.Command, " "),
+		"s": strings.Join(call.Action.Command, " "),
 	}
 	if len(call.Action.Env) > 0 {
 		input["env"] = call.Action.Env
@@ -1084,14 +1084,9 @@ func appendWebSearchCall(out *anthropic.MessageNewParams, call *oairesponses.Res
 		map[string]any{"query": query},
 		anthropic.ServerToolUseBlockParamNameWebSearch,
 	))
-
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
-		out.Messages = append(out.Messages, anthropic.NewUserMessage())
-	}
-	last = &out.Messages[len(out.Messages)-1]
-	// OpenAI wire 无 Anthropic required 的 encrypted_content；带空 encrypted 的伪
-	// result 可能被官方 API 拒绝。result content 固定空数组，URL 列表折成可见文本
-	// 挂在同一 user 消息里，保留模型可读上下文。
+	// web_search_tool_result 只能出现在 assistant 消息（DeepSeek 400 实测）。
+	// OpenAI wire 无 Anthropic required 的 encrypted_content，result content 固定
+	// 空数组；URL 列表折成可见文本放在同一 assistant 消息里，保留模型可读上下文。
 	last.Content = append(last.Content, anthropic.NewWebSearchToolResultBlock(
 		[]anthropic.WebSearchResultBlockParam{}, call.ID,
 	))
@@ -1672,13 +1667,37 @@ func allowedToolNames(declared []oairesponses.ToolUnionParam, allowed *oairespon
 			return nil, err
 		}
 		for _, identity := range identities {
-			if !hasToolIdentity(declaredIdentities, identity) {
-				return nil, fmt.Errorf("tool_choice allowed_tools entry %s is not declared", identity)
+			names, err := expandAllowedIdentity(declaredIdentities, identity)
+			if err != nil {
+				return nil, err
 			}
-			allowedNames[identity.ConvertedName()] = true
+			for _, name := range names {
+				allowedNames[name] = true
+			}
 		}
 	}
 	return allowedNames, nil
+}
+
+// expandAllowedIdentity 校验 allowed_tools 条目并把可用的扁平工具名展开。
+// mcp 条目只带 server_label（无 name）时代表放行整个 server 的已声明工具。
+func expandAllowedIdentity(declared []toolcatalog.Identity, id toolcatalog.Identity) ([]string, error) {
+	if id.OpenAIType == model.ToolTypeMcp && id.Name == "" {
+		var names []string
+		for _, d := range declared {
+			if d.Namespace == id.Namespace {
+				names = append(names, d.ConvertedName())
+			}
+		}
+		if len(names) == 0 {
+			return nil, fmt.Errorf("tool_choice allowed_tools entry %s is not declared", id)
+		}
+		return names, nil
+	}
+	if !hasToolIdentity(declared, id) {
+		return nil, fmt.Errorf("tool_choice allowed_tools entry %s is not declared", id)
+	}
+	return []string{id.ConvertedName()}, nil
 }
 
 func declaredToolIdentities(tools []oairesponses.ToolUnionParam) ([]toolcatalog.Identity, error) {
@@ -1697,6 +1716,15 @@ func hasToolIdentity(identities []toolcatalog.Identity, want toolcatalog.Identit
 	for _, identity := range identities {
 		if identity.Equal(want) {
 			return true
+		}
+	}
+	// 兼容扁平名选择：namespace / mcp 声明展开成 ns__name / mcp__server__tool 后，
+	// tool_choice 可能按扁平 function 名选择，按 ConvertedName 兜底匹配。
+	if want.Namespace == "" {
+		for _, identity := range identities {
+			if identity.Namespace != "" && identity.ConvertedName() == want.Name {
+				return true
+			}
 		}
 	}
 	return false

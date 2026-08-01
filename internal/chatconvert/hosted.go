@@ -2,7 +2,6 @@ package chatconvert
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -35,12 +34,12 @@ func webSearchToolDecl() ChatTool {
 	}
 }
 
-func mcpToolDecl(serverLabel, toolName string) ChatTool {
+func mcpToolDecl(serverLabel, toolName, serverDescription string) ChatTool {
 	return ChatTool{
 		Type: "function",
 		Function: ChatFunction{
 			Name:        mcpChatName(serverLabel, toolName),
-			Description: fmt.Sprintf("MCP tool %s on server %s (Chat backend: shape-only).", toolName, serverLabel),
+			Description: serverDescription,
 			Parameters: map[string]any{
 				"type":                 "object",
 				"properties":           map[string]any{},
@@ -75,7 +74,7 @@ func mcpDeclsFromTool(m *oairesponses.ToolMcpParam) []ChatTool {
 		if n == "" {
 			continue
 		}
-		out = append(out, mcpToolDecl(m.ServerLabel, n))
+		out = append(out, mcpToolDecl(m.ServerLabel, n, optString(m.ServerDescription)))
 	}
 	return out
 }

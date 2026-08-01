@@ -113,6 +113,13 @@ func InspectAllowed(tool map[string]any) ([]Identity, error) {
 		return []Identity{{OpenAIType: typ, Name: name, Freeform: typ == model.ToolTypeCustom}}, nil
 	case model.ToolTypeNamespace:
 		return inspectAllowedNamespace(tool)
+	case model.ToolTypeMcp:
+		serverLabel, _ := tool["server_label"].(string)
+		if serverLabel == "" {
+			return nil, fmt.Errorf("tool_choice allowed_tools mcp entry requires a server_label")
+		}
+		name, _ := tool["name"].(string)
+		return []Identity{{OpenAIType: model.ToolTypeMcp, Namespace: "mcp__" + serverLabel, Name: name}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool_choice allowed_tools entry %q: Anthropic backend has no safe equivalent", typ)
 	}

@@ -9,7 +9,7 @@ import (
 
 // SanitizeClientToolInput 是回程 client tool 参数的统一出口。
 //
-// freeform=true：先从 Anthropic {"input":"..."} 解包裸文本。
+// freeform=true：先从 Anthropic {"s":"..."} 解包裸文本。
 // freeform=false：把 JSON 参数里「整数值却写成 1.0」的 number 收成整数字面量，
 // 避免 Codex/Rust serde 报 floating point expected i32/i64/u64。
 //

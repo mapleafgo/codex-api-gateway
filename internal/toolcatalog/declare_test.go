@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 func TestDeclareFunction(t *testing.T) {
@@ -26,27 +26,8 @@ func TestDeclareFunction(t *testing.T) {
 
 func TestDeclareCustomIsFreeform(t *testing.T) {
 	decls, _ := Declare(oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{Name: "c"}})
-	if decls[0].OfTool.Type != anthropic.ToolTypeCustom {
-		t.Fatalf("custom tool must set ToolTypeCustom")
-	}
-}
-
-func TestStripToolTypeKeepsServerTools(t *testing.T) {
-	custom, err := Declare(oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{Name: "c"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws, err := Declare(oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tools := append(custom, ws...)
-	StripToolType(tools)
-	if tools[0].OfTool == nil || tools[0].OfTool.Type != "" {
-		t.Fatalf("client tool type 应被清空: %#v", tools[0].OfTool)
-	}
-	if tools[1].OfWebSearchTool20260209 == nil {
-		t.Fatalf("server tool 不应被破坏: %#v", tools[1])
+	if decls[0].OfTool.Type != "" {
+		t.Fatalf("client tool 应省略 type 字段，got %q", decls[0].OfTool.Type)
 	}
 }
 
@@ -68,6 +49,25 @@ func TestDeclareMcpExpandsAllowedTools(t *testing.T) {
 	}
 	if decls[1].OfTool == nil || decls[1].OfTool.Name != "mcp__weather__list" {
 		t.Fatalf("bad second declaration: %+v", decls[1])
+	}
+}
+
+func TestDeclareMcpCarriesServerDescription(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfMcp: &oairesponses.ToolMcpParam{
+		ServerLabel:       "browser",
+		ServerDescription: oparam.NewOpt("Browser automation MCP server"),
+		AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{
+			OfMcpAllowedTools: []string{"click"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decls) != 1 || decls[0].OfTool == nil {
+		t.Fatalf("decls=%+v", decls)
+	}
+	if !decls[0].OfTool.Description.Valid() || decls[0].OfTool.Description.Value != "Browser automation MCP server" {
+		t.Fatalf("mcp server_description not carried: %+v", decls[0].OfTool.Description)
 	}
 }
 
@@ -161,6 +161,127 @@ func TestToInputSchema(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"type":"object"`) {
 		t.Errorf("input_schema missing type=object: %s", b)
+	}
+}
+
+func TestDeclareFunctionPreservesPropertyDescription(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfFunction: &oairesponses.FunctionToolParam{
+		Name:        "get_stock_price",
+		Description: oparam.NewOpt("Get the current stock price for a given ticker symbol."),
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"ticker": map[string]any{
+					"type":        "string",
+					"description": "The stock ticker symbol, e.g. AAPL for Apple Inc.",
+				},
+			},
+			"required": []string{"ticker"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	props, ok := decls[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%T", decls[0].OfTool.InputSchema.Properties)
+	}
+	ticker, ok := props["ticker"].(map[string]any)
+	if !ok {
+		t.Fatalf("ticker=%#v", props["ticker"])
+	}
+	if ticker["description"] != "The stock ticker symbol, e.g. AAPL for Apple Inc." {
+		t.Fatalf("property description lost: %#v", ticker)
+	}
+}
+
+func TestDeclareToolSearchPreservesPropertyDescription(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfToolSearch: &oairesponses.ToolSearchToolParam{
+		Description: oparam.NewOpt("search deferred tools"),
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"q": map[string]any{
+					"type":        "string",
+					"description": "the search query",
+				},
+			},
+			"required": []string{"q"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	props, ok := decls[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%T", decls[0].OfTool.InputSchema.Properties)
+	}
+	q, ok := props["q"].(map[string]any)
+	if !ok {
+		t.Fatalf("q=%#v", props["q"])
+	}
+	if q["description"] != "the search query" {
+		t.Fatalf("tool_search property description lost: %#v", q)
+	}
+}
+
+func TestDeclareNamespaceFunctionPreservesPropertyDescription(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfNamespace: &oairesponses.NamespaceToolParam{
+		Name: "ns",
+		Tools: []oairesponses.NamespaceToolToolUnionParam{{
+			OfFunction: &oairesponses.NamespaceToolToolFunctionParam{
+				Name: "lookup",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id": map[string]any{
+							"type":        "string",
+							"description": "contact id",
+						},
+					},
+					"required": []string{"id"},
+				},
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	props, ok := decls[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%T", decls[0].OfTool.InputSchema.Properties)
+	}
+	id, ok := props["id"].(map[string]any)
+	if !ok {
+		t.Fatalf("id=%#v", props["id"])
+	}
+	if id["description"] != "contact id" {
+		t.Fatalf("namespace property description lost: %#v", id)
+	}
+}
+
+func TestDeclareCustomInputDescription(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{
+		Name:        "parse",
+		Description: oparam.NewOpt("parse csv"),
+		Format: shared.CustomToolInputFormatUnionParam{OfGrammar: &shared.CustomToolInputFormatGrammarParam{
+			Definition: "start: /[0-9]+/",
+			Syntax:     "lark",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	props, ok := decls[0].OfTool.InputSchema.Properties.(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%T", decls[0].OfTool.InputSchema.Properties)
+	}
+	input, ok := props["s"].(map[string]any)
+	if !ok {
+		t.Fatalf("input=%#v", props["s"])
+	}
+	if input["description"] != "Required format:\nstart: /[0-9]+/" {
+		t.Fatalf("freeform input description not carried: %#v", input)
 	}
 }
 

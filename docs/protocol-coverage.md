@@ -46,7 +46,7 @@
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
 - **WARN 收口**：配置含**启用中** r 源时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」；`previous_response_id` 打 INFO「透传上游，网关不代补会话」
 - **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat/Anthropic 转换
-- **DeepSeek 适配**：DeepSeek 的 Anthropic 兼容端点（`/anthropic/v1/messages`）对显式 `type:"custom"` 工具返回 400（`unknown variant 'custom'`），但接受**缺省 type** 的 `name + input_schema` 声明（实测可正常返回 tool_use）；a 路径可用 `tools_type: omit` 保留全部工具能力，或把 DeepSeek 配为 `backend_type: r` 走 Responses 透传
+- **DeepSeek 适配**：DeepSeek 的 Anthropic 兼容端点（`/anthropic/v1/messages`）对显式 `type:"custom"` 工具返回 400（`unknown variant 'custom'`）；a 路径 client tool 已统一省略 type（官方缺省 `name + description + input_schema` 形态），天然兼容，不再需要 `tools_type` 配置
 
 字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准；几乎全部请求/事件字段对网关为 passthrough，语义由上游决定。
 
@@ -150,7 +150,7 @@
 - **DeepSeek a 端点工具限制**：DeepSeek Anthropic 兼容端点只接受 `web_search_20250305` / `web_search_20260209` server tool，`custom` 工具返回 400；带 21+ 工具的 Codex 请求实测 400 后 failover 到 Chat 源。DeepSeek 改为 `backend_type: r` 透传后全部 200，登记到 r 专节。
 - **freeform 单键任意键名解包**：opencode 等 Chat 上游把工具文本包在 `input`/`patch`/`cmd` 等不同键下，Codex 会把整段 JSON 当入参导致校验失败；`SanitizeClientToolInput` 对 freeform 工具改为单键 JSON 对象直接取唯一字符串值，键名不敏感；多键 structured 形态仍走 apply_patch V4A 兜底，r 透传实测返回裸文本不受影响。
 - **opencode c 400（Console upstream failed）观测**：2026-08-01 11:25-11:28 opencode2api 上游（Console provider）连续返回 400 `Error from provider (Console): Upstream request failed`，网关按 4xx 策略不重试不降级、failover 到 grok a 成功；属上游暂时故障，网关侧无转换改动。
-- **a 路径 `tools_type: omit`**：DeepSeek 的 Anthropic 兼容端点不接受显式 `type:"custom"`，但接受缺省 type 的 `name + input_schema` 声明（实测 200 且 tool_use 正常）；新增 source 配置 `tools_type: custom|omit`，a 路径对 `omit` 源清空 client tool 的 type 字段，server tool 不受影响，c/r 忽略该配置。
+- **a 路径 client tool 统一省略 type（用户决策）**：Anthropic client tool 没有独立 custom 类型，`type:"custom"` 是默认值且部分兼容端点（DeepSeek）拒绝显式写；`custom`/`shell`/`apply_patch` 一律转官方缺省形态 `name + description + input_schema`，移除 `tools_type: custom|omit` 配置与 `StripToolType`，server tool 仍带自身变体 type。
 
 ### 2026-07-31
 
@@ -225,7 +225,7 @@
 
 沿用全局状态定义。Chat 路径额外：
 
-- 内建 freeform 工具（`shell` / `local_shell` / `apply_patch`）在 Chat 侧声明为 `type=function` + `parameters={input:string}`；出站回程统一折为 `custom_tool_call`（name=`shell` / `local_shell` / `apply_patch`），input 原样透传，不解析命令/补丁文本。freeform `custom` 工具同样按 `custom_tool_call` 回程（`tool_search` 为 `tool_search_call`）。
+- 内建 freeform 工具（`shell` / `local_shell` / `apply_patch`）在 Chat 侧声明为 `type=function` + `parameters={s:string}`；出站回程统一折为 `custom_tool_call`（name=`shell` / `local_shell` / `apply_patch`），input 原样透传，不解析命令/补丁文本。freeform `custom` 工具同样按 `custom_tool_call` 回程（`tool_search` 为 `tool_search_call`）。
 - 连续多条 Responses `function_call` / freeform call **必须**合并为一条 Chat `assistant` 消息的 `tool_calls[]`，否则多数 Chat 兼容上游 400。
 
 ### 产品边界（c）
@@ -280,7 +280,7 @@
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
 | `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；`id` / `tool_call_id` 原样透传（不归一化） |
 | `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错 |
-| `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"input":...}` freeform；相邻合并 |
+| `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"s":...}` freeform；相邻合并 |
 | `custom_tool_call_output` | role=tool | `supported` | |
 | `shell_call` / `local_shell_call` | tool_calls name=`shell` / `local_shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema；`local_shell` 用独立函数名区分回程 |
 | `shell_call_output` / `local_shell_call_output` | role=tool | `lossy_supported` | status/stdout 折文本 |
@@ -301,14 +301,14 @@
 | Responses tool | Chat tools[] | 状态 | 说明 |
 |---|---|---|---|
 | `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做完整投影（对齐 opencode `ToolSchemaProjection.openAI`：强制 `type=object`，anyOf record 变体展平进 properties，递归去 null；仅 anyOf 展平时强制 `additionalProperties=false`） |
-| `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；grammar 丢失 |
+| `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；根 description 保持原文，grammar 约束写入 `properties.input.description`（英文） |
 | `shell` / `local_shell` | function name=`shell` / `local_shell` freeform | `lossy_supported` | 独立函数名，回程统一折 `custom_tool_call` |
-| `apply_patch` | function name=`apply_patch` | `supported` | freeform `parameters={input:string}`；历史按客户端 operation/path/diff 直接回填（见 Input Item）；回程对 structured JSON 输出兜底折 V4A |
+| `apply_patch` | function name=`apply_patch` | `supported` | freeform `parameters={s:string}`；历史按客户端 operation/path/diff 直接回填（见 Input Item）；回程对 structured JSON 输出兜底折 V4A |
 | `tool_search` | function name=`tool_search` | `supported` | |
 | `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项；嵌套 function 同样做 schema 投影 |
 | `web_search` / `web_search_preview` | function `web_search` | `lossy_supported` | 无 server 搜索 |
 | `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明跳过（Debug） |
-| `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | 无连接/审批；filter 不展开 |
+| `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | `server_description` 折入工具 description；连接/审批不注入；filter 不展开 |
 | file_search / computer / image_generation / programmatic | none | `unsupported_by_backend` | 声明跳过 |
 
 ### 出站 SSE（c → Responses）
@@ -341,7 +341,7 @@
 | 厂商 `reasoning_content` 无 encrypted/signature | 明文 reasoning 有损（summary 承载全文）；a 路径 signature/encrypted 不在 c 复现 |
 | Chat 原生 Anthropic 式 `citations_delta` | 五家主路径无官方等价；联网多走 tool_calls；非标 annotations 本期不做 |
 | hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
-| Chat 原生 `tools[].type=custom` + grammar | freeform 统一 function 化以兼容通用上游；grammar 丢失 |
+| Chat 原生 `tools[].type=custom` + grammar | freeform 统一 function 化以兼容通用上游；grammar 约束写入 `input` 字段 description（英文），根 description 保持原文 |
 | 出站 logprobs `bytes` 字段 | Chat TokenLogprob.bytes 不映射到 Responses（官方 delta logprobs 无 bytes） |
 | Responses-only：`max_tool_calls` / `background` / `conversation` / `context_management` / `prompt` 模板 | 无 Chat 等价或产品边界外 |
 | Chat-only：`frequency_penalty` / `presence_penalty` / `seed` / `stop` / `n` / `logit_bias` / `prediction` / `audio`/`modalities` / `web_search_options` | Responses 请求无对应顶层字段，无法从客户端映射 |
@@ -460,7 +460,7 @@
 | `file_search_call` | none | `dropped` | 历史回灌 WARN + 丢弃（不 raw dump）；工具声明阶段 fail-fast |
 | `computer_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `computer_call_output` | none | `dropped` | 同上 |
-| `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；无 encrypted 时 result content 空；URL 折可见文本；open_page/find 折 query。出站 stream 见 Output/SSE |
+| `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；`web_search_tool_result` 必须放在 assistant 消息（DeepSeek 400 实测）；无 encrypted 时 result content 空；URL 折可见文本；open_page/find 折 query。出站 stream 见 Output/SSE |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
 | `function_call_output` | user `tool_result` | `supported` | `output` string 或 content 数组（`input_text`/`input_image`/`input_file`）→ tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
@@ -509,16 +509,16 @@
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
 | `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
-| `mcp` | 扁平 client tool `mcp__<server>__<tool>` | `lossy_supported` | `allowed_tools: string[]` → 逐个展开为 function 声明；`allowed_tools: filter`/空列表 → 不声明（经 tool_search 动态提供）；连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不再注入或 fail-fast，交给 Codex 客户端本地连接执行 |
+| `mcp` | 扁平 client tool `mcp__<server>__<tool>` | `lossy_supported` | `allowed_tools: string[]` → 逐个展开为 function 声明，`server_description` 折入工具 description；`allowed_tools: filter`/空列表 → 不声明（经 tool_search 动态提供）；连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不再注入或 fail-fast，交给 Codex 客户端本地连接执行 |
 | `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明时明确转换错误（fail-fast） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无 Anthropic 等价物；DEBUG + 忽略，透传上游自行决定 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
-| `local_shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
-| `shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史 limits/caller/environment_type 折入 input（见 Input Item）；skills 细节仍 lossy |
-| `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
+| `local_shell` | client tool `shell` | `lossy_supported` | 统一省略 type；声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
+| `shell` | client tool `shell` | `lossy_supported` | 统一省略 type；声明 freeform `shell`；历史 limits/caller/environment_type 折入 input（见 Input Item）；skills 细节仍 lossy |
+| `custom` | client tool | `lossy_supported` | 统一省略 type；freeform `s` 字段 description 只声明必填格式（英文，取 `format.definition`，不含工具级 description），shell/apply_patch 用默认文案；`format.definition` 折入 s 字段 description |
 | `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`；回程按请求声明还原 namespace/name，未声明才回退最后一个 `__` 拆分 |
 | `tool_search` | client tool `tool_search` | `supported` | 当前按普通 tool 暴露 |
-| `apply_patch` | client custom tool `apply_patch` | `supported` | freeform `{input:string}` schema（Codex 只消费 V4A 文本）；历史 operation/path/diff 直接回填；回程 structured→V4A 兜底 |
+| `apply_patch` | client tool `apply_patch` | `supported` | 统一省略 type；freeform `{s:string}` schema（Codex 只消费 V4A 文本）；历史 operation/path/diff 直接回填；回程 structured→V4A 兜底 |
 
 ## Tool Choice Union
 
@@ -531,7 +531,7 @@
 | `custom` | `tool_choice.tool(name)` | `supported` | 仅在声明了相同 type/name 的 custom 时映射，否则明确转换失败 |
 | `apply_patch` | `tool_choice.tool("apply_patch")` | `supported` | 仅在已声明 `apply_patch` 时映射，否则明确转换失败 |
 | `shell` | `tool_choice.tool("shell")` | `supported` | 仅在已声明 `shell` 时映射；`local_shell` 不是此 specific choice 的等价声明 |
-| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配，未知 mode、转换名冲突和 hosted/MCP 条目明确报错 |
+| `allowed_tools` | filtered tool set + choice mode | `lossy_supported` | 仅支持 `auto`/`required`；每个 allowed 条目按 `type`、namespace、name 与已声明工具精确匹配；MCP 条目按 `server_label`（可选 `name`）展开为扁平工具；未知 mode、转换名冲突和 hosted/未声明 MCP 条目明确报错 |
 | hosted tool choice | none | `lossy_supported` | 无 Anthropic 等价 choice：DEBUG 后忽略，声明的工具照常下发，是否调用由上游决定（不代劳拒绝） |
 | `mcp` | none | `lossy_supported` | 无等价 MCP choice：DEBUG 后忽略，交上游决定（不代劳拒绝） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无等价 programmatic tool choice；请求时返回明确转换错误 |

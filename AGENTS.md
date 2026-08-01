@@ -109,6 +109,10 @@ Lint 配置在 `.golangci.yml`，启用了 `errcheck`、`govet`、`staticcheck`�
 - 错误返回：用 `fmt.Errorf` 构造 error 正常返回，不要把 error 文本当日志打印。
 - 唯一例外是 `internal/logging` 中的 `log.SetOutput(io.Discard)`，它是用来压制标准库 `log`（防止第三方依赖污染 stdout），不是日志输出。
 
+## 上游 wire 文本语言规范
+
+发往上游模型的所有文本（工具 `description`、`input_schema` 字段 `description`、占位文本、回灌提示等）必须使用英文。中文只用于代码注释、文档、commit message 与用户交互，禁止进入发给上游模型的 wire 文本。
+
 ## Testing Guidelines
 
 使用 Go 标准测试框架。单元测试靠近实现文件，集成测试可参考 `internal/server/integration_test.go`。新增转换、调度、熔断、配置解析或并发行为时，应补充表驱动测试；涉及共享状态或 goroutine 的改动应运行 `task test-race`。
