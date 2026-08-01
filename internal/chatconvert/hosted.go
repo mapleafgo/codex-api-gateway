@@ -28,7 +28,8 @@ func webSearchToolDecl() ChatTool {
 				"properties": map[string]any{
 					"query": map[string]any{"type": "string"},
 				},
-				"required": []string{"query"},
+				"required":             []string{"query"},
+				"additionalProperties": false,
 			},
 		},
 	}
@@ -45,7 +46,8 @@ func codeInterpreterToolDecl() ChatTool {
 				"properties": map[string]any{
 					"code": map[string]any{"type": "string"},
 				},
-				"required": []string{"code"},
+				"required":             []string{"code"},
+				"additionalProperties": false,
 			},
 		},
 	}
@@ -58,8 +60,9 @@ func mcpToolDecl(serverLabel, toolName string) ChatTool {
 			Name:        mcpChatName(serverLabel, toolName),
 			Description: fmt.Sprintf("MCP tool %s on server %s (Chat backend: shape-only).", toolName, serverLabel),
 			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
 			},
 		},
 	}
@@ -68,6 +71,10 @@ func mcpToolDecl(serverLabel, toolName string) ChatTool {
 func mcpDeclsFromTool(m *oairesponses.ToolMcpParam) []ChatTool {
 	if m == nil || m.ServerLabel == "" {
 		return nil
+	}
+	if toolcatalog.HasMCPConnectionFields(m) {
+		slog.Debug("chatconvert: MCP 连接字段由 Codex 客户端本地使用，不注入 Chat 上游",
+			"server_label", m.ServerLabel)
 	}
 	names := m.AllowedTools.OfMcpAllowedTools
 	if len(names) == 0 && m.AllowedTools.OfMcpToolFilter != nil {

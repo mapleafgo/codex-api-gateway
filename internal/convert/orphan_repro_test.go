@@ -31,7 +31,7 @@ func TestEnsureToolUsePairedMidOrphan(t *testing.T) {
 		{"type":"function_call","call_id":"c1","name":"tool","arguments":"{}"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"nevermind"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestEnsureToolUsePairedTailOrphan(t *testing.T) {
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"do X"}]},
 		{"type":"function_call","call_id":"c1","name":"tool","arguments":"{}"}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestEnsureToolUsePairedMultipleOrphans(t *testing.T) {
 		{"type":"function_call","call_id":"c2","name":"b","arguments":"{}"},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestEnsureToolUsePairedNormalUntouched(t *testing.T) {
 		{"type":"function_call","call_id":"c1","name":"tool","arguments":"{}"},
 		{"type":"function_call_output","call_id":"c1","output":"ok"}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestEnsureToolUsePairedServerToolUnaffected(t *testing.T) {
 		{"type":"code_interpreter_call","id":"ci_1","code":"print(1)","outputs":[]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestCoalesceUserAdjacentBeforeToolResult(t *testing.T) {
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"more context"}]},
 		{"type":"function_call_output","call_id":"c1","output":"ok"}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestCoalesceAssistantAdjacent(t *testing.T) {
 		{"type":"reasoning","id":"r1","encrypted_content":"sig","summary":[{"type":"summary_text","text":"think"}]},
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

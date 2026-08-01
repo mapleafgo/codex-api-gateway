@@ -17,7 +17,7 @@ func TestReasoningContentFallbackWhenSummaryEmpty(t *testing.T) {
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ans"}]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestWebSearchHistoryResultEmptyWithoutEncrypted(t *testing.T) {
 		{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"go","sources":[{"type":"url","url":"https://go.dev/"}]}},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"u"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestUnsupportedHistoryItemsDroppedWithWarn(t *testing.T) {
 			defer restore()
 			payload := `{"model":"gpt-5","input":[` + tc.item + `,{"type":"message","role":"user","content":[{"type":"input_text","text":"u"}]}],"stream":true}`
 			req := mustReq(t, payload)
-			out, _, err := ToAnthropic(req, &config.Config{})
+			out, err := ToAnthropic(req, &config.Config{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +127,7 @@ func TestCodeInterpreterImageOutputWarns(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"code_interpreter_call","id":"ci1","status":"completed","code":"plot()","outputs":[{"type":"image","url":"https://x/y.png"},{"type":"logs","logs":"done"}]}
 	],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestCodeInterpreterImageOutputWarns(t *testing.T) {
 	}
 }
 
-// TestMcpCallHistoryReplay：历史 mcp_call 回放为 beta mcp_tool_use + mcp_tool_result（param.Override）。
+// TestMcpCallHistoryReplay：历史 mcp_call 按扁平名直接回填标准 tool_use + tool_result。
 func TestMcpCallHistoryReplay(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"weather"}]},
@@ -175,7 +175,7 @@ func TestMcpCallHistoryReplay(t *testing.T) {
 		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"sunny"}]},
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"again"}]}
 	],"tools":[{"type":"mcp","server_label":"weather","server_url":"https://mcp.example/sse"}],"stream":true}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,16 +184,16 @@ func TestMcpCallHistoryReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	if !strings.Contains(s, "mcp_tool_use") || !strings.Contains(s, "mcp_1") {
-		t.Fatalf("mcp_tool_use missing from marshaled messages: %s", s)
+	if !strings.Contains(s, "mcp__weather__get") || !strings.Contains(s, "mcp_1") {
+		t.Fatalf("flat tool_use name missing from marshaled messages: %s", s)
 	}
-	if !strings.Contains(s, "mcp_tool_result") {
-		t.Fatalf("mcp_tool_result missing from marshaled messages: %s", s)
+	if !strings.Contains(s, "tool_result") {
+		t.Fatalf("tool_result missing from marshaled messages: %s", s)
+	}
+	if strings.Contains(s, "mcp_tool_use") || strings.Contains(s, "mcp_tool_result") {
+		t.Fatalf("beta mcp blocks must not be emitted: %s", s)
 	}
 	if !strings.Contains(s, "sunny") {
 		t.Fatalf("mcp result output lost: %s", s)
-	}
-	if !strings.Contains(s, "weather") {
-		t.Fatalf("server_name/label lost: %s", s)
 	}
 }

@@ -81,6 +81,7 @@ func (b *ChatBackend) Execute(
 	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
 	conv.SetFreeformNames(chatReq.FreeformNames)
+	conv.SetDeclaredNames(chatReq.DeclaredNames)
 
 	var ttfb time.Duration
 	locked := false

@@ -8,7 +8,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
-	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
@@ -312,9 +311,8 @@ func validateNamespaceToolChildren(data []byte) error {
 }
 
 // ToAnthropic converts a Response request into an Anthropic Messages request.
-// 第二个返回值是 MCP beta 注入定义（mcp_servers + mcp_toolset），由 collectMCP 产出；
-// 非 nil 时由 client 层注入到 marshal 后的请求体（SDK 不支持这组字段）。
-func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anthropic.MessageNewParams, *anthropicclient.MCPInjection, error) {
+// MCP 由 Codex 客户端本地执行，工具声明直接展开为标准 tool（toolcatalog.Declare）。
+func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anthropic.MessageNewParams, error) {
 	defaultMaxTokens := int64(config.DefaultAnthropicMaxTokens)
 	if cfg != nil && cfg.Anthropic.DefaultMaxTokens > 0 {
 		defaultMaxTokens = int64(cfg.Anthropic.DefaultMaxTokens)
@@ -354,14 +352,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 			lastReasoning = i
 		}
 	}
-	var hasMCPHistory bool
 	for i := range req.Input.OfInputItemList {
 		item := &req.Input.OfInputItemList[i]
 		if item.OfReasoning != nil && i != lastReasoning {
 			continue
 		}
-		if err := appendItem(out, &sysParts, item, &hasMCPHistory); err != nil {
-			return nil, nil, fmt.Errorf("convert input item: %w", err)
+		if err := appendItem(out, &sysParts, item); err != nil {
+			return nil, fmt.Errorf("convert input item: %w", err)
 		}
 	}
 
@@ -378,13 +375,13 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	applyMetadata(out, req)
 
 	if err := convertTools(out, req); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := injectStructuredOutput(out, req); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := convertToolChoice(out, req); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Codex 回灌历史或多轮 message item 可能产生连续同 role 的 Anthropic 消息
 	// （例如多条 user 输入、reasoning + assistant text 组合成两条 assistant）。
@@ -409,102 +406,7 @@ func ToAnthropic(req *oairesponses.ResponseNewParams, cfg *config.Config) (*anth
 	coalesceSameRoleMessages(out)
 	applyAnthropicCacheControl(out, cfg)
 
-	mcp, err := collectMCP(req)
-	if err != nil {
-		return nil, nil, err
-	}
-	// 历史 mcp_call 通过 param.Override 注入 messages；client 层需要据此设 beta header。
-	if mcp == nil {
-		mcp = &anthropicclient.MCPInjection{}
-	}
-	if hasMCPHistory {
-		mcp.History = true
-	}
-	return out, mcp, nil
-}
-
-// collectMCP 扫描请求里的 mcp tool，产出 beta MCPInjection（mcp_servers + toolset）。
-// 字段映射见 spec 2.2；损失处理见 spec 2.4。
-// connector_id / tunnel_id 是 OpenAI 私有托管设施，不在 Anthropic 标准范围 → fail-fast。
-func collectMCP(req *oairesponses.ResponseNewParams) (*anthropicclient.MCPInjection, error) {
-	var inj anthropicclient.MCPInjection
-	for _, t := range req.Tools {
-		if t.OfMcp == nil {
-			continue
-		}
-		m := t.OfMcp
-		if m.ConnectorID != "" {
-			return nil, fmt.Errorf("mcp connector_id %q is not supported: use server_url form instead", m.ConnectorID)
-		}
-		if m.TunnelID.Valid() && m.TunnelID.Value != "" {
-			return nil, fmt.Errorf("mcp tunnel_id %q is not supported: use server_url form instead", m.TunnelID.Value)
-		}
-		serverURL := ""
-		if m.ServerURL.Valid() {
-			serverURL = m.ServerURL.Value
-		}
-		if serverURL == "" {
-			return nil, fmt.Errorf("mcp server %q requires server_url (connector_id/tunnel_id unsupported)", m.ServerLabel)
-		}
-		token := ""
-		if m.Authorization.Valid() {
-			token = m.Authorization.Value
-		}
-		// headers：择优提取 Authorization: Bearer → authorization_token（authorization 空时回退）。
-		if bearer, ok := m.Headers["Authorization"]; ok {
-			if token != "" {
-				slog.Warn("MCP server 同时设置 authorization 字段与 headers[Authorization]，headers 值被忽略",
-					"server_label", m.ServerLabel)
-			} else {
-				token = strings.TrimPrefix(bearer, "Bearer ")
-			}
-		}
-		for k := range m.Headers {
-			if k != "Authorization" {
-				slog.Warn("丢弃 MCP server 自定义 header（Anthropic 仅支持单一 authorization_token）",
-					"server_label", m.ServerLabel, "header", k)
-			}
-		}
-		// require_approval：Anthropic MCP 无审批协议。never/缺省正常；其余降级 never + WARN。
-		if appr := approvalMode(m.RequireApproval); appr != "" && appr != "never" {
-			slog.Warn("MCP require_approval 降级为 never（Anthropic 无审批协议，工具将直接执行）",
-				"server_label", m.ServerLabel, "require_approval", appr)
-		}
-		inj.Servers = append(inj.Servers, anthropicclient.MCPServer{
-			Type: "url", URL: serverURL, Name: m.ServerLabel, AuthorizationToken: token,
-		})
-		if m.AllowedTools.OfMcpToolFilter != nil {
-			slog.Warn("mcp allowed_tools filter 不支持精确映射，降级为全启用（toolset default_config.enabled=true）",
-				"server_label", m.ServerLabel)
-		}
-		enabled := allowedMCPToolNames(m.AllowedTools)
-		inj.Toolsets = append(inj.Toolsets, anthropicclient.MCPToolset{
-			MCPServerName: m.ServerLabel, EnabledTools: enabled,
-		})
-	}
-	if inj.Empty() {
-		return nil, nil
-	}
-	return &inj, nil
-}
-
-// approvalMode 从 ToolMcpRequireApprovalUnionParam 取出审批模式字符串（"" 表缺省=never）。
-// SDK：OfMcpToolApprovalSetting 是 param.Opt[string]（值如 "never"/"on_failure"/"if_referenced"），
-// OfMcpToolApprovalFilter 是 filter 对象（近似需审批，降级为 on_failure）。
-func approvalMode(u oairesponses.ToolMcpRequireApprovalUnionParam) string {
-	if u.OfMcpToolApprovalSetting.Valid() {
-		return u.OfMcpToolApprovalSetting.Value
-	}
-	if u.OfMcpToolApprovalFilter != nil {
-		return "on_failure"
-	}
-	return ""
-}
-
-// allowedMCPToolNames 从 allowed_tools union 取出命中的工具名列表。
-// SDK：OfMcpAllowedTools 是 []string（allowlist）；OfMcpToolFilter 是 filter 对象（本批不展开）。
-func allowedMCPToolNames(u oairesponses.ToolMcpAllowedToolsUnionParam) []string {
-	return u.OfMcpAllowedTools
+	return out, nil
 }
 
 type instructionPart struct {
@@ -512,8 +414,7 @@ type instructionPart struct {
 	text string
 }
 
-// hasMCPHistory 非 nil 时，成功回放 mcp_call 会置 true，供 client 层设置 MCP beta header。
-func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam, hasMCPHistory *bool) error {
+func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, item *oairesponses.ResponseInputItemUnionParam) error {
 	if item.OfMessage != nil {
 		return appendMessage(out, sysParts, item.OfMessage)
 	}
@@ -550,21 +451,13 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 		return appendWebSearchCall(out, item.OfWebSearchCall)
 	}
 	// 历史 MCP items 按变体分档：
-	//   - mcp_call：通过 param.Override 注入 beta mcp_tool_use / mcp_tool_result（走
-	//     anthropic-beta: mcp-client-2025-11-20），保留调用上下文。
+	//   - mcp_call：按扁平名直接回填标准 tool_use + tool_result（不注入 beta MCP 块）。
 	//   - mcp_list_tools：无 Anthropic 等价块，折成 developer marker（server + 工具名 + error），
 	//     保留「有哪些工具可用」的线索，lossy。
 	//   - mcp_approval_request / mcp_approval_response：Anthropic 无审批协议，网关不实现，
 	//     WARN + 丢弃，避免误导模型以为审批已发生。
 	if item.OfMcpCall != nil {
-		wrote, err := appendMcpCall(out, item.OfMcpCall)
-		if err != nil {
-			return err
-		}
-		if wrote && hasMCPHistory != nil {
-			*hasMCPHistory = true
-		}
-		return nil
+		return appendMcpCall(out, item.OfMcpCall)
 	}
 	if item.OfMcpListTools != nil {
 		slog.Debug("丢弃历史 mcp_list_tools（opencode 无此类型；Codex 不把 AdditionalTools 转文本，工具经 ToolSpec/请求 tools 声明）",
@@ -925,24 +818,33 @@ func appendLocalShellCall(out *anthropic.MessageNewParams, call *oairesponses.Re
 }
 
 func appendApplyPatchCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemApplyPatchCallParam) error {
-	// 与声明/回程一致：freeform V4A 文本，不要 structured JSON。
-	// status/caller 无 Anthropic freeform 字段可挂，折入 tool_result 侧已有 status 文本；
-	// 历史 call 本身只回灌 patch 正文（lossy：caller 丢失，见覆盖表）。
-	var patch string
+	var input map[string]any
 	switch {
 	case call.Operation.OfCreateFile != nil:
-		patch = toolcatalog.FormatApplyPatchV4A("create_file", call.Operation.OfCreateFile.Path, call.Operation.OfCreateFile.Diff)
+		input = map[string]any{
+			"operation": "create_file",
+			"path":      call.Operation.OfCreateFile.Path,
+			"diff":      call.Operation.OfCreateFile.Diff,
+		}
 	case call.Operation.OfUpdateFile != nil:
-		patch = toolcatalog.FormatApplyPatchV4A("update_file", call.Operation.OfUpdateFile.Path, call.Operation.OfUpdateFile.Diff)
+		input = map[string]any{
+			"operation": "update_file",
+			"path":      call.Operation.OfUpdateFile.Path,
+			"diff":      call.Operation.OfUpdateFile.Diff,
+		}
 	case call.Operation.OfDeleteFile != nil:
-		patch = toolcatalog.FormatApplyPatchV4A("delete_file", call.Operation.OfDeleteFile.Path, "")
+		input = map[string]any{
+			"operation": "delete_file",
+			"path":      call.Operation.OfDeleteFile.Path,
+		}
 	default:
 		return fmt.Errorf("apply_patch call %q has an invalid operation", call.CallID)
 	}
-	if patch == "" {
-		return fmt.Errorf("apply_patch call %q has an invalid operation", call.CallID)
+	if call.Status != "" {
+		input["status"] = call.Status
 	}
-	return appendToolUse(out, call.CallID, "apply_patch", map[string]any{"input": patch})
+	putCallerMeta(input, call.Caller.OfDirect != nil, call.Caller.OfProgram != nil, call.Caller.GetCallerID())
+	return appendToolUse(out, call.CallID, "apply_patch", input)
 }
 
 // putCallerMeta 把 OpenAI tool call 的 caller 身份折进 tool_use.input（无 Anthropic 等价字段）。
@@ -1179,57 +1081,24 @@ func appendCodeInterpreterCall(out *anthropic.MessageNewParams, call *oairespons
 	return nil
 }
 
-// appendMcpCall 把历史 mcp_call 回放为 beta mcp_tool_use + mcp_tool_result。
-// 标准 ContentBlockParamUnion 无 MCP 变体，用 param.Override 塞原始 JSON，
-// 随 MessageNewParams marshal 后由 client 的 beta header 路径识别。
-// 第二个返回值表示是否真正写入了消息块（id 为空时跳过且不置 History）。
-func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemMcpCallParam) (bool, error) {
+// appendMcpCall 把历史 mcp_call 直接回填为标准 tool_use + tool_result。
+// MCP 由 Codex 客户端本地执行，历史形态与回程一致走扁平名
+// mcp__<server>__<tool>，不再重建 beta mcp_tool_use/mcp_tool_result。
+func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseInputItemMcpCallParam) error {
 	if call.ID == "" {
-		return false, nil
+		return nil
 	}
-	// mcp_tool_use.input：优先 object，否则 arguments 原串当 string 塞入。
-	input := toolUseInputPassthrough(call.Arguments)
-	useRaw, err := json.Marshal(map[string]any{
-		"type":        "mcp_tool_use",
-		"id":          call.ID,
-		"name":        call.Name,
-		"server_name": call.ServerLabel,
-		"input":       input,
-	})
-	if err != nil {
-		return false, err
+	name := toolcatalog.ToolName("mcp__"+call.ServerLabel, call.Name)
+	if err := appendToolUse(out, call.ID, name, toolUseInputPassthrough(call.Arguments)); err != nil {
+		return err
 	}
 	resultContent := ""
-	isError := false
 	if call.Error.Valid() && call.Error.Value != "" {
 		resultContent = call.Error.Value
-		isError = true
 	} else if call.Output.Valid() {
 		resultContent = call.Output.Value
 	}
-	resultObj := map[string]any{
-		"type":        "mcp_tool_result",
-		"tool_use_id": call.ID,
-		"is_error":    isError,
-		"content":     []map[string]any{{"type": "text", "text": resultContent}},
-	}
-	resultRaw, err := json.Marshal(resultObj)
-	if err != nil {
-		return false, err
-	}
-
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleAssistant {
-		out.Messages = append(out.Messages, anthropic.NewAssistantMessage())
-	}
-	last := &out.Messages[len(out.Messages)-1]
-	last.Content = append(last.Content, aparam.Override[anthropic.ContentBlockParamUnion](json.RawMessage(useRaw)))
-
-	if len(out.Messages) == 0 || out.Messages[len(out.Messages)-1].Role != anthropic.MessageParamRoleUser {
-		out.Messages = append(out.Messages, anthropic.NewUserMessage())
-	}
-	last = &out.Messages[len(out.Messages)-1]
-	last.Content = append(last.Content, aparam.Override[anthropic.ContentBlockParamUnion](json.RawMessage(resultRaw)))
-	return true, nil
+	return appendToolResult(out, call.ID, resultContent)
 }
 
 // appendWebSearchCall 把历史 web_search_call 回放为 Anthropic

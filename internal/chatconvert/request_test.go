@@ -98,6 +98,33 @@ func TestToChat_FunctionCallHistory(t *testing.T) {
 	}
 }
 
+func TestToChat_FunctionCallHistoryKeepsNamespace(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]},
+			{"type":"function_call","call_id":"c1","name":"spawn_agent","namespace":"collaboration","arguments":"{\"task\":\"x\"}"},
+			{"type":"function_call_output","call_id":"c1","output":"ok"}
+		],
+		"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]}]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := false
+	for _, m := range out.Messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name == "collaboration__spawn_agent" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("history function_call must keep namespace in flat name: %+v", out.Messages)
+	}
+}
+
 func TestToChat_MergeAdjacentFunctionCalls(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
@@ -157,12 +184,45 @@ func TestToChat_ShellAndApplyPatchTools(t *testing.T) {
 	if !names["shell"] || !names["apply_patch"] || !names["f"] {
 		t.Fatalf("tools=%v", names)
 	}
-	if !out.IsFreeformName("shell") || !out.IsFreeformName("apply_patch") {
-		t.Fatalf("freeform registry: %+v", out.FreeformNames)
+	for _, t0 := range out.Tools {
+		if t0.Function.Name != "apply_patch" {
+			continue
+		}
+		params, _ := t0.Function.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		if _, ok := props["input"]; !ok {
+			t.Fatalf("apply_patch must use freeform input schema: %v", params)
+		}
+		if _, ok := props["operation"]; ok {
+			t.Fatalf("apply_patch must not declare operation/path/diff: %v", params)
+		}
+	}
+	// shell/apply_patch 由 ChatName* 常量专项识别，不进 custom 回程登记表。
+	if out.IsFreeformName("shell") || out.IsFreeformName("apply_patch") {
+		t.Fatalf("builtin freeform must not be registered as custom: %+v", out.FreeformNames)
 	}
 	// custom suffix must NOT be used
 	if names["apply_patch_custom"] {
 		t.Fatal("must not suffix _custom")
+	}
+}
+
+func TestToChat_LocalShellDistinctToolName(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"local_shell"},{"type":"shell"}],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	names := map[string]bool{}
+	for _, t0 := range out.Tools {
+		names[t0.Function.Name] = true
+	}
+	if !names["local_shell"] || !names["shell"] {
+		t.Fatalf("local_shell must keep distinct name: %v", names)
+	}
+	if out.IsFreeformName("local_shell") {
+		t.Fatalf("local_shell must not be registered as custom: %+v", out.FreeformNames)
 	}
 }
 
@@ -177,22 +237,21 @@ func TestToChat_CustomNoSuffix(t *testing.T) {
 	}
 }
 
-func TestToChat_CustomGrammarToolMapsToChatCustom(t *testing.T) {
+func TestToChat_CustomGrammarToolMapsToChatFunction(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"tools":[{"type":"custom","name":"parse","description":"parse csv","format":{"type":"grammar","definition":"start: /[0-9]+/","syntax":"lark"}}],
 		"input":"x"
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	if len(out.Tools) != 1 || out.Tools[0].Type != "custom" {
+	if len(out.Tools) != 1 || out.Tools[0].Type != "function" {
 		t.Fatalf("tools=%+v", out.Tools)
 	}
-	ct := out.Tools[0].Custom
-	if ct == nil || ct.Name != "parse" || ct.Format == nil || ct.Format.Type != "grammar" || ct.Format.Grammar == nil {
-		t.Fatalf("custom=%+v", ct)
+	if out.Tools[0].Function.Name != "parse" {
+		t.Fatalf("function=%+v", out.Tools[0].Function)
 	}
-	if ct.Format.Grammar.Syntax != "lark" || ct.Format.Grammar.Definition != "start: /[0-9]+/" {
-		t.Fatalf("grammar=%+v", ct.Format.Grammar)
+	if !strings.Contains(out.Tools[0].Function.Description, "start: /[0-9]+/") {
+		t.Fatalf("grammar definition must be merged into description: %q", out.Tools[0].Function.Description)
 	}
 	if !out.IsFreeformName("parse") {
 		t.Fatal("custom should be freeform")
@@ -201,31 +260,33 @@ func TestToChat_CustomGrammarToolMapsToChatCustom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"type":"custom","custom":{"name":"parse","description":"parse csv","format":{"type":"grammar","grammar":{"syntax":"lark","definition":"start: /[0-9]+/"}}}`) {
-		t.Fatalf("wire missing custom grammar: %s", raw)
+	if !strings.Contains(string(raw), `"type":"function","function":{"name":"parse"`) {
+		t.Fatalf("wire missing function declaration: %s", raw)
 	}
 }
 
-func TestToChat_NamespaceCustomGrammarToolMapsToChatCustom(t *testing.T) {
+func TestToChat_NamespaceCustomGrammarToolMapsToChatFunction(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"tools":[{"type":"namespace","name":"ns","tools":[{"type":"custom","name":"parse","description":"d","format":{"type":"grammar","definition":"x","syntax":"regex"}}]}],
 		"input":"x"
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	if len(out.Tools) != 1 || out.Tools[0].Type != "custom" {
+	if len(out.Tools) != 1 || out.Tools[0].Type != "function" {
 		t.Fatalf("tools=%+v", out.Tools)
 	}
-	ct := out.Tools[0].Custom
-	if ct == nil || ct.Name != "ns__parse" || ct.Format == nil || ct.Format.Grammar == nil || ct.Format.Grammar.Syntax != "regex" {
-		t.Fatalf("custom=%+v", ct)
+	if out.Tools[0].Function.Name != "ns__parse" {
+		t.Fatalf("function=%+v", out.Tools[0].Function)
+	}
+	if !strings.Contains(out.Tools[0].Function.Description, "x") {
+		t.Fatalf("grammar definition must be merged into description: %q", out.Tools[0].Function.Description)
 	}
 	if !out.IsFreeformName("ns__parse") {
 		t.Fatal("namespaced custom should be freeform")
 	}
 }
 
-func TestToChat_CustomGrammarToolChoiceUsesCustom(t *testing.T) {
+func TestToChat_CustomGrammarToolChoiceUsesFunction(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"tools":[{"type":"custom","name":"parse","format":{"type":"grammar","definition":"x","syntax":"lark"}}],
@@ -237,13 +298,13 @@ func TestToChat_CustomGrammarToolChoiceUsesCustom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"tool_choice":{"type":"custom","custom":{"name":"parse"}}`) {
-		t.Fatalf("custom tool_choice missing: %s", raw)
+	if !strings.Contains(string(raw), `"function":{"name":"parse"},"type":"function"`) {
+		t.Fatalf("custom tool_choice must degrade to function: %s", raw)
 	}
 }
 
 func TestToChat_CustomToolCallHistoryRoundTrip(t *testing.T) {
-	// grammar custom 工具声明必须在 wire 上输出 type=custom。
+	// custom 工具声明统一 function 降级，历史 custom_tool_call 也走 function。
 	body := `{
 		"model":"gpt-4o",
 		"tools":[{"type":"custom","name":"parse","format":{"type":"grammar","definition":"start: /[0-9]+/","syntax":"lark"}}],
@@ -257,12 +318,12 @@ func TestToChat_CustomToolCallHistoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `"id":"call_parse","type":"custom","custom":{"name":"parse","input":"42"}`
+	want := `"id":"call_parse","type":"function","function":{"name":"parse","arguments":"{\"input\":\"42\"}"}`
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("custom tool_call history wire missing %s: %s", want, raw)
 	}
-	if strings.Contains(string(raw), `"function":`) {
-		t.Fatalf("grammar custom tool_call history must not emit function side: %s", raw)
+	if strings.Contains(string(raw), `"custom":{"name":"parse"`) {
+		t.Fatalf("custom tool_call history must not emit custom side: %s", raw)
 	}
 }
 
@@ -287,6 +348,69 @@ func TestToChat_FreeformCustomToolCallHistoryDegradesToFunction(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"custom":{"name":"mytool"`) {
 		t.Fatalf("freeform custom tool_call must not emit custom side: %s", raw)
+	}
+}
+
+func TestToChat_ApplyPatchCustomGrammarDeclDegradesToFunction(t *testing.T) {
+	// Codex 客户端把 apply_patch 声明为 custom + grammar（V4A lark 语法），
+	// 但 Chat 上游无 apply_patch custom 槽位：声明与历史都必须 function 降级，
+	// 否则 opencode2api 会把裸 V4A 文本直接当 arguments，上游解析失败 400。
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: /[a-z]+/"}}],
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"edit"}]},
+			{"type":"custom_tool_call","call_id":"call_ap","name":"apply_patch","input":"*** Begin Patch\n*** Update File: a.txt\n+x\n*** End Patch"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"id":"call_ap","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Update File: a.txt\\n+x\\n*** End Patch\"}"}`
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("apply_patch custom grammar history must degrade to function: %s", raw)
+	}
+	if strings.Contains(string(raw), `"custom":{"name":"apply_patch"`) {
+		t.Fatalf("apply_patch must not emit custom side: %s", raw)
+	}
+	// 工具声明同样保持 function + FreeformInputSchema。
+	var tools []struct {
+		Function struct {
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Parameters  map[string]any `json:"parameters"`
+		} `json:"function"`
+		Custom *json.RawMessage `json:"custom"`
+	}
+	if err := json.Unmarshal([]byte(raw), &struct {
+		Tools []struct {
+			Function struct {
+				Name        string         `json:"name"`
+				Description string         `json:"description"`
+				Parameters  map[string]any `json:"parameters"`
+			} `json:"function"`
+			Custom *json.RawMessage `json:"custom"`
+		} `json:"tools"`
+	}{Tools: tools}); err != nil {
+		t.Fatal(err)
+	}
+	for _, td := range tools {
+		if td.Function.Name != "apply_patch" {
+			continue
+		}
+		props, _ := td.Function.Parameters["properties"].(map[string]any)
+		if _, ok := props["input"]; !ok {
+			t.Fatalf("apply_patch decl must keep freeform input schema: %v", td.Function.Parameters)
+		}
+		wantDesc := "The apply_patch tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.\n\napply_patch 输入必须是 V4A 补丁文本（grammar 模板）：\nstart: /[a-z]+/"
+		if td.Function.Description != wantDesc {
+			t.Fatalf("apply_patch decl description mismatch:\n got=%q\nwant=%q", td.Function.Description, wantDesc)
+		}
+		if td.Custom != nil {
+			t.Fatalf("apply_patch decl must not carry custom wire: %v", string(*td.Custom))
+		}
 	}
 }
 
@@ -682,8 +806,8 @@ func TestToChat_ShellCallHistoryMerged(t *testing.T) {
 	if !callOK || !outOK {
 		t.Fatalf("shell history incomplete call=%v out=%v msgs=%+v", callOK, outOK, out.Messages)
 	}
-	if !out.IsFreeformName("shell") {
-		t.Fatal("shell should be freeform")
+	if out.IsFreeformName("shell") {
+		t.Fatalf("shell must not be registered as custom: %+v", out.FreeformNames)
 	}
 }
 
@@ -779,7 +903,7 @@ func TestToChat_ToolChoiceFunctionAndShell(t *testing.T) {
 	}
 }
 
-func TestToChat_ApplyPatchHistoryV4A(t *testing.T) {
+func TestToChat_ApplyPatchHistoryStructured(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -796,8 +920,15 @@ func TestToChat_ApplyPatchHistoryV4A(t *testing.T) {
 			for _, tc := range m.ToolCalls {
 				if tc.Function.Name == "apply_patch" {
 					callOK = true
-					if !strings.Contains(tc.Function.Arguments, "a.go") {
-						t.Fatalf("args should embed path/diff: %s", tc.Function.Arguments)
+					var args map[string]any
+					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+						t.Fatalf("args not JSON: %v", err)
+					}
+					if args["operation"] != "update_file" || args["path"] != "a.go" {
+						t.Fatalf("args must be structured operation/path: %s", tc.Function.Arguments)
+					}
+					if args["status"] != "completed" {
+						t.Fatalf("args must keep status: %s", tc.Function.Arguments)
 					}
 				}
 			}
@@ -809,8 +940,8 @@ func TestToChat_ApplyPatchHistoryV4A(t *testing.T) {
 	if !callOK || !outOK {
 		t.Fatalf("apply_patch history incomplete call=%v out=%v msgs=%+v", callOK, outOK, out.Messages)
 	}
-	if !out.IsFreeformName("apply_patch") {
-		t.Fatal("apply_patch freeform")
+	if out.IsFreeformName("apply_patch") {
+		t.Fatalf("apply_patch must not be registered as custom: %+v", out.FreeformNames)
 	}
 }
 
@@ -829,7 +960,7 @@ func TestToChat_LocalShellCallHistory(t *testing.T) {
 	for _, m := range out.Messages {
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
-				if tc.Function.Name == "shell" {
+				if tc.Function.Name == "local_shell" {
 					callOK = true
 					if !strings.Contains(tc.Function.Arguments, "ls") {
 						t.Fatalf("shell args=%s", tc.Function.Arguments)
@@ -843,6 +974,110 @@ func TestToChat_LocalShellCallHistory(t *testing.T) {
 	}
 	if !callOK || !outOK {
 		t.Fatalf("local_shell incomplete call=%v out=%v msgs=%+v", callOK, outOK, out.Messages)
+	}
+}
+
+func TestToChat_WebSearchHistoryFallbackIDsUnique(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"q1"}]},
+			{"type":"web_search_call","action":{"search":{"queries":["a"]}},"status":"completed"},
+			{"type":"web_search_call","action":{"search":{"queries":["b"]}},"status":"completed"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	seen := map[string]bool{}
+	toolByID := map[string]string{}
+	for _, m := range out.Messages {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID == "" || seen[tc.ID] {
+					t.Fatalf("duplicate or empty fallback call id: %+v", m.ToolCalls)
+				}
+				seen[tc.ID] = true
+			}
+		}
+		if m.Role == "tool" && m.ToolCallID != "" {
+			toolByID[m.ToolCallID] = m.Content.(string)
+		}
+	}
+	if len(seen) != 2 || len(toolByID) != 2 {
+		t.Fatalf("fallback ids not unique: calls=%v tools=%v msgs=%+v", seen, toolByID, out.Messages)
+	}
+}
+
+func TestToChat_FunctionCallOutputWithoutIDWarnAndSkip(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	body := `{
+		"model":"gpt-4o",
+		"input":[{"type":"function_call_output","output":"done"}]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, m := range out.Messages {
+		if m.Role == "tool" {
+			t.Fatalf("tool message with empty call id must not be emitted: %+v", out.Messages)
+		}
+	}
+	if !strings.Contains(buf.String(), "call_id") {
+		t.Fatalf("want WARN for missing call_id, logs=%s", buf.String())
+	}
+}
+
+func TestNormalizeToolSchemaNoForcedAdditionalProperties(t *testing.T) {
+	got := normalizeToolSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"q": map[string]any{"type": "string"},
+		},
+	})
+	m := got.(map[string]any)
+	if _, ok := m["additionalProperties"]; ok {
+		t.Fatalf("schema without anyOf must not force additionalProperties: %v", got)
+	}
+	anyOf := normalizeToolSchema(map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}},
+			map[string]any{"type": "null"},
+		},
+	})
+	am := anyOf.(map[string]any)
+	if am["additionalProperties"] != false {
+		t.Fatalf("anyOf projection must force additionalProperties=false: %v", anyOf)
+	}
+}
+
+func TestToChat_HostedAndFreeformSchemasProjected(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[
+			{"type":"web_search"},
+			{"type":"code_interpreter"},
+			{"type":"mcp","server_label":"srv","allowed_tools":["get"]},
+			{"type":"shell"},
+			{"type":"local_shell"},
+			{"type":"apply_patch"}
+		],
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) == 0 {
+		t.Fatalf("no tools: %+v", out.Tools)
+	}
+	for _, tl := range out.Tools {
+		if tl.Type != "function" {
+			continue
+		}
+		params, ok := tl.Function.Parameters.(map[string]any)
+		if !ok {
+			t.Fatalf("tool %s parameters type=%T", tl.Function.Name, tl.Function.Parameters)
+		}
+		if params["additionalProperties"] != false {
+			t.Fatalf("tool %s must declare additionalProperties=false: %v", tl.Function.Name, params)
+		}
 	}
 }
 
@@ -908,6 +1143,19 @@ func TestToChat_AllowedToolsUnknownEntryErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "allowed_tools") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestToChat_AllowedToolsLocalShellKeepsDistinctName(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"tools":[{"type":"local_shell"}],
+		"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[{"type":"local_shell"}]},
+		"input":"x"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	if len(out.Tools) != 1 || out.Tools[0].Function.Name != "local_shell" {
+		t.Fatalf("allowed local_shell must survive as name=local_shell: %+v", out.Tools)
 	}
 }
 
@@ -1389,8 +1637,8 @@ func TestToChat_ToolSchemaNullAnyOfNormalized(t *testing.T) {
 	if _, ok := b["anyOf"]; ok {
 		t.Fatalf("b anyOf should be merged away: %v", b)
 	}
-	if params["additionalProperties"] != false {
-		t.Fatalf("additionalProperties not forced false: %v", params)
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("top-level schema without anyOf must not force additionalProperties: %v", params)
 	}
 }
 
@@ -1411,8 +1659,8 @@ func TestToChat_NamespaceToolSchemaNormalized(t *testing.T) {
 	if !ok || params["type"] != "object" {
 		t.Fatalf("namespace parameters not normalized: %v", out.Tools[0].Function.Parameters)
 	}
-	if params["additionalProperties"] != false {
-		t.Fatalf("namespace additionalProperties not forced false: %v", params)
+	if _, ok := params["additionalProperties"]; ok {
+		t.Fatalf("namespace schema without anyOf must not force additionalProperties: %v", params)
 	}
 }
 

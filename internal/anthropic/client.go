@@ -19,13 +19,6 @@ import (
 
 var streamErrorType = string(aconstant.ValueOf[aconstant.Error]())
 
-// beta MCP probe 与合成事件使用的 wire 字符串，派生自 SDK shared/constant。
-var (
-	eventContentBlockStart = string(aconstant.ValueOf[aconstant.ContentBlockStart]())
-	blockMCPToolUse        = string(aconstant.ValueOf[aconstant.MCPToolUse]())
-	blockMCPToolResult     = string(aconstant.ValueOf[aconstant.MCPToolResult]())
-)
-
 // Client posts Anthropic Messages requests and returns SSE bodies.
 type Client struct {
 	HTTP *http.Client
@@ -129,9 +122,7 @@ func truncForLog(b []byte, n int) string {
 
 // Stream 发送请求并返回流式响应体及其 HTTP 状态码。
 // 传输失败返回状态码 0；HTTP/SSE 失败保留上游状态码，供观测和故障转移使用。
-// mcp 非 nil 时把 mcp_servers（顶层）+ mcp_toolset（tools[] 追加）注入请求体，
-// 并补上 beta header mcp-client-2025-11-20（与 thinking beta 共存）。
-func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, mcp *MCPInjection, headers map[string]string) (io.ReadCloser, int, error) {
+func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, headers map[string]string) (io.ReadCloser, int, error) {
 	log := logging.FromContext(ctx)
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -143,17 +134,12 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	if body, err = injectStream(body); err != nil {
 		return nil, 0, err
 	}
-	// MCP 是 beta server tool：mcp_servers + mcp_toolset 必须在 marshal 后注入
-	// （SDK 不支持这组字段），否则上游无法识别 MCP 定义。
-	if body, err = injectMCP(body, mcp); err != nil {
-		return nil, 0, err
-	}
 	// base_url 在配置里只写到各网关根地址，Messages 路径 /v1/messages 由
 	// 代码统一补全。各 Anthropic 兼容后端根地址不同（官方
 	// https://api.anthropic.com、智谱 https://open.bigmodel.cn/api/anthropic），
 	// 但 Messages 路径同为 /v1/messages，故配置不写该后缀、由 messagesURL 补全。
 	url := messagesURL(endpoint)
-	log.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req), "mcp", mcp != nil && mcp.NeedsBeta())
+	log.Info("发起上游流式请求", "url", url, "model", string(req.Model), "max_tokens", req.MaxTokens, "thinking", thinkingEnabled(req))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		log.Warn("构造流式请求失败", "url", url, "error", err)
@@ -168,13 +154,10 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 	// the one it knows and ignores the other.
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	// anthropic-beta：thinking 与 MCP beta 可共存（逗号分隔），appendBeta 去重。
+	// anthropic-beta：thinking 与扩展缓存 TTL 可共存（逗号分隔），appendBeta 去重。
 	beta := ""
 	if thinkingEnabled(req) {
 		beta = appendBeta(beta, "interleaved-thinking-2025-05-14")
-	}
-	if mcp != nil && mcp.NeedsBeta() {
-		beta = appendBeta(beta, MCPBetaHeader)
 	}
 	if req.CacheControl.TTL == anthropic.CacheControlEphemeralTTLTTL1h {
 		beta = appendBeta(beta, ExtendedCacheTTLBetaHeader)
@@ -263,30 +246,6 @@ func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStre
 			ev.Delta.Type = errInfo.Error.Type
 			ev.Delta.Text = errInfo.Error.Message
 			if err := fn(ev); err != nil {
-				return err
-			}
-			continue
-		}
-
-		// beta mcp blocks live inside content_block_start envelopes; standard
-		// unmarshal drops beta fields (server_name/is_error/content). Probe the
-		// envelope + nested content_block.type, synthesize an event carrying the
-		// beta fields in Input.
-		var envelope struct {
-			Type         string `json:"type"`
-			ContentBlock struct {
-				Type string `json:"type"`
-			} `json:"content_block"`
-		}
-		if json.Unmarshal([]byte(payload), &envelope) == nil && envelope.Type == eventContentBlockStart &&
-			(envelope.ContentBlock.Type == blockMCPToolUse || envelope.ContentBlock.Type == blockMCPToolResult) {
-			log.Debug("合成 beta MCP content_block_start 事件", "block_type", envelope.ContentBlock.Type)
-			synthetic, err := synthesizeMCPEvent([]byte(payload))
-			if err != nil {
-				log.Warn("解析 beta MCP content_block 失败", "block_type", envelope.ContentBlock.Type, "error", err)
-				return fmt.Errorf("parse mcp block: %w: %s", err, truncForLog([]byte(payload), 500))
-			}
-			if err := fn(synthetic); err != nil {
 				return err
 			}
 			continue

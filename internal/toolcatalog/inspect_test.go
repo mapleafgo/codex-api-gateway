@@ -58,6 +58,32 @@ func TestInspectNamespaceExpands(t *testing.T) {
 	}
 }
 
+func TestDeclaredIdentities(t *testing.T) {
+	tools := []oairesponses.ToolUnionParam{
+		{OfFunction: &oairesponses.FunctionToolParam{Name: "f"}},
+		{OfNamespace: &oairesponses.NamespaceToolParam{
+			Name: "ns",
+			Tools: []oairesponses.NamespaceToolToolUnionParam{
+				{OfFunction: &oairesponses.NamespaceToolToolFunctionParam{Name: "a__b"}},
+			},
+		}},
+		{OfMcp: &oairesponses.ToolMcpParam{
+			ServerLabel:  "srv",
+			AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{OfMcpAllowedTools: []string{"get"}},
+		}},
+	}
+	got := DeclaredIdentities(tools)
+	if id := got["f"]; id.Name != "f" || id.Namespace != "" {
+		t.Fatalf("plain function: %+v", id)
+	}
+	if id := got["ns__a__b"]; id.Namespace != "ns" || id.Name != "a__b" {
+		t.Fatalf("namespace child with __: %+v", id)
+	}
+	if id := got["mcp__srv__get"]; id.Namespace != "mcp__srv" || id.Name != "get" {
+		t.Fatalf("mcp allowed tool: %+v", id)
+	}
+}
+
 func TestInspectUnsupportedErrors(t *testing.T) {
 	_, err := Inspect(oairesponses.ToolUnionParam{})
 	if err == nil {

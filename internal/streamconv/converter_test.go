@@ -1793,64 +1793,66 @@ func TestEmptyOutputTextKeepsRequiredTextFields(t *testing.T) {
 	}
 }
 
-func TestMcpToolUseEmitsMcpCall(t *testing.T) {
+func TestMcpFlatToolUseEmitsFunctionCall(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
-	// 模拟 ScanEvents probe 合成的 mcp_tool_use 事件
+	// MCP 由 Codex 客户端本地执行：a 路径上游若返回 mcp 工具调用，
+	// 按扁平名回成 function_call{namespace:mcp__<server>, name:<tool>}。
 	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
 		Type: "content_block_start", Index: 0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "mcp_tool_use", ID: "toolu_mcp1", Name: "get",
-			Input: map[string]any{"server_name": "weather", "name": "get", "arguments": `{"q":"sf"}`},
+			Type: "tool_use", ID: "toolu_mcp1", Name: "mcp__weather__get",
 		},
 	})
 	added := eventData(t, eventByType(t, evs, "response.output_item.added"))
 	item := added["item"].(map[string]any)
-	if item["type"] != "mcp_call" || item["server_label"] != "weather" || item["name"] != "get" {
-		t.Fatalf("bad mcp_call item: %v", item)
+	if item["type"] != "function_call" || item["namespace"] != "mcp__weather" || item["name"] != "get" {
+		t.Fatalf("bad function_call item: %v", item)
 	}
-	if item["arguments"] != `{"q":"sf"}` {
-		t.Fatalf("bad arguments: %v", item["arguments"])
+	if item["call_id"] != "toolu_mcp1" {
+		t.Fatalf("bad call_id: %v", item)
 	}
-	eventByType(t, evs, "response.mcp_call.in_progress")
-	eventByType(t, evs, "response.mcp_call_arguments.delta")
-	eventByType(t, evs, "response.mcp_call_arguments.done")
-
-	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
-		Type: "content_block_start", Index: 1,
-		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "mcp_tool_result", ToolUseID: "toolu_mcp1",
-			Input: map[string]any{"output": "sunny", "is_error": false},
-		},
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"q":"sf"}`},
 	})
-	done := eventData(t, eventByType(t, evs2, "response.output_item.done"))
-	doneItem := done["item"].(map[string]any)
-	if doneItem["status"] != "completed" || doneItem["output"] != "sunny" {
-		t.Fatalf("bad mcp_call done: %v", doneItem)
+	evs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	eventByType(t, evs2, "response.function_call_arguments.done")
+	items := c.OutputItems()
+	if len(items) != 1 || items[0].Type != "function_call" {
+		t.Fatalf("bad output items: %+v", items)
+	}
+	if items[0].Namespace != "mcp__weather" || items[0].Name != "get" {
+		t.Fatalf("bad namespace/name: %+v", items[0])
 	}
 }
 
-func TestMcpToolResultErrorEmitsFailed(t *testing.T) {
+func TestDeclaredNameOverridesSplit(t *testing.T) {
 	c := New()
 	c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"}})
+	// 普通工具名含 "__"：按请求声明还原，不能盲拆成 namespace。
+	c.SetDeclaredToolNames(map[string]toolcatalog.Identity{
+		"a__b": {OpenAIType: "function", Name: "a__b"},
+	})
 	c.Feed(&anthropic.MessageStreamEventUnion{
 		Type: "content_block_start", Index: 0,
 		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "mcp_tool_use", ID: "toolu_mcp2", Name: "get",
-			Input: map[string]any{"server_name": "w", "name": "get", "arguments": "{}"},
+			Type: "tool_use", ID: "toolu_ab", Name: "a__b",
 		},
 	})
-	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
-		Type: "content_block_start", Index: 1,
-		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{
-			Type: "mcp_tool_result", ToolUseID: "toolu_mcp2",
-			Input: map[string]any{"output": "boom", "is_error": true},
-		},
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{}`},
 	})
-	eventByType(t, evs, "response.mcp_call.failed")
-	done := eventData(t, eventByType(t, evs, "response.output_item.done"))
-	if done["item"].(map[string]any)["status"] != "failed" {
-		t.Fatalf("expected failed status")
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	items := c.OutputItems()
+	if len(items) != 1 || items[0].Type != "function_call" {
+		t.Fatalf("bad output items: %+v", items)
+	}
+	if items[0].Name != "a__b" || items[0].Namespace != "" {
+		t.Fatalf("declared plain name must not be split: %+v", items[0])
 	}
 }
 
@@ -1992,7 +1994,7 @@ func TestAnthropicServerToolResultsSkippedNotFailed(t *testing.T) {
 	}
 }
 
-func TestConverterApplyPatchNormalizesExtraStars(t *testing.T) {
+func TestConverterApplyPatchPassesThrough(t *testing.T) {
 	c := New()
 	c.SetCustomToolNames([]string{"apply_patch"})
 	c.Feed(&anthropic.MessageStreamEventUnion{
@@ -2012,14 +2014,35 @@ func TestConverterApplyPatchNormalizesExtraStars(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items=%+v", items)
 	}
-	if strings.Contains(items[0].Input, "Patch ***") {
-		t.Fatalf("extra stars remain: %q", items[0].Input)
+	if items[0].Input != "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***" {
+		t.Fatalf("apply_patch input must pass through unchanged: %q", items[0].Input)
 	}
-	if !strings.HasPrefix(items[0].Input, "*** Begin Patch\n") {
-		t.Fatalf("begin: %q", items[0].Input)
+}
+
+func TestConverterApplyPatchSingleKeyAnyName(t *testing.T) {
+	// a 路径回程与 Chat 共用 SanitizeClientToolInput：Anthropic tool_use
+	// 若把 V4A 文本包进任意单键（如 patch），也必须解包为裸文本。
+	c := New()
+	c.SetCustomToolNames([]string{"apply_patch"})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_start", Message: anthropic.Message{ID: "m", Model: "x"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_start", Index: 0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_patch", Name: "apply_patch"},
+	})
+	raw := `{"patch":"*** Begin Patch\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch"}`
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "content_block_delta", Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: raw},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{Type: "content_block_stop", Index: 0})
+	items := c.OutputItems()
+	if len(items) != 1 {
+		t.Fatalf("items=%+v", items)
 	}
-	if !strings.HasSuffix(items[0].Input, "*** End Patch") {
-		t.Fatalf("end: %q", items[0].Input)
+	if items[0].Input != "*** Begin Patch\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch" {
+		t.Fatalf("a-path apply_patch single-key must unwrap, got %q", items[0].Input)
 	}
 }
 

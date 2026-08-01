@@ -403,40 +403,6 @@ func TestIntegrationCustomToolStream(t *testing.T) {
 // thinking_delta + signature_delta produces reasoning_summary_* events and
 // stores the signature for round-trip.
 
-// TestIntegrationApplyPatchNormalizesExtraStars 端到端：上游 tool_use(apply_patch)
-// 产出带多余 *** 的 V4A 时，客户端收到的 custom_tool_call.input 首行必须是
-// "*** Begin Patch"（Codex 校验字面量）。
-func TestIntegrationApplyPatchNormalizesExtraStars(t *testing.T) {
-	lines := []string{
-		`{"type":"message_start","message":{"id":"m_ap1","model":"claude"}}`,
-		`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_ap","name":"apply_patch"}}`,
-		`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"*** Begin Patch ***\\n*** Update File: a.go\\n@@\\n-old\\n+new\\n*** End Patch ***\"}"}}`,
-		`{"type":"content_block_stop","index":0}`,
-		`{"type":"message_delta","delta":{"type":"message_delta","stop_reason":"tool_use"},"usage":{"input_tokens":5,"output_tokens":3}}`,
-		`{"type":"message_stop"}`,
-	}
-	upstream, _ := mockBackend([]mockResp{{lines: lines}})
-	defer upstream.Close()
-	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
-	}
-	srv := New(cfg)
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	body := `{"model":"gpt-5","input":"edit","tools":[{"type":"apply_patch"}],"stream":true}`
-	events := postResponses(t, ts, body)
-	doneEv := findEvent(t, events, "response.custom_tool_call_input.done")
-	input, _ := doneEv.data["input"].(string)
-	if !strings.HasPrefix(input, "*** Begin Patch\n") {
-		t.Fatalf("begin marker wrong: %q", input)
-	}
-	if strings.Contains(input, "Patch ***") {
-		t.Fatalf("extra stars remain: %q", input)
-	}
-}
-
 // TestIntegrationFunctionArgsCoerceIntegerFloats 端到端：上游 function 参数
 // 含 85100.0 时，客户端 arguments 必须是整数字面量。
 func TestIntegrationFunctionArgsCoerceIntegerFloats(t *testing.T) {

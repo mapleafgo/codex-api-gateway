@@ -6,7 +6,7 @@ import (
 )
 
 // FreeformToolNames 返回请求里以 freeform custom tool 形式声明的工具名。
-// 这类工具（如 Codex 的 apply_patch）输入是 grammar/freeform 文本而非 JSON：
+// 这类工具（shell / custom）输入是 grammar/freeform 文本而非 JSON：
 // 请求侧转成 Anthropic custom tool 后，返回侧需把模型输出解包成裸文本，
 // 才能与客户端的 freeform 调用契约对齐。
 func FreeformToolNames(req *oairesponses.ResponseNewParams) []string {
@@ -68,4 +68,24 @@ func DeclaredServerTools(req *oairesponses.ResponseNewParams) []toolcatalog.Iden
 		}
 	}
 	return ids
+}
+
+// DeclaredToolNames 返回请求声明的全部工具身份，key 为 Anthropic wire 扁平名
+// （namespace 用 "__" 拼接）。扫描范围与 FreeformToolNames 一致（含历史
+// tool_search_output 动态工具），供回程按声明还原 namespace/name。
+func DeclaredToolNames(req *oairesponses.ResponseNewParams) map[string]toolcatalog.Identity {
+	out := map[string]toolcatalog.Identity{}
+	appendFromTools := func(tools []oairesponses.ToolUnionParam) {
+		for name, id := range toolcatalog.DeclaredIdentities(tools) {
+			out[name] = id
+		}
+	}
+	appendFromTools(req.Tools)
+	for i := range req.Input.OfInputItemList {
+		item := req.Input.OfInputItemList[i]
+		if item.OfToolSearchOutput != nil {
+			appendFromTools(item.OfToolSearchOutput.Tools)
+		}
+	}
+	return out
 }

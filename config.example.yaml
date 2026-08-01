@@ -87,6 +87,8 @@ sources:
     api_key: ${ANTHROPIC_KEY}               # 密钥，支持 ${ENV_VAR} 展开
     model_map: { gpt-5: claude-sonnet-4-20250514 }  # 请求 model → 后端 model 映射
     default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
+    # tools_type: custom                    # a 路径工具声明 type 字段：custom=标准 Anthropic type:"custom"（默认）；
+                                            # omit=省略 type（DeepSeek 等兼容端点只接受缺省形态，实测 type:"custom" 会 400）
     # disabled: true                        # 人工停用：true 时不参与调度；管理页可即时切换
     # headers:                              # 可选：追加到上游请求的自定义 header（如 X-Api-Key、anthropic-beta 覆盖）
     #   X-Custom: value                     # 保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖，会被跳过并 WARN

@@ -14,6 +14,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 var (
@@ -56,9 +57,14 @@ func (b *AnthropicBackend) Execute(
 		return fmt.Errorf("decode: %w", err)
 	}
 	clientModel := string(req.Model)
-	anthReq, mcp, err := convert.ToAnthropic(req, cfg)
+	anthReq, err := convert.ToAnthropic(req, cfg)
 	if err != nil {
 		return fmt.Errorf("toanthropic: %w", err)
+	}
+	// DeepSeek 等兼容端点只接受缺省形态的工具声明（type:"custom" 会 400），
+	// 按 source.tools_type=omit 清空 client tool 的 type 字段。
+	if tt, err := config.NormalizeToolsType(src.ToolsType); err == nil && tt == config.ToolsTypeOmit {
+		toolcatalog.StripToolType(anthReq.Tools)
 	}
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
@@ -74,6 +80,7 @@ func (b *AnthropicBackend) Execute(
 	conv.SetClientModel(clientModel)
 	conv.SetCustomToolNames(convert.FreeformToolNames(req))
 	conv.SetDeclaredServerTools(convert.DeclaredServerTools(req))
+	conv.SetDeclaredToolNames(convert.DeclaredToolNames(req))
 	// 仅 summary==concise 时上游返回 summarized thinking，才用 reasoning_summary_*。
 	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
 		conv.SetSummarized(true)
@@ -83,7 +90,7 @@ func (b *AnthropicBackend) Execute(
 		"endpoint", src.BaseURL,
 		"model", clientModel,
 		"resolved_model", resolved)
-	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, mcp, src.Headers)
+	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, src.Headers)
 	if err != nil {
 		log.Warn("上游源建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {

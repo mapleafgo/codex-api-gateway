@@ -32,19 +32,14 @@ func TestCustomToolInputPreservesBlankLines(t *testing.T) {
 	}
 }
 
-func TestApplyPatchSanitizeStripsExtraStars(t *testing.T) {
+func TestApplyPatchSanitizePassesThrough(t *testing.T) {
 	rawBytes, _ := json.Marshal(map[string]string{
 		"input": "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***",
 	})
 	got := toolcatalog.SanitizeClientToolInput("apply_patch", true, string(rawBytes))
-	if !strings.HasPrefix(got, "*** Begin Patch\n") {
-		t.Fatalf("begin: %q", got)
-	}
-	if strings.Contains(got, "Patch ***") {
-		t.Fatalf("extra stars remain: %q", got)
-	}
-	if !strings.HasSuffix(got, "*** End Patch") {
-		t.Fatalf("end: %q", got)
+	want := "*** Begin Patch ***\n*** Update File: a.go\n@@\n-old\n+new\n*** End Patch ***"
+	if got != want {
+		t.Fatalf("apply_patch input must pass through unchanged: %q", got)
 	}
 }
 

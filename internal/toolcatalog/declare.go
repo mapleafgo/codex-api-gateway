@@ -23,10 +23,10 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		c := t.OfCustom
 		return []anthropic.ToolUnionParam{ClientTool(c.Name, FreeformInputSchema(), optionalString(c.Description), true)}, nil
 	case t.OfApplyPatch != nil:
-		// Codex apply_patch 是 freeform V4A 文本工具（非 structured operation/path/diff）。
-		// 声明 structured schema 会诱导上游产出 JSON，回程/客户端校验双双失败。
-		desc := ApplyPatchDescription()
-		return []anthropic.ToolUnionParam{ClientTool("apply_patch", FreeformInputSchema(), &desc, true)}, nil
+		// Codex 的 apply_patch 只消费 V4A 文本：声明 freeform {"input":...}，
+		// 回程 custom_tool_call.input 才能直接交给客户端执行。历史回灌虽按
+		// 客户端原始 operation/path/diff 直接回填，但声明必须驱动模型输出文本。
+		return []anthropic.ToolUnionParam{ClientTool("apply_patch", FreeformInputSchema(), nil, true)}, nil
 	case t.OfShell != nil:
 		return []anthropic.ToolUnionParam{ClientTool("shell", FreeformInputSchema(), nil, true)}, nil
 	case t.OfLocalShell != nil:
@@ -73,9 +73,10 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		}
 		return []anthropic.ToolUnionParam{{OfCodeExecutionTool20250522: &anthropic.CodeExecutionTool20250522Param{}}}, nil
 	case t.OfMcp != nil:
-		// MCP 是 beta server tool，不产出标准 ToolUnionParam；
-		// 其请求定义由 convert.collectMCP 产出 MCPInjection，client 注入。
-		return nil, nil
+		// MCP 由 Codex 客户端本地执行：allowed_tools 展开为扁平
+		// mcp__<server>__<tool> 标准 tool 声明（与 c 路径一致），
+		// 不再注入 Anthropic beta mcp_servers/mcp_toolset。
+		return mcpClientToolDecls(t.OfMcp), nil
 	case t.OfWebSearch != nil:
 		ws := t.OfWebSearch
 		if ws.SearchContextSize != "" {
@@ -101,6 +102,47 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))
 	}
+}
+
+// mcpClientToolDecls 把 MCP allowed_tools 展开为扁平 client tool 声明。
+// filter / 空列表形态不展开（工具经 tool_search 动态提供）。
+func mcpClientToolDecls(m *oairesponses.ToolMcpParam) []anthropic.ToolUnionParam {
+	if m == nil || m.ServerLabel == "" {
+		return nil
+	}
+	if HasMCPConnectionFields(m) {
+		slog.Debug("MCP 连接字段由 Codex 客户端本地使用，网关不注入上游",
+			"server_label", m.ServerLabel)
+	}
+	if m.AllowedTools.OfMcpToolFilter != nil {
+		slog.Debug("mcp allowed_tools filter 不展开为 Anthropic tool 声明",
+			"server_label", m.ServerLabel)
+		return nil
+	}
+	out := make([]anthropic.ToolUnionParam, 0, len(m.AllowedTools.OfMcpAllowedTools))
+	for _, name := range m.AllowedTools.OfMcpAllowedTools {
+		if name == "" {
+			continue
+		}
+		out = append(out, ClientTool(ToolName("mcp__"+m.ServerLabel, name), nil, nil, false))
+	}
+	return out
+}
+
+// HasMCPConnectionFields 报告 type:mcp 是否携带客户端连接信息（server_url /
+// authorization / headers / require_approval / connector_id / tunnel_id）。
+// 这些字段只对 Codex 本地连接有意义，网关声明时不需要也不应注入上游。
+func HasMCPConnectionFields(m *oairesponses.ToolMcpParam) bool {
+	if m == nil {
+		return false
+	}
+	return m.ConnectorID != "" ||
+		m.ServerURL.Valid() ||
+		m.Authorization.Valid() ||
+		len(m.Headers) > 0 ||
+		m.TunnelID.Valid() ||
+		m.RequireApproval.OfMcpToolApprovalSetting.Valid() ||
+		m.RequireApproval.OfMcpToolApprovalFilter != nil
 }
 
 // webSearchTool 构造 Anthropic web_search_20260209。
@@ -130,7 +172,7 @@ func webSearchTool(allowed []string, city, country, region, timezone oparam.Opt[
 }
 
 // ClientTool 构造一个 Anthropic client tool（ToolParam）。
-// custom=true 标记为 freeform custom tool（apply_patch / shell / custom）。
+// custom=true 标记为 freeform custom tool（shell / custom）。
 // 被 Declare 与 convert 的 structured-output 注入共用。
 func ClientTool(name string, schema map[string]any, description *string, custom bool) anthropic.ToolUnionParam {
 	if schema == nil {
@@ -147,6 +189,17 @@ func ClientTool(name string, schema map[string]any, description *string, custom 
 		tool.Type = anthropic.ToolTypeCustom
 	}
 	return anthropic.ToolUnionParam{OfTool: tool}
+}
+
+// StripToolType 清空 client tool（OfTool）的 type 字段，server tool 保持不变。
+// DeepSeek 等 Anthropic 兼容端点的 serde 只接受缺省形态的工具声明，
+// 显式 type:"custom" 会 400（实测 "unknown variant `custom`"）。
+func StripToolType(tools []anthropic.ToolUnionParam) {
+	for i := range tools {
+		if tools[i].OfTool != nil {
+			tools[i].OfTool.Type = ""
+		}
+	}
 }
 
 // ToolName 返回 namespace 工具的转换后名（namespace 为空时原样返回）。
@@ -169,14 +222,15 @@ func schemaFromAny(v any) map[string]any {
 	return s
 }
 
-// FreeformInputSchema 返回 freeform 工具（shell/apply_patch/custom）的通用 input schema。
+// FreeformInputSchema 返回 freeform 工具（shell/custom）的通用 input schema。
 func FreeformInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"input": map[string]any{"type": "string"},
 		},
-		"required": []string{"input"},
+		"required":             []string{"input"},
+		"additionalProperties": false,
 	}
 }
 

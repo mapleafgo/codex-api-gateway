@@ -137,7 +137,8 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	可选字段（仅在网关必须告知时给值，其余交给 Codex 默认）：
 //	  - supports_search_tool=true（启用 tool_search + MCP deferred tools 懒加载，网关核心）
 //	  - context_window（Codex 默认 None，必须告知；同步到 max_context_window）
-//	  - include_skills_usage_instructions=true（注入 skills 使用说明块，引导 skill 发现）
+//	  - include_skills_usage_instructions=true（base_instructions 为空时注入，引导 skill 发现；
+//	    非空时 false，避免与基线指令重复）
 //	  - web_search_tool_type="text_and_image"（声明支持文本+图片 web 搜索）
 //	  - input_modalities=["text","image"]（默认按多模态声明）
 //	  - default_reasoning_summary="auto"（固定声明默认 summary 模式，不让客户端省略推断）
@@ -162,6 +163,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	multiAgentV2 := "v2"
 	compHash := "3000"
 	responsesLiteOff := false
+	baseInstructions := s.holder.Current().BaseInstructions
 	info := model.CodexModelInfo{
 		// —— 必填字段 ——
 		Slug:                     slug,
@@ -174,7 +176,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		// Priority 由 handleModels 按顺序分配，codexModelInfo 不设固定值.
 		AvailabilityNux:            nil,
 		Upgrade:                    nil,
-		BaseInstructions:           s.holder.Current().BaseInstructions,
+		BaseInstructions:           baseInstructions,
 		SupportsReasoningSummaries: true,
 		DefaultReasoningSummary:    model.ReasoningSummaryAuto,
 		SupportVerbosity:           false,
@@ -192,7 +194,7 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		SupportsSearchTool:             true,
 		ContextWindow:                  &ctxWindow,
 		MaxContextWindow:               &ctxWindow,
-		IncludeSkillsUsageInstructions: true,
+		IncludeSkillsUsageInstructions: baseInstructions == "",
 		WebSearchToolType:              "text_and_image",
 		InputModalities:                []string{"text", "image"},
 		// tool_mode="direct"：强制标准工具调用模式（function 工具独立发送、模型直接
@@ -208,6 +210,9 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		// 优化，第三方上游有害无益）。显式 false 而非省略，防止 Codex hardcode/默认开启
 		// lite（如 gpt-5.6 catalog 硬编码 true）。不开放 per-slug 覆盖。
 		UseResponsesLite: &responsesLiteOff,
+	}
+	if baseInstructions != "" {
+		info.ModelMessages = &model.CodexModelMessages{InstructionsTemplate: &baseInstructions}
 	}
 
 	// 应用 config.yaml models.<slug> 覆盖（仅覆盖显式配置的字段）
@@ -368,7 +373,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	bt, _ := config.NormalizeBackendType(first.BackendType)
 	switch bt {
 	case config.BackendAnthropic:
-		if _, _, err := convert.ToAnthropic(req, cur); err != nil {
+		if _, err := convert.ToAnthropic(req, cur); err != nil {
 			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return

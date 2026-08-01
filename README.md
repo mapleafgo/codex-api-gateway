@@ -398,10 +398,11 @@ rm -f ~/.codex/models_cache.json
 - **web_search**：出站完整（事件链 + `url_citation`，流式与终态 item annotations 都写）；历史回灌为 `server_tool_use` + 空 `web_search_tool_result` + sources 可见文本——OpenAI wire 无 Anthropic required 的 `encrypted_content`，无法做官方级 result round-trip。
 - **code interpreter**：`container`（file_ids / memory_limit / 显式 container）、image 输出、`code_execution_tool_result_error` 不可转换。
 - **MCP**：
-  - `mcp_call` 历史 → beta `mcp_tool_use` / `mcp_tool_result`（`param.Override` + `anthropic-beta: mcp-client-2025-11-20`）
+  - MCP 由 Codex 客户端本地执行：`allowed_tools` 展开为扁平 `mcp__<server>__<tool>` function 声明，回程走 `function_call`，不再注入 Anthropic beta MCP 配置
+  - `mcp_call` 历史 → 标准 `tool_use` + `tool_result`（扁平名直接回填）
   - `mcp_list_tools` 历史 → developer marker（lossy）
-  - `mcp_approval_request` / `response` **不实现**：Anthropic 无审批协议，历史 WARN + 丢弃；请求侧 `require_approval≠never` 降级 never + WARN
-  - `headers` 仅提取 `Authorization: Bearer`；`connector_id`/`tunnel_id` fail-fast
+  - `mcp_approval_request` / `response` **不实现**：Anthropic 无审批协议，历史 WARN + 丢弃
+  - 连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不注入或 fail-fast，交给客户端本地连接执行
 - **tool_choice `allowed_tools`**：仅 `auto`/`required` 映射；条目按 type/namespace/name 精确匹配已声明工具；与 structured output 组合或含 hosted/MCP 条目时 fail-fast。
 - **无等价历史 item**（`file_search_call` / `computer_call*` / `image_generation_call` / `program*` / `item_reference` / `additional_tools`）：WARN + 丢弃，不进 system context。
 - **无等价请求参数**：`background` / `conversation` / `moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / deprecated `user` 等按 WARN + 忽略；`service_tier` 非空时 WARN 且不透传。

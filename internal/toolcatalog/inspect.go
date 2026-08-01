@@ -42,12 +42,54 @@ func Inspect(t oairesponses.ToolUnionParam) ([]Identity, error) {
 	case t.OfCodeInterpreter != nil:
 		return []Identity{{OpenAIType: model.ToolTypeCodeInterpreter, Name: "code_interpreter"}}, nil
 	case t.OfMcp != nil:
-		return []Identity{{OpenAIType: model.ToolTypeMcp, Name: "mcp"}}, nil
+		return inspectMCP(t.OfMcp), nil
 	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
 		return []Identity{{OpenAIType: model.ToolTypeWebSearch, Name: "web_search"}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))
 	}
+}
+
+// inspectMCP 把 mcp tool 的 allowed_tools 展开为命名空间身份
+// （namespace=mcp__<server>, name=<tool>），与 Declare 的扁平声明一致。
+// filter / 空列表形态退化为单个占位身份（仅用于错误信息）。
+func inspectMCP(m *oairesponses.ToolMcpParam) []Identity {
+	if m == nil || m.ServerLabel == "" || m.AllowedTools.OfMcpToolFilter != nil {
+		return []Identity{{OpenAIType: model.ToolTypeMcp, Name: "mcp"}}
+	}
+	names := m.AllowedTools.OfMcpAllowedTools
+	out := make([]Identity, 0, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		out = append(out, Identity{
+			OpenAIType: model.ToolTypeMcp,
+			Namespace:  "mcp__" + m.ServerLabel,
+			Name:       name,
+		})
+	}
+	if len(out) == 0 {
+		return []Identity{{OpenAIType: model.ToolTypeMcp, Name: "mcp"}}
+	}
+	return out
+}
+
+// DeclaredIdentities 返回一批工具的扁平 wire 名 → 身份映射。
+// key 与 Declare / toolUnionToChat 产出的工具名一致（namespace 用 "__" 拼接），
+// 供回程按声明还原 namespace/name，避免对含 "__" 的工具名盲拆。
+func DeclaredIdentities(tools []oairesponses.ToolUnionParam) map[string]Identity {
+	out := map[string]Identity{}
+	for _, t := range tools {
+		ids, err := Inspect(t)
+		if err != nil {
+			continue
+		}
+		for _, id := range ids {
+			out[id.ConvertedName()] = id
+		}
+	}
+	return out
 }
 
 // InspectAllowed 从一个 allowed_tools 条目（弱类型 map）提取身份。

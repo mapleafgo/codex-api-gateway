@@ -2,7 +2,6 @@ package toolcatalog
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -10,8 +9,7 @@ import (
 
 // SanitizeClientToolInput 是回程 client tool 参数的统一出口。
 //
-// freeform=true：先从 Anthropic {"input":"..."} 解包裸文本，再按工具名做
-// 契约归一（目前 apply_patch V4A）。
+// freeform=true：先从 Anthropic {"input":"..."} 解包裸文本。
 // freeform=false：把 JSON 参数里「整数值却写成 1.0」的 number 收成整数字面量，
 // 避免 Codex/Rust serde 报 floating point expected i32/i64/u64。
 //
@@ -27,86 +25,42 @@ func SanitizeClientToolInput(toolName string, freeform bool, raw string) string 
 }
 
 func sanitizeFreeformInput(toolName, raw string) string {
-	text := unwrapFreeformInput(raw)
-	switch toolName {
-	case "apply_patch":
-		return NormalizeApplyPatchInput(text)
-	default:
-		return text
+	if toolName == "apply_patch" {
+		return sanitizeApplyPatchFreeform(raw)
 	}
+	return unwrapSingleValueJSON(raw)
 }
 
-// unwrapFreeformInput 从 {"input":"..."} 解出文本；非该形态则原样返回。
-func unwrapFreeformInput(raw string) string {
+// unwrapSingleValueJSON 从单键 JSON 对象中取出字符串值；键名不敏感。
+// opencode 等上游把 freeform 文本包在 input/patch/cmd 等不同键下，
+// 统一取唯一值，避免 Codex 把整段 JSON 当工具入参。多键或非 string 值原样返回。
+func unwrapSingleValueJSON(raw string) string {
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
 		return raw
 	}
-	if input, ok := obj["input"].(string); ok {
-		return input
+	if len(obj) != 1 {
+		return raw
 	}
-	// structured apply_patch 等：保留 raw 给下游 name 特化处理
+	for _, v := range obj {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
 	return raw
 }
 
-// NormalizeApplyPatchInput 归一 Codex V4A freeform patch。
-//
-// 常见故障：模型写 "*** Begin Patch ***" / "*** End Patch ***"（多一对星），
-// 客户端严格要求首行恰好 "*** Begin Patch"。
-// 另：历史/声明曾暴露 structured（operation/path/diff），模型可能产出 JSON，
-// 此处折回 V4A。
-func NormalizeApplyPatchInput(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return raw
+// sanitizeApplyPatchFreeform 处理 apply_patch 的 freeform 契约：
+// 优先解单键对象（input/patch 等任意键名）；若模型按历史回灌形态输出 structured
+// operation/path/diff JSON，兜底折成 V4A 文本，保证 Codex 可执行。
+func sanitizeApplyPatchFreeform(raw string) string {
+	if text := unwrapSingleValueJSON(raw); text != raw {
+		return text
 	}
-	if s, ok := structuredApplyPatchToV4A(raw); ok {
-		raw = s
+	if patch, ok := structuredApplyPatchToV4A(raw); ok {
+		return patch
 	}
-	// 整段被 JSON 字符串引号包住
-	if len(raw) >= 2 && raw[0] == '"' {
-		var s string
-		if err := json.Unmarshal([]byte(raw), &s); err == nil && s != "" {
-			raw = s
-		}
-	}
-	lines := strings.Split(raw, "\n")
-	for i, line := range lines {
-		trim := strings.TrimRight(line, "\r")
-		switch {
-		case isBeginPatchMarker(trim):
-			lines[i] = "*** Begin Patch"
-		case isEndPatchMarker(trim):
-			lines[i] = "*** End Patch"
-		default:
-			lines[i] = trim
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func isBeginPatchMarker(line string) bool {
-	s := strings.TrimSpace(line)
-	if s == "*** Begin Patch" {
-		return true
-	}
-	if !strings.HasPrefix(s, "*** Begin Patch") {
-		return false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(s, "*** Begin Patch"))
-	return rest == "" || rest == "***" || strings.Trim(rest, "* \t") == ""
-}
-
-func isEndPatchMarker(line string) bool {
-	s := strings.TrimSpace(line)
-	if s == "*** End Patch" {
-		return true
-	}
-	if !strings.HasPrefix(s, "*** End Patch") {
-		return false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(s, "*** End Patch"))
-	return rest == "" || rest == "***" || strings.Trim(rest, "* \t") == ""
+	return raw
 }
 
 func structuredApplyPatchToV4A(raw string) (string, bool) {
@@ -120,52 +74,15 @@ func structuredApplyPatchToV4A(raw string) (string, bool) {
 		return "", false
 	}
 	diff, _ := obj["diff"].(string)
-	s := FormatApplyPatchV4A(op, path, diff)
-	if s == "" {
+	patch := formatApplyPatchV4A(op, path, diff)
+	if patch == "" {
 		return "", false
 	}
-	return s, true
+	return patch, true
 }
 
-func writeDiffBody(b *strings.Builder, diff string) {
-	if diff == "" {
-		return
-	}
-	trimmed := strings.TrimLeft(diff, "\n")
-	if strings.HasPrefix(trimmed, "*** Add File:") ||
-		strings.HasPrefix(trimmed, "*** Update File:") ||
-		strings.HasPrefix(trimmed, "*** Delete File:") {
-		for _, line := range strings.Split(diff, "\n") {
-			t := strings.TrimRight(line, "\r")
-			if isBeginPatchMarker(t) || isEndPatchMarker(t) {
-				continue
-			}
-			b.WriteString(t)
-			b.WriteByte('\n')
-		}
-		return
-	}
-	b.WriteString(diff)
-	if !strings.HasSuffix(diff, "\n") {
-		b.WriteByte('\n')
-	}
-}
-
-// ApplyPatchDescription 声明侧简短说明，强调 V4A 标记字面量（无尾部 ***）。
-func ApplyPatchDescription() string {
-	return fmt.Sprintf(
-		"Apply a freeform V4A patch as plain text. First line must be exactly %q and last line exactly %q (no extra stars). Use %q / %q / %q headers.",
-		"*** Begin Patch",
-		"*** End Patch",
-		"*** Add File: path",
-		"*** Update File: path",
-		"*** Delete File: path",
-	)
-}
-
-// FormatApplyPatchV4A 从 OpenAI apply_patch_call 的 operation 拼 V4A 文本，
-// 供历史回灌与 freeform 契约对齐（不要再回灌 structured JSON）。
-func FormatApplyPatchV4A(operation, path, diff string) string {
+// formatApplyPatchV4A 从 apply_patch_call 的 operation 拼 V4A 文本。
+func formatApplyPatchV4A(operation, path, diff string) string {
 	var b strings.Builder
 	b.WriteString("*** Begin Patch\n")
 	switch operation {
@@ -173,18 +90,21 @@ func FormatApplyPatchV4A(operation, path, diff string) string {
 		b.WriteString("*** Add File: ")
 		b.WriteString(path)
 		b.WriteByte('\n')
-		writeDiffBody(&b, diff)
+		b.WriteString(diff)
 	case "update_file":
 		b.WriteString("*** Update File: ")
 		b.WriteString(path)
 		b.WriteByte('\n')
-		writeDiffBody(&b, diff)
+		b.WriteString(diff)
 	case "delete_file":
 		b.WriteString("*** Delete File: ")
 		b.WriteString(path)
 		b.WriteByte('\n')
 	default:
 		return ""
+	}
+	if diff != "" && !strings.HasSuffix(diff, "\n") {
+		b.WriteByte('\n')
 	}
 	b.WriteString("*** End Patch")
 	return b.String()

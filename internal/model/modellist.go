@@ -40,7 +40,8 @@ type CodexModelsResponse struct {
 //     去掉 omitempty 始终显式返回（含 false），让客户端明确搜索能力而非靠 serde default 推断
 //   - supports_image_detail_original: 是否支持图片原尺寸 detail，默认 false；
 //     与 input_modalities 含 image（能接受图片输入）是不同维度，始终显式返回
-//   - include_skills_usage_instructions: 注入 skills 使用说明块，默认 true（启用 skill 发现引导）
+//   - include_skills_usage_instructions: 注入 skills 使用说明块；base_instructions 为空时默认
+//     true（启用 skill 发现引导），非空时默认 false
 //   - web_search_tool_type: web search 能力类型 text|text_and_image（仅声明，不自动注册工具）
 //   - input_modalities: 支持的输入模态 ["text","image"]
 //   - effective_context_window_percent: 输入 token 占窗口百分比
@@ -52,8 +53,9 @@ type CodexModelsResponse struct {
 //     namespace 工具。第三方上游非 OpenAI 后端启用有害无益，codexModelInfo 硬编码显式
 //     false 压制 lite（防 Codex hardcode/默认开启），不开放 per-slug 覆盖。
 //
-// 不注入（保持零值）：
-//   - model_messages（personality 模板，网关不注入）
+// 按需注入：
+//   - model_messages.instructions_template：base_instructions.md 非空时注入（与 base_instructions
+//     同文本，Codex 优先使用 instructions_template 组装 system 指令，格式说明随指令到达上游）
 //   - default_reasoning_level / service_tiers / default_service_tier 等（用 Codex 默认）
 //
 // used_fallback_model_metadata 是 Codex 内部标记（#[skip_deserializing]），
@@ -80,26 +82,34 @@ type CodexModelInfo struct {
 	ExperimentalSupportedTools []string              `json:"experimental_supported_tools"`
 
 	// —— 可选字段（有 serde(default)），零值省略 ——
-	DefaultReasoningLevel          *string  `json:"default_reasoning_level,omitempty"`
-	AdditionalSpeedTiers           []string `json:"additional_speed_tiers,omitempty"`
-	ServiceTiers                   []any    `json:"service_tiers,omitempty"`
-	DefaultServiceTier             *string  `json:"default_service_tier,omitempty"`
-	ModelMessages                  *any     `json:"model_messages,omitempty"`
-	IncludeSkillsUsageInstructions bool     `json:"include_skills_usage_instructions,omitempty"`
-	DefaultReasoningSummary        string   `json:"default_reasoning_summary"`
-	WebSearchToolType              string   `json:"web_search_tool_type,omitempty"`
-	SupportsImageDetailOriginal    bool     `json:"supports_image_detail_original"`
-	ContextWindow                  *int64   `json:"context_window,omitempty"`
-	MaxContextWindow               *int64   `json:"max_context_window,omitempty"`
-	AutoCompactTokenLimit          *int64   `json:"auto_compact_token_limit,omitempty"`
-	CompHash                       *string  `json:"comp_hash,omitempty"`
-	EffectiveContextWindowPercent  int64    `json:"effective_context_window_percent,omitempty"`
-	InputModalities                []string `json:"input_modalities,omitempty"`
-	SupportsSearchTool             bool     `json:"supports_search_tool"`
-	UseResponsesLite               *bool    `json:"use_responses_lite,omitempty"`
-	AutoReviewModelOverride        *string  `json:"auto_review_model_override,omitempty"`
-	ToolMode                       *string  `json:"tool_mode,omitempty"`
-	MultiAgentVersion              *string  `json:"multi_agent_version,omitempty"`
+	DefaultReasoningLevel          *string             `json:"default_reasoning_level,omitempty"`
+	AdditionalSpeedTiers           []string            `json:"additional_speed_tiers,omitempty"`
+	ServiceTiers                   []any               `json:"service_tiers,omitempty"`
+	DefaultServiceTier             *string             `json:"default_service_tier,omitempty"`
+	ModelMessages                  *CodexModelMessages `json:"model_messages,omitempty"`
+	IncludeSkillsUsageInstructions bool                `json:"include_skills_usage_instructions,omitempty"`
+	DefaultReasoningSummary        string              `json:"default_reasoning_summary"`
+	WebSearchToolType              string              `json:"web_search_tool_type,omitempty"`
+	SupportsImageDetailOriginal    bool                `json:"supports_image_detail_original"`
+	ContextWindow                  *int64              `json:"context_window,omitempty"`
+	MaxContextWindow               *int64              `json:"max_context_window,omitempty"`
+	AutoCompactTokenLimit          *int64              `json:"auto_compact_token_limit,omitempty"`
+	CompHash                       *string             `json:"comp_hash,omitempty"`
+	EffectiveContextWindowPercent  int64               `json:"effective_context_window_percent,omitempty"`
+	InputModalities                []string            `json:"input_modalities,omitempty"`
+	SupportsSearchTool             bool                `json:"supports_search_tool"`
+	UseResponsesLite               *bool               `json:"use_responses_lite,omitempty"`
+	AutoReviewModelOverride        *string             `json:"auto_review_model_override,omitempty"`
+	ToolMode                       *string             `json:"tool_mode,omitempty"`
+	MultiAgentVersion              *string             `json:"multi_agent_version,omitempty"`
+}
+
+// CodexModelMessages 对应 ModelInfo.model_messages（Codex 组装模型指令的模板结构）。
+// InstructionsVariables 只在模板含 {{ personality }} 占位符时需要；网关模板直接用
+// base_instructions 文本，不注入变量。
+type CodexModelMessages struct {
+	InstructionsTemplate  *string           `json:"instructions_template,omitempty"`
+	InstructionsVariables map[string]string `json:"instructions_variables,omitempty"`
 }
 
 // CodexReasoningLevel 对应 supported_reasoning_levels 数组元素。

@@ -481,6 +481,32 @@ func TestModelsEndpointBaseInstructionsFromConfig(t *testing.T) {
 		if got != content {
 			t.Errorf("model[%d] base_instructions 不匹配 config 加载内容. got len=%d want len=%d", i, len(got), len(content))
 		}
+		mm, ok := m["model_messages"]
+		if !ok {
+			t.Fatalf("model[%d] 缺少 model_messages 字段", i)
+		}
+		var messages struct {
+			InstructionsTemplate string `json:"instructions_template"`
+		}
+		if err := json.Unmarshal(mm, &messages); err != nil {
+			t.Fatalf("model[%d] model_messages 反序列化失败: %v. raw=%s", i, err, string(mm))
+		}
+		var messagesRaw map[string]json.RawMessage
+		if err := json.Unmarshal(mm, &messagesRaw); err != nil {
+			t.Fatalf("model[%d] model_messages 原始对象解析失败: %v. raw=%s", i, err, string(mm))
+		}
+		// model_messages 不返回 permissions（权限模板不注入）
+		if _, ok := messagesRaw["permissions"]; ok {
+			t.Errorf("model[%d] model_messages 不应包含 permissions", i)
+		}
+		if messages.InstructionsTemplate != content {
+			t.Errorf("model[%d] instructions_template 不匹配 config 加载内容. got len=%d want len=%d",
+				i, len(messages.InstructionsTemplate), len(content))
+		}
+		// 有 base_instructions 时不再注入 skills 使用说明（避免与基线指令重复）
+		if isui, ok := m["include_skills_usage_instructions"]; ok && strings.TrimSpace(string(isui)) != "false" {
+			t.Errorf("model[%d] include_skills_usage_instructions 应为 false（有 base_instructions）, got: %v", i, string(isui))
+		}
 	}
 }
 
@@ -787,6 +813,14 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	// include_skills_usage_instructions=true
 	if isui, ok := m0["include_skills_usage_instructions"]; !ok || strings.TrimSpace(string(isui)) != "true" {
 		t.Fatalf("include_skills_usage_instructions 应为 true, got: %v (present=%v)", string(m0["include_skills_usage_instructions"]), ok)
+	}
+	// permissions 不返回（网关不暴露 Codex ModelMessages.permissions / 模型权限字段）
+	if _, ok := m0["permissions"]; ok {
+		t.Fatalf("models 接口不应返回 permissions, got: %v", string(m0["permissions"]))
+	}
+	// supports_reasoning_summaries 默认 true（接受 reasoning.summary 参数）
+	if srs, ok := m0["supports_reasoning_summaries"]; !ok || strings.TrimSpace(string(srs)) != "true" {
+		t.Fatalf("supports_reasoning_summaries 应默认 true, got: %v (present=%v)", string(m0["supports_reasoning_summaries"]), ok)
 	}
 	// web_search_tool_type=text_and_image
 	if wst, ok := m0["web_search_tool_type"]; !ok || strings.TrimSpace(string(wst)) != `"text_and_image"` {

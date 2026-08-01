@@ -138,10 +138,15 @@ const DefaultLogMaxSizeMB = 50
 
 // Source configures one upstream (backend_type a | c | r).
 type Source struct {
-	Name         string            `koanf:"name" yaml:"name"`
-	BaseURL      string            `koanf:"base_url" yaml:"base_url"`
-	APIKey       string            `koanf:"api_key" yaml:"api_key,omitempty"`
-	BackendType  string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	Name        string `koanf:"name" yaml:"name"`
+	BaseURL     string `koanf:"base_url" yaml:"base_url"`
+	APIKey      string `koanf:"api_key" yaml:"api_key,omitempty"`
+	BackendType string `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	// ToolsType 控制 a 路径工具声明的 wire 形态：
+	// custom=标准 Anthropic type:"custom"；omit=省略 type 字段，
+	// 用于只接受缺省工具形态的 Anthropic 兼容端点（如 DeepSeek）。
+	// 仅 backend_type=a 生效，c/r 忽略。
+	ToolsType    string            `koanf:"tools_type" yaml:"tools_type,omitempty"`
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
 	Breaker      *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
@@ -166,6 +171,29 @@ func NormalizeBackendType(s string) (string, error) {
 		return BackendOpenAIResponses, nil
 	default:
 		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, r)", s)
+	}
+}
+
+// ToolsType 是 a 路径工具声明的 type 字段策略。
+type ToolsType string
+
+const (
+	// ToolsTypeCustom 标准 Anthropic 形态：client tool 显式写 type:"custom"。
+	ToolsTypeCustom ToolsType = "custom"
+	// ToolsTypeOmit 省略工具 type 字段。DeepSeek 等兼容端点的 serde 只接受
+	// 缺省形态（实测 type:"custom" 返回 400 "unknown variant custom"）。
+	ToolsTypeOmit ToolsType = "omit"
+)
+
+// NormalizeToolsType 校验并归一 tools_type；空值按 custom 处理。
+func NormalizeToolsType(s string) (ToolsType, error) {
+	switch ToolsType(strings.TrimSpace(s)) {
+	case "", ToolsTypeCustom:
+		return ToolsTypeCustom, nil
+	case ToolsTypeOmit:
+		return ToolsTypeOmit, nil
+	default:
+		return "", fmt.Errorf("config: invalid tools_type %q (allowed: custom, omit)", s)
 	}
 }
 
@@ -582,6 +610,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: source %d: %w", i, err)
 		}
 		s.BackendType = norm
+		toolsType, err := NormalizeToolsType(s.ToolsType)
+		if err != nil {
+			return fmt.Errorf("config: source %d: %w", i, err)
+		}
+		s.ToolsType = string(toolsType)
 		if err := validateSourceHeaders(i, s.Headers); err != nil {
 			return err
 		}

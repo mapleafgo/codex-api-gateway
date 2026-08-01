@@ -104,6 +104,64 @@ sources:
 	}
 }
 
+func TestNormalizeToolsType(t *testing.T) {
+	cases := []struct {
+		in   string
+		want ToolsType
+		err  bool
+	}{
+		{"", ToolsTypeCustom, false},
+		{"custom", ToolsTypeCustom, false},
+		{"omit", ToolsTypeOmit, false},
+		{"  omit  ", ToolsTypeOmit, false},
+		{"full", "", true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeToolsType(tc.in)
+		if tc.err {
+			if err == nil {
+				t.Fatalf("NormalizeToolsType(%q) 应报错", tc.in)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("NormalizeToolsType(%q)=%q,%v want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+func TestValidateSourceToolsType(t *testing.T) {
+	dir := t.TempDir()
+	valid := filepath.Join(dir, "valid.yaml")
+	_ = os.WriteFile(valid, []byte(`
+sources:
+  - name: ds
+    base_url: https://api.deepseek.com
+    backend_type: a
+    tools_type: omit
+    api_key: secret
+`), 0644)
+	cfg, err := Load(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Sources) != 1 || cfg.Sources[0].ToolsType != string(ToolsTypeOmit) {
+		t.Fatalf("tools_type=omit 未解析: %+v", cfg.Sources)
+	}
+
+	bad := filepath.Join(dir, "bad.yaml")
+	_ = os.WriteFile(bad, []byte(`
+sources:
+  - name: ds
+    base_url: https://api.deepseek.com
+    backend_type: a
+    tools_type: full
+`), 0644)
+	if _, err := Load(bad); err == nil {
+		t.Fatal("非法 tools_type 应被拒绝")
+	}
+}
+
 func TestSourceHeadersRejectsEmptyName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

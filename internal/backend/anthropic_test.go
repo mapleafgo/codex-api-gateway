@@ -77,6 +77,60 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	}
 }
 
+// TestAnthropicBackend_ToolsTypeOmit 验证 tools_type=omit 时 client tool 声明
+// 省略 type 字段（DeepSeek 等兼容端点只接受缺省形态），server tool 保留。
+func TestAnthropicBackend_ToolsTypeOmit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		toolsType string
+		wantOmit  bool
+	}{
+		{"custom", "", false},
+		{"omit", string(config.ToolsTypeOmit), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				io.WriteString(w, `data: {"type":"message_start","message":{"id":"m1","model":"x"}}`+"\n\n")
+				io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
+				io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`+"\n\n")
+				io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+				io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`+"\n\n")
+				io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+			}))
+			defer ts.Close()
+
+			b := NewAnthropic()
+			_ = b.Execute(logging.WithRequestID(context.Background(), "req-tools-type"),
+				[]byte(`{"model":"m","input":"hi","tools":[{"type":"custom","name":"c1"},{"type":"web_search"}],"stream":true}`),
+				config.Source{Name: "ds", BaseURL: ts.URL, APIKey: "k", BackendType: "a", ToolsType: tc.toolsType},
+				nil,
+				func(model.SSEEvent) error { return nil },
+				func(UpstreamEvent) {},
+				1,
+			)
+			if len(body) == 0 {
+				t.Fatal("上游未收到请求体")
+			}
+			if tc.wantOmit {
+				if bytes.Contains(body, []byte(`"type":"custom"`)) {
+					t.Fatalf("tools_type=omit 时不应有 custom type: %s", body)
+				}
+			} else if !bytes.Contains(body, []byte(`"type":"custom"`)) {
+				t.Fatalf("默认 tools_type 应写 custom type: %s", body)
+			}
+			if !bytes.Contains(body, []byte(`"name":"c1"`)) {
+				t.Fatalf("client tool 声明丢失: %s", body)
+			}
+			if !bytes.Contains(body, []byte(`"type":"web_search_20260209"`)) {
+				t.Fatalf("server tool type 应保留: %s", body)
+			}
+		})
+	}
+}
+
 func TestAnthropicBackend_MaxTokensReportsIncomplete(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()

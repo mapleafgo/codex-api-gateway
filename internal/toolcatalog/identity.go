@@ -31,7 +31,7 @@ type Identity struct {
 	Name string
 	// Namespace 是 namespace 归属，非 namespace tool 为空。
 	Namespace string
-	// Freeform 为 true 表示输入是 freeform 文本（apply_patch / shell / custom），
+	// Freeform 为 true 表示输入是 freeform 文本（shell / custom），
 	// 回程需把模型输出解包成裸文本以对齐客户端契约。
 	Freeform bool
 }

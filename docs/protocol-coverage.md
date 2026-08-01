@@ -46,6 +46,7 @@
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
 - **WARN 收口**：配置含**启用中** r 源时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」；`previous_response_id` 打 INFO「透传上游，网关不代补会话」
 - **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat/Anthropic 转换
+- **DeepSeek 适配**：DeepSeek 的 Anthropic 兼容端点（`/anthropic/v1/messages`）对显式 `type:"custom"` 工具返回 400（`unknown variant 'custom'`），但接受**缺省 type** 的 `name + input_schema` 声明（实测可正常返回 tool_use）；a 路径可用 `tools_type: omit` 保留全部工具能力，或把 DeepSeek 配为 `backend_type: r` 走 Responses 透传
 
 字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准；几乎全部请求/事件字段对网关为 passthrough，语义由上游决定。
 
@@ -62,7 +63,7 @@
 - Codex CLI → Anthropic 兼容后端的 **Responses ↔ Messages 直转**。
 - 客户端自带完整 `input` 回灌；网关无 session store。
 - 可语义映射的 tool / content / SSE 生命周期；有损处登记 `lossy_supported` 并说明损失。
-- 网关按 `anthropic.cache_enabled` 自主控制 Anthropic `cache_control`，不依赖 OpenAI prompt cache key。MCP `mcp_toolset` 在 inject 后仅重定位已有 tools 末项断点；`anthropic.cache_ttl=1h` 时带 `extended-cache-ttl-2025-04-11` beta。
+- 网关按 `anthropic.cache_enabled` 自主控制 Anthropic `cache_control`，不依赖 OpenAI prompt cache key。MCP 由 Codex 客户端本地执行：网关只声明扁平 `mcp__<server>__<tool>` function，不再注入 beta MCP 配置；`anthropic.cache_ttl=1h` 时带 `extended-cache-ttl-2025-04-11` beta。
 
 ### 2. 产品范围外（声明不做）
 
@@ -180,6 +181,10 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 ### 2026-08-01
 
 - **compaction 行为修正（Codex local 压缩确认）**：`supports_remote_compaction()` 仅对 provider 名为 OpenAI/Azure 成立；本网关面向第三方 provider（如 deepseek）时 Codex 走 **local 压缩**，摘要生成请求与摘要回灌均为普通明文消息，网关按常规转换透传。真实 `compaction` item 的 `encrypted_content` 只对生成它的服务端可解，a/c 路径无法解读，改为 **WARN + 丢弃**（移除原先折独立 user `<compaction>` 密文文本的降级）；`compaction_trigger` 保持丢弃（请求控制信号）。
+- **DeepSeek a 端点工具限制**：DeepSeek Anthropic 兼容端点只接受 `web_search_20250305` / `web_search_20260209` server tool，`custom` 工具返回 400；带 21+ 工具的 Codex 请求实测 400 后 failover 到 Chat 源。DeepSeek 改为 `backend_type: r` 透传后全部 200，登记到 r 专节。
+- **freeform 单键任意键名解包**：opencode 等 Chat 上游把工具文本包在 `input`/`patch`/`cmd` 等不同键下，Codex 会把整段 JSON 当入参导致校验失败；`SanitizeClientToolInput` 对 freeform 工具改为单键 JSON 对象直接取唯一字符串值，键名不敏感；多键 structured 形态仍走 apply_patch V4A 兜底，r 透传实测返回裸文本不受影响。
+- **opencode c 400（Console upstream failed）观测**：2026-08-01 11:25-11:28 opencode2api 上游（Console provider）连续返回 400 `Error from provider (Console): Upstream request failed`，网关按 4xx 策略不重试不降级、failover 到 grok a 成功；属上游暂时故障，网关侧无转换改动。
+- **a 路径 `tools_type: omit`**：DeepSeek 的 Anthropic 兼容端点不接受显式 `type:"custom"`，但接受缺省 type 的 `name + input_schema` 声明（实测 200 且 tool_use 正常）；新增 source 配置 `tools_type: custom|omit`，a 路径对 `omit` 源清空 client tool 的 type 字段，server tool 不受影响，c/r 忽略该配置。
 
 ### 2026-07-31
 
@@ -215,7 +220,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
   - `reasoning`：`summary` 为空时回退 `content[].reasoning_text`，避免误判 redacted。
 - **hosted server tool 历史回灌**
   - `web_search_call` 历史：`server_tool_use(web_search)` + 空 `web_search_tool_result` + sources URL 折可见文本（Anthropic required `encrypted_content` 无 OpenAI 来源，填空会 400）。
-  - `mcp_call` 历史：`param.Override` 注入 beta `mcp_tool_use` / `mcp_tool_result`，client 层同步 `anthropic-beta: mcp-client-2025-11-20`。
+  - `mcp_call` 历史：按扁平名 `mcp__<server>__<tool>` 直接回填标准 `tool_use` + `tool_result`，不重建 beta MCP 块。
   - `mcp_list_tools` 历史：折 developer marker（server + 工具名 + error），lossy 保留可用工具线索。
   - `mcp_approval_request` / `response`：Anthropic 无审批协议，**不实现**，WARN + 丢弃。
   - `code_interpreter_call` 的 image 输出：丢弃 + WARN；logs 保留，并写入可读占位（`image output omitted`）。
@@ -254,7 +259,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 沿用全局状态定义。Chat 路径额外：
 
-- freeform 工具（`shell` / `apply_patch` / `custom`）在 Chat 侧声明为 `type=function` + `parameters={input:string}`；出站回程按 freeform 名映射为 Responses `custom_tool_call`（`tool_search` 为 `tool_search_call`）。
+- 内建 freeform 工具（`shell` / `local_shell` / `apply_patch`）在 Chat 侧声明为 `type=function` + `parameters={input:string}`；出站回程统一折为 `custom_tool_call`（name=`shell` / `local_shell` / `apply_patch`），input 原样透传，不解析命令/补丁文本。freeform `custom` 工具同样按 `custom_tool_call` 回程（`tool_search` 为 `tool_search_call`）。
 - 连续多条 Responses `function_call` / freeform call **必须**合并为一条 Chat `assistant` 消息的 `tool_calls[]`，否则多数 Chat 兼容上游 400。
 
 ### 产品边界（c）
@@ -311,9 +316,9 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"input":...}` freeform；相邻合并 |
 | `custom_tool_call_output` | role=tool | `supported` | |
-| `shell_call` / `local_shell_call` | tool_calls name=`shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema |
+| `shell_call` / `local_shell_call` | tool_calls name=`shell` / `local_shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema；`local_shell` 用独立函数名区分回程 |
 | `shell_call_output` / `local_shell_call_output` | role=tool | `lossy_supported` | status/stdout 折文本 |
-| `apply_patch_call` | tool_calls name=`apply_patch` | `lossy_supported` | V4A 文本进 freeform `input` |
+| `apply_patch_call` | tool_calls name=`apply_patch` | `supported` | operation/path/diff 结构化 JSON 进 function arguments，含 status/caller |
 | `apply_patch_call_output` | role=tool | `lossy_supported` | |
 | `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
@@ -329,10 +334,10 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 
 | Responses tool | Chat tools[] | 状态 | 说明 |
 |---|---|---|---|
-| `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做完整投影（对齐 opencode `ToolSchemaProjection.openAI`：强制 `type=object`，anyOf record 变体展平进 properties，递归去 null，强制 `additionalProperties=false`） |
+| `function` | function | `supported` | name/description/parameters/**strict**；parameters 出站做完整投影（对齐 opencode `ToolSchemaProjection.openAI`：强制 `type=object`，anyOf record 变体展平进 properties，递归去 null；仅 anyOf 展平时强制 `additionalProperties=false`） |
 | `custom` | function + freeform parameters | `lossy_supported` | name **不加** `_custom` 后缀；grammar 丢失 |
-| `shell` / `local_shell` | function name=`shell` freeform | `lossy_supported` | |
-| `apply_patch` | function name=`apply_patch` freeform | `lossy_supported` | description 强调 V4A |
+| `shell` / `local_shell` | function name=`shell` / `local_shell` freeform | `lossy_supported` | 独立函数名，回程统一折 `custom_tool_call` |
+| `apply_patch` | function name=`apply_patch` | `supported` | freeform `parameters={input:string}`；历史按客户端 operation/path/diff 直接回填（见 Input Item）；回程对 structured JSON 输出兜底折 V4A |
 | `tool_search` | function name=`tool_search` | `supported` | |
 | `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项；嵌套 function 同样做 schema 投影 |
 | `web_search` / `web_search_preview` | function `web_search` | `lossy_supported` | 无 server 搜索 |
@@ -349,11 +354,12 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
-| `delta.tool_calls` freeform 名（shell/apply_patch/custom） | `custom_tool_call` + input delta/done | `supported` | 同上；`SanitizeClientToolInput` 解包/归一 |
+| `delta.tool_calls` name=`shell` / `local_shell` / `apply_patch` | `custom_tool_call` + input delta/done | `supported` | 参数在 `output_item.done` 一次给出；`SanitizeClientToolInput` 对单键 JSON 对象按任意键名取值解包；apply_patch 若输出 structured JSON 兜底折 V4A |
+| `delta.tool_calls` freeform custom 名 | `custom_tool_call` + input delta/done | `supported` | `SanitizeClientToolInput` 解包/归一 |
 | `delta.tool_calls` name=`tool_search` | `tool_search_call` | `supported` | arguments 随 item done |
 | `delta.tool_calls` name=`web_search` | `web_search_call` 链 | `lossy_supported` | 无真实 sources |
 | `delta.tool_calls` name=`code_interpreter` | `code_interpreter_call` 链 | `lossy_supported` | code 从 arguments 解；无 logs |
-| `delta.tool_calls` name=`mcp__*__*` | `function_call`（namespace 拆分） | `supported` | Chat 无 server MCP；必须回 client 可执行的 function_call（含 Codex `mcp__*` namespace） |
+| `delta.tool_calls` name=`mcp__*__*` | `function_call`（按声明还原 namespace） | `supported` | Chat 无 server MCP；必须回 client 可执行的 function_call（含 Codex `mcp__*` namespace）；先查请求声明映射，未声明才回退 `__` 拆分 |
 | `finish_reason=stop` / `tool_calls` | `response.completed` | `supported` | |
 | `finish_reason=length` | `response.incomplete` reason=`max_output_tokens` | `supported` | |
 | `finish_reason=content_filter` | `response.incomplete` + refusal 事件链 | `supported` | 累积 `delta.refusal`，缺省用 fallback 文案；清掉半截 text/tool output |
@@ -398,6 +404,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `stream_options.include_obfuscation` | 透传；始终 `include_usage` |
 | usage details | `cached_tokens` + `reasoning_tokens` 出站明细 + `cache_read_input_tokens` 兼容字段 |
 | 工具历史无活动工具 | 显式发 `tools: []`（对齐 pi 的 Anthropic 代理兼容；无工具历史仍省略） |
+| shell/local_shell/apply_patch 回程统一 custom | `custom_tool_call` 透传（对齐 a 路径）；工具 schema 投影仅在 anyOf 展平时强制 `additionalProperties=false`（对齐 opencode） |
 | usage 缺 `total_tokens` | 按 `prompt + completion` 兜底（同 opencode/pi） |
 | 出站 token logprobs | Chat `choices[].logprobs` → `response.output_text.delta/done.logprobs` + content part |
 | OfInputMessage / OfOutputMessage | chatconvert 防御分支（SDK 极少落点） |
@@ -501,12 +508,12 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `local_shell_call_output` | user `tool_result` | `lossy_supported` | 文本 tool_result；可前缀 `[status=…]`；item.id 作 tool_use_id |
 | `shell_call` | assistant `tool_use` name=`shell` | `lossy_supported` | 命令文本 + `environment_type` + `timeout_ms`/`max_output_length`/`status`/`caller_type`/`caller_id` 折入 tool_use.input；无 Anthropic 原生 shell 协议 |
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr + `[status]`/`[max_output_length]`/`[exit_code]`/`[timeout]` 折文本；caller 不映射 |
-| `apply_patch_call` | assistant freeform `tool_use` name=`apply_patch` | `lossy_supported` | create/update/delete → V4A 文本（`*** Begin/End Patch`）；`status`/`caller` 无 Anthropic 字段（丢失） |
+| `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `supported` | operation/path/diff 结构化 JSON 透传；`status`/`caller` 折入 tool_use.input |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | `[status=…]` + 可选日志文本；caller 不映射 |
 | `mcp_list_tools` | none | `dropped` | opencode 无此类型；Codex 不把 AdditionalTools 转文本（工具经 ToolSpec/请求 tools 声明）；DEBUG 丢弃 |
 | `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
-| `mcp_call` | beta `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | param.Override 注入 messages；需 beta header；error→is_error |
+| `mcp_call` | `tool_use` name=`mcp__<server>__<tool>` + `tool_result` | `supported` | 扁平名直接回填；error 文本并入 tool_result |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
 | `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
@@ -536,16 +543,16 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
 | `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
 | `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
-| `mcp` | beta mcp_servers + mcp_toolset (mcp-client-2025-11-20) | `lossy_supported` | `allowed_tools: string[]` → toolset allowlist（已实现）；`allowed_tools: filter` → WARN + 全启用；`require_approval≠never` 降级 never + WARN；headers 仅 Bearer → `authorization_token`；`connector_id`/`tunnel_id` fail-fast；需 beta `mcp-client-2025-11-20` |
+| `mcp` | 扁平 client tool `mcp__<server>__<tool>` | `lossy_supported` | `allowed_tools: string[]` → 逐个展开为 function 声明；`allowed_tools: filter`/空列表 → 不声明（经 tool_search 动态提供）；连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不再注入或 fail-fast，交给 Codex 客户端本地连接执行 |
 | `code_interpreter` | Anthropic code execution tool (20250522) | `lossy_supported` | 声明 `code_execution_20250522`；`container`（id/auto file_ids/memory）**WARN + 丢弃**（Anthropic 无 container） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无 Anthropic 等价物；DEBUG + 忽略，透传上游自行决定 |
 | `image_generation` | none | `unsupported_by_backend` | Anthropic Messages 不生成 OpenAI image result；请求时返回明确转换错误 |
 | `local_shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史元数据见 Input Item（env/cwd/timeout/user/status） |
 | `shell` | client custom tool `shell` | `lossy_supported` | 声明 freeform `shell`；历史 limits/caller/environment_type 折入 input（见 Input Item）；skills 细节仍 lossy |
 | `custom` | Anthropic custom tool | `lossy_supported` | `format` grammar/text 语义未完整保留 |
-| `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`，其他类型明确转换失败 |
+| `namespace` | flattened tool names | `lossy_supported` | namespace 被拼入 tool name；子工具仅支持 `function` / `custom`；回程按请求声明还原 namespace/name，未声明才回退最后一个 `__` 拆分 |
 | `tool_search` | client tool `tool_search` | `supported` | 当前按普通 tool 暴露 |
-| `apply_patch` | client custom tool `apply_patch` | `supported` | freeform input 支持 |
+| `apply_patch` | client custom tool `apply_patch` | `supported` | freeform `{input:string}` schema（Codex 只消费 V4A 文本）；历史 operation/path/diff 直接回填；回程 structured→V4A 兜底 |
 
 ## Tool Choice Union
 
@@ -572,7 +579,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `reasoning` | thinking/redacted thinking block | `supported` | 支持 summary/signature/encrypted |
 | `function_call` | `tool_use` | `supported` | 回程 arguments 把整数值 `N.0` 收成整数，避免 Codex serde 失败 | 普通 tool use |
 | `function_call_output` | request replay only | `supported` | 作为 input item 回放（含 content 数组形态） |
-| `custom_tool_call` | custom `tool_use` | `supported` | freeform input 解包；`apply_patch` 额外归一 V4A 标记（去多余 `***`） |
+| `custom_tool_call` | custom `tool_use` | `supported` | freeform 单键对象按任意键名取值解包（shell/custom/apply_patch），多键 structured 形态 apply_patch 兜底折 V4A |
 | `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放（含 content list 形态） |
 | `tool_search_call` | `tool_use` name=`tool_search` | `supported` | `toolSearchCallKind` 产出 `tool_search_call` item（execution=client，arguments 随 done 一次性给出，不流式 delta） |
 | `tool_search_output` | request replay only | `supported` | 由 Codex 本地执行 tool_search 后回灌；网关入站注入 tools + tool_result。出站不生成该 item（后端非搜索持有者） |
@@ -592,7 +599,7 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `shell_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `apply_patch_call` | `custom_tool_call` name=`apply_patch` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `apply_patch_call` item type |
 | `apply_patch_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
-| `mcp_call` | Anthropic beta MCP `mcp_tool_use` + `mcp_tool_result` | `lossy_supported` | server_tool_use(mcp_tool_use) + mcp_tool_result 映射为 mcp_call 事件链；error 变体并入 failed（is_error） |
+| `mcp_call` | `function_call` namespace=`mcp__<server>` name=`<tool>` | `lossy_supported` | 上游若返回 MCP 工具调用，按扁平名回成 function_call 交客户端执行；不再生成 mcp_call item 与事件链 |
 | `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史丢弃（DEBUG） |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 出站不生成；`require_approval≠never` 降级 never + WARN；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 | `mcp_approval_response` | none | `unsupported_by_backend` | 出站不生成；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
@@ -642,11 +649,11 @@ OpenAI 把「代码跑出的图」定义为**可渲染的 image output 项**；A
 | `response.image_generation_call.generating` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.partial_image` | none | `unsupported_by_backend` | 无等价 |
 | `response.image_generation_call.completed` | none | `unsupported_by_backend` | 无等价 |
-| `response.mcp_call_arguments.delta` | Anthropic beta MCP `input_json_delta` | `lossy_supported` | mcp_tool_use 的 input_json_delta 映射为 arguments.delta |
-| `response.mcp_call_arguments.done` | Anthropic beta MCP `tool_use` block stop | `lossy_supported` | server_tool_use stop 映射为 arguments.done |
-| `response.mcp_call.in_progress` | Anthropic beta MCP `server_tool_use` | `lossy_supported` | server_tool_use(mcp_tool_use) 触发 |
-| `response.mcp_call.completed` | Anthropic beta MCP `mcp_tool_result` | `lossy_supported` | mcp_tool_result 触发；output 为结果文本 |
-| `response.mcp_call.failed` | Anthropic beta MCP `mcp_tool_result` (is_error) | `lossy_supported` | mcp_tool_result 的 is_error 变体映射为 failed |
+| `response.mcp_call_arguments.delta` | none | `unsupported_by_backend` | 不再生成：a 路径 MCP 走 `function_call.arguments.delta` |
+| `response.mcp_call_arguments.done` | none | `unsupported_by_backend` | 不再生成：a 路径 MCP 走 `function_call.arguments.done` |
+| `response.mcp_call.in_progress` | none | `unsupported_by_backend` | 不再生成 |
+| `response.mcp_call.completed` | none | `unsupported_by_backend` | 不再生成 |
+| `response.mcp_call.failed` | none | `unsupported_by_backend` | 不再生成 |
 | `response.mcp_list_tools.in_progress` | none | `unsupported_by_backend` | 无等价 |
 | `response.mcp_list_tools.completed` | none | `unsupported_by_backend` | 无等价 |
 | `response.mcp_list_tools.failed` | none | `unsupported_by_backend` | 无等价 |

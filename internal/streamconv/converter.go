@@ -51,12 +51,6 @@ var (
 	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
 	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
 	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
-
-	evMcpCallInProgress     = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallInProgress]())
-	evMcpCallArgumentsDelta = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDelta]())
-	evMcpCallArgumentsDone  = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDone]())
-	evMcpCallCompleted      = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallCompleted]())
-	evMcpCallFailed         = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallFailed]())
 )
 
 var (
@@ -94,9 +88,6 @@ var (
 	anBlockToolSearchToolResult                   = string(aconstant.ValueOf[aconstant.ToolSearchToolResult]())
 	anBlockToolSearchToolResultError              = string(aconstant.ValueOf[aconstant.ToolSearchToolResultError]())
 
-	// beta mcp block：ScanEvents probe 合成 content_block_start 事件时使用同一字符串作为 Type。
-	anBlockMcpToolUse    = string(aconstant.ValueOf[aconstant.MCPToolUse]())
-	anBlockMcpToolResult = string(aconstant.ValueOf[aconstant.MCPToolResult]())
 	// mid_conversation_system: Anthropic 中途插入的 system 指令块。
 	// OpenAI Responses 没有原生等价的「中途 system 消息」输出项，
 	// 当前选择 WARN + 跳过（不中断流），后续可考虑转为 developer marker。
@@ -160,14 +151,15 @@ type Converter struct {
 	// 时，若此集合唯一可确定，则忽略 name 按该身份回退 dispatch。
 	declaredServerTools []toolcatalog.Identity
 
+	// declaredToolNames 是请求声明的扁平工具名 → 身份映射，用于回程还原
+	// namespace/name（工具名含 "__" 时不依赖字符串拆分）。
+	declaredToolNames map[string]toolcatalog.Identity
+
 	// Web search state: Anthropic tool_use id -> output item index.
 	webSearchByToolUseID map[string]int
 
 	// Code execution state: Anthropic tool_use id -> output item index.
 	codeExecutionByToolUseID map[string]int
-
-	// MCP call state: Anthropic mcp_tool_use id -> output item index.
-	mcpCallByToolUseID map[string]int
 
 	// skippedBlocks tracks block indices for server tools that have no
 	// Responses equivalent (web_fetch, uncatalogued future tools, ...).
@@ -199,8 +191,8 @@ func New() *Converter {
 		},
 		webSearchByToolUseID:     map[string]int{},
 		codeExecutionByToolUseID: map[string]int{},
-		mcpCallByToolUseID:       map[string]int{},
 		skippedBlocks:            map[int]bool{},
+		declaredToolNames:        map[string]toolcatalog.Identity{},
 	}
 }
 
@@ -274,6 +266,31 @@ func (c *Converter) SetCustomToolNames(names []string) {
 // 见 dispatchCallKind 的 server_tool_use 分支与 webSearchCallKind.handleResult。
 func (c *Converter) SetDeclaredServerTools(ids []toolcatalog.Identity) {
 	c.declaredServerTools = ids
+}
+
+// SetDeclaredToolNames 注入请求声明的工具身份映射（扁平名 → namespace/name）。
+func (c *Converter) SetDeclaredToolNames(names map[string]toolcatalog.Identity) {
+	if names == nil {
+		return
+	}
+	if c.declaredToolNames == nil {
+		c.declaredToolNames = map[string]toolcatalog.Identity{}
+	}
+	for name, id := range names {
+		c.declaredToolNames[name] = id
+	}
+}
+
+// resolveDeclaredName 按声明映射改写 function/custom 调用的 namespace/name。
+// 上游返回的扁平名可能含 "__"（如普通工具名 mcp__x），盲拆会错。
+func (c *Converter) resolveDeclaredName(item *model.OutputItem, flat string) {
+	if item == nil || flat == "" || c.declaredToolNames == nil {
+		return
+	}
+	if id, ok := c.declaredToolNames[flat]; ok {
+		item.Namespace = id.Namespace
+		item.Name = id.Name
+	}
 }
 
 // Feed processes one Anthropic event; returns Response SSE events to emit.
@@ -379,10 +396,6 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		return nil
 	case anBlockContainerUpload:
 		return c.handleSkippedBlockStart(ev)
-	case anBlockMcpToolUse:
-		return c.handleCallStart(ev, c.dispatchCallKind(ev))
-	case anBlockMcpToolResult:
-		return c.handleCallResult(ev)
 	}
 	return []model.SSEEvent{c.handleUnsupportedBlock(ev)}
 }

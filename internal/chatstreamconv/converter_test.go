@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
 func evTypes(t *testing.T, data []byte) string {
@@ -146,11 +149,10 @@ func TestToolCallStream(t *testing.T) {
 	}
 }
 
-func TestShellCustomToolStream(t *testing.T) {
+func TestShellCallItemStream(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")
-	c.SetFreeformNames(map[string]struct{}{"shell": {}})
-	var types []string
+	var all []model.SSEEvent
 	chunks := []string{
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"shell","arguments":""}}]}}]}`,
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"ls\"}"}}]}}]}`,
@@ -161,36 +163,106 @@ func TestShellCustomToolStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, e := range evs {
-			types = append(types, evTypes(t, e.Data))
-		}
+		all = append(all, evs...)
 	}
-	for _, e := range c.FeedDone() {
-		types = append(types, evTypes(t, e.Data))
-	}
-	has := false
-	for _, typ := range types {
-		if typ == "response.custom_tool_call_input.done" {
-			has = true
-		}
+	all = append(all, c.FeedDone()...)
+	for _, e := range all {
+		typ := evTypes(t, e.Data)
 		if typ == "response.function_call_arguments.delta" {
-			t.Fatalf("shell must not emit function arguments delta: %v", types)
+			t.Fatalf("shell must not emit function arguments delta")
 		}
 	}
-	if !has {
-		t.Fatalf("missing custom input done: %v", types)
+	item := doneItemFromEvents(t, all, "custom_tool_call")
+	if item["name"] != "shell" || item["input"] != "ls" {
+		t.Fatalf("shell custom_tool_call name=%v input=%v want shell/ls", item["name"], item["input"])
 	}
-	var found bool
-	for _, it := range c.OutputItems() {
-		if it.Type == "custom_tool_call" && it.Name == "shell" {
-			found = true
-			if it.Input != "ls" {
-				t.Fatalf("input unwrapped want ls got %q", it.Input)
-			}
+}
+
+// doneItemFromEvents 从 Feed/FeedDone 事件流中取出 output_item.done 的 item 并断言 type。
+func doneItemFromEvents(t *testing.T, events []model.SSEEvent, wantType string) map[string]any {
+	t.Helper()
+	for _, e := range events {
+		if evTypes(t, e.Data) != "response.output_item.done" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(e.Data, &m); err != nil {
+			t.Fatalf("unmarshal done: %v", err)
+		}
+		item, _ := m["item"].(map[string]any)
+		if item != nil && item["type"] == wantType {
+			return item
 		}
 	}
-	if !found {
-		t.Fatalf("items=%+v", c.OutputItems())
+	t.Fatalf("no output_item.done with type %s, events=%v", wantType, events)
+	return nil
+}
+
+func TestLocalShellCallItemStream(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var all []model.SSEEvent
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ls","type":"function","function":{"name":"local_shell","arguments":"{\"input\":\"pwd\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, evs...)
+	}
+	all = append(all, c.FeedDone()...)
+	item := doneItemFromEvents(t, all, "custom_tool_call")
+	if item["name"] != "local_shell" || item["input"] != "pwd" {
+		t.Fatalf("local_shell custom_tool_call name=%v input=%v want local_shell/pwd", item["name"], item["input"])
+	}
+}
+
+func TestApplyPatchCallItemStream(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var all []model.SSEEvent
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ap","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Add File: a.txt\\n+hi\\n*** End Patch\"}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, evs...)
+	}
+	all = append(all, c.FeedDone()...)
+	item := doneItemFromEvents(t, all, "custom_tool_call")
+	wantInput := "*** Begin Patch\n*** Add File: a.txt\n+hi\n*** End Patch"
+	if item["name"] != "apply_patch" || item["input"] != wantInput {
+		t.Fatalf("apply_patch custom_tool_call name=%v input=%v", item["name"], item["input"])
+	}
+}
+
+func TestToolSearchArgumentsSanitized(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	var all []model.SSEEvent
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ts","type":"function","function":{"name":"tool_search","arguments":"{\"queries\":[\"1.0\"]}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, evs...)
+	}
+	all = append(all, c.FeedDone()...)
+	item := doneItemFromEvents(t, all, "tool_search_call")
+	args, _ := item["arguments"].(string)
+	if strings.Contains(args, "1.0") {
+		t.Fatalf("tool_search arguments not sanitized: %q", args)
 	}
 }
 
@@ -645,12 +717,41 @@ func TestMCPOutboundShape(t *testing.T) {
 	t.Fatalf("no function_call item %+v", c.OutputItems())
 }
 
+func TestDeclaredNameOverridesSplit(t *testing.T) {
+	c := New()
+	c.SetDeclaredNames(map[string]toolcatalog.Identity{
+		"a__b":      {OpenAIType: "function", Name: "a__b"},
+		"ns__parse": {OpenAIType: "custom", Namespace: "ns", Name: "parse", Freeform: true},
+	})
+	c.SetFreeformNames(map[string]struct{}{"ns__parse": {}})
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"m1","type":"function","function":{"name":"a__b","arguments":"{}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":1,"id":"m2","type":"custom","custom":{"name":"ns__parse","input":"{}"}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		_, _ = c.Feed([]byte(ch))
+	}
+	_ = c.FeedDone()
+	got := map[string]model.OutputItem{}
+	for _, it := range c.OutputItems() {
+		got[it.Type+"|"+it.Name] = it
+	}
+	fn, ok := got["function_call|a__b"]
+	if !ok || fn.Namespace != "" {
+		t.Fatalf("declared plain name must not be split: %+v", got)
+	}
+	ct, ok := got["custom_tool_call|parse"]
+	if !ok || ct.Namespace != "ns" {
+		t.Fatalf("namespaced custom must resolve from declaration: %+v", got)
+	}
+}
+
 func TestToolCallNameArrivesAfterID(t *testing.T) {
 	// 兼容上游常见分片：先 id，后 name/arguments。
 	// 仅有 id 时若立即 open，会按空 name 误判 function_call，output_item.added 类型错误。
 	c := New()
 	c.SetClientModel("m")
-	c.SetFreeformNames(map[string]struct{}{"shell": {}})
 	chunks := []string{
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{}}]}}]}`,
 		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"shell","arguments":"{\"input\":\"pwd\"}"}}]}}]}`,
@@ -683,7 +784,7 @@ func TestToolCallNameArrivesAfterID(t *testing.T) {
 	}
 	var found bool
 	for _, it := range c.OutputItems() {
-		if it.Type == "custom_tool_call" && it.Name == "shell" && it.Input == "pwd" {
+		if it.Type == "custom_tool_call" && it.CallID == "call_s" {
 			found = true
 		}
 		if it.Type == "function_call" {

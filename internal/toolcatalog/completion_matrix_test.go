@@ -52,17 +52,17 @@ func TestCompletionMatrixDeclareClientTools(t *testing.T) {
 		})
 	}
 
-	// apply_patch 必须 freeform schema（input 字符串），不得 structured operation
+	// apply_patch 使用 freeform {input:string} schema（Codex 只消费 V4A 文本）
 	decls, _ := Declare(oairesponses.ToolUnionParam{OfApplyPatch: &oairesponses.ApplyPatchToolParam{}})
 	props, _ := decls[0].OfTool.InputSchema.Properties.(map[string]any)
 	if props["input"] == nil {
 		t.Fatalf("apply_patch schema missing freeform input: %#v", props)
 	}
 	if _, ok := props["operation"]; ok {
-		t.Fatalf("apply_patch must not be structured: %#v", props)
+		t.Fatalf("apply_patch must not declare structured operation schema: %#v", props)
 	}
-	if !decls[0].OfTool.Description.Valid() || !strings.Contains(decls[0].OfTool.Description.Value, "Begin Patch") {
-		t.Fatalf("apply_patch desc should document V4A: %#v", decls[0].OfTool.Description)
+	if decls[0].OfTool.Description.Valid() {
+		t.Fatalf("apply_patch desc should be empty: %#v", decls[0].OfTool.Description)
 	}
 }
 
@@ -73,11 +73,5 @@ func TestCompletionMatrixSanitizeSkillAndPatchPaths(t *testing.T) {
 	got := SanitizeClientToolInput("exec_command", false, `{"cmd":"cat SKILL.md","yield_time_ms":120000.0}`)
 	if strings.Contains(got, "120000.0") {
 		t.Fatalf("skill-related function args still float: %s", got)
-	}
-	// apply_patch 多星
-	raw := `{"input":"*** Begin Patch ***\n*** Add File: skills/x/SKILL.md\n+# hi\n*** End Patch ***"}`
-	patch := SanitizeClientToolInput("apply_patch", true, raw)
-	if !strings.HasPrefix(patch, "*** Begin Patch\n") || strings.Contains(patch, "Patch ***") {
-		t.Fatalf("patch not normalized: %q", patch)
 	}
 }

@@ -2,7 +2,6 @@ package convert
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -16,7 +15,7 @@ func TestCustomToolNotDropped(t *testing.T) {
 		{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},
 		{"type":"custom","name":"apply_patch","description":"edit files","format":{"type":"grammar","syntax":"lark","definition":"start: x"}}
 	]}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +42,7 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true,"tools":[
 		{"type":"apply_patch"}
 	]}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +53,7 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	if tool.Type != anthropic.ToolTypeCustom {
 		t.Fatalf("apply_patch should be exposed as Anthropic custom tool, got %q", tool.Type)
 	}
-	// freeform schema：properties.input，不得是 structured operation/path/diff
+	// freeform schema：properties.input，不得是 structured operation/path/diff。
 	props, _ := tool.InputSchema.Properties.(map[string]any)
 	if props == nil || props["input"] == nil {
 		t.Fatalf("apply_patch must use freeform {input:string} schema, got %#v", tool.InputSchema.Properties)
@@ -62,8 +61,8 @@ func TestApplyPatchToolNotDropped(t *testing.T) {
 	if _, ok := props["operation"]; ok {
 		t.Fatalf("apply_patch must not declare structured operation schema: %#v", props)
 	}
-	if !tool.Description.Valid() || !strings.Contains(tool.Description.Value, "Begin Patch") {
-		t.Fatalf("apply_patch description should mention V4A markers: %#v", tool.Description)
+	if tool.Description.Valid() {
+		t.Fatalf("apply_patch description should be empty: %#v", tool.Description)
 	}
 }
 
@@ -72,7 +71,7 @@ func TestShellToolNotDroppedAndCanBeForced(t *testing.T) {
 		"tools":[{"type":"shell"}],
 		"tool_choice":{"type":"shell"}
 	}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +91,7 @@ func TestLocalShellToolNotDropped(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true,"tools":[
 		{"type":"local_shell"}
 	]}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +109,7 @@ func TestApplyPatchToolChoiceCanBeForced(t *testing.T) {
 		"tools":[{"type":"apply_patch"}],
 		"tool_choice":{"type":"apply_patch"}
 	}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +125,7 @@ func TestNamespaceFunctionAndCustomToolsNotDropped(t *testing.T) {
 			{"type":"custom","name":"raw","description":"raw command"}
 		]}
 	]}`)
-	out, _, err := ToAnthropic(req, &config.Config{})
+	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

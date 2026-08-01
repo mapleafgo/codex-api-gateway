@@ -31,6 +31,61 @@ func TestDeclareCustomIsFreeform(t *testing.T) {
 	}
 }
 
+func TestStripToolTypeKeepsServerTools(t *testing.T) {
+	custom, err := Declare(oairesponses.ToolUnionParam{OfCustom: &oairesponses.CustomToolParam{Name: "c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := Declare(oairesponses.ToolUnionParam{OfWebSearch: &oairesponses.WebSearchToolParam{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := append(custom, ws...)
+	StripToolType(tools)
+	if tools[0].OfTool == nil || tools[0].OfTool.Type != "" {
+		t.Fatalf("client tool type 应被清空: %#v", tools[0].OfTool)
+	}
+	if tools[1].OfWebSearchTool20260209 == nil {
+		t.Fatalf("server tool 不应被破坏: %#v", tools[1])
+	}
+}
+
+func TestDeclareMcpExpandsAllowedTools(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfMcp: &oairesponses.ToolMcpParam{
+		ServerLabel: "weather",
+		AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{
+			OfMcpAllowedTools: []string{"get", "list"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Declare mcp: %v", err)
+	}
+	if len(decls) != 2 {
+		t.Fatalf("expected 2 tool declarations, got %+v", decls)
+	}
+	if decls[0].OfTool == nil || decls[0].OfTool.Name != "mcp__weather__get" {
+		t.Fatalf("bad first declaration: %+v", decls[0])
+	}
+	if decls[1].OfTool == nil || decls[1].OfTool.Name != "mcp__weather__list" {
+		t.Fatalf("bad second declaration: %+v", decls[1])
+	}
+}
+
+func TestDeclareMcpFilterDeclaresNothing(t *testing.T) {
+	decls, err := Declare(oairesponses.ToolUnionParam{OfMcp: &oairesponses.ToolMcpParam{
+		ServerLabel: "weather",
+		AllowedTools: oairesponses.ToolMcpAllowedToolsUnionParam{
+			OfMcpToolFilter: &oairesponses.ToolMcpAllowedToolsMcpToolFilterParam{ReadOnly: oparam.NewOpt(true)},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Declare mcp filter: %v", err)
+	}
+	if len(decls) != 0 {
+		t.Fatalf("filter variant must not expand, got %+v", decls)
+	}
+}
+
 func TestDeclareNamespacePrefixesNames(t *testing.T) {
 	decls, err := Declare(oairesponses.ToolUnionParam{OfNamespace: &oairesponses.NamespaceToolParam{
 		Name:  "ns",

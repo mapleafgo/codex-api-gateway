@@ -13,6 +13,13 @@
 > 更新（2026-07-31 第三轮，opencode 逐帧对齐）：图片透传 `image_url`、工具结果图片聚合独立 user 消息、
 > 时序 system 更新折 `<system-update>` user、工具 schema 完整投影（anyOf 展平 + 强制 object/additionalProperties）、
 > `reasoning_effort` 任意值透传、assistant `content:null` / tool `content:""` 均已落地；剩余仅 P2 产品边界项（R1/R10/M4）登记不处理。
+>
+> 更新（2026-08-01 第四轮）：shell / local_shell / apply_patch 回程统一
+> `custom_tool_call`（Codex 客户端执行）；apply_patch 声明与回程保持 freeform V4A，
+> 历史回灌按客户端原始 operation/path/diff 直接回填，回程对 structured JSON 兜底
+> 折 V4A；`local_shell` 出站改用独立函数名；
+> 工具 schema 投影对齐 opencode 精确语义（仅 anyOf 展平时强制
+> `additionalProperties:false`，无 anyOf 不强制）；MCP 回程死分支删除。
 
 沿用仓库两条硬约束：
 
@@ -125,7 +132,7 @@ opencode `ToolSchemaProjection.openAI`（`tool-schema.ts:48-62`）会把：
 我们 `toolUnionToChat` 对 function / namespace 工具原样透传 `parameters`。严格上游可能对 null anyOf / 缺少 type 报 400。投影是 wire 归一，不是替上游判能力。
 已处理：`normalizeToolSchema` 完整复刻 opencode `ToolSchemaProjection.openAI`：
 - 顶层强制 `type: "object"`；
-- 顶层 `anyOf` 的 record 变体展平进 `properties` 并强制 `additionalProperties: false`；
+- 顶层 `anyOf` 的 record 变体展平进 `properties` 并强制 `additionalProperties: false`（仅该场景，无 anyOf 不强制）；
 - 递归移除 `anyOf` / `type` 数组中的 null 变体，单个 anyOf 变体并入父级；
 - function / namespace function / tool_search 均套用。
 

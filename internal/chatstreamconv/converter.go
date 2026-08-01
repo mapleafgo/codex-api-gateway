@@ -41,10 +41,6 @@ var (
 	evCodeInterpreterCallCodeDelta    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDelta]())
 	evCodeInterpreterCallCodeDone     = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCodeDone]())
 	evCodeInterpreterCallCompleted    = string(oaconstant.ValueOf[oaconstant.ResponseCodeInterpreterCallCompleted]())
-	evMcpCallInProgress               = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallInProgress]())
-	evMcpCallArgumentsDelta           = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDelta]())
-	evMcpCallArgumentsDone            = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallArgumentsDone]())
-	evMcpCallCompleted                = string(oaconstant.ValueOf[oaconstant.ResponseMcpCallCompleted]())
 )
 
 const refusalFallback = "I can't help with that."
@@ -67,6 +63,10 @@ type Converter struct {
 
 	// freeform 工具名（shell/apply_patch/custom）；tool_search 单独分支
 	freeformNames map[string]struct{}
+
+	// declaredNames 是请求声明的扁平工具名 → 身份映射，用于回程还原
+	// namespace/name（工具名含 "__" 时不依赖字符串拆分）。
+	declaredNames map[string]toolcatalog.Identity
 
 	// 文本 message item
 	msgItemID   string
@@ -112,7 +112,6 @@ const (
 	kindToolSearch
 	kindWebSearch
 	kindCodeInterpreter
-	kindMCP
 )
 
 // chatChunk 是 Chat Completions 流式 chunk 的精简视图。
@@ -278,11 +277,13 @@ func New() *Converter {
 	return &Converter{
 		tools:         map[int]*toolAccum{},
 		freeformNames: map[string]struct{}{},
+		declaredNames: map[string]toolcatalog.Identity{},
 	}
 }
 
 // SetFreeformNames 登记 freeform 工具名（来自 chatconvert.ChatRequest.FreeformNames）。
-// shell/apply_patch 始终按 freeform 处理；custom 名须登记，否则会误判为 function_call。
+// shell/local_shell/apply_patch 由 classifyTool 特判为 custom；其余 custom 名须登记，
+// 否则会误判为 function_call。
 func (c *Converter) SetFreeformNames(names map[string]struct{}) {
 	if names == nil {
 		return
@@ -290,6 +291,29 @@ func (c *Converter) SetFreeformNames(names map[string]struct{}) {
 	for n := range names {
 		c.freeformNames[n] = struct{}{}
 	}
+}
+
+// SetDeclaredNames 注入请求声明的工具身份映射（扁平名 → namespace/name）。
+func (c *Converter) SetDeclaredNames(names map[string]toolcatalog.Identity) {
+	if names == nil {
+		return
+	}
+	if c.declaredNames == nil {
+		c.declaredNames = map[string]toolcatalog.Identity{}
+	}
+	for name, id := range names {
+		c.declaredNames[name] = id
+	}
+}
+
+// resolveToolName 按声明映射还原 namespace/name；未声明时回退 "__" 拆分。
+func (c *Converter) resolveToolName(flat string) (string, string) {
+	if c.declaredNames != nil {
+		if id, ok := c.declaredNames[flat]; ok {
+			return id.Namespace, id.Name
+		}
+	}
+	return toolcatalog.SplitToolName(flat)
 }
 
 func (c *Converter) nextSeq() int64 { c.seq++; return c.seq }
@@ -438,7 +462,7 @@ func (c *Converter) classifyTool(name string) toolKind {
 	switch name {
 	case "tool_search":
 		return kindToolSearch
-	case toolcatalog.ChatNameShell, toolcatalog.ChatNameApplyPatch:
+	case toolcatalog.ChatNameShell, toolcatalog.ChatNameLocalShell, toolcatalog.ChatNameApplyPatch:
 		return kindCustom
 	case toolcatalog.ChatNameWebSearch:
 		return kindWebSearch
@@ -673,11 +697,13 @@ func (c *Converter) feedToolCall(index int, id, name, args, customName, customIn
 func (c *Converter) buildToolItem(acc *toolAccum) model.OutputItem {
 	switch acc.kind {
 	case kindCustom:
+		ns, name := c.resolveToolName(acc.name)
 		return model.OutputItem{
-			Type:   model.ItemTypeCustomToolCall,
-			ID:     acc.itemID,
-			CallID: acc.id,
-			Name:   acc.name,
+			Type:      model.ItemTypeCustomToolCall,
+			ID:        acc.itemID,
+			CallID:    acc.id,
+			Name:      name,
+			Namespace: ns,
 		}
 	case kindToolSearch:
 		return model.OutputItem{
@@ -700,17 +726,8 @@ func (c *Converter) buildToolItem(acc *toolAccum) model.OutputItem {
 			ID:     acc.itemID,
 			Status: model.ResponseStatusInProgress,
 		}
-	case kindMCP:
-		server, tool, _ := parseMCPName(acc.name)
-		return model.OutputItem{
-			Type:        model.ItemTypeMcpCall,
-			ID:          acc.itemID,
-			Status:      model.ResponseStatusInProgress,
-			ServerLabel: server,
-			Name:        tool,
-		}
 	default:
-		ns, name := toolcatalog.SplitToolName(acc.name)
+		ns, name := c.resolveToolName(acc.name)
 		return model.OutputItem{
 			Type:      model.ItemTypeFunctionCall,
 			ID:        acc.itemID,
@@ -720,18 +737,6 @@ func (c *Converter) buildToolItem(acc *toolAccum) model.OutputItem {
 			Namespace: ns,
 		}
 	}
-}
-
-func parseMCPName(flat string) (server, tool string, ok bool) {
-	if !strings.HasPrefix(flat, toolcatalog.MCPChatNamePrefix) {
-		return "", "", false
-	}
-	rest := strings.TrimPrefix(flat, toolcatalog.MCPChatNamePrefix)
-	idx := strings.LastIndex(rest, "__")
-	if idx <= 0 {
-		return "", "", false
-	}
-	return rest[:idx], rest[idx+2:], true
 }
 
 func (c *Converter) hostedStartEvents(acc *toolAccum) []model.SSEEvent {
@@ -751,13 +756,6 @@ func (c *Converter) hostedStartEvents(acc *toolAccum) []model.SSEEvent {
 		return []model.SSEEvent{
 			model.MarshalEvent(evCodeInterpreterCallInProgress, model.CodeInterpreterCallEvent{
 				Type: evCodeInterpreterCallInProgress, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, ItemID: acc.itemID,
-			}),
-		}
-	case kindMCP:
-		return []model.SSEEvent{
-			model.MarshalEvent(evMcpCallInProgress, model.McpCallEvent{
-				Type: evMcpCallInProgress, SequenceNumber: c.nextSeq(),
 				OutputIndex: acc.outIdx, ItemID: acc.itemID,
 			}),
 		}
@@ -846,12 +844,14 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 			// 函数降级形态（shell/apply_patch/无 grammar custom）：仍按 {"input":...} 解包。
 			input = toolcatalog.SanitizeClientToolInput(acc.name, true, rawArgs)
 		}
+		ns, name := c.resolveToolName(acc.name)
 		item := model.OutputItem{
-			Type:   model.ItemTypeCustomToolCall,
-			ID:     acc.itemID,
-			CallID: acc.id,
-			Name:   acc.name,
-			Input:  input,
+			Type:      model.ItemTypeCustomToolCall,
+			ID:        acc.itemID,
+			CallID:    acc.id,
+			Name:      name,
+			Namespace: ns,
+			Input:     input,
 		}
 		if acc.outIdx < len(c.outputItems) {
 			c.outputItems[acc.outIdx] = item
@@ -874,13 +874,14 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 			OutputIndex: acc.outIdx, Item: item,
 		}))
 	case kindToolSearch:
+		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
 		item := model.OutputItem{
 			Type:      model.ItemTypeToolSearchCall,
 			ID:        acc.itemID,
 			CallID:    acc.id,
 			Status:    model.ResponseStatusCompleted,
 			Execution: "client",
-			Arguments: rawArgs,
+			Arguments: args,
 		}
 		if acc.outIdx < len(c.outputItems) {
 			c.outputItems[acc.outIdx] = item
@@ -949,46 +950,16 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 				OutputIndex: acc.outIdx, Item: item,
 			}),
 		)
-	case kindMCP:
-		server, tool, _ := parseMCPName(acc.name)
-		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
-		item := model.OutputItem{
-			Type:        model.ItemTypeMcpCall,
-			ID:          acc.itemID,
-			Status:      model.ResponseStatusCompleted,
-			ServerLabel: server,
-			Name:        tool,
-			Arguments:   args,
-			Output:      "", // Chat 无 server MCP result
-		}
 		if acc.outIdx < len(c.outputItems) {
 			c.outputItems[acc.outIdx] = item
 		}
-		if args != "" {
-			out = append(out,
-				model.MarshalEvent(evMcpCallArgumentsDelta, model.McpCallArgumentsDeltaEvent{
-					Type: evMcpCallArgumentsDelta, SequenceNumber: c.nextSeq(),
-					OutputIndex: acc.outIdx, ItemID: acc.itemID, Delta: args,
-				}),
-				model.MarshalEvent(evMcpCallArgumentsDone, model.McpCallArgumentsDoneEvent{
-					Type: evMcpCallArgumentsDone, SequenceNumber: c.nextSeq(),
-					OutputIndex: acc.outIdx, ItemID: acc.itemID, Arguments: args,
-				}),
-			)
-		}
-		out = append(out,
-			model.MarshalEvent(evMcpCallCompleted, model.McpCallEvent{
-				Type: evMcpCallCompleted, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, ItemID: acc.itemID,
-			}),
-			model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
-				Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
-				OutputIndex: acc.outIdx, Item: item,
-			}),
-		)
+		out = append(out, model.MarshalEvent(evOutputItemDone, model.OutputItemDoneEvent{
+			Type: evOutputItemDone, SequenceNumber: c.nextSeq(),
+			OutputIndex: acc.outIdx, Item: item,
+		}))
 	default:
 		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
-		ns, name := toolcatalog.SplitToolName(acc.name)
+		ns, name := c.resolveToolName(acc.name)
 		item := model.OutputItem{
 			Type:      model.ItemTypeFunctionCall,
 			ID:        acc.itemID,
