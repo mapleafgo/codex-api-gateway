@@ -10,6 +10,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	oparam "github.com/openai/openai-go/v3/packages/param"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 )
@@ -1340,6 +1341,34 @@ func TestHostedToolChoicePassesThrough(t *testing.T) {
 	// tool_choice 留给上游处理，转换后应无 Anthropic tool_choice（由上游自行决定）。
 	if out.ToolChoice.OfAuto != nil || out.ToolChoice.OfAny != nil || out.ToolChoice.OfTool != nil || out.ToolChoice.OfNone != nil {
 		t.Fatalf("hosted tool_choice should leave tool_choice unset, got %+v", out.ToolChoice)
+	}
+}
+
+func TestMcpToolChoiceMapsToStandardTool(t *testing.T) {
+	req := &oairesponses.ResponseNewParams{
+		Model: "gpt-5",
+		Input: oairesponses.ResponseNewParamsInputUnion{OfString: oparam.NewOpt("hi")},
+		Tools: []oairesponses.ToolUnionParam{{
+			OfFunction: &oairesponses.FunctionToolParam{
+				Name: toolcatalog.ToolName("mcp__srv", "fn"),
+			},
+		}},
+		ToolChoice: oairesponses.ResponseNewParamsToolChoiceUnion{
+			OfMcpTool: &oairesponses.ToolChoiceMcpParam{
+				ServerLabel: "srv",
+				Name:        oparam.NewOpt("fn"),
+			},
+		},
+	}
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatalf("mcp tool_choice must not fail: %v", err)
+	}
+	if out.ToolChoice.OfTool == nil {
+		t.Fatalf("mcp tool_choice should map to tool choice, got %+v", out.ToolChoice)
+	}
+	if out.ToolChoice.OfTool.Name != "mcp__srv__fn" {
+		t.Fatalf("expected tool_choice name mcp__srv__fn, got %q", out.ToolChoice.OfTool.Name)
 	}
 }
 

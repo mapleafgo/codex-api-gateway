@@ -1651,9 +1651,13 @@ func convertToolChoice(out *anthropic.MessageNewParams, req *oairesponses.Respon
 			"tool_choice_type", *tc.GetType())
 		return nil
 	case tc.OfMcpTool != nil:
-		// MCP tool_choice 无 Anthropic 等价物：由上游自行决定。网关不代劳拒绝。
-		slog.Debug("MCP tool_choice 交给上游处理（网关不映射 Anthropic 等价 type）",
-			"tool_choice_type", *tc.GetType())
+		// MCP 工具已展开为扁平 function 声明（mcp__<server>__<tool>），
+		// 映射为标准 tool choice。
+		mcp := tc.OfMcpTool
+		flatName := toolcatalog.ToolName("mcp__"+mcp.ServerLabel, mcp.Name.Value)
+		if err := applySpecificToolChoice(out, req.Tools, toolcatalog.Identity{OpenAIType: model.ToolTypeFunction, Name: flatName}); err != nil {
+			return err
+		}
 		return nil
 	case tc.OfResponseNewsToolChoiceSpecificProgrammaticToolCallingParam != nil:
 		// programmatic tool_choice 无 Anthropic 等价物：由上游自行决定。网关不代劳拒绝。

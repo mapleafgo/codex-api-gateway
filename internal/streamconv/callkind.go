@@ -8,7 +8,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 )
 
-// callKind 描述一种回程 call（来自 tool_use / server_tool_use / mcp_tool_use block）
+// callKind 描述一种回程 call（来自 tool_use / server_tool_use block）
 // 如何映射为 OpenAI Responses call item 及其事件链。通用流水线（handleCallStart /
 // handleCallDelta / handleCallStop / handleCallResult）按策略驱动，消除「每 call 一个
 // 特例 handler」——新增 call 类型只改 dispatchCallKind 注册表，不再加 handler。
