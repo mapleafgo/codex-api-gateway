@@ -42,6 +42,7 @@ const refusalFallback = "I can't help with that."
 
 // Converter 将 Chat chunk 流转为 Responses SSE。
 type Converter struct {
+	log         *slog.Logger
 	respID      string
 	model       string
 	clientModel string
@@ -269,9 +270,17 @@ func deltaContentText(raw json.RawMessage) string {
 // New 返回空转换器。
 func New() *Converter {
 	return &Converter{
+		log:           slog.Default(),
 		tools:         map[int]*toolAccum{},
 		freeformNames: map[string]struct{}{},
 		declaredNames: map[string]toolcatalog.Identity{},
+	}
+}
+
+// SetLogger 注入请求级 logger（含 request_id），使转换诊断日志可关联单次请求。
+func (c *Converter) SetLogger(l *slog.Logger) {
+	if l != nil {
+		c.log = l
 	}
 }
 
@@ -932,7 +941,7 @@ func (c *Converter) emitTerminal() []model.SSEEvent {
 	c.completed = true
 	status, incompleteReason := statusForFinish(c.stopReason)
 	if c.stopReason == "content_filter" {
-		slog.Warn("chatstreamconv: content_filter → incomplete + refusal",
+		c.log.Warn("chatstreamconv: content_filter → incomplete + refusal",
 			"response_id", c.respID)
 	}
 	resp := model.NewResponseObject(c.respID, status, c.model, c.createdAt, c.echo)

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -139,6 +140,7 @@ var reservedUpstreamHeaders = map[string]bool{
 func ApplyHeaders(req *http.Request, headers map[string]string) {
 	for k, v := range headers {
 		if reservedUpstreamHeaders[strings.ToLower(k)] {
+			slog.Debug("跳过保留自定义 header", "header", k, "impact", "由网关统一管理，不可被 source.headers 覆盖")
 			continue
 		}
 		req.Header.Set(k, v)

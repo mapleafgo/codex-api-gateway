@@ -198,6 +198,16 @@ JSON 接口（前端调用，也可独立集成）：
 | POST | `/admin/api/config/reload` | 手动触发从磁盘 reload |
 | POST | `/admin/api/sources/promote` | 手动将源提升回 normal |
 | POST | `/admin/api/sources/disabled` | 即时停用/启用单源（写盘 + 热重载） |
+| POST | `/admin/api/sources/test` | 用 `base_url` + `api_key` 探测上游连通性与 key 有效性 |
+| POST | `/admin/api/sources/reorder` | 调整源顺序（写盘 + 热重载） |
+| POST | `/admin/api/sources` | 追加新源（写盘 + 热重载） |
+| POST | `/admin/api/sources/delete` | 按 name 删除源（写盘 + 热重载） |
+| POST | `/admin/api/upstream-models` | 用连接参数试拉上游模型列表（未落盘配置） |
+| GET | `/admin/api/models` | 按源名拉取上游模型列表 |
+| POST | `/admin/api/models/reorder` | 调整模型白名单顺序（写盘 + 热重载） |
+| POST | `/admin/api/models/add` | 追加模型白名单项（写盘 + 热重载） |
+| POST | `/admin/api/models/delete` | 删除模型白名单项（写盘 + 热重载） |
+| GET | `/admin/api/version` | 返回构建注入版本号 |
 | GET | `/admin/api/events` | SSE 推送 metrics 快照（每 3s 一次） |
 
 ## 配置
@@ -277,7 +287,7 @@ breaker:
   first_byte_timeout: 12s
   degrade_threshold: 3
   recover_threshold: 1
-  cooldown: 30s
+  circuit_interval: 1m
   half_open_probes: 1
   recovery: normal
   max_retries: 0
@@ -290,7 +300,7 @@ breaker:
 | `first_byte_timeout` | 等待上游首个流式事件的最长时间，超时计为失败 |
 | `degrade_threshold` | 连续失败达阈值后降级，再达阈值后熔断 |
 | `recover_threshold` | 降级恢复到正常所需的连续成功次数 |
-| `cooldown` | 熔断后进入半开探测前的等待时间 |
+| `circuit_interval` | 熔断后进入半开探测前的等待时间 |
 | `half_open_probes` | 半开状态允许的探测请求数 |
 | `recovery` | 半开探测成功后恢复到 `normal` 或 `degraded` |
 | `max_retries` | 所有源失败后的整轮重试次数（仅全局，单源不覆盖） |
@@ -303,7 +313,7 @@ sources:
     base_url: https://open.bigmodel.cn/api/anthropic
     breaker:
       first_byte_timeout: 8s
-      cooldown: 10s
+      circuit_interval: 10s
 ```
 
 ## API
@@ -396,18 +406,18 @@ rm -f ~/.codex/models_cache.json
 
 - **多模态**：`input_image.file_id` 不支持（网关无 OpenAI 凭据拉取文件；仅接受 base64 / URL）。
 - **web_search**：出站完整（事件链 + `url_citation`，流式与终态 item annotations 都写）；历史回灌为 `server_tool_use` + 空 `web_search_tool_result` + sources 可见文本——OpenAI wire 无 Anthropic required 的 `encrypted_content`，无法做官方级 result round-trip。
-- **code interpreter**：网关整体不支持（a/c 声明 fail-fast；历史与回程静默忽略/skip），不再映射 Anthropic code_execution。
+- **code interpreter**：网关整体不支持（a 声明 fail-fast；c 声明 Debug 跳过；历史与回程静默忽略/skip），不再映射 Anthropic code_execution。
 - **structured output**：`text.format.json_schema` / `json_object` a/c 统一忽略（`output_config` 仅保留 `effort`），不写 `output_config.format` 或 `response_format`。
 - **redacted_thinking**：网关只接受明文 thinking；出站 `redacted_thinking` 块跳过，入站 redacted 密文（无 summary 文本的 `encrypted_content`）忽略，明文 `thinking` 签名回灌保留。
 - **MCP**：
   - MCP 由 Codex 客户端本地执行：`allowed_tools` 展开为扁平 `mcp__<server>__<tool>` function 声明，回程走 `function_call`，不再注入 Anthropic beta MCP 配置
   - `mcp_call` 历史 → 标准 `tool_use` + `tool_result`（扁平名直接回填）
-  - `mcp_list_tools` 历史 → developer marker（lossy）
+  - `mcp_list_tools` 历史 → DEBUG 丢弃（opencode 无此类型，Codex 不把 AdditionalTools 转消息，工具经请求 tools/ToolSpec 声明）
   - `mcp_approval_request` / `response` **不实现**：Anthropic 无审批协议，历史 WARN + 丢弃
   - 连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不注入或 fail-fast，交给客户端本地连接执行
 - **tool_choice `allowed_tools`**：仅 `auto`/`required` 映射；条目按 type/namespace/name 精确匹配已声明工具；含 hosted/MCP 条目时 fail-fast。
 - **无等价历史 item**（`file_search_call` / `computer_call*` / `image_generation_call` / `program*` / `item_reference` / `additional_tools`）：WARN + 丢弃，不进 system context。
-- **无等价请求参数**：`background` / `conversation` / `moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / deprecated `user` 等按 WARN + 忽略；`service_tier` 非空时 WARN 且不透传。
+- **无等价请求参数（a 路径）**：`background` / `conversation` / `context_management` / `max_tool_calls` / `prompt` / deprecated `user` 等按 WARN + 忽略；`moderation` / `top_logprobs` / `prompt_cache_*` / `safety_identifier` / `service_tier` 仅 **c** 路径透传（a 路径按 INFO 提示忽略）。
 
 完整状态见[协议覆盖矩阵](docs/protocol-coverage.md)（含 Anthropic `a`、Chat Completions `c` 与 Responses 透传 `r` 专节）。
 

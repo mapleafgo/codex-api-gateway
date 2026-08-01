@@ -70,6 +70,7 @@ func (b *AnthropicBackend) Execute(
 	logAnthropicConverted(log, anthReq, maxTokensSource)
 
 	conv := streamconv.New()
+	conv.SetLogger(log)
 	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
 	conv.SetCustomToolNames(convert.FreeformToolNames(req))

@@ -78,6 +78,7 @@ func (b *ChatBackend) Execute(
 	defer stream.Close()
 
 	conv := chatstreamconv.New()
+	conv.SetLogger(log)
 	conv.SetEcho(convert.EchoFromRequest(req))
 	conv.SetClientModel(clientModel)
 	conv.SetFreeformNames(chatReq.FreeformNames)

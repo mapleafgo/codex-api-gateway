@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,8 +35,8 @@ func NewResponses() *ResponsesBackend {
 // PrepareUpstreamBody 将客户端 Responses JSON 做最小改写：model 映射 + 强制 stream=true。
 // 使用 map 语义透传，保留未知扩展字段。
 func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientModel, resolved string, err error) {
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	m, err := decodeObject(raw)
+	if err != nil {
 		return nil, "", "", fmt.Errorf("decode: %w", err)
 	}
 	if m == nil {
@@ -64,14 +65,25 @@ func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientMod
 	return body, clientModel, resolved, nil
 }
 
+// decodeObject 用 UseNumber 解码 JSON 对象，避免 map 重编码时大整数经 float64 丢精度。
+func decodeObject(data []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // rewriteClientModel 按 T2 规则把 data 中顶层/response 内 model 回写为客户端请求 model。
 // 未含 model 的帧原样返回；Marshal 失败保留原 Data。
 func rewriteClientModel(data []byte, clientModel string) []byte {
 	if clientModel == "" {
 		return data
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil || m == nil {
+	m, err := decodeObject(data)
+	if err != nil || m == nil {
 		return data
 	}
 	changed := false

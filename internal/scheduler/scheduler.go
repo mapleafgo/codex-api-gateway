@@ -325,7 +325,7 @@ func (s *Scheduler) ExecuteGeneric(
 	attemptNo := 0
 	var lastErr error
 	var lastSource string
-	for attempt := 0; mr == -1 || attempt <= mr; attempt++ {
+	for attempt := 0; ; attempt++ {
 		var firstClientErr clientRejection
 		sourceName, success, err := s.tryRoundGeneric(ctx, rawBody, onEvent, onUpstream, &attemptNo, &firstClientErr)
 		if sourceName != "" {
@@ -345,10 +345,8 @@ func (s *Scheduler) ExecuteGeneric(
 				"source", firstClientErr.source, "elapsed", time.Since(start).String(), "error", firstClientErr.err)
 			return firstClientErr.source, firstClientErr.err
 		}
-		if mr == 0 {
-			break
-		}
-		if mr != -1 && attempt == mr {
+		// max_retries 由 config 校验保证 >= 0：mr 表示首轮之外的整轮重试次数。
+		if attempt >= mr {
 			break
 		}
 		log.Warn("本轮上游源均失败，等待后重试", "attempt", attempt, "max_retries", mr, "last_error", lastErr)

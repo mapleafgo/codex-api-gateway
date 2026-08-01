@@ -41,6 +41,20 @@ func TestPrepareUpstreamBody_ModelMapAndStream(t *testing.T) {
 	}
 }
 
+func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
+	src := config.Source{
+		ModelMap: map[string]string{"gpt-5": "o3"},
+	}
+	raw := []byte(`{"model":"gpt-5","stream":false,"max_output_tokens":9223372036854775807}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`9223372036854775807`)) {
+		t.Fatalf("large integer corrupted by float64 re-marshal: %s", body)
+	}
+}
+
 func TestRewriteClientModel_T2(t *testing.T) {
 	in := []byte(`{"type":"response.completed","response":{"id":"r1","model":"o3","usage":{"input_tokens":1,"output_tokens":2}}}`)
 	out := rewriteClientModel(in, "gpt-5")
@@ -52,6 +66,16 @@ func TestRewriteClientModel_T2(t *testing.T) {
 	}
 	if resp["id"] != "r1" {
 		t.Fatal("id changed")
+	}
+}
+
+func TestRewriteClientModel_PreservesLargeNumbers(t *testing.T) {
+	in := []byte(`{"type":"response.completed","response":{"id":"r1","model":"o3","created_at":1750000000123456789,"usage":{"input_tokens":9223372036854775807}}}`)
+	out := rewriteClientModel(in, "gpt-5")
+	for _, want := range []string{`"model":"gpt-5"`, `1750000000123456789`, `9223372036854775807`} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Fatalf("rewriteClientModel 损坏数据，缺少 %s: %s", want, out)
+		}
 	}
 }
 

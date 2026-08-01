@@ -89,7 +89,7 @@ sources:
     default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
     # disabled: true                        # 人工停用：true 时不参与调度；管理页可即时切换
     # headers:                              # 可选：追加到上游请求的自定义 header（如 X-Api-Key、anthropic-beta 覆盖）
-    #   X-Custom: value                     # 保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖，会被跳过并 WARN
+    #   X-Custom: value                     # 保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖，会被跳过（Debug 记录）
 
   # 备用源：演示 per-source 断路器覆盖（整个 breaker 块可选，省略即用全局）
   # 单源 breaker 中为零值的字段会继承全局；max_retries 始终取全局、不被覆盖。

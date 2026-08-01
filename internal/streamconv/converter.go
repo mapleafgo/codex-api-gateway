@@ -108,6 +108,7 @@ const refusalFallback = "I can't help with that."
 
 // Converter turns a stream of Anthropic SSE events into Response SSE events.
 type Converter struct {
+	log         *slog.Logger
 	respID      string
 	model       string
 	clientModel string
@@ -174,6 +175,7 @@ type Converter struct {
 // New returns a fresh converter.
 func New() *Converter {
 	return &Converter{
+		log:            slog.Default(),
 		callByBlockIdx: map[int]*callState{},
 		customToolNames: map[string]bool{
 			"apply_patch": true,
@@ -182,6 +184,13 @@ func New() *Converter {
 		webSearchByToolUseID: map[string]int{},
 		skippedBlocks:        map[int]bool{},
 		declaredToolNames:    map[string]toolcatalog.Identity{},
+	}
+}
+
+// SetLogger 注入请求级 logger（含 request_id），使转换诊断日志可关联单次请求。
+func (c *Converter) SetLogger(l *slog.Logger) {
+	if l != nil {
+		c.log = l
 	}
 }
 
@@ -356,7 +365,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		// 而非标准的 web_search_tool_result。若该块的 tool_use_id 对应一个
 		// 已知的 web_search server_tool_use，按 web search 结果处理；否则静默跳过。
 		if _, ok := c.webSearchByToolUseID[ev.ContentBlock.ToolUseID]; ok {
-			slog.Debug("web search 结果以 tool_result 形态回传，按 web search 结果处理",
+			c.log.Debug("web search 结果以 tool_result 形态回传，按 web search 结果处理",
 				"response_id", c.respID, "tool_use_id", ev.ContentBlock.ToolUseID)
 			return c.handleCallResult(ev)
 		}
@@ -378,7 +387,7 @@ func (c *Converter) handleBlockStart(ev *anthropic.MessageStreamEventUnion) []mo
 		// WARN + 跳过（保留后续 delta/stop 的 index 跟踪），不中断流。
 		blkIdx := int(ev.Index)
 		c.skippedBlocks[blkIdx] = true
-		slog.Warn("跳过 Anthropic mid_conversation_system 块（OpenAI Responses 无原生等价输出），对应数据被丢弃",
+		c.log.Warn("跳过 Anthropic mid_conversation_system 块（OpenAI Responses 无原生等价输出），对应数据被丢弃",
 			"response_id", c.respID, "block_index", blkIdx)
 		return nil
 	case anBlockContainerUpload:
@@ -394,7 +403,7 @@ func (c *Converter) handleUnsupportedBlock(ev *anthropic.MessageStreamEventUnion
 	if blockType == "" {
 		blockType = "unknown"
 	}
-	slog.Warn("遇到不支持的 Anthropic content block，转为 response.failed",
+	c.log.Warn("遇到不支持的 Anthropic content block，转为 response.failed",
 		"response_id", c.respID, "block_type", blockType, "name", ev.ContentBlock.Name)
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Output = []model.OutputItem{}
@@ -471,7 +480,7 @@ func (c *Converter) handleThinkingStart(ev *anthropic.MessageStreamEventUnion) [
 func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	blkIdx := int(ev.Index)
 	c.skippedBlocks[blkIdx] = true
-	slog.Warn("跳过无 Responses 等价物的 server_tool_use block，对应数据被丢弃",
+	c.log.Warn("跳过无 Responses 等价物的 server_tool_use block，对应数据被丢弃",
 		"response_id", c.respID, "block_index", blkIdx, "name", ev.ContentBlock.Name)
 	return nil
 }
@@ -483,7 +492,7 @@ func (c *Converter) handleSkippedServerToolUseStart(ev *anthropic.MessageStreamE
 func (c *Converter) handleSkippedBlockStart(ev *anthropic.MessageStreamEventUnion) []model.SSEEvent {
 	blkIdx := int(ev.Index)
 	c.skippedBlocks[blkIdx] = true
-	slog.Warn("跳过无 Responses 等价物的 content block，对应数据被丢弃",
+	c.log.Warn("跳过无 Responses 等价物的 content block，对应数据被丢弃",
 		"response_id", c.respID, "block_index", blkIdx, "block_type", ev.ContentBlock.Type)
 	return nil
 }
@@ -580,7 +589,7 @@ func (c *Converter) handleCitationsDelta(ev *anthropic.MessageStreamEventUnion) 
 		c.annotationIndex++
 		return out
 	default:
-		slog.Warn("收到未知 Anthropic citation type，对应数据被丢弃",
+		c.log.Warn("收到未知 Anthropic citation type，对应数据被丢弃",
 			"response_id", c.respID,
 			"citation_type", cit.Type,
 			"impact", "该 citation 不会作为 annotation 发出")
@@ -754,12 +763,12 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
 	if c.stopReason == string(anthropic.StopReasonRefusal) {
 		c.resetOutputForRefusal()
-		slog.Info("上游响应被拒绝（refusal）", "response_id", c.respID, "stop_reason", c.stopReason)
+		c.log.Info("上游响应被拒绝（refusal）", "response_id", c.respID, "stop_reason", c.stopReason)
 		out = append(out, c.emitRefusalEvents()...)
 	}
 
 	status, incompleteReason := statusFor(c.stopReason)
-	slog.Info("上游流终态",
+	c.log.Info("上游流终态",
 		"response_id", c.respID,
 		"status", status,
 		"stop_reason", c.stopReason,
@@ -872,7 +881,7 @@ func (c *Converter) handleError(ev *anthropic.MessageStreamEventUnion) []model.S
 	if ev.Delta.Text != "" {
 		msg = ev.Delta.Text
 	}
-	slog.Warn("收到上游 error 事件，转为 response.failed",
+	c.log.Warn("收到上游 error 事件，转为 response.failed",
 		"response_id", c.respID, "message", msg)
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Output = []model.OutputItem{}

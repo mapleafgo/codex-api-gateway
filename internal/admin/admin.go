@@ -677,11 +677,15 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		status = "reachable"
 	}
 
+	var httpStatus *int
+	if result.HTTPStatus != 0 {
+		httpStatus = &result.HTTPStatus
+	}
 	writeJSON(w, http.StatusOK, sourceTestResult{
 		OK:           isOK,
 		Status:       status,
 		Message:      result.Message,
-		HTTPStatus:   &result.HTTPStatus,
+		HTTPStatus:   httpStatus,
 		ResponseTime: result.ResponseTimeMs,
 	})
 }
@@ -855,6 +859,7 @@ func sanitizeSourceHeaders(in map[string]string) map[string]string {
 			continue
 		}
 		if isReservedHeader(k) {
+			slog.Debug("管理页保存时跳过保留自定义 header", "header", k, "impact", "由网关统一管理，不可被 source.headers 覆盖")
 			continue
 		}
 		out[k] = v

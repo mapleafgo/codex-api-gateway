@@ -214,7 +214,8 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 func ScanEvents(ctx context.Context, r io.Reader, fn func(*anthropic.MessageStreamEventUnion) error) error {
 	log := logging.FromContext(ctx)
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// 与 chat/responses 共用 1 MiB 初始 / 16 MiB 上限，避免超长单帧断流。
+	sc.Buffer(make([]byte, 0, upstreamhttp.ScanInitialBuf), upstreamhttp.ScanMaxBuf)
 	var count int
 	for sc.Scan() {
 		line := sc.Text()

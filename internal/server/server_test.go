@@ -709,6 +709,54 @@ func TestModelsEndpointRejectsPost(t *testing.T) {
 	}
 }
 
+// TestModelsEndpointPriorityFollowsConfigOrder 锁定 Priority 与配置顺序一致：
+// Codex 按 priority 升序排序（越小越优先、默认选首项），配置越靠前的模型必须拿到越小数字。
+func TestModelsEndpointPriorityFollowsConfigOrder(t *testing.T) {
+	cfg := &config.Config{
+		Breaker:        config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
+		Sources:        []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:0"}},
+		ModelSlugOrder: []string{"alpha", "beta", "gamma"},
+		ModelOverrides: map[string]config.ModelOverride{
+			"alpha": {}, "beta": {}, "gamma": {},
+		},
+	}
+	srv := New(cfg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200. body: %s", resp.StatusCode, body)
+	}
+	var raw struct {
+		Models []struct {
+			Slug     string `json:"slug"`
+			Priority int    `json:"priority"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("unmarshal: %v. body: %s", err, body)
+	}
+	want := []struct {
+		slug     string
+		priority int
+	}{
+		{"alpha", 1}, {"beta", 2}, {"gamma", 3},
+	}
+	if len(raw.Models) != len(want) {
+		t.Fatalf("models=%d, want %d: %s", len(raw.Models), len(want), body)
+	}
+	for i, m := range raw.Models {
+		if m.Slug != want[i].slug || m.Priority != want[i].priority {
+			t.Fatalf("models[%d]=%s priority=%d, want %s priority=%d", i, m.Slug, m.Priority, want[i].slug, want[i].priority)
+		}
+	}
+}
+
 // TestModelsEndpointCodexModelInfoContract 验证 /v1/models 返回的每个 model 对象
 // 都包含 Codex serde 反序列化 ModelInfo 所需的全部 key。
 func TestModelsEndpointCodexModelInfoContract(t *testing.T) {

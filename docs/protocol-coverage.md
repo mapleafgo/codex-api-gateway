@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-07-23（a Anthropic + c Chat + r Responses 透传；structured / usage details 已支持）
+日期: 2026-08-01（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
 
 本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `r` 见专节，**三路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
@@ -145,6 +145,7 @@
 
 ### 2026-08-01
 
+- **文档对齐与运行修复**：`/v1/models` Priority 改为按配置顺序升序 `1..N`（Codex 按 priority 升序排序，越小越优先）；r 透传 `PrepareUpstreamBody` / `rewriteClientModel` 改用 `json.Number` 保留大整数；`web_search` / `web_search_preview` 矩阵版本行订正为 `20260209`（实际 wire）；README 断路器键名 `cooldown` 订正为 `circuit_interval`。
 - **DeepSeek 兼容收口（用户决策）**：a/c 路径不再转换 `text.format`（`json_schema` / `json_object` 统一忽略，`output_config` 仅保留 `effort`）；`code_interpreter` 整体移除（a/c 声明 fail-fast，历史 item 与上游 code_execution 回程静默忽略/skip，不再映射 `code_execution_20250522`）；**网关只接受明文 thinking**：出站 `redacted_thinking` 块跳过（不生成 reasoning item），入站无 summary 文本的 `encrypted_content`（redacted 密文）静默忽略，明文 thinking 的 signature 回灌保留。
 - **compaction 行为修正（Codex local 压缩确认）**：`supports_remote_compaction()` 仅对 provider 名为 OpenAI/Azure 成立；本网关面向第三方 provider（如 deepseek）时 Codex 走 **local 压缩**，摘要生成请求与摘要回灌均为普通明文消息，网关按常规转换透传。真实 `compaction` item 的 `encrypted_content` 只对生成它的服务端可解，a/c 路径无法解读，改为 **WARN + 丢弃**（移除原先折独立 user `<compaction>` 密文文本的降级）；`compaction_trigger` 保持丢弃（请求控制信号）。
 - **DeepSeek a 端点工具限制**：DeepSeek Anthropic 兼容端点只接受 `web_search_20250305` / `web_search_20260209` server tool，`custom` 工具返回 400；带 21+ 工具的 Codex 请求实测 400 后 failover 到 Chat 源。DeepSeek 改为 `backend_type: r` 透传后全部 200，登记到 r 专节。
@@ -217,7 +218,7 @@
 
 ## Chat 后端覆盖矩阵（backend_type: c）
 
-日期: 2026-07-22
+日期: 2026-08-01
 
 本节只描述 **Responses → Chat Completions → Responses SSE** 路径（`backend_type: c`）。Anthropic 直转见上文各表；两路径**不共享**字段状态。
 
@@ -507,8 +508,8 @@
 | `file_search` | none | `unsupported_by_backend` | 无 OpenAI vector store 后端；请求时返回明确转换错误 |
 | `computer` | none | `unsupported_by_backend` | 需 computer use 执行环境；请求时返回明确转换错误 |
 | `computer_use_preview` | none | `unsupported_by_backend` | 同上；请求时返回明确转换错误 |
-| `web_search` | Anthropic web search server tool (20250305) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
-| `web_search_preview` | Anthropic web search server tool (20250305) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
+| `web_search` | Anthropic web search server tool (20260209) | `lossy_supported` | `filters.allowed_domains` → `allowed_domains`；`user_location` → `user_location`；`search_context_size` 无 Anthropic 字段 → WARN + 忽略 |
+| `web_search_preview` | Anthropic web search server tool (20260209) | `lossy_supported` | 同 web_search：`user_location` 映射；`search_context_size` WARN + 忽略；preview 无 domains filter |
 | `mcp` | 扁平 client tool `mcp__<server>__<tool>` | `lossy_supported` | `allowed_tools: string[]` → 逐个展开为 function 声明，`server_description` 折入工具 description；`allowed_tools: filter`/空列表 → 不声明（经 tool_search 动态提供）；连接字段（server_url/headers/require_approval/connector_id/tunnel_id）不再注入或 fail-fast，交给 Codex 客户端本地连接执行 |
 | `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明时明确转换错误（fail-fast） |
 | `programmatic_tool_calling` | none | `unsupported_by_backend` | 无 Anthropic 等价物；DEBUG + 忽略，透传上游自行决定 |
@@ -542,7 +543,7 @@
 |---|---|---|---|
 | `message` | text block | `supported` | 输出 text message |
 | `reasoning` | thinking block | `lossy_supported` | 有 summary/文本 + signature 时回灌 thinking；redacted_thinking 不再回灌（静默忽略） |
-| `function_call` | `tool_use` | `supported` | 回程 arguments 把整数值 `N.0` 收成整数，避免 Codex serde 失败 | 普通 tool use |
+| `function_call` | `tool_use` | `supported` | 回程 arguments 把整数值 `N.0` 收成整数，避免 Codex serde 失败 |
 | `function_call_output` | request replay only | `supported` | 作为 input item 回放（含 content 数组形态） |
 | `custom_tool_call` | custom `tool_use` | `supported` | freeform 单键对象按任意键名取值解包（shell/custom/apply_patch），多键 structured 形态 apply_patch 兜底折 V4A |
 | `custom_tool_call_output` | request replay only | `supported` | 作为 input item 回放（含 content list 形态） |

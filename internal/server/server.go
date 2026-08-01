@@ -106,8 +106,9 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	infos := make([]model.CodexModelInfo, 0, len(names))
 	for i, name := range names {
 		info := s.codexModelInfo(name)
-		// 按配置顺序分配 Priority，越靠前优先级越高（方便 Codex 按序选主模型）。
-		info.Priority = len(names) - i
+		// Codex 按 priority 升序排序（越小越优先、默认选首项），
+		// 配置中越靠前的模型分到越小数字，保证客户端按配置顺序选主模型。
+		info.Priority = i + 1
 		infos = append(infos, info)
 	}
 	resp := model.CodexModelsResponse{Models: infos}
@@ -150,7 +151,6 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	  - comp_hash="3000"：对齐 gpt-5.6 catalog 压缩兼容哈希。连续两 turn 不同会
 //	    触发 Codex 前置压缩；网关统一注入，避免客户端切模型时误触发。
 //	不注入（保持零值）：
-//	  - model_messages
 //	  - default_reasoning_level / service_tiers / default_service_tier 等
 //
 // config.yaml models.<slug> 可覆盖 context_window / supports_image / supports_search；
