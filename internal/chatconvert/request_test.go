@@ -675,10 +675,28 @@ func TestToChat_CompactionDroppedWarns(t *testing.T) {
 	}
 }
 
-func TestToChat_PromptCacheKeyPassthrough(t *testing.T) {
-	out := mustChat(t, `{"model":"gpt-4o","prompt_cache_key":"bucket-1","input":"hi"}`, "gpt-4o")
-	if out.PromptCacheKey == nil || *out.PromptCacheKey != "bucket-1" {
-		t.Fatalf("prompt_cache_key=%v", out.PromptCacheKey)
+func TestToChat_DropsChatUnsupportedTopLevelFields(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"prompt_cache_key":"bucket-1",
+		"text":{"verbosity":"high"},
+		"safety_identifier":"sid-1",
+		"input":"hi"
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(b)
+	for _, field := range []string{"prompt_cache_key", "verbosity", "safety_identifier"} {
+		if strings.Contains(s, field) {
+			t.Fatalf("Chat 请求体不应包含 %s：%s", field, s)
+		}
+	}
+	// 允许的其它标准字段不受影响。
+	if out.Model != "gpt-4o" || len(out.Messages) == 0 {
+		t.Fatalf("标准字段受影响: model=%q messages=%d", out.Model, len(out.Messages))
 	}
 }
 
@@ -702,12 +720,9 @@ func TestToChat_FunctionStrictPassthrough(t *testing.T) {
 	}
 }
 
-func TestToChat_VerbosityServiceTierReasoningTopLogprobs(t *testing.T) {
+func TestToChat_ServiceTierReasoningTopLogprobs(t *testing.T) {
 	body := `{"model":"gpt-4o","input":"hi","text":{"verbosity":"high"},"service_tier":"priority","reasoning":{"effort":"high"},"top_logprobs":3}`
 	out := mustChat(t, body, "gpt-4o")
-	if out.Verbosity == nil || *out.Verbosity != "high" {
-		t.Fatalf("verbosity=%v", out.Verbosity)
-	}
 	if out.ServiceTier == nil || *out.ServiceTier != "priority" {
 		t.Fatalf("service_tier=%v", out.ServiceTier)
 	}
@@ -717,6 +732,11 @@ func TestToChat_VerbosityServiceTierReasoningTopLogprobs(t *testing.T) {
 	if out.TopLogprobs == nil || *out.TopLogprobs != 3 || out.Logprobs == nil || !*out.Logprobs {
 		t.Fatalf("logprobs top=%v on=%v", out.TopLogprobs, out.Logprobs)
 	}
+	// verbosity 是 Responses 专有字段，Chat 无顶层槽位，应丢弃不进 wire。
+	b, _ := json.Marshal(out)
+	if strings.Contains(string(b), "verbosity") {
+		t.Fatalf("Chat 请求体不应含 verbosity：%s", b)
+	}
 }
 
 func TestToChat_SafetyMetadataStoreModeration(t *testing.T) {
@@ -725,12 +745,9 @@ func TestToChat_SafetyMetadataStoreModeration(t *testing.T) {
 		"safety_identifier":"u1",
 		"metadata":{"k":"v"},
 		"store":true,
-		"moderation":{"model":"omni-moderation-latest","policy":{"input":{"mode":"score"},"output":{"mode":"block"}}}
-	}`
+			"moderation":{"model":"omni-moderation-latest","policy":{"input":{"mode":"score"},"output":{"mode":"block"}}}
+		}`
 	out := mustChat(t, body, "gpt-4o")
-	if out.SafetyIdentifier == nil || *out.SafetyIdentifier != "u1" {
-		t.Fatalf("safety=%v", out.SafetyIdentifier)
-	}
 	if out.Metadata["k"] != "v" {
 		t.Fatalf("metadata=%v", out.Metadata)
 	}
@@ -739,6 +756,11 @@ func TestToChat_SafetyMetadataStoreModeration(t *testing.T) {
 	}
 	if out.Moderation == nil || out.Moderation.Model != "omni-moderation-latest" {
 		t.Fatalf("moderation=%+v", out.Moderation)
+	}
+	// safety_identifier 是 Responses 专有字段，Chat 无顶层槽位，应丢弃。
+	b, _ := json.Marshal(out)
+	if strings.Contains(string(b), "safety_identifier") {
+		t.Fatalf("Chat 请求体不应含 safety_identifier：%s", b)
 	}
 }
 

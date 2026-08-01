@@ -29,8 +29,8 @@
 
 详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
 
-- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`function.strict`/`text.verbosity`/`service_tier`/`safety_identifier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、`prompt_cache_key`、usage（含 details）、`finish_reason` 终态。
-- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger / mcp_list_tools 历史 **丢弃**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
+- **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`function.strict`/`service_tier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、usage（含 details）、`finish_reason` 终态。
+- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；`text.verbosity`/`safety_identifier`/`prompt_cache_key` 为 Responses 专有字段，Chat 无顶层等价，**DEBUG + 丢弃**（2026-08-01）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger / mcp_list_tools 历史 **丢弃**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
@@ -159,6 +159,10 @@
 - **compaction 类历史收口（Codex/opencode 对照）**：`compaction` 折独立 user `<compaction>` 密文文本（opencode 对应物是 user `<conversation-checkpoint>`，不再走 `<system-update>`；a 路径在 Anthropic 交替约束下并入相邻 user）；`compaction_trigger` 是请求控制信号，Codex 明确丢弃；`mcp_list_tools` 不转模型文本（opencode 无此类型，Codex 不把 AdditionalTools 转消息，工具经 ToolSpec/请求 tools 声明）。
 - **透传收口（用户决策）**：`reasoning_effort` 任意值原样透传，不再拒绝 `max`；`tool_call_id` 原样透传，移除出站归一化（对齐 opencode，不改写客户端可见 call_id）。
 
+### 2026-08-01
+
+- **Chat 上游非标准字段丢弃**：`prompt_cache_key` / `text.verbosity` / `safety_identifier` 均为 Responses/Codex 专有、Chat Completions 无顶层等价字段。此前透传会导致严格上游 400（如 `0v0.info` 报「未知请求字段：prompt_cache_key」），故改为 **DEBUG + 丢弃**（同 `prompt_cache_options` 处理）。相关对话式上游若确需这些扩展，由上游自行声明支持，网关不再代发。
+
 ### 2026-07-22
 
 - **Responses 透传（`backend_type: r`）**：最小改写透传 + T2 model 回写 + warn 收口。
@@ -258,9 +262,9 @@
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
 | `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`（任意值透传，不拒绝）；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
 | `text.format` structured | none | `dropped` | 网关不支持 structured output；`json_schema`/`json_object` 忽略，不写 `response_format` |
-| `text.verbosity` | `verbosity` | `supported` | low/medium/high 透传；a 路径仍忽略 |
+| `text.verbosity` | none | `dropped` | Responses 专有字段，Chat 无顶层等价；非空时 **DEBUG + 丢弃**（2026-08-01） |
 | `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |
-| `safety_identifier` | `safety_identifier` | `supported` | Chat 透传；a 路径忽略 |
+| `safety_identifier` | none | `dropped` | Responses 专有字段，Chat 无顶层等价；非空时 **DEBUG + 丢弃**（2026-08-01） |
 | `metadata` | `metadata` | `supported` | Chat 整表透传；a 路径仅 user_id + echo |
 | `store` | `store` | `supported` | Chat 透传；响应 echo 仍保留 |
 | `moderation` | `moderation` | `supported` | model + policy modes 同形透传；a 路径忽略 |
@@ -268,8 +272,8 @@
 | `top_logprobs` | `logprobs=true` + `top_logprobs` | `supported` | Chat 透传；a 路径忽略；出站见 SSE 表 |
 | `stream_options.include_obfuscation` | 同名 | `supported` | 强制 `include_usage=true` 并透传 obfuscation；a 路径忽略 |
 | `previous_response_id` 等平台字段 | none | `unsupported_by_backend` | 与 a 路径同产品边界 |
-| `prompt_cache_key` | `prompt_cache_key` | `supported` | Chat 官方字段透传 |
-| `prompt_cache_options` | none | `dropped` | Chat 请求体无顶层等价（仅 content part `prompt_cache_breakpoint`）；mode/ttl 非空时 **DEBUG + 丢弃**，`prompt_cache_key` 不受影响 |
+| `prompt_cache_key` | none | `dropped` | Responses/Codex 专有字段，Chat 无顶层等价；非空时 **DEBUG + 丢弃**（2026-08-01） |
+| `prompt_cache_options` | none | `dropped` | Chat 请求体无顶层等价（仅 content part `prompt_cache_breakpoint`）；mode/ttl 非空时 **DEBUG + 丢弃** |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated，不映射 |
 | `user`（deprecated） | none | `dropped` | 与 a 一致不映射；请用 safety_identifier / metadata.user_id |
 

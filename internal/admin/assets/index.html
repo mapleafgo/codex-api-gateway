@@ -2019,6 +2019,8 @@ function app() {
         data.models.forEach(m => {
           // 未配置时默认开启搜索（对齐 codexModelInfo 默认 true）
           if (m.supports_search == null) m.supports_search = true;
+          // 分配稳定 _id 作 x-for key，避免编辑 slug 时 Alpine 重建 DOM 丢焦点
+          if (!m._id) m._id = 'mdl_' + Math.random().toString(36).slice(2, 10);
         });
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
@@ -2595,7 +2597,7 @@ function app() {
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-          const item = { slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false };
+          const item = { _id: 'mdl_' + Math.random().toString(36).slice(2, 10), slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false };
           this.cfg.models.push(item);
           this.patchSnapshotAppend('models', item);
           this.notify(this.t('addModelOk') + ': ' + slug, 'success');

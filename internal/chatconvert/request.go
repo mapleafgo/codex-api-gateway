@@ -30,11 +30,8 @@ type ChatRequest struct {
 	MaxTokens           *int                `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int                `json:"max_completion_tokens,omitempty"`
 	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
-	PromptCacheKey      *string             `json:"prompt_cache_key,omitempty"`
 	ResponseFormat      any                 `json:"response_format,omitempty"`
-	Verbosity           *string             `json:"verbosity,omitempty"`
 	ServiceTier         *string             `json:"service_tier,omitempty"`
-	SafetyIdentifier    *string             `json:"safety_identifier,omitempty"`
 	Metadata            map[string]string   `json:"metadata,omitempty"`
 	Store               *bool               `json:"store,omitempty"`
 	Moderation          *ChatModeration     `json:"moderation,omitempty"`
@@ -211,23 +208,30 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		out.ParallelToolCalls = ptr(req.ParallelToolCalls.Value)
 	}
 	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
-		out.PromptCacheKey = ptr(req.PromptCacheKey.Value)
+		// Chat Completions 协议无顶层 prompt_cache_key 槽位（OpenAI Chat 标准
+		// 未定义该字段，仅供 Responses/Codex 扩展）。透传会导致严格上游 400
+		// （如 0v0.info 报「未知请求字段：prompt_cache_key」），故丢弃。
+		slog.Debug("chatconvert: 丢弃 prompt_cache_key（Chat 无顶层等价字段）",
+			"prompt_cache_key", req.PromptCacheKey.Value)
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		// Chat 请求体无 prompt_cache_options 槽位（仅 content part 的
-		// prompt_cache_breakpoint），不透传，保留 prompt_cache_key。
+		// prompt_cache_breakpoint），不透传。
 		slog.Debug("chatconvert: 丢弃 prompt_cache_options（Chat 无顶层等价字段）",
 			"mode", req.PromptCacheOptions.Mode, "ttl", req.PromptCacheOptions.Ttl)
 	}
 	// text.format（json_schema/json_object）不支持，静默忽略，不写 response_format。
 	if v := string(req.Text.Verbosity); v != "" {
-		out.Verbosity = ptr(v)
+		// Chat 无顶层 verbosity 槽位（Responses 专有），丢弃避免未知字段 400。
+		slog.Debug("chatconvert: 丢弃 text.verbosity（Chat 无等价字段）", "verbosity", v)
 	}
 	if st := string(req.ServiceTier); st != "" {
 		out.ServiceTier = ptr(st)
 	}
 	if req.SafetyIdentifier.Valid() && req.SafetyIdentifier.Value != "" {
-		out.SafetyIdentifier = ptr(req.SafetyIdentifier.Value)
+		// Chat 无顶层 safety_identifier 槽位（Responses 专有），丢弃避免 400。
+		slog.Debug("chatconvert: 丢弃 safety_identifier（Chat 无等价字段）",
+			"safety_identifier", req.SafetyIdentifier.Value)
 	}
 	if len(req.Metadata) > 0 {
 		out.Metadata = map[string]string(req.Metadata)

@@ -2037,3 +2037,90 @@ func TestConverterFunctionArgsCoerceIntegerFloats(t *testing.T) {
 		t.Fatalf("ints missing: %s", args)
 	}
 }
+
+// TestConverterFlushOpenBlocksOnMissingContentBlockStop 验证：上游在最后一个
+// tool_use block 结束时缺失 content_block_stop、直接发 message_delta +
+// message_stop 时，网关兜底补发 function_call_arguments.done + output_item.done，
+// 客户端能收到完整的 function_call（修复 0v0.info/glm-5.2 的「没有任何返回」）。
+func TestConverterFlushOpenBlocksOnMissingContentBlockStop(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "m_flush", Model: "x"},
+	})
+	// thinking block（正常含 stop）
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        0,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "thinking"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 0,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "thinking_delta", Thinking: "hi"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_stop",
+		Index: 0,
+	})
+	// tool_use block —— 故意不发 content_block_stop
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:         "content_block_start",
+		Index:        1,
+		ContentBlock: anthropic.ContentBlockStartEventContentBlockUnion{Type: "tool_use", ID: "call_flush", Name: "search"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "content_block_delta",
+		Index: 1,
+		Delta: anthropic.MessageStreamEventUnionDelta{Type: "input_json_delta", PartialJSON: `{"q":"flush"}`},
+	})
+	// 直接发 message_delta + message_stop（缺失 content_block_stop index=1）
+	stopEvs, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: "tool_use"},
+	})
+	stopEvs2, _ := c.Feed(&anthropic.MessageStreamEventUnion{
+		Type: "message_stop",
+	})
+
+	// 合并 message_delta + message_stop 返回的事件
+	allEvs := append(stopEvs, stopEvs2...)
+	types := eventTypes(allEvs)
+
+	// 必须补发 function_call_arguments.done
+	hasArgsDone := false
+	hasItemDone := false
+	for _, typ := range types {
+		if typ == "response.function_call_arguments.done" {
+			hasArgsDone = true
+		}
+		if typ == "response.output_item.done" {
+			hasItemDone = true
+		}
+	}
+	if !hasArgsDone {
+		t.Fatalf("缺失 content_block_stop 时必须兜底补发 function_call_arguments.done，实际事件: %v", types)
+	}
+	if !hasItemDone {
+		t.Fatalf("缺失 content_block_stop 时必须兜底补发 output_item.done，实际事件: %v", types)
+	}
+
+	// 最终 outputItems 里 function_call 必须已 finalize
+	items := c.OutputItems()
+	var fc *model.OutputItem
+	for i := range items {
+		if items[i].Type == "function_call" {
+			fc = &items[i]
+			break
+		}
+	}
+	if fc == nil {
+		t.Fatalf("缺少 function_call item: %+v", items)
+	}
+	if fc.Arguments != `{"q":"flush"}` {
+		t.Fatalf("function_call Arguments 未 finalize, got %q", fc.Arguments)
+	}
+	if fc.Status != model.ResponseStatusCompleted {
+		t.Fatalf("function_call Status 未 finalize, got %q", fc.Status)
+	}
+}

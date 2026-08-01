@@ -657,10 +657,10 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 	// prompt_cache_*：Anthropic 用内容 hash + 网关自主 cache_control，不认 OpenAI client key/options/retention。
 	if req.PromptCacheKey.Valid() && req.PromptCacheKey.Value != "" {
 		// Codex 常发；网关已自主 cache_control，属可控协议差异 → DEBUG 即可。
-		// a 路径：网关自主 cache_control；c 路径：chatconvert 透传 prompt_cache_key。
-		log.Debug("prompt_cache_key 按后端分流（a 忽略/自主 cache_control；c 透传 Chat）",
+		// a 路径：网关自主 cache_control；c 路径：chatconvert 丢弃（Chat 无顶层槽位）。
+		log.Debug("prompt_cache_key 按后端分流（a 忽略/自主 cache_control；c 丢弃）",
 			"field", "prompt_cache_key",
-			"impact", "Anthropic 源不按 OpenAI cache key 分桶；Chat 源由 chatconvert 写入 prompt_cache_key")
+			"impact", "Anthropic 源不按 OpenAI cache key 分桶；Chat 源由 chatconvert 丢弃（Chat 无顶层槽位）")
 	}
 	if req.PromptCacheOptions.Mode != "" || req.PromptCacheOptions.Ttl != "" {
 		// 与 prompt_cache_key 同属可控协议差异，网关已自主 cache_control → DEBUG。

@@ -344,3 +344,49 @@ func TestWatcherIgnoresUnrelatedSiblingFile(t *testing.T) {
 		t.Fatalf("配置被意外改动")
 	}
 }
+
+// TestWatcherDeduplicatesIdenticalReload 验证：文件内容未变化时，fsnotify 事件
+// 路径（dedupe=true）的重复 reload 会被跳过，而手动 Reload()（dedupe=false）
+// 始终执行（用于 callback 失败重试等场景）。
+func TestWatcherDeduplicatesIdenticalReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := minimalYAML(":9999", "src1")
+	writeFile(t, path, content)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	holder := config.NewHolder(cfg)
+
+	var reloads atomic.Int32
+	var logCalls atomic.Int32
+	w, err := New(path, holder,
+		func() error { reloads.Add(1); return nil },
+		func(config.LoggingCfg) error { logCalls.Add(1); return nil })
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// 手动 Reload() 记录初始 hash（dedupe=false，总执行）。
+	w.Reload()
+	if reloads.Load() != 1 {
+		t.Fatalf("手动 Reload reloads=%d, want 1", reloads.Load())
+	}
+	// fsnotify 事件路径（dedupe=true）：内容相同应被跳过。
+	w.reload(true)
+	if reloads.Load() != 1 {
+		t.Fatalf("内容相同 fsnotify reload reloads=%d, want 1（应去重）", reloads.Load())
+	}
+	// 内容变化后再次走 fsnotify 路径：应触发。
+	writeFile(t, path, minimalYAML(":8888", "src2"))
+	w.reload(true)
+	if reloads.Load() != 2 {
+		t.Fatalf("内容变化 fsnotify reload reloads=%d, want 2", reloads.Load())
+	}
+	if holder.Current().Server.Listen != ":8888" {
+		t.Fatalf("Server.Listen=%q want :8888", holder.Current().Server.Listen)
+	}
+}

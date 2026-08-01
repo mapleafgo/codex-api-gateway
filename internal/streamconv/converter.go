@@ -759,8 +759,38 @@ func statusFor(reason string) (status, incompleteReason string) {
 	}
 }
 
+// flushOpenBlocks 对未收到 content_block_stop 的进行中 block 做兜底 finalize。
+// 某些兼容上游（如 0v0.info/glm-5.2）在最后一个 tool_use block 结束时缺失
+// content_block_stop，直接发 message_delta + message_stop，导致
+// function_call 的 arguments.done / output_item.done 不发出，客户端收到
+// 不完整的 function_call。此处按 content_block_stop 语义补发 finalize 事件。
+func (c *Converter) flushOpenBlocks() []model.SSEEvent {
+	var out []model.SSEEvent
+	// openText / openThinking 不依赖 Index（用内部 itemIdx），用 -1 触发
+	// 对应分支（-1 不会出现在 skippedBlocks 中，真实 block index 均 >= 0）。
+	if c.openText || c.openThinking {
+		out = append(out, c.handleBlockStop(&anthropic.MessageStreamEventUnion{
+			Type:  anContentBlockStop,
+			Index: -1,
+		})...)
+	}
+	// 对所有未关闭的 call block 按其 block index 补发 stop。
+	for idx := range c.callByBlockIdx {
+		out = append(out, c.handleBlockStop(&anthropic.MessageStreamEventUnion{
+			Type:  anContentBlockStop,
+			Index: int64(idx),
+		})...)
+	}
+	return out
+}
+
 func (c *Converter) handleComplete() []model.SSEEvent {
 	var out []model.SSEEvent
+	// 兜底：兼容上游（如 0v0.info/glm-5.2）在最后一个 block 结束时缺失
+	// content_block_stop、直接发 message_delta + message_stop 的情况。
+	// 不补发会导致 function_call 的 arguments.done / output_item.done 缺失，
+	// 客户端收到不完整的 function_call，表现为「没有任何返回」。
+	out = append(out, c.flushOpenBlocks()...)
 	if c.stopReason == string(anthropic.StopReasonRefusal) {
 		c.resetOutputForRefusal()
 		c.log.Info("上游响应被拒绝（refusal）", "response_id", c.respID, "stop_reason", c.stopReason)

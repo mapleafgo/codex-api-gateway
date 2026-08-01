@@ -12,3 +12,5 @@ data/
 *.log.*
 .playwright-mcp/
 gateway.pid
+# Added by code-review-graph
+.code-review-graph/
