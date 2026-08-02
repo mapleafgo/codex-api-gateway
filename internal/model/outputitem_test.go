@@ -193,6 +193,98 @@ func TestToolSearchCallItemEmptyFieldsStillEmitRequiredKeys(t *testing.T) {
 	}
 }
 
+// TestMessageItemMarshalsRequiredContent 锁定 message item 的 content 字段
+// 必须始终输出数组（即使空/nil）—— OpenAI wire api:"required"，且 Codex 的
+// ResponseItem Message 变体 content 是无 #[serde(default)] 的 required Vec，
+// nil 序列化为 "content":null 会导致 serde 反序列化失败、output_item.added
+// 被丢弃、active_item 不被设置，表现为 "OutputTextDelta without active item"。
+func TestMessageItemMarshalsRequiredContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content []OutputText
+	}{
+		{"empty slice", []OutputText{}},
+		{"nil", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := OutputItem{
+				Type: ItemTypeMessage, ID: "msg_0",
+				Role: RoleAssistant, Status: ResponseStatusInProgress,
+				Content: tc.content,
+			}
+			raw, err := json.Marshal(item)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got map[string]any
+			_ = json.Unmarshal(raw, &got)
+			arr, ok := got["content"].([]any)
+			if !ok {
+				t.Fatalf("content must be a JSON array (got %T): %s", got["content"], raw)
+			}
+			if len(arr) != 0 {
+				t.Fatalf("content want empty [], got %v: %s", arr, raw)
+			}
+			if bytes.Contains(raw, []byte(`"content":null`)) {
+				t.Fatalf("content marshalled as null: %s", raw)
+			}
+		})
+	}
+}
+
+// TestFunctionCallItemMarshalsRequiredArguments 锁定 function_call item 的
+// arguments 字段必须始终输出（即使空串）—— OpenAI wire api:"required"，且 Codex
+// 的 ResponseItem FunctionCall 变体 arguments 是无 #[serde(default)] 的 required
+// String，缺失会导致 serde 反序列化失败、active_item 不被设置，表现为
+// "FunctionCallArgumentsDelta without active item"。call_id/name 同理。
+func TestFunctionCallItemMarshalsRequiredArguments(t *testing.T) {
+	item := OutputItem{
+		Type: ItemTypeFunctionCall, ID: "fc_0", Status: ResponseStatusInProgress,
+		CallID: "call_1", Name: "get_weather",
+		// Arguments 故意留空
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, key := range []string{"type", "id", "call_id", "name", "arguments"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("function_call wire missing required key %q: %s", key, raw)
+		}
+	}
+	if got["arguments"] != "" {
+		t.Fatalf("arguments want empty string, got %v: %s", got["arguments"], raw)
+	}
+}
+
+// TestCustomToolCallItemMarshalsRequiredInput 锁定 custom_tool_call item 的
+// input 字段必须始终输出（即使空串）—— 与 function_call.arguments 同理，
+// 缺失会导致 "CustomToolCallInputDelta without active item"。
+func TestCustomToolCallItemMarshalsRequiredInput(t *testing.T) {
+	item := OutputItem{
+		Type: ItemTypeCustomToolCall, ID: "ctc_0", Status: ResponseStatusInProgress,
+		CallID: "call_2", Name: "shell",
+		// Input 故意留空
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, key := range []string{"type", "id", "call_id", "name", "input"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("custom_tool_call wire missing required key %q: %s", key, raw)
+		}
+	}
+	if got["input"] != "" {
+		t.Fatalf("input want empty string, got %v: %s", got["input"], raw)
+	}
+}
+
 // TestReasoningItemMarshalsRequiredSummary 锁定 reasoning item 的 summary 字段
 // 必须始终输出（即使空/nil）—— OpenAI wire api:"required"，且 Codex 的
 // ResponseItem Reasoning 变体 summary 是无 #[serde(default)] 的 required Vec，

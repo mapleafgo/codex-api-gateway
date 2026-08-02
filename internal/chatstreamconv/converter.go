@@ -492,6 +492,9 @@ func (c *Converter) ensureMessageOpen() []model.SSEEvent {
 		ID:     c.msgItemID,
 		Status: model.ResponseStatusInProgress,
 		Role:   model.RoleAssistant,
+		// Content 必须非 nil：wire required，nil→"content":null 会让 Codex
+		// serde 反序列化失败 → "OutputTextDelta without active item"。
+		Content: []model.OutputText{},
 	}
 	c.outputItems = append(c.outputItems, item)
 	out = append(out, model.MarshalEvent(evOutputItemAdded, model.OutputItemAddedEvent{

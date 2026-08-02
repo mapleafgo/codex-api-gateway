@@ -140,9 +140,53 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 			Status: i.Status,
 		})
 	}
+	if i.Type == ItemTypeFunctionCall {
+		// arguments 是 OpenAI wire api:"required"，且 Codex 的 ResponseItem
+		// FunctionCall 变体 arguments 是无 #[serde(default)] 的 required String ——
+		// added 时空串经 omitempty 不输出会导致 serde 反序列化失败、item 被丢弃、
+		// active_item 不被设置，表现为 "FunctionCallArgumentsDelta without active item"。
+		// call_id/name 同为 required，始终输出。
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Status    string `json:"status,omitempty"`
+			Namespace string `json:"namespace,omitempty"`
+		}{
+			Type: i.Type, ID: i.ID, CallID: i.CallID, Name: i.Name,
+			Arguments: i.Arguments, Status: i.Status, Namespace: i.Namespace,
+		})
+	}
+	if i.Type == ItemTypeCustomToolCall {
+		// input 同 arguments，是 required String，空串经 omitempty 不输出会导致
+		// Codex serde 反序列化失败、active_item 不被设置。
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Input     string `json:"input"`
+			Status    string `json:"status,omitempty"`
+			Namespace string `json:"namespace,omitempty"`
+		}{
+			Type: i.Type, ID: i.ID, CallID: i.CallID, Name: i.Name,
+			Input: i.Input, Status: i.Status, Namespace: i.Namespace,
+		})
+	}
 	if i.Type != ItemTypeMessage {
 		type outputItem OutputItem
 		return json.Marshal(outputItem(i))
+	}
+	// content 是 OpenAI wire api:"required"，且 Codex 的 ResponseItem Message
+	// 变体 content 是无 #[serde(default)] 的 required Vec —— nil 序列化为
+	// "content":null 会让 Codex serde 反序列化失败、output_item.added 被丢弃、
+	// active_item 不被设置，表现为 "OutputTextDelta without active item"。
+	// 故即使空也必须输出 "content":[]。
+	content := i.Content
+	if content == nil {
+		content = []OutputText{}
 	}
 	return json.Marshal(struct {
 		Type    string       `json:"type"`
@@ -153,7 +197,7 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 		Content []OutputText `json:"content"`
 	}{
 		Type: i.Type, ID: i.ID, Status: i.Status, Role: i.Role, Phase: i.Phase,
-		Content: i.Content,
+		Content: content,
 	})
 }
 

@@ -73,6 +73,44 @@ func TestTextStream(t *testing.T) {
 	}
 }
 
+// TestMessageItemAddedContentNotNull 锁定 c 路径 message item 在
+// output_item.added 事件中的 content 字段必须是数组（非 null）。
+// nil content 序列化为 "content":null 会让 Codex serde 反序列化失败，
+// active_item 不被设置，表现为 "OutputTextDelta without active item"。
+func TestMessageItemAddedContentNotNull(t *testing.T) {
+	c := New()
+	c.SetClientModel("gpt-4o")
+	evs, err := c.Feed([]byte(`{"id":"c1","choices":[{"index":0,"delta":{"content":"hi"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		if !evTypeIs(evTypes(t, e.Data), "response.output_item.added") {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(e.Data, &m); err != nil {
+			t.Fatalf("unmarshal output_item.added: %v: %s", err, e.Data)
+		}
+		item, _ := m["item"].(map[string]any)
+		if item == nil {
+			t.Fatalf("output_item.added missing item: %s", e.Data)
+		}
+		arr, ok := item["content"].([]any)
+		if !ok {
+			t.Fatalf("content must be a JSON array (got %T): %s", item["content"], e.Data)
+		}
+		if strings.Contains(string(e.Data), `"content":null`) {
+			t.Fatalf("content marshalled as null: %s", e.Data)
+		}
+		if len(arr) != 0 {
+			t.Fatalf("content want empty [] at added, got %v: %s", arr, e.Data)
+		}
+		return
+	}
+	t.Fatalf("no output_item.added event found in %d events", len(evs))
+}
+
 func TestEmptyChoicesUsageChunk(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")
