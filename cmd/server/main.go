@@ -290,6 +290,10 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 		_ = watcher.Close()
 	}
 	slog.Debug("退出流程：watcher.Close 完成", "elapsed", time.Since(t1).String(), "watcher_nil", watcher == nil)
+	// 关闭日志 writer，确保退出前缓冲队列中的日志落盘。
+	if err := logging.Close(); err != nil {
+		slog.Warn("关闭日志 writer 失败", "error", err)
+	}
 	t2 := time.Now()
 	select {
 	case <-shutdownCh:

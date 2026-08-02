@@ -15,55 +15,80 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/logrotate"
+)
+
+// 日志 sink 全局状态：进程生命周期内只创建一次 AsyncWriter，
+// 热重载时复用同一 sink，仅重建 slog handler（等级/格式），
+// 避免关闭旧 writer 导致在途请求（捕获了旧 handler 的 logger）日志静默丢失。
+var (
+	configureMu sync.Mutex
+	currentFile string // 当前日志文件路径；空表示 stderr
+	currentSink io.Writer
+	currentAW   *logrotate.AsyncWriter // 文件模式下的异步 writer；stderr 模式为 nil
 )
 
 // Configure 将配置指定的 slog handler 安装为进程默认 logger。
-// File 非空时日志写入该文件（追加模式，进程生命周期常开）；为空则写 stderr。
-// 重复调用（热重载场景）会先关闭上一次打开的日志文件句柄，避免 fd 泄漏，
-// 但 stderr 模式（File 为空）不持有文件句柄，无需关闭。
+// File 非空时日志写入该文件（经 logrotate 按大小滚动 + 异步刷盘）；为空则写 stderr。
+// 重复调用（热重载场景）复用同一 AsyncWriter，仅重建 handler 以应用新的等级/格式，
+// 不关闭旧 writer——在途请求可能仍持有旧 handler 引用，关闭会导致其日志写入失败被静默吞掉。
+// 仅当日志文件路径发生变化时才创建新的 AsyncWriter（旧的不关闭，由 GC 回收 fd）。
 func Configure(cfg config.LoggingCfg) error {
-	out := io.Writer(os.Stderr)
-	if cfg.File != "" {
-		rf, err := openRotatingFile(cfg.File, cfg.MaxSizeMB, cfg.MaxBackups)
-		if err != nil {
-			return err
+	configureMu.Lock()
+	defer configureMu.Unlock()
+
+	if cfg.File != currentFile {
+		// 文件路径变化（含首次配置、file↔stderr 切换）：创建新 sink。
+		// 旧 AsyncWriter 不关闭——其 Close 会拒绝新写入，而捕获了旧 handler 的
+		// 在途请求仍可能向其 Write；让旧 writer 自然排空队列后由 GC 回收 fd。
+		if cfg.File != "" {
+			aw, err := openAsyncLogWriter(cfg)
+			if err != nil {
+				return err
+			}
+			currentAW = aw
+			currentSink = aw
+		} else {
+			currentAW = nil
+			currentSink = os.Stderr
 		}
-		out = rf
+		currentFile = cfg.File
 	}
-	// 先安装新 handler 再关旧句柄：反过来会留下一个窗口，其它 goroutine
-	// 经旧 default logger 写入已关闭的文件，write error 被 slog 吞掉，
-	// 日志静默丢失。
-	handler := NewHandler(out, cfg)
+
+	handler := NewHandler(currentSink, cfg)
 	slog.SetDefault(slog.New(handler))
 	log.SetOutput(io.Discard)
-	if cfg.File != "" {
-		closeCurrentLogWriter(out.(io.Closer))
-	} else {
-		// 退回 stderr：关闭已打开的日志文件。
-		closeCurrentLogWriter(nil)
-	}
 	return nil
 }
 
-// currentLogWriter 保存当前文件日志 writer（可能是 *rotatingFile），供热重载关闭旧句柄。
-// 仅经 closeCurrentLogWriter 在 currentLogWriterMu 保护下读写。
-var (
-	currentLogWriterMu sync.Mutex
-	currentLogWriter   io.Closer
-)
+// openAsyncLogWriter 创建 logrotate Writer 并包装为 AsyncWriter。
+// FullDropNewest 策略保证队列满时不阻塞转发热路径，仅丢弃当前日志条目。
+func openAsyncLogWriter(cfg config.LoggingCfg) (*logrotate.AsyncWriter, error) {
+	w, err := logrotate.Open(logrotate.Config{
+		Filename:      cfg.File,
+		MaxFileSizeMB: cfg.MaxSizeMB,
+		MaxBackups:    cfg.MaxBackups,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return logrotate.OpenAsync(w, logrotate.AsyncConfig{
+		QueueSize:  8192,
+		FullPolicy: logrotate.FullDropNewest,
+	})
+}
 
-// closeCurrentLogWriter 关闭当前日志 writer（若 next 为 nil 或指向不同对象）。
-func closeCurrentLogWriter(next io.Closer) {
-	currentLogWriterMu.Lock()
-	defer currentLogWriterMu.Unlock()
-	if currentLogWriter != nil && (next == nil || next != currentLogWriter) {
-		_ = currentLogWriter.Close()
+// Close 刷盘并关闭当前日志 writer。供进程优雅关闭调用，确保退出前日志落盘。
+// stderr 模式为 no-op。重复调用安全。
+func Close() error {
+	configureMu.Lock()
+	defer configureMu.Unlock()
+	if currentAW != nil {
+		err := currentAW.Close()
+		currentAW = nil
+		return err
 	}
-	if next != nil {
-		currentLogWriter = next
-	} else {
-		currentLogWriter = nil
-	}
+	return nil
 }
 
 // NewHandler 根据日志等级和格式返回 slog handler。

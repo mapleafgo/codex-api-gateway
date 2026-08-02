@@ -87,13 +87,22 @@ func TestNewHandlerUsesJSONFormat(t *testing.T) {
 
 func TestConfigureWritesToFile(t *testing.T) {
 	prev := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		_ = Close()
+		slog.SetDefault(prev)
+		currentFile = ""
+		currentSink = nil
+		currentAW = nil
+	})
 
 	path := filepath.Join(t.TempDir(), "test.log")
 	if err := Configure(config.LoggingCfg{Level: "debug", Format: "text", File: path}); err != nil {
 		t.Fatalf("Configure with file failed: %v", err)
 	}
 	slog.Info("file-output-marker", "key", "val")
+
+	// 异步刷盘：Close 会排空队列再落盘
+	_ = Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -107,7 +116,13 @@ func TestConfigureWritesToFile(t *testing.T) {
 func TestConfigureFileOpenError(t *testing.T) {
 	// 路径指向已存在的目录，OpenFile 必失败；且不应改动默认 logger。
 	prev := slog.Default()
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	t.Cleanup(func() {
+		_ = Close()
+		slog.SetDefault(prev)
+		currentFile = ""
+		currentSink = nil
+		currentAW = nil
+	})
 
 	dir := t.TempDir()
 	if err := Configure(config.LoggingCfg{Level: "debug", File: dir}); err == nil {
