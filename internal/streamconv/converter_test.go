@@ -1441,6 +1441,7 @@ func TestConverterStatus(t *testing.T) {
 	}{
 		{name: "max tokens", stopReason: anthropic.StopReasonMaxTokens, want: model.ResponseStatusIncomplete},
 		{name: "pause turn", stopReason: anthropic.StopReasonPauseTurn, want: model.ResponseStatusIncomplete},
+		{name: "context window exceeded", stopReason: anthropic.StopReason(anthropic.BetaStopReasonModelContextWindowExceeded), want: model.ResponseStatusFailed},
 		{name: "refusal", stopReason: anthropic.StopReasonRefusal, want: model.ResponseStatusIncomplete},
 		{name: "end turn", stopReason: anthropic.StopReasonEndTurn, want: model.ResponseStatusCompleted},
 		{name: "tool use", stopReason: anthropic.StopReasonToolUse, want: model.ResponseStatusCompleted},
@@ -1490,6 +1491,36 @@ func TestPauseTurnDoesNotEmitInvalidIncompleteReason(t *testing.T) {
 	details, ok := response["incomplete_details"]
 	if !ok || details != nil {
 		t.Fatalf("pause_turn incomplete response must include incomplete_details:null, got %v", response)
+	}
+}
+
+func TestContextWindowExceededEmitsFailedContextLengthError(t *testing.T) {
+	c := New()
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:    "message_start",
+		Message: anthropic.Message{ID: "msg_ctx", Model: "glm-test"},
+	})
+	c.Feed(&anthropic.MessageStreamEventUnion{
+		Type:  "message_delta",
+		Delta: anthropic.MessageStreamEventUnionDelta{StopReason: anthropic.StopReason(anthropic.BetaStopReasonModelContextWindowExceeded)},
+	})
+	evs, _ := c.Feed(&anthropic.MessageStreamEventUnion{Type: "message_stop"})
+
+	last := evs[len(evs)-1]
+	if last.Type != "response.failed" {
+		t.Fatalf("expected response.failed, got %s", last.Type)
+	}
+	payload := decodePayload(t, last.Data)
+	response, _ := payload["response"].(map[string]any)
+	errObj, ok := response["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("context window exceeded response must include error, got %v", response)
+	}
+	if errObj["code"] != model.ErrorCodeContextLengthExceeded {
+		t.Fatalf("error.code=%v want %s", errObj["code"], model.ErrorCodeContextLengthExceeded)
+	}
+	if _, ok := response["incomplete_details"]; ok {
+		t.Fatalf("failed response must not include incomplete_details, got %v", response)
 	}
 }
 

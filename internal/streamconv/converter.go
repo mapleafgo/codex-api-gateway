@@ -221,7 +221,7 @@ func (c *Converter) Status() string {
 	if c.failed {
 		return model.ResponseStatusFailed
 	}
-	status, _ := statusFor(c.stopReason)
+	status, _, _ := statusFor(c.stopReason)
 	return status
 }
 
@@ -739,23 +739,29 @@ func (c *Converter) recordStopReason(ev *anthropic.MessageStreamEventUnion) {
 	}
 }
 
-func statusFor(reason string) (status, incompleteReason string) {
+func statusFor(reason string) (status, incompleteReason, errorCode string) {
 	switch anthropic.StopReason(reason) {
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonToolUse:
-		return model.ResponseStatusCompleted, ""
+		return model.ResponseStatusCompleted, "", ""
 	case anthropic.StopReasonMaxTokens:
-		return model.ResponseStatusIncomplete, model.IncompleteReasonMaxOutputTokens
+		return model.ResponseStatusIncomplete, model.IncompleteReasonMaxOutputTokens, ""
 	case anthropic.StopReasonPauseTurn:
-		return model.ResponseStatusIncomplete, ""
+		return model.ResponseStatusIncomplete, "", ""
+	case anthropic.StopReason(anthropic.BetaStopReasonModelContextWindowExceeded):
+		// OpenAI incomplete_details.reason 无上下文超限枚举；Codex 客户端只把
+		// response.failed 的 error.code=context_length_exceeded 识别为上下文超限
+		// （codex-rs codex-api/src/sse/responses.rs is_context_window_error），
+		// 并标记 token usage full 供下一轮 pre-turn 自动压缩。
+		return model.ResponseStatusFailed, "", model.ErrorCodeContextLengthExceeded
 	case anthropic.StopReasonRefusal:
-		return model.ResponseStatusIncomplete, model.IncompleteReasonContentFilter
+		return model.ResponseStatusIncomplete, model.IncompleteReasonContentFilter, ""
 	case anthropic.StopReasonStopSequence:
-		return model.ResponseStatusCompleted, ""
+		return model.ResponseStatusCompleted, "", ""
 	default:
 		if reason == model.IncompleteReasonContentFilter {
-			return model.ResponseStatusIncomplete, model.IncompleteReasonContentFilter
+			return model.ResponseStatusIncomplete, model.IncompleteReasonContentFilter, ""
 		}
-		return model.ResponseStatusCompleted, ""
+		return model.ResponseStatusCompleted, "", ""
 	}
 }
 
@@ -797,7 +803,7 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 		out = append(out, c.emitRefusalEvents()...)
 	}
 
-	status, incompleteReason := statusFor(c.stopReason)
+	status, incompleteReason, errorCode := statusFor(c.stopReason)
 	c.log.Info("上游流终态",
 		"response_id", c.respID,
 		"status", status,
@@ -816,6 +822,12 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 	if c.usage != nil {
 		resp.Usage = c.usage
 	}
+	if errorCode != "" {
+		resp.Error = &model.ResponseError{
+			Code:    errorCode,
+			Message: "model context window exceeded",
+		}
+	}
 	if incompleteReason != "" {
 		resp.IncompleteDetails = &model.IncompleteDetails{Reason: incompleteReason}
 	}
@@ -823,6 +835,9 @@ func (c *Converter) handleComplete() []model.SSEEvent {
 	eventType := evResponseCompleted
 	if status == model.ResponseStatusIncomplete {
 		eventType = evResponseIncomplete
+	}
+	if status == model.ResponseStatusFailed {
+		eventType = evResponseFailed
 	}
 
 	out = append(out, model.MarshalEvent(eventType, model.TerminalResponseEvent{

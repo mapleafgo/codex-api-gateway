@@ -688,6 +688,7 @@
 | stop reason | none | `stop_sequence` | `supported` | completed |
 | stop reason | none | `max_tokens` | `supported` | incomplete/max_output_tokens |
 | stop reason | none | `pause_turn` | `lossy_supported` | incomplete，但不写入非法 reason |
+| stop reason | none | `model_context_window_exceeded` | `lossy_supported` | 转 `response.failed` + `error.code=context_length_exceeded`，Codex 客户端据此标记上下文已满并触发下一轮自动压缩 |
 | stop reason | none | `refusal` | `supported` | 映射为 content_filter 并输出 refusal 事件 |
 | content part | `output_text` | `text` | `supported` | 直接映射 |
 | content part | `refusal` | refusal stop/details | `supported` | 已输出 |

@@ -67,6 +67,11 @@ const (
 	IncompleteReasonMaxOutputTokens = "max_output_tokens"
 	IncompleteReasonContentFilter   = "content_filter"
 
+	// OpenAI Responses 没有上下文超限的 incomplete_details.reason 枚举。
+	// Codex 客户端只识别 response.failed 的 error.code=context_length_exceeded，
+	// 命中后会标记 token usage full，并在下一轮采样前触发自动压缩。
+	ErrorCodeContextLengthExceeded = "context_length_exceeded"
+
 	ReasoningSummaryAuto    = string(oairesponses.ReasoningSummaryAuto)
 	ReasoningSummaryConcise = string(oairesponses.ReasoningSummaryConcise)
 	ReasoningEffortNone     = string(oairesponses.ReasoningEffortNone)
