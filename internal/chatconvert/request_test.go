@@ -1512,6 +1512,38 @@ func TestToChat_ReasoningBeforeAssistantText(t *testing.T) {
 	}
 }
 
+// TestToChat_ReasoningSignalWithToolCallAssistant 复现 OpenCode/DeepSeek 400：
+// 历史形如 reasoning → assistant 文本 → function_call 时，reasoning_content 必须
+// 挂到带 tool_calls 的同一条 assistant 上，不能拆成一条只含 reasoning 的 assistant。
+func TestToChat_ReasoningSignalWithToolCallAssistant(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := false
+	for _, m := range out.Messages {
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		// 严格上游（DeepSeek requiresAssistantContentForToolCalls）要求
+		// content、reasoning_content、tool_calls 同框，不能拆成两条 assistant。
+		text, _ := m.Content.(string)
+		if m.ReasoningContent == "need tool" && text == "let me check" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tool-call assistant must carry content+reasoning_content+tool_calls; msgs=%+v", out.Messages)
+	}
+}
+
 // TestToChat_ReasoningContentFromContentFallback summary 空时回退 content[].reasoning_text。
 func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
 	body := `{

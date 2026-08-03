@@ -471,6 +471,24 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		out = append(out, ChatMessage{Role: "user", Content: wrapped})
 	}
 	appendToolCall := func(id, name, args string) {
+		// 上一条 assistant 文本（可能已带 reasoning_content）与本次 tool_calls 同轮：
+		// 合并进它，避免拆成两条 assistant 导致严格上游（DeepSeek/OpenCode）要求
+		// reasoning_content 与 tool_calls 同框时 400。
+		if n := len(out); n > 0 && out[n-1].Role == "assistant" && len(out[n-1].ToolCallID) == 0 {
+			p := &out[n-1]
+			attachReasoning(p)
+			p.ToolCalls = append(p.ToolCalls, ChatToolCall{
+				ID:   id,
+				Type: "function",
+				Function: ChatToolCallFunc{
+					Name: name,
+					// Chat Completions 要求 arguments 是合法 JSON 字符串；上游
+					// （如 MiMo prefill）会对内容再 parse，截断/非 JSON 会 400。
+					Arguments: chatFunctionArguments(args),
+				},
+			})
+			return
+		}
 		if pending == nil {
 			pending = &ChatMessage{Role: "assistant"}
 			attachReasoning(pending)
