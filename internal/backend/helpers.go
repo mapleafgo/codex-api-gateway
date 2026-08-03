@@ -45,7 +45,7 @@ func classifyOutcome(ctx context.Context, in outcomeInput) (status string, code 
 	if scanErr == nil {
 		return
 	}
-	if isClientCanceled(ctx, scanErr) {
+	if IsClientCanceled(ctx, scanErr) {
 		// 业务终态已达成后客户端才断开：保留初值状态，不算 canceled。
 		if !in.terminal {
 			status = "canceled"
@@ -60,9 +60,9 @@ func classifyOutcome(ctx context.Context, in outcomeInput) (status string, code 
 	return
 }
 
-// isClientCanceled 判断 err 是否由请求 ctx 取消引起（客户端断开）。
+// IsClientCanceled 判断 err 是否由请求 ctx 取消引起（客户端断开）。
 // 首字节超时会取消子 ctx，但父 ctx 仍有效，故须同时检查父 ctx.Err()。
-func isClientCanceled(ctx context.Context, err error) bool {
+func IsClientCanceled(ctx context.Context, err error) bool {
 	if err == nil || ctx == nil {
 		return false
 	}

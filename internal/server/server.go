@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -426,7 +425,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// Backend 已在 SSE 流内写入真实 response id；此处 id 仅用于日志/metrics 关联。
 	respID := newResponseID()
-	clientCanceled := isClientCanceled(r.Context(), execErr)
+	clientCanceled := backend.IsClientCanceled(r.Context(), execErr)
 
 	status := model.ResponseStatusCompleted
 	if lastUp.Status == "incomplete" {
@@ -924,18 +923,6 @@ func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
 		Attempt:       ev.Attempt,
 		BackendType:   ev.BackendType,
 	})
-}
-
-// isClientCanceled 判断 execErr 是否由客户端断开（请求 ctx 取消）引起。
-// 与 scheduler.isClientCanceled 同语义；server 不依赖 scheduler 未导出 helper。
-func isClientCanceled(ctx context.Context, err error) bool {
-	if err == nil || ctx == nil {
-		return false
-	}
-	if ctx.Err() == nil {
-		return false
-	}
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ctx.Err())
 }
 
 // errSummary 返回上游错误全文，供观测台 tip 展示完整上游返回。

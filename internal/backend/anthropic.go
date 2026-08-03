@@ -147,14 +147,14 @@ func (b *AnthropicBackend) Execute(
 	// 收尾安全网：对齐旧 server 成功路径再喂一次 message_stop。
 	// 上游未发 message_stop 但干净结束时，仍产出 response.completed。
 	if locked && !conv.Done() {
-		if scanErr == nil || (isClientCanceled(ctx, scanErr) && sawStop) {
+		if scanErr == nil || (IsClientCanceled(ctx, scanErr) && sawStop) {
 			trailing, _ := conv.Feed(&anthropic.MessageStreamEventUnion{Type: anMessageStop})
 			for _, e := range trailing {
 				if err := onEvent(e); err != nil && scanErr == nil {
 					scanErr = err
 				}
 			}
-		} else if scanErr != nil && !isClientCanceled(ctx, scanErr) {
+		} else if scanErr != nil && !IsClientCanceled(ctx, scanErr) {
 			// 流中途失败：补 response.failed（sequence 延续 converter）
 			errResp := model.NewResponseObject(conv.RespID(), model.ResponseStatusFailed, clientModel, time.Now().Unix(), convert.EchoFromRequest(req))
 			errResp.Output = conv.OutputItems()
@@ -167,7 +167,7 @@ func (b *AnthropicBackend) Execute(
 	}
 
 	if locked && scanErr != nil {
-		if isClientCanceled(ctx, scanErr) {
+		if IsClientCanceled(ctx, scanErr) {
 			if !sawStop && !conv.Done() {
 				log.Info("上游流读取因客户端断开中止", "elapsed", time.Since(start).String(), "error", scanErr)
 			}
