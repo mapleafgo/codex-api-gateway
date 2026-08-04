@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-08-01（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
+日期: 2026-08-04（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
 
 本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `r` 见专节，**三路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
@@ -40,7 +40,7 @@
 
 客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
-- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；其余键原样保留（含 `previous_response_id`、tools、include 等）
+- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；其余键原样保留（含 `previous_response_id`、tools、include 等）
 - **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
 - **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
@@ -142,6 +142,10 @@
   回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
+
+### 2026-08-04
+
+- **DeepSeek thinking-mode reasoning 回传修复**：c 路径 `chatconvert` 在连续多条 assistant 文本后接 `function_call` 时，把同段 assistant 上已挂的 `reasoning_content` 迁移到最终带 `tool_calls` 的 assistant，避免 `reasoning_content ... must be passed back` 400；r 路径 `PrepareUpstreamBody` 把 OpenAI 标准 `summary` 明文折算进 `reasoning_text` content，满足 DeepSeek `/responses` 只认 plain-text `content` 的合并契约。
 
 ### 2026-08-01
 
