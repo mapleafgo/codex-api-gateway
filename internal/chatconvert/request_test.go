@@ -1627,10 +1627,10 @@ func TestToChat_ReasoningAfterToolResultMergesBack(t *testing.T) {
 }
 
 // TestToChat_ReasoningAcrossConsecutiveAssistants 复现 Console 400：
-// reasoning 后连续多条 assistant 文本再接 function_call 时，reasoning 只能挂在
-// 第一条 assistant 上，而 tool_calls 落在最后一条，导致带 tool_calls 的 assistant
-// 缺 reasoning_content。修复应把同段 assistant 上的 reasoning 迁移到最终
-// 带 tool_calls 的 assistant，满足严格上游同框要求。
+// reasoning 后连续多条 assistant 文本再接 function_call 时，若只把 reasoning
+// 迁移到最后一条 assistant 并清空前序，会破坏 Z.AI/Console 官方“完整、不重排
+// 回传所有 reasoning_content 块”的契约。正确做法是把连续 assistant 段合并成
+// 一条，content、reasoning_content、tool_calls 同框且保持原始顺序。
 func TestToChat_ReasoningAcrossConsecutiveAssistants(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
@@ -1647,25 +1647,31 @@ func TestToChat_ReasoningAcrossConsecutiveAssistants(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	found := 0
+	assistants := 0
+	var merged ChatMessage
 	for _, m := range out.Messages {
 		if m.Role != "assistant" {
 			continue
 		}
+		assistants++
+		merged = m
 		text, _ := m.Content.(string)
 		if text == "" && len(m.ToolCalls) == 0 {
 			t.Fatalf("assistant must carry content or tool_calls; msg=%+v; msgs=%+v", m, out.Messages)
 		}
-		if len(m.ToolCalls) == 0 {
-			continue
-		}
-		found++
-		if m.ReasoningContent == "" || !strings.Contains(m.ReasoningContent, "need tool") {
-			t.Fatalf("tool-call assistant must carry reasoning_content; msg=%+v; msgs=%+v", m, out.Messages)
-		}
 	}
-	if found != 1 {
-		t.Fatalf("want exactly 1 tool-call assistant, got %d; msgs=%+v", found, out.Messages)
+	if assistants != 1 {
+		t.Fatalf("want 1 merged assistant, got %d; msgs=%+v", assistants, out.Messages)
+	}
+	text, _ := merged.Content.(string)
+	if !strings.Contains(text, "text 1") || !strings.Contains(text, "text 2") || !strings.Contains(text, "text 3") {
+		t.Fatalf("merged assistant must keep all assistant texts in order; msg=%+v; msgs=%+v", merged, out.Messages)
+	}
+	if !strings.Contains(merged.ReasoningContent, "need tool") {
+		t.Fatalf("merged assistant must keep reasoning_content; msg=%+v; msgs=%+v", merged, out.Messages)
+	}
+	if len(merged.ToolCalls) != 2 {
+		t.Fatalf("merged assistant must carry both tool_calls; msg=%+v; msgs=%+v", merged, out.Messages)
 	}
 }
 

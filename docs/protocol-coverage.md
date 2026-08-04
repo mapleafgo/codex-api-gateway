@@ -145,7 +145,7 @@
 
 ### 2026-08-04
 
-- **DeepSeek thinking-mode reasoning 回传修复**：c 路径 `chatconvert` 在连续多条 assistant 文本后接 `function_call` 时，把同段 assistant 上已挂的 `reasoning_content` 迁移到最终带 `tool_calls` 的 assistant，避免 `reasoning_content ... must be passed back` 400；r 路径 `PrepareUpstreamBody` 把 OpenAI 标准 `summary` 明文折算进 `reasoning_text` content，满足 DeepSeek `/responses` 只认 plain-text `content` 的合并契约。
+- **DeepSeek thinking-mode reasoning 回传修复**：c 路径 `chatconvert` 在连续多条 assistant 文本后接 `function_call` 时，把整个连续 assistant 段合并成一条消息，`content` / `reasoning_content` / `tool_calls` 同框且保持原始顺序，遵守 Z.AI/Console 与 DeepSeek “完整、不重排回传 `reasoning_content`”契约，避免 `reasoning_content ... must be passed back` 400；r 路径 `PrepareUpstreamBody` 把 OpenAI 标准 `summary` 明文折算进 `reasoning_text` content，满足 DeepSeek `/responses` 只认 plain-text `content` 的合并契约。
 
 ### 2026-08-01
 
@@ -297,7 +297,7 @@
 | `apply_patch_call_output` | role=tool | `lossy_supported` | |
 | `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
-| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；与 `tool_calls` 同框；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
+| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；连续 assistant 段合并为一条，`content` / `reasoning_content` / `tool_calls` 同框且不重排；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
 | `code_interpreter_call` 历史 | none | `dropped` | 网关不支持 code_interpreter；静默忽略 |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |

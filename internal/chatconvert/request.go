@@ -471,30 +471,36 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		out = append(out, ChatMessage{Role: "user", Content: wrapped})
 	}
 	appendToolCall := func(id, name, args string) {
-		// 上一条 assistant 文本（可能已带 reasoning_content）与本次 tool_calls 同轮：
-		// 合并进它，避免拆成两条 assistant 导致严格上游（DeepSeek/OpenCode）要求
-		// reasoning_content 与 tool_calls 同框时 400。
+		// 上一条 assistant 文本与本次 tool_calls 同轮：把连续 assistant 段合并成
+		// 一条，content、reasoning_content、tool_calls 同框且保持原始顺序。
+		// Z.AI/Console 要求完整、不重排地回传 reasoning_content，只迁移会破坏序列。
 		if n := len(out); n > 0 && out[n-1].Role == "assistant" {
-			p := &out[n-1]
-			attachReasoning(p)
-			p.ToolCalls = append(p.ToolCalls, chatToolCall(id, name, args))
-			if p.ReasoningContent == "" {
-				// reasoning 可能挂在同段更早的 assistant 文本上（同一轮连续
-				// assistant），迁移到最终带 tool_calls 的 assistant，保证严格
-				// 上游（DeepSeek/OpenCode）对 reasoning 与 tool_calls 同框的要求。
-				j := n - 1
-				for j > 0 && out[j-1].Role == "assistant" {
-					j--
-				}
-				for k := n - 1; k >= j; k-- {
-					// 连续 assistant 段内前序消息不带 tool_calls，迁移不会破坏同框约束。
-					if out[k].ReasoningContent != "" && len(out[k].ToolCalls) == 0 {
-						p.ReasoningContent = out[k].ReasoningContent
-						out[k].ReasoningContent = ""
-						break
+			j := n - 1
+			for j > 0 && out[j-1].Role == "assistant" {
+				j--
+			}
+			merged := ChatMessage{Role: "assistant"}
+			for k := j; k < n; k++ {
+				prev := out[k]
+				if text, ok := prev.Content.(string); ok && text != "" {
+					if mergedText, ok := merged.Content.(string); ok && mergedText != "" {
+						merged.Content = mergedText + "\n" + text
+					} else {
+						merged.Content = text
 					}
 				}
+				if prev.ReasoningContent != "" {
+					if merged.ReasoningContent != "" {
+						merged.ReasoningContent += "\n"
+					}
+					merged.ReasoningContent += prev.ReasoningContent
+				}
+				merged.ToolCalls = append(merged.ToolCalls, prev.ToolCalls...)
 			}
+			out = append(out[:j], merged)
+			p := &out[j]
+			attachReasoning(p)
+			p.ToolCalls = append(p.ToolCalls, chatToolCall(id, name, args))
 			return
 		}
 		// 上一条是 tool（上一轮工具结果已回包但该轮尚未闭合，紧接着又出现
