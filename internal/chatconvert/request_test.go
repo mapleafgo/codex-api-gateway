@@ -1512,10 +1512,60 @@ func TestToChat_ReasoningBeforeAssistantText(t *testing.T) {
 	}
 }
 
-// TestToChat_ReasoningSignalWithToolCallAssistant 复现 OpenCode/DeepSeek 400：
-// 历史形如 reasoning → assistant 文本 → function_call 时，reasoning_content 必须
-// 挂到带 tool_calls 的同一条 assistant 上，不能拆成一条只含 reasoning 的 assistant。
-func TestToChat_ReasoningSignalWithToolCallAssistant(t *testing.T) {
+// TestToChat_ReasoningWithToolCallAssistantPerRound 复现 OpenCode/DeepSeek 400：
+// 历史连续多轮 reasoning → assistant 文本 → function_call 时，每轮 reasoning_content
+// 必须挂到本轮带 tool_calls 的同一条 assistant 上，不能拆成只含 reasoning 的
+// assistant，也不能串到上一轮的 assistant。
+func TestToChat_ReasoningWithToolCallAssistantPerRound(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool 1"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check 1"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok 1"},
+			{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"need tool 2"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check 2"}]},
+			{"type":"function_call","id":"fc2","call_id":"call_2","name":"get_logs","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok 2"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	want := map[string]string{
+		"need tool 1": "let me check 1",
+		"need tool 2": "let me check 2",
+	}
+	found := map[string]string{}
+	for _, m := range out.Messages {
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 || m.ReasoningContent == "" {
+			continue
+		}
+		// 严格上游（DeepSeek requiresAssistantContentForToolCalls）要求
+		// content、reasoning_content、tool_calls 同框，且按轮归属。
+		text, _ := m.Content.(string)
+		found[m.ReasoningContent] = text
+	}
+	for rc, content := range want {
+		if got := found[rc]; got != content {
+			t.Fatalf("round %q tool-call assistant content=%q want %q; msgs=%+v", rc, got, content, out.Messages)
+		}
+	}
+	if len(found) != len(want) {
+		t.Fatalf("want %d tool-call assistants with reasoning, got %d; msgs=%+v", len(want), len(found), out.Messages)
+	}
+	// reasoning 不得被拆到无 tool_calls 的独立 assistant 上。
+	for _, m := range out.Messages {
+		if m.Role == "assistant" && m.ReasoningContent != "" && len(m.ToolCalls) == 0 {
+			t.Fatalf("reasoning must not be split onto assistant without tool_calls; msgs=%+v", out.Messages)
+		}
+	}
+}
+
+// TestToChat_ReasoningContentInterleavedToolCalls 同一轮工具环若被 tool 结果打断
+// （reasoning → assistant → fc → fco → fc → fco），每个带 tool_calls 的 assistant
+// 都必须携带 reasoning_content，不能出现缺 reasoning 的第二条 tool-call assistant。
+func TestToChat_ReasoningContentInterleavedToolCalls(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -1523,24 +1573,99 @@ func TestToChat_ReasoningSignalWithToolCallAssistant(t *testing.T) {
 			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"}]},
 			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check"}]},
 			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
-			{"type":"function_call_output","call_id":"call_1","output":"ok"}
+			{"type":"function_call_output","call_id":"call_1","output":"ok 1"},
+			{"type":"function_call","id":"fc2","call_id":"call_2","name":"search","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok 2"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, m := range out.Messages {
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ReasoningContent == "" {
+			t.Fatalf("tool-call assistant missing reasoning_content; msg=%+v; msgs=%+v", m, out.Messages)
+		}
+	}
+}
+
+// TestToChat_ReasoningAfterToolResultMergesBack 复现 Console 400：
+// reasoning 出现在 tool 结果之后、下一个 function_call 合并回上一轮 assistant 之前时，
+// 该 reasoning 必须挂回同一 assistant，不能残留成末尾只有 reasoning_content、
+// 没有 content/tool_calls 的 assistant（上游要求 assistant 至少携带 content 或 tool_calls）。
+func TestToChat_ReasoningAfterToolResultMergesBack(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool 1"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check 1"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok 1"},
+			{"type":"reasoning","id":"r2","summary":[{"type":"summary_text","text":"need tool 2"}]},
+			{"type":"function_call","id":"fc2","call_id":"call_2","name":"search","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok 2"}
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
 	found := false
 	for _, m := range out.Messages {
-		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+		if m.Role != "assistant" {
 			continue
 		}
-		// 严格上游（DeepSeek requiresAssistantContentForToolCalls）要求
-		// content、reasoning_content、tool_calls 同框，不能拆成两条 assistant。
 		text, _ := m.Content.(string)
-		if m.ReasoningContent == "need tool" && text == "let me check" {
+		if text == "" && len(m.ToolCalls) == 0 {
+			t.Fatalf("assistant must carry content or tool_calls; msg=%+v; msgs=%+v", m, out.Messages)
+		}
+		if len(m.ToolCalls) > 0 && m.ToolCalls[len(m.ToolCalls)-1].ID == "call_2" {
+			if m.ReasoningContent == "" || !strings.Contains(m.ReasoningContent, "need tool 2") {
+				t.Fatalf("merged assistant must carry pending reasoning; msg=%+v; msgs=%+v", m, out.Messages)
+			}
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("tool-call assistant must carry content+reasoning_content+tool_calls; msgs=%+v", out.Messages)
+		t.Fatalf("expected merged tool-call assistant for call_2; msgs=%+v", out.Messages)
+	}
+}
+
+// TestToChat_ReasoningAcrossConsecutiveAssistants 复现 Console 400：
+// reasoning 后连续多条 assistant 文本再接 function_call 时，reasoning 只能挂在
+// 第一条 assistant 上，而 tool_calls 落在最后一条，导致带 tool_calls 的 assistant
+// 缺 reasoning_content。修复应把同段 assistant 上的 reasoning 迁移到最终
+// 带 tool_calls 的 assistant，满足严格上游同框要求。
+func TestToChat_ReasoningAcrossConsecutiveAssistants(t *testing.T) {
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"text 1"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"text 2"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"text 3"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
+			{"type":"function_call","id":"fc2","call_id":"call_2","name":"search","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok 1"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok 2"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := 0
+	for _, m := range out.Messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		text, _ := m.Content.(string)
+		if text == "" && len(m.ToolCalls) == 0 {
+			t.Fatalf("assistant must carry content or tool_calls; msg=%+v; msgs=%+v", m, out.Messages)
+		}
+		if len(m.ToolCalls) == 0 {
+			continue
+		}
+		found++
+		if m.ReasoningContent == "" || !strings.Contains(m.ReasoningContent, "need tool") {
+			t.Fatalf("tool-call assistant must carry reasoning_content; msg=%+v; msgs=%+v", m, out.Messages)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("want exactly 1 tool-call assistant, got %d; msgs=%+v", found, out.Messages)
 	}
 }
 

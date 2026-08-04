@@ -474,35 +474,49 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 		// 上一条 assistant 文本（可能已带 reasoning_content）与本次 tool_calls 同轮：
 		// 合并进它，避免拆成两条 assistant 导致严格上游（DeepSeek/OpenCode）要求
 		// reasoning_content 与 tool_calls 同框时 400。
-		if n := len(out); n > 0 && out[n-1].Role == "assistant" && len(out[n-1].ToolCallID) == 0 {
+		if n := len(out); n > 0 && out[n-1].Role == "assistant" {
 			p := &out[n-1]
 			attachReasoning(p)
-			p.ToolCalls = append(p.ToolCalls, ChatToolCall{
-				ID:   id,
-				Type: "function",
-				Function: ChatToolCallFunc{
-					Name: name,
-					// Chat Completions 要求 arguments 是合法 JSON 字符串；上游
-					// （如 MiMo prefill）会对内容再 parse，截断/非 JSON 会 400。
-					Arguments: chatFunctionArguments(args),
-				},
-			})
+			p.ToolCalls = append(p.ToolCalls, chatToolCall(id, name, args))
+			if p.ReasoningContent == "" {
+				// reasoning 可能挂在同段更早的 assistant 文本上（同一轮连续
+				// assistant），迁移到最终带 tool_calls 的 assistant，保证严格
+				// 上游（DeepSeek/OpenCode）对 reasoning 与 tool_calls 同框的要求。
+				j := n - 1
+				for j > 0 && out[j-1].Role == "assistant" {
+					j--
+				}
+				for k := n - 1; k >= j; k-- {
+					// 连续 assistant 段内前序消息不带 tool_calls，迁移不会破坏同框约束。
+					if out[k].ReasoningContent != "" && len(out[k].ToolCalls) == 0 {
+						p.ReasoningContent = out[k].ReasoningContent
+						out[k].ReasoningContent = ""
+						break
+					}
+				}
+			}
 			return
+		}
+		// 上一条是 tool（上一轮工具结果已回包但该轮尚未闭合，紧接着又出现
+		// function_call）：合并回产生该 tool 的 assistant，保证 reasoning_content
+		// 与 tool_calls 同框，而不是新建缺 reasoning 的 assistant 触发 400。
+		if n := len(out); n > 0 && out[n-1].Role == "tool" {
+			j := n - 1
+			for j > 0 && out[j-1].Role == "tool" {
+				j--
+			}
+			if j > 0 && out[j-1].Role == "assistant" {
+				p := &out[j-1]
+				attachReasoning(p)
+				p.ToolCalls = append(p.ToolCalls, chatToolCall(id, name, args))
+				return
+			}
 		}
 		if pending == nil {
 			pending = &ChatMessage{Role: "assistant"}
 			attachReasoning(pending)
 		}
-		pending.ToolCalls = append(pending.ToolCalls, ChatToolCall{
-			ID:   id,
-			Type: "function",
-			Function: ChatToolCallFunc{
-				Name: name,
-				// Chat Completions 要求 arguments 是合法 JSON 字符串；上游
-				// （如 MiMo prefill）会对内容再 parse，截断/非 JSON 会 400。
-				Arguments: chatFunctionArguments(args),
-			},
-		})
+		pending.ToolCalls = append(pending.ToolCalls, chatToolCall(id, name, args))
 	}
 	for i := range req.Input.OfInputItemList {
 		item := &req.Input.OfInputItemList[i]
@@ -1207,6 +1221,19 @@ func chatFunctionArguments(s string) string {
 		return "{}"
 	}
 	return s
+}
+
+// chatToolCall 构造一条 Chat function tool_call，arguments 保证是合法 JSON 字符串，
+// 避免上游（如 MiMo prefill）对内容再 parse 时因截断/非 JSON 而 400。
+func chatToolCall(id, name, args string) ChatToolCall {
+	return ChatToolCall{
+		ID:   id,
+		Type: "function",
+		Function: ChatToolCallFunc{
+			Name:      name,
+			Arguments: chatFunctionArguments(args),
+		},
+	}
 }
 
 func toolSearchArgsJSON(args any) string {
