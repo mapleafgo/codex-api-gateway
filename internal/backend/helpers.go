@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,23 +13,27 @@ import (
 
 // 事件 wire 字符串，派生自 SDK shared/constant 以防止与规范值漂移。
 var (
-	evResponseCreated          = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
-	evResponseInProgress       = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
-	evResponseCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
-	evResponseIncomplete       = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
-	evResponseFailed           = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
-	evOutputTextDelta          = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
-	evOutputTextDone           = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
-	evReasoningTextDelta       = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
-	evReasoningTextDone        = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
-	evFunctionCallArgsDelta    = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
-	evFunctionCallArgsDone     = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
-	evCustomToolCallInputDelta = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
-	evCustomToolCallInputDone  = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
-	evWebSearchInProgress      = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
-	evWebSearchSearching       = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
-	evWebSearchCompleted       = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
-	evOutputItemAdded          = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
+	evResponseCreated           = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
+	evResponseInProgress        = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
+	evResponseCompleted         = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
+	evResponseIncomplete        = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
+	evResponseFailed            = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
+	evOutputTextDelta           = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
+	evOutputTextDone            = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
+	evReasoningTextDelta        = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
+	evReasoningTextDone         = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
+	evReasoningSummaryTextDelta = string(oaconstant.ValueOf[oaconstant.ResponseReasoningSummaryTextDelta]())
+	evReasoningSummaryTextDone  = string(oaconstant.ValueOf[oaconstant.ResponseReasoningSummaryTextDone]())
+	evRefusalDelta              = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDelta]())
+	evRefusalDone               = string(oaconstant.ValueOf[oaconstant.ResponseRefusalDone]())
+	evFunctionCallArgsDelta     = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
+	evFunctionCallArgsDone      = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
+	evCustomToolCallInputDelta  = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
+	evCustomToolCallInputDone   = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
+	evWebSearchInProgress       = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
+	evWebSearchSearching        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
+	evWebSearchCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
+	evOutputItemAdded           = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
 )
 
 // outcomeInput 汇聚各后端上游流扫描结束后终态归类所需的输入。
@@ -151,14 +156,28 @@ const maxBufferedEvents = 64
 
 // isContentEvent 判断事件是否携带上游实际产出内容。使用白名单判定：
 // 未知事件一律视为非内容事件缓冲，避免新增状态/结构事件被误判为内容而锁定源。
-func isContentEvent(et string) bool {
-	switch et {
+func isContentEvent(e model.SSEEvent) bool {
+	switch e.Type {
 	case evOutputTextDelta, evOutputTextDone,
 		evReasoningTextDelta, evReasoningTextDone,
+		evReasoningSummaryTextDelta, evReasoningSummaryTextDone,
+		evRefusalDelta, evRefusalDone,
 		evFunctionCallArgsDelta, evFunctionCallArgsDone,
 		evCustomToolCallInputDelta, evCustomToolCallInputDone,
 		evWebSearchInProgress, evWebSearchSearching, evWebSearchCompleted:
 		return true
+	case evOutputItemAdded:
+		// tool_search_call 没有专门 delta 事件，arguments 只随 output_item.added/done 携带；
+		// 因此该 item 类型的 added 事件按内容处理，避免合法工具响应被当空响应 failover。
+		var probe struct {
+			Item struct {
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(e.Data, &probe) == nil && probe.Item.Type == model.ItemTypeToolSearchCall {
+			return true
+		}
+		return false
 	default:
 		return false
 	}
@@ -167,11 +186,11 @@ func isContentEvent(et string) bool {
 // isBufferableEvent 判断事件是否应作为“空响应候选”缓冲：既非内容事件，也不是
 // 明确携带错误/截断终态的事件（response.failed / response.incomplete 必须立即放行）。
 // response.completed 无内容时仍缓冲，以便 run 级空响应 failover 判定。
-func isBufferableEvent(et string) bool {
-	if isContentEvent(et) {
+func isBufferableEvent(e model.SSEEvent) bool {
+	if isContentEvent(e) {
 		return false
 	}
-	switch et {
+	switch e.Type {
 	case evResponseFailed, evResponseIncomplete:
 		return false
 	default:
@@ -184,7 +203,7 @@ func isBufferableEvent(et string) bool {
 // ErrEmptyResponse 让请求 failover 到下一个源。
 // 解决上游返回 HTTP 200 + 空流（如 deepseek-v4-flash 对超大请求静默放弃）时
 // scheduler 误判源锁定、无法 failover 的问题。r 透传后端不用，保持原语义。
-// 非并发安全：Send/Flush/IsFlushed 必须由同一个流式扫描 goroutine 串行调用。
+// 非并发安全：Send/HasContent/SawTerminalFailure 必须由同一个流式扫描 goroutine 串行调用。
 type EventGate struct {
 	buf     []model.SSEEvent
 	flushed bool
@@ -203,7 +222,7 @@ func (g *EventGate) Send(e model.SSEEvent) error {
 	if g.flushed {
 		return g.onEvent(e)
 	}
-	if isBufferableEvent(e.Type) {
+	if isBufferableEvent(e) {
 		if len(g.buf) >= maxBufferedEvents {
 			return fmt.Errorf("event gate: %d buffered non-content events before content", len(g.buf))
 		}
@@ -213,7 +232,7 @@ func (g *EventGate) Send(e model.SSEEvent) error {
 	// 首个内容事件或错误/截断终态：先 flush 缓冲，再发出当前事件。
 	// 内容事件才算“已产出内容”；错误/截断终态只是透传给客户端，不能当作空响应兜底已解除。
 	g.flushed = true
-	if isContentEvent(e.Type) {
+	if isContentEvent(e) {
 		g.content = true
 	} else {
 		g.failure = true
@@ -227,27 +246,8 @@ func (g *EventGate) Send(e model.SSEEvent) error {
 	return g.onEvent(e)
 }
 
-// IsFlushed 报告缓冲是否已被放行（内容事件或错误/截断终态）。
-func (g *EventGate) IsFlushed() bool { return g.flushed }
-
 // HasContent 报告是否已出现真实内容事件，用于 scheduler 决定是否锁定源。
 func (g *EventGate) HasContent() bool { return g.content }
 
 // SawTerminalFailure 报告是否已出现需要透传客户端的错误/截断终态事件。
 func (g *EventGate) SawTerminalFailure() bool { return g.failure }
-
-// Flush 无条件发出缓冲并置为已 flush。
-// 客户端取消等非空响应失败场景使用：保持源锁定语义，避免 scheduler 误判。
-func (g *EventGate) Flush() error {
-	if g.flushed {
-		return nil
-	}
-	g.flushed = true
-	for _, b := range g.buf {
-		if err := g.onEvent(b); err != nil {
-			return err
-		}
-	}
-	g.buf = nil
-	return nil
-}

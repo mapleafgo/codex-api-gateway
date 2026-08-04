@@ -19,7 +19,7 @@ func TestPrepareUpstreamBody_ModelMapAndStream(t *testing.T) {
 		DefaultModel: "fallback",
 	}
 	raw := []byte(`{"model":"gpt-5","stream":false,"input":"hi","foo":{"bar":1}}`)
-	body, client, resolved, err := PrepareUpstreamBody(raw, &src)
+	body, client, resolved, err := PrepareUpstreamBody(raw, &src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 		ModelMap: map[string]string{"gpt-5": "o3"},
 	}
 	raw := []byte(`{"model":"gpt-5","stream":false,"max_output_tokens":9223372036854775807}`)
-	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestPrepareUpstreamBody_ReasoningSummaryToContent(t *testing.T) {
 			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"}
 		]
 	}`)
-	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestPrepareUpstreamBody_ReasoningContentStringNotOverwritten(t *testing.T) 
 			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
 		]
 	}`)
-	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestPrepareUpstreamBody_ReasoningEmptySummaryUntouched(t *testing.T) {
 			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
 		]
 	}`)
-	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -228,15 +228,65 @@ func TestEmptyChatResponseSwitchesToNext(t *testing.T) {
 	}
 }
 
+// TestFailureTerminalBeforeContentNoFailover 失败终态（response.failed）已写出给客户端后，
+// Backend 即便再返回非 nil error 也不得 failover 到下一源：否则客户端会在一个 failed 终态
+// 之后又收到第二个源的 created/completed，形成非法双响应流。
+func TestFailureTerminalBeforeContentNoFailover(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		// 先开流（合成 created/in_progress），随后坏 JSON 让 ScanEvents 返回错误，
+		// ChatBackend 会补发 response.failed 并返回非 nil error。
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-fail\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		io.WriteString(w, "data: {\"bad\":\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer failing.Close()
+
+	goodCalled := atomic.Bool{}
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCalled.Store(true)
+		goodChatSSE(w)
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+		},
+		Sources: []config.Source{
+			makeChatSource("c-fail", failing.URL+"/v1", 0),
+			makeChatSource("c-good", good.URL+"/v1", 1),
+		},
+	}
+	s := New(cfg)
+	var events []model.SSEEvent
+	name, err := runGeneric(s, func(ev model.SSEEvent) error {
+		events = append(events, ev)
+		return nil
+	}, nil)
+	if err == nil {
+		t.Fatalf("expected error from failing source")
+	}
+	if name != "c-fail" {
+		t.Fatalf("source=%q want c-fail", name)
+	}
+	if goodCalled.Load() {
+		t.Fatal("failed terminal already delivered must not failover")
+	}
+	if countEventType(events, "response.failed") != 1 {
+		t.Fatalf("client must receive exactly one response.failed; events=%+v", events)
+	}
+}
+
 func TestStatusOnlySourceSwitchesToNext(t *testing.T) {
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
-		// 仅发 message_start（只合成 created/in_progress 状态事件，无内容事件）后断开
+		// 仅发 message_start + message_stop（只合成 created/in_progress/completed，
+		// 无任何内容事件）后干净结束：空响应应 failover 到下一源。
 		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"message_stop\"}\n\n")
 		w.(http.Flusher).Flush()
-		hj := w.(http.Hijacker)
-		conn, _, _ := hj.Hijack()
-		conn.Close()
 	}))
 	defer flaky.Close()
 

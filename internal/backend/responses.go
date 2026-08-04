@@ -25,8 +25,8 @@ func NewResponses() *ResponsesBackend {
 }
 
 // PrepareUpstreamBody 将客户端 Responses JSON 做最小改写：model 映射 + 强制 stream=true。
-// 使用 map 语义透传，保留未知扩展字段。
-func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientModel, resolved string, err error) {
+// 使用 map 语义透传，保留未知扩展字段。log 用于折算日志的请求级关联，空时退回默认 logger。
+func PrepareUpstreamBody(raw []byte, src *config.Source, log *slog.Logger) (body []byte, clientModel, resolved string, err error) {
 	m, err := decodeObject(raw)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("decode: %w", err)
@@ -49,7 +49,7 @@ func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientMod
 	}
 	m["model"] = resolved
 	m["stream"] = true
-	rewriteReasoningSummaryToContent(m)
+	rewriteReasoningSummaryToContent(m, log)
 
 	body, err = json.Marshal(m)
 	if err != nil {
@@ -62,7 +62,10 @@ func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientMod
 // 折算进 content（reasoning_text part）：DeepSeek /responses 只支持 plain-text
 // content 并把它合并进相邻 assistant message，忽略 summary/encrypted_content；
 // 只透传 summary 会触发 "reasoning_text ... must be passed back" 400。
-func rewriteReasoningSummaryToContent(m map[string]any) {
+func rewriteReasoningSummaryToContent(m map[string]any, log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
 	input, ok := m["input"].([]any)
 	if !ok {
 		return
@@ -90,7 +93,7 @@ func rewriteReasoningSummaryToContent(m map[string]any) {
 		converted++
 	}
 	if converted > 0 {
-		slog.Debug("responses: reasoning summary 折算为 content",
+		log.Debug("responses: reasoning summary 折算为 content",
 			"model", m["model"],
 			"converted", converted,
 			"text_len", textLen)
@@ -252,7 +255,7 @@ func (b *ResponsesBackend) Execute(
 		"source", src.Name,
 		"backend_type", config.BackendOpenAIResponses,
 		"attempt", attempt)
-	body, clientModel, resolved, err := PrepareUpstreamBody(rawBody, &src)
+	body, clientModel, resolved, err := PrepareUpstreamBody(rawBody, &src, log)
 	if err != nil {
 		return err
 	}

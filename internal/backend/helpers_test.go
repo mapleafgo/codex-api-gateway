@@ -37,17 +37,14 @@ func TestEventGate_BuffersUntilContent(t *testing.T) {
 		got = append(got, ev.Type)
 		return nil
 	})
-	if g.IsFlushed() {
-		t.Fatal("must not flush before content")
-	}
 	if err := g.Send(model.SSEEvent{Type: evResponseCreated}); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Send(model.SSEEvent{Type: evResponseInProgress}); err != nil {
 		t.Fatal(err)
 	}
-	if g.IsFlushed() {
-		t.Fatal("status events must not flush the gate")
+	if g.HasContent() {
+		t.Fatal("status events must not count as content")
 	}
 	if len(got) != 0 {
 		t.Fatalf("status events must be buffered, got %v", got)
@@ -55,8 +52,8 @@ func TestEventGate_BuffersUntilContent(t *testing.T) {
 	if err := g.Send(model.SSEEvent{Type: "response.output_text.delta"}); err != nil {
 		t.Fatal(err)
 	}
-	if !g.IsFlushed() {
-		t.Fatal("content event must flush the gate")
+	if !g.HasContent() {
+		t.Fatal("content event must count as content")
 	}
 	want := []string{evResponseCreated, evResponseInProgress, "response.output_text.delta"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -84,30 +81,11 @@ func TestEventGate_NoContentNotFlushed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if g.IsFlushed() {
-		t.Fatal("status+terminal only must not flush")
+	if g.HasContent() {
+		t.Fatal("status+terminal only must not count as content")
 	}
 	if len(got) != 0 {
 		t.Fatalf("must not emit any event, got %v", got)
-	}
-}
-
-// TestEventGate_Flush 强制 flush 用于客户端取消等场景：保持源锁定语义。
-func TestEventGate_Flush(t *testing.T) {
-	var got []string
-	g := NewEventGate(func(ev model.SSEEvent) error {
-		got = append(got, ev.Type)
-		return nil
-	})
-	_ = g.Send(model.SSEEvent{Type: evResponseCreated})
-	if err := g.Flush(); err != nil {
-		t.Fatal(err)
-	}
-	if !g.IsFlushed() {
-		t.Fatal("Flush must set flushed")
-	}
-	if len(got) != 1 || got[0] != evResponseCreated {
-		t.Fatalf("Flush must emit buffered events, got %v", got)
 	}
 }
 
@@ -135,7 +113,7 @@ func TestEventGate_StructuralEventNotContent(t *testing.T) {
 	if err := g.Send(model.SSEEvent{Type: evOutputItemAdded}); err != nil {
 		t.Fatal(err)
 	}
-	if g.IsFlushed() {
+	if g.HasContent() {
 		t.Fatal("output_item.added must not trigger content lock")
 	}
 	if len(got) != 0 {
@@ -155,9 +133,6 @@ func TestEventGate_ErrorEventFlushes(t *testing.T) {
 	if err := g.Send(model.SSEEvent{Type: evResponseFailed}); err != nil {
 		t.Fatal(err)
 	}
-	if !g.IsFlushed() {
-		t.Fatal("error terminal event must flush the gate")
-	}
 	if g.HasContent() {
 		t.Fatal("error terminal event must not count as content")
 	}
@@ -167,5 +142,47 @@ func TestEventGate_ErrorEventFlushes(t *testing.T) {
 	want := []string{evResponseCreated, evResponseFailed}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("order=%v want %v", got, want)
+	}
+}
+
+// TestEventGate_ReasoningSummaryEventsAreContent concise summary 模式的
+// response.reasoning_summary_text.delta 也是真实内容事件，不能当作空响应缓冲。
+func TestEventGate_ReasoningSummaryEventsAreContent(t *testing.T) {
+	var got []string
+	g := NewEventGate(func(ev model.SSEEvent) error {
+		got = append(got, ev.Type)
+		return nil
+	})
+	_ = g.Send(model.SSEEvent{Type: evResponseCreated})
+	if err := g.Send(model.SSEEvent{Type: "response.reasoning_summary_text.delta"}); err != nil {
+		t.Fatal(err)
+	}
+	if !g.HasContent() {
+		t.Fatal("reasoning summary delta must count as content")
+	}
+	if got[0] != evResponseCreated || got[1] != "response.reasoning_summary_text.delta" {
+		t.Fatalf("events=%v", got)
+	}
+}
+
+// TestEventGate_RefusalEventsAreContent refusal 输出是可见内容，不能触发空响应 failover。
+func TestEventGate_RefusalEventsAreContent(t *testing.T) {
+	g := NewEventGate(func(model.SSEEvent) error { return nil })
+	_ = g.Send(model.SSEEvent{Type: "response.refusal.delta"})
+	if !g.HasContent() {
+		t.Fatal("refusal delta must count as content")
+	}
+}
+
+// TestEventGate_ToolSearchAddedIsContent tool_search_call 没有专门 delta 事件，
+// response.output_item.added 携带完整 arguments，必须算内容，否则合法工具响应会被当空响应丢。
+func TestEventGate_ToolSearchAddedIsContent(t *testing.T) {
+	g := NewEventGate(func(model.SSEEvent) error { return nil })
+	data := `{"type":"response.output_item.added","output_index":0,"item":{"type":"tool_search_call","id":"tsc_1","call_id":"call_1","status":"in_progress","execution":"client"}}`
+	if err := g.Send(model.SSEEvent{Type: evOutputItemAdded, Data: []byte(data)}); err != nil {
+		t.Fatal(err)
+	}
+	if !g.HasContent() {
+		t.Fatal("tool_search_call output_item.added must count as content")
 	}
 }

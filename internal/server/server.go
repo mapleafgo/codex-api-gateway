@@ -378,7 +378,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case config.BackendOpenAIResponses:
-		if _, _, _, err := backend.PrepareUpstreamBody(body, &first); err != nil {
+		if _, _, _, err := backend.PrepareUpstreamBody(body, &first, log); err != nil {
 			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return

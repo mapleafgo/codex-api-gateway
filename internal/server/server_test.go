@@ -1005,11 +1005,18 @@ func TestResponsesPostTerminalClientCancelTreatedAsCompleted(t *testing.T) {
 	// 指标：client 侧应 completed，不得 failed。
 	// 先 Stop 强制 drain channel。
 	snap := srv.Metrics().Snapshot()
-	// 事件可能还在 channel；再等一轮。
+	// 事件可能还在 channel：Recent 里先到的是 upstream 指标，必须等到 client 指标送达再断言。
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		snap = srv.Metrics().Snapshot()
-		if len(snap.Recent) > 0 {
+		sawClient := false
+		for _, rec := range snap.Recent {
+			if rec.Kind == "client" {
+				sawClient = true
+				break
+			}
+		}
+		if sawClient {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -492,13 +492,14 @@ func (s *Scheduler) trySourceGeneric(
 	// UpstreamEvent 是 backend.UpstreamEvent 的别名，回调直接透传（nil 时不上报）。
 	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
 	if !locked {
-		if gate != nil && gate.SawTerminalFailure() && err == nil {
-			// 已把错误/截断终态透传给客户端；不当作空响应 failover。
+		if gate != nil && gate.SawTerminalFailure() {
+			// 已把错误/截断终态透传给客户端；无论 Backend 是否附带返回 error，
+			// 都不能再 failover（否则客户端会在 failed 终态后收到第二源的事件）。
 			oldState, newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
 			log.Warn("上游源已透传失败终态，不计空响应 failover",
 				"old_state", oldState, "new_state", newState)
-			return true, nil
+			return true, err
 		}
 		if ctx.Err() != nil {
 			// 客户端取消：保持源锁定语义，不触发 failover，由 server 记录取消。
