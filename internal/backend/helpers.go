@@ -139,6 +139,7 @@ func StatusCodeFromErr(err error) int {
 // that indicates the request itself is invalid (no point retrying elsewhere).
 // 429/408 被排除：它们是传输可用性信号（限流/超时），必须走正常降级与
 // 整轮重试路径，否则持续限流的源永不降级、稳坐优先级第一位。
+// 其余 4xx 同样计入 breaker 失败（降级/机会失败），但整轮不重试。
 func IsClientError(err error) bool {
 	code := StatusCodeFromErr(err)
 	if code == 429 || code == 408 {

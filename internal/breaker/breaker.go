@@ -178,8 +178,12 @@ func (b *Breaker) RecordSuccess() (State, State) {
 }
 
 // AutoRecover 检查 degraded 源是否已超过 degrade_interval 无新失败。
-// 若超时且无新失败（degradedAt 未被 RecordFailure 重置），自动升回 Normal。
-// 返回 (oldState, newState, true) 表示已恢复，否则 (st, st, false)。
+// 若超时且无新失败（degradedAt 未被 RecordFailure 重置），返回 true 表示
+// 「时机已到」：调度器据此把源恢复到原始优先级（重新给被尝试的机会）。
+// 但健康状态**保持 degraded**，degradeCount 不清零——这样后续连续失败能
+// 继续升级到 circuitOpen，而不是被无条件重置为 normal 导致熔断永不发生。
+// 只有真实请求成功（RecordSuccess 达到 recover_threshold）才转回 normal。
+// 返回 (Degraded, Degraded, true)；未到时机则 (st, st, false)。
 func (b *Breaker) AutoRecover() (State, State, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -191,11 +195,9 @@ func (b *Breaker) AutoRecover() (State, State, bool) {
 		return b.st, b.st, false
 	}
 	if b.now().Sub(b.degradedAt) >= interval {
-		b.st = Normal
-		b.degradeCount = 0
-		b.successStreak = 0
-		b.degradedAt = time.Time{}
-		return Degraded, Normal, true
+		// 重置计时窗口，避免每个轮询周期重复触发；状态仍保持 degraded。
+		b.degradedAt = b.now()
+		return Degraded, Degraded, true
 	}
 	return b.st, b.st, false
 }

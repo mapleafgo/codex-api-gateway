@@ -24,6 +24,12 @@ var ErrAllSourcesFailed = errors.New("all upstream sources failed")
 // sources fail in a round. Not configurable; tests may override Scheduler.backoff.
 const defaultBackoff = 10 * time.Second
 
+// defaultRecoveryPeriod is the polling interval of the background degraded
+// recovery loop. It only bounds how quickly a source returns to its original
+// priority position after degrade_interval elapses; tests may override
+// Scheduler.recoveryPeriod before calling StartRecovery.
+const defaultRecoveryPeriod = 1 * time.Minute
+
 // orderEntry tracks a source's runtime position and its original config index.
 type orderEntry struct {
 	name          string
@@ -42,6 +48,11 @@ type Scheduler struct {
 	bkMu             sync.Mutex
 	ordMu            sync.RWMutex
 	backoff          time.Duration // injectable for tests; defaults to defaultBackoff
+	recoveryPeriod   time.Duration // injectable for tests; defaults to defaultRecoveryPeriod
+	stopMu           sync.Mutex
+	stopCh           chan struct{}
+	startOnce        sync.Once
+	stopped          bool
 }
 
 // UpstreamEvent 描述一次单源上游尝试的观测数据，由 Scheduler 通过
@@ -97,6 +108,61 @@ func New(cfg any) *Scheduler {
 		breakers:         map[string]*breaker.Breaker{},
 		order:            order,
 		backoff:          defaultBackoff,
+		recoveryPeriod:   defaultRecoveryPeriod,
+	}
+}
+
+// StartRecovery 启动一个后台恢复线程：定期评估所有源，把 degrade_interval
+// 已超时的 degraded 源恢复到原始优先级位置（健康状态保持 degraded）。
+// 这保证无请求流量时降级源也能自动归位，而不是只依赖请求处理路径上的评估。
+// 重复调用幂等。
+func (s *Scheduler) StartRecovery() {
+	s.startOnce.Do(func() {
+		s.stopMu.Lock()
+		defer s.stopMu.Unlock()
+		if s.stopped {
+			// 已被 StopRecovery 关闭：不再启动后台线程，避免泄漏。
+			return
+		}
+		s.stopCh = make(chan struct{})
+		period := s.recoveryPeriod
+		if period <= 0 {
+			period = defaultRecoveryPeriod
+		}
+		go s.recoverLoop(period)
+	})
+}
+
+// StopRecovery 停止后台恢复线程。重复调用安全。
+func (s *Scheduler) StopRecovery() {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	if s.stopped {
+		return
+	}
+	s.stopped = true
+	if s.stopCh != nil {
+		close(s.stopCh)
+	}
+}
+
+func (s *Scheduler) recoverLoop(period time.Duration) {
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			s.evaluateRecoveries()
+		}
+	}
+}
+
+// evaluateRecoveries 对所有源执行一次 degrade 超时自动恢复评估。
+func (s *Scheduler) evaluateRecoveries() {
+	for _, src := range s.runtimeSeq() {
+		s.autoRecoverDegraded(&src)
 	}
 }
 
@@ -382,13 +448,18 @@ func (s *Scheduler) tryRoundGeneric(
 	var lastErr error
 	var lastSource string
 
+	// 每轮先评估所有降级源的 degrade 超时自动恢复。不能放在单源循环内，否则
+	// 高优先级源一旦锁定成功就提前返回，队尾降级源永远不会被遍历到，也就
+	// 永远停留在 degraded、后续不再被调用。
+	for _, src := range s.runtimeSeq() {
+		s.autoRecoverDegraded(&src)
+	}
+
 	for _, src := range s.runtimeSeq() {
 		if src.Disabled {
 			log.Debug("跳过上游源", "source", src.Name, "reason", "disabled")
 			continue
 		}
-		// Auto-recover degraded sources that have exceeded degrade_interval.
-		s.autoRecoverDegraded(&src)
 
 		bk := s.breakerFor(&src)
 		if !bk.Allow() {
@@ -429,15 +500,19 @@ func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
 	}
 }
 
-// autoRecoverDegraded checks whether src's breaker has been in Degraded state
-// long enough to auto-recover. If so, it adjusts the runtime order accordingly.
+// autoRecoverDegraded 检查 src 是否已到 degrade 超时恢复时机。若到时机，只把
+// 源恢复到原始优先级位置（重新给被尝试的机会），健康状态保持 degraded：
+// degradeCount 不清零，后续连续失败能累计升级到 circuitOpen；只有真实请求
+// 成功后才由 RecordSuccess 转回 normal。
 func (s *Scheduler) autoRecoverDegraded(src *config.Source) {
 	bk := s.breakerFor(src)
-	oldSt, newSt, recovered := bk.AutoRecover()
-	if recovered {
-		s.adjustOrder(src.Name, oldSt, newSt)
-		slog.Info("上游源 degrade 超时自动恢复", "source", src.Name, "old_state", oldSt, "new_state", newSt)
+	_, _, recovered := bk.AutoRecover()
+	if !recovered {
+		return
 	}
+	s.restoreOriginal(src.Name)
+	slog.Info("上游源 degrade 超时恢复优先级（状态保持 degraded）",
+		"source", src.Name, "degrade_count", bk.DegradeCount())
 }
 
 func (s *Scheduler) trySourceGeneric(
@@ -508,17 +583,24 @@ func (s *Scheduler) trySourceGeneric(
 		if err == nil {
 			err = backend.ErrEmptyResponse
 		}
+		oldState, newState := bk.RecordFailure()
+		s.adjustOrder(src.Name, oldState, newState)
+		attrs := []any{"old_state", oldState, "new_state", newState, "error", err}
 		if backend.IsClientError(err) {
-			log.Warn("上游源拒绝请求 (4xx)，不降级", "error", err)
-		} else {
-			oldState, newState := bk.RecordFailure()
-			s.adjustOrder(src.Name, oldState, newState)
-			attrs := []any{"old_state", oldState, "new_state", newState, "error", err}
-			if err == backend.ErrEmptyResponse {
-				attrs = append(attrs, "cause", "empty_response")
-			}
-			log.Warn("上游源失败（未锁定）", attrs...)
+			// 4xx 同样计为失败（降级/机会失败）；整轮不重试由
+			// ExecuteGeneric 的 firstClientErr 提前返回保证。
+			attrs = append(attrs, "cause", "client_error")
 		}
+		if oldState == breaker.Degraded && newState == breaker.Degraded {
+			// degraded 机会窗口内失败（未达熔断阈值）：重新排到队尾，
+			// 等下一个 degrade_interval 再给机会；失败计数累计，三次后熔断。
+			s.moveToEnd(src.Name)
+			attrs = append(attrs, "chance_failed", true)
+		}
+		if err == backend.ErrEmptyResponse {
+			attrs = append(attrs, "cause", "empty_response")
+		}
+		log.Warn("上游源失败（未锁定）", attrs...)
 		return false, err
 	}
 	return true, err

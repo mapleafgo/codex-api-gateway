@@ -35,14 +35,16 @@ logging:
 
 # 全局断路器（所有后端源共享，可被单源 breaker 覆盖）
 # 状态机：
-#   normal ──(连续 N 次失败)──> degraded(该源序列后移) ──(再连续 N 次失败)──> circuitOpen(熔断)
-#   degraded ──(超过 degrade_interval 无新失败)──> 自动恢复 normal（时间基，不依赖成功请求）
+#   normal ──(连续 N 次失败)──> degraded(该源序列后移)
+#   degraded ──(超过 degrade_interval 无新失败)──> 恢复到原始优先级位置（进入机会窗口，状态仍保持 degraded）
+#   degraded 机会窗口内 ──(真实请求成功 recover_threshold 次)──> normal
+#   degraded 机会窗口内 ──(失败)──> 重新移到队尾等下一次机会；连续 N 次机会失败 ──> circuitOpen(熔断)
 #   circuitOpen ──(circuit_interval 结束)──> halfOpen(放行探测) ──(探测成功)──> 由 recovery 决定回到 normal/degraded
 breaker:
   first_byte_timeout: 12s   # 流式请求等待首个字节的最长时间，超时计为失败
-  degrade_threshold: 3      # normal→degraded 与 degraded→circuitOpen 各需的连续失败次数
-  recover_threshold: 1      # halfOpen→normal 所需的连续成功次数（degraded 不受此限）
-  degrade_interval: 30s     # degraded 源超过此间隔无新失败则自动恢复 normal
+  degrade_threshold: 3      # normal→degraded 需连续 N 次失败；degraded 机会窗口累计 N 次失败（中间无成功）→ circuitOpen
+  recover_threshold: 1      # degraded→normal 与 halfOpen→normal 所需的连续成功次数
+  degrade_interval: 30s     # degraded 源超过此间隔无新失败则恢复到原始优先级进入机会窗口
   circuit_interval: 1m      # 熔断(circuitOpen)后多久转为半开(halfOpen)探测
   half_open_probes: 1       # halfOpen 状态允许放行的探测请求数
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded

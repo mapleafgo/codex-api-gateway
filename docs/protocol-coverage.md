@@ -154,7 +154,7 @@
 - **compaction 行为修正（Codex local 压缩确认）**：`supports_remote_compaction()` 仅对 provider 名为 OpenAI/Azure 成立；本网关面向第三方 provider（如 deepseek）时 Codex 走 **local 压缩**，摘要生成请求与摘要回灌均为普通明文消息，网关按常规转换透传。真实 `compaction` item 的 `encrypted_content` 只对生成它的服务端可解，a/c 路径无法解读，改为 **WARN + 丢弃**（移除原先折独立 user `<compaction>` 密文文本的降级）；`compaction_trigger` 保持丢弃（请求控制信号）。
 - **DeepSeek a 端点工具限制**：DeepSeek Anthropic 兼容端点只接受 `web_search_20250305` / `web_search_20260209` server tool，`custom` 工具返回 400；带 21+ 工具的 Codex 请求实测 400 后 failover 到 Chat 源。DeepSeek 改为 `backend_type: r` 透传后全部 200，登记到 r 专节。
 - **freeform 单键任意键名解包**：opencode 等 Chat 上游把工具文本包在 `input`/`patch`/`cmd` 等不同键下，Codex 会把整段 JSON 当入参导致校验失败；`SanitizeClientToolInput` 对 freeform 工具改为单键 JSON 对象直接取唯一字符串值，键名不敏感；多键 structured 形态仍走 apply_patch V4A 兜底，r 透传实测返回裸文本不受影响。
-- **opencode c 400（Console upstream failed）观测**：2026-08-01 11:25-11:28 opencode2api 上游（Console provider）连续返回 400 `Error from provider (Console): Upstream request failed`，网关按 4xx 策略不重试不降级、failover 到 grok a 成功；属上游暂时故障，网关侧无转换改动。
+- **opencode c 400（Console upstream failed）观测**：2026-08-01 11:25-11:28 opencode2api 上游（Console provider）连续返回 400 `Error from provider (Console): Upstream request failed`，网关 failover 到 grok a 成功（当时策略为整轮不重试不降级；2026-08-04 起 4xx 计入降级/机会失败，整轮仍不重试）；属上游暂时故障，网关侧无转换改动。
 - **a 路径 client tool 统一省略 type（用户决策）**：Anthropic client tool 没有独立 custom 类型，`type:"custom"` 是默认值且部分兼容端点（DeepSeek）拒绝显式写；`custom`/`shell`/`apply_patch` 一律转官方缺省形态 `name + description + input_schema`，移除 `tools_type: custom|omit` 配置与 `StripToolType`，server tool 仍带自身变体 type。
 
 ### 2026-07-31

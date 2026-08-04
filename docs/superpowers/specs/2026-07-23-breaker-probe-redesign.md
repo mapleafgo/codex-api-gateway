@@ -3,6 +3,11 @@
 日期: 2026-07-23
 状态: 待实现
 
+> 本设计后续按「机会窗口」语义改版：degrade_interval 超时只把 degraded 源恢复到
+> 原始优先级位置进入机会窗口（健康状态**保持 degraded**）；机会内成功才转 normal，
+> 机会内失败重新排到队尾等下一次机会，累计 N 次机会失败（中间无成功）触发
+> circuitOpen。本文以改版后语义为准（2026-08-04 更新）。
+
 ## 1. 背景与动机
 
 当前断路器有两个突出问题：
@@ -18,7 +23,7 @@
 ## 2. 目标与非目标
 
 **目标**
-- Degraded 源在 `degrade_interval` 内无新失败后自动恢复为 Normal
+- Degraded 源在 `degrade_interval` 内无新失败后恢复到原始优先级位置（机会窗口；健康状态保持 degraded，便于机会失败升级到 circuitOpen）
 - `cooldown` 更名为 `circuit_interval`（默认 1m），作为 CircuitOpen→HalfOpen 探针间隔，现有 HalfOpen 机制不变
 - 去掉 429 特判逻辑，429 走正常 RecordFailure 流程
 - Degraded 时的 `moveToEnd` 保留（避免影响正常源延迟），auto-recovery 保证恢复
@@ -55,7 +60,8 @@ Normal ── failStreak≥degrade_threshold ──→ Degraded (moveToEnd)
 Degraded ── failStreak≥degrade_threshold ──→ CircuitOpen
 　　　　　　│
 　　　　　　── successStreak≥recover_threshold ──→ Normal (restoreOriginal)
-　　　　　　── ★ degrade_interval 内无新失败 ──→ Normal (restoreOriginal)
+　　　　　　── ★ degrade_interval 内无新失败 ──→ 恢复原始位置(机会窗口，状态仍 Degraded)
+　　　　　　── 机会内失败 ──→ moveToEnd 等下一次机会；累计 N 次机会失败 ──→ CircuitOpen
 
 CircuitOpen ── circuit_interval到期(默认1m) ──→ HalfOpen
 　　　　　　　　　　　　　　　　　　　│
@@ -64,10 +70,8 @@ HalfOpen ── recover_threshold次成功 ──→ Normal/Degraded(按recovery
 ```
 
 **关键行为**：
-- Degraded 自动恢复不要求源被成功尝试——只要 `degrade_interval` 内没有 `RecordFailure` 调用，自动恢复为 Normal
-- 恢复后 `restoreOriginal()` 回到配置原始顺序位置，下个请求自然经过它（就是探测）
-  - 请求成功 → 保持 Normal
-  - 请求失败 → 重新 degrade + restart 计时器
+- Degraded 在 `degrade_interval` 内无新失败后经 `restoreOriginal()` 恢复到原始优先级位置(机会窗口)，健康状态保持 degraded，degradeCount 不清零
+- 机会窗口内请求成功(recover_threshold 次) → 转 Normal；机会窗口内失败 → moveToEnd 重新排到队尾等下一次机会；failStreak 累计且仅成功清零，累计 N 次机会失败 → CircuitOpen
 - `RecordFailure()` 重置 `degradedAt` 计时器。429 不再特判，因此 429 也正常重置计时
 
 ## 4. 配置变更
@@ -76,7 +80,7 @@ HalfOpen ── recover_threshold次成功 ──→ Normal/Degraded(按recovery
 
 ```yaml
 breaker:
-  degrade_interval: 30s       # 新增，默认 30s。Degraded 自动恢复为 Normal 的间隔
+  degrade_interval: 30s       # 新增，默认 30s。Degraded 源超时后恢复到原始位置进入机会窗口的间隔
   circuit_interval: 1m        # 默认 1m。CircuitOpen→HalfOpen 探针间隔（替代原 cooldown）
   degrade_threshold: 3        # 不变
   recover_threshold: 1        # 不变。HalfOpen 需要连续成功次数
@@ -101,7 +105,7 @@ type Breaker struct {
 
 ```go
 // AutoRecover 检查 Degraded 状态是否已超过 degrade_interval。
-// 若超过且无新失败（degradedAt 未被 RecordFailure 重置），自动升回 Normal。
+// 若超过且无新失败（degradedAt 未被 RecordFailure 重置），返回 recovered=true：调度器恢复到原始优先级位置，状态保持 degraded。
 // 返回 (oldState, newState, recovered)，scheduler 据此调用 restoreOriginal。
 func (b *Breaker) AutoRecover() (State, State, bool)
 ```
@@ -158,7 +162,7 @@ func (s *Scheduler) autoRecoverDegraded() {
 
 | 测试 | 验证点 |
 |------|--------|
-| TestDegradedAutoRecoverAfterInterval | Degraded 后超时，AutoRecover() 返回 Normal |
+| TestDegradedAutoRecoverAfterInterval | Degraded 后超时，AutoRecover() 返回 recovered=true 且状态保持 Degraded |
 | TestDegradedAutoRecoverResetOnFailure | Degraded 后 RecordFailure 重置计时器，AutoRecover 不生效 |
 | TestDegradedAutoRecoverNotBeforeInterval | Degraded 后未到间隔，AutoRecover 不生效 |
 | TestDegradedAutoRecoverAfterSuccess | RecordSuccess 后不再 Degraded，AutoRecover 不生效 |
@@ -182,4 +186,4 @@ func (s *Scheduler) autoRecoverDegraded() {
 
 ## 8. 遗留问题
 
-- `recover_threshold` 当前同时用于 Degraded→Normal（请求成功恢复）和 HalfOpen→Normal（探测恢复）。新设计中 Degraded 层用 `degrade_interval` 超时恢复而非成功计数，因此 `recover_threshold` 在实现时仅保留 HalfOpen 用途，不再影响 Degraded 自动恢复。
+- `recover_threshold` 同时用于 Degraded→Normal（机会窗口内真实请求成功恢复）和 HalfOpen→Normal（探测恢复）。degrade_interval 超时只恢复原始优先级位置、不清健康状态，不替代 recover_threshold 的成功计数。

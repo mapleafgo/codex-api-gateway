@@ -145,6 +145,10 @@ func main() {
 
 	srv := server.New(cfg)
 	defer srv.Close()
+	// 后台恢复线程：保证无请求流量时，degrade_interval 已超时的降级源也能
+	// 恢复到原始优先级位置（状态保持 degraded，等真实成功或累计机会失败熔断）。
+	srv.Scheduler().StartRecovery()
+	defer srv.Scheduler().StopRecovery()
 
 	// 配置热重载：fsnotify 监听 config.yaml 与同级 base_instructions.md，自动 Load 并替换 holder；
 	// scheduler.Reload 由 srv.ReloadScheduler 触发，重建运行时优先级；

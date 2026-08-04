@@ -299,7 +299,8 @@ breaker:
 | --- | --- |
 | `first_byte_timeout` | 等待上游首个流式事件的最长时间，超时计为失败 |
 | `degrade_threshold` | 连续失败达阈值后降级，再达阈值后熔断 |
-| `recover_threshold` | 降级恢复到正常所需的连续成功次数 |
+| `degrade_interval` | 降级源超过此间隔无新失败后恢复到原始优先级位置进入机会窗口（状态仍保持 `degraded`；机会内失败重新排到队尾，连续 N 次机会失败后熔断） |
+| `recover_threshold` | `degraded`/`halfOpen` 恢复到 `normal` 所需的连续成功次数 |
 | `circuit_interval` | 熔断后进入半开探测前的等待时间 |
 | `half_open_probes` | 半开状态允许的探测请求数 |
 | `recovery` | 半开探测成功后恢复到 `normal` 或 `degraded` |

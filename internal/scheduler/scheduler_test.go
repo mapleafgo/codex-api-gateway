@@ -53,6 +53,11 @@ func err500(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"boom"}}`))
 }
 
+func err400(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`))
+}
+
 var testBackoff = 1 * time.Millisecond
 
 const minimalResponsesBody = `{"model":"x","input":"hi","stream":true}`
@@ -1089,6 +1094,192 @@ func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
 	}
 }
 
+// TestSchedulerDegradedSourceNotStarvedByHealthySource 复现：健康源 A 每轮都
+// 锁定成功并提前返回，导致排在后位的降级源 B 永远不被遍历、也不会被评估
+// degrade 超时自动恢复，从而一直停留在 degraded 再也不会被调用。
+// B 语义下，tryRoundGeneric 每轮开始会先整体评估所有源，把 degrade 超时的
+// B 恢复到其原始首位，从而在 A 锁定前就重新获得被尝试的机会。
+func TestSchedulerDegradedSourceNotStarvedByHealthySource(t *testing.T) {
+	goodA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer goodA.Close()
+	goodB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer goodB.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 1,
+			RecoverThreshold: 1,
+			CircuitInterval:  config.Duration(time.Minute),
+			DegradeInterval:  config.Duration(30 * time.Millisecond),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+			Recovery:         "normal",
+		},
+		Sources: []config.Source{
+			makeSource("B", goodB.URL, 0), // 原本居首的降级源
+			makeSource("A", goodA.URL, 1),
+		},
+	}
+	s := New(cfg)
+
+	// 强制 B 进入 degraded 并后移，同时让 degrade 间隔已过期。
+	srcB, _ := s.sourceByName("B")
+	bkB := s.breakerFor(&srcB)
+	bkB.RecordFailure() // threshold=1 -> degraded
+	if bkB.State() != breaker.Degraded {
+		t.Fatalf("setup: B want degraded, got %v", bkB.State())
+	}
+	bkB.SetDegradedAt(time.Now().Add(-50 * time.Millisecond))
+	s.moveToEnd("B") // 降级后移到队尾，A 排在 B 前
+
+	// 轮次开始先评估：B 超时恢复原始首位，被 A 抢占前已重新获得尝试机会并成功转 normal。
+	if _, err := runGeneric(s, nil, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if bkB.State() != breaker.Normal {
+		t.Fatalf("B should auto-recover to normal after degrade_interval, got %v", bkB.State())
+	}
+}
+
+// TestDegradedChanceFailuresMoveToEndAndCircuitOpen 覆盖「机会窗口」语义：
+// 降级源在 degrade_interval 超时后恢复到原位置（给机会）；机会内失败一次即
+// 重新排到队尾等下一次机会；三次机会都失败后触发熔断 circuitOpen。
+func TestDegradedChanceFailuresMoveToEndAndCircuitOpen(t *testing.T) {
+	badA := httptest.NewServer(http.HandlerFunc(err500))
+	defer badA.Close()
+	goodB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer goodB.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 3,
+			RecoverThreshold: 1,
+			CircuitInterval:  config.Duration(time.Minute),
+			DegradeInterval:  config.Duration(30 * time.Second),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+			Recovery:         "normal",
+		},
+		Sources: []config.Source{
+			makeSource("A", badA.URL, 0),
+			makeSource("B", goodB.URL, 1),
+		},
+	}
+	s := New(cfg)
+	aSrc, _ := s.sourceByName("A")
+	bkA := s.breakerFor(&aSrc)
+
+	// 三次失败：A normal -> degraded，并被移到队尾。
+	for i := 0; i < 3; i++ {
+		if _, err := runGeneric(s, nil, nil); err != nil {
+			t.Fatalf("degrade round %d: %v", i+1, err)
+		}
+	}
+	if bkA.State() != breaker.Degraded {
+		t.Fatalf("setup: A want degraded, got %v", bkA.State())
+	}
+	seq := s.runtimeSeq()
+	if seq[0].Name != "B" || seq[1].Name != "A" {
+		t.Fatalf("setup: A 应已移到队尾，got %v", sourceNames(seq))
+	}
+
+	// 三次机会：每次超时恢复原位置 -> 机会内失败 -> 重新移到队尾。
+	for i := 0; i < 3; i++ {
+		bkA.SetDegradedAt(time.Now().Add(-time.Minute))
+		s.autoRecoverDegraded(&aSrc)
+		seq = s.runtimeSeq()
+		if seq[0].Name != "A" || seq[1].Name != "B" {
+			t.Fatalf("chance %d: A 应恢复到原位置，got %v", i+1, sourceNames(seq))
+		}
+		if _, err := runGeneric(s, nil, nil); err != nil {
+			t.Fatalf("chance %d: %v", i+1, err)
+		}
+		seq = s.runtimeSeq()
+		if seq[0].Name != "B" || seq[1].Name != "A" {
+			t.Fatalf("chance %d: 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+		}
+	}
+
+	if bkA.State() != breaker.CircuitOpen {
+		t.Fatalf("三次机会失败后应熔断 circuitOpen，got %v", bkA.State())
+	}
+}
+
+// TestClientErrorDegradesAndChanceFailuresCircuitOpen 覆盖「4xx 也要降级」：
+// 4xx 同样计为 breaker 失败（降级/机会失败），三次机会失败后触发熔断；
+// 每轮仍由轮内 failover 换到健康源，整轮不重试语义不变。
+func TestClientErrorDegradesAndChanceFailuresCircuitOpen(t *testing.T) {
+	badA := httptest.NewServer(http.HandlerFunc(err400))
+	defer badA.Close()
+	goodB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer goodB.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeThreshold: 3,
+			RecoverThreshold: 1,
+			CircuitInterval:  config.Duration(time.Minute),
+			DegradeInterval:  config.Duration(30 * time.Second),
+			HalfOpenProbes:   1,
+			MaxRetries:       0,
+			Recovery:         "normal",
+		},
+		Sources: []config.Source{
+			makeSource("A", badA.URL, 0),
+			makeSource("B", goodB.URL, 1),
+		},
+	}
+	s := New(cfg)
+	aSrc, _ := s.sourceByName("A")
+	bkA := s.breakerFor(&aSrc)
+
+	// 三次 4xx：A normal -> degraded，并被移到队尾；B 每轮 failover 成功。
+	for i := 0; i < 3; i++ {
+		if _, err := runGeneric(s, nil, nil); err != nil {
+			t.Fatalf("degrade round %d: %v", i+1, err)
+		}
+	}
+	if bkA.State() != breaker.Degraded {
+		t.Fatalf("4xx 三次后 A 应降级 degraded，got %v", bkA.State())
+	}
+	seq := s.runtimeSeq()
+	if seq[0].Name != "B" || seq[1].Name != "A" {
+		t.Fatalf("setup: A 应已移到队尾，got %v", sourceNames(seq))
+	}
+
+	// 三次机会，每次超时恢复原位置 -> 4xx 机会失败 -> 重新移到队尾。
+	for i := 0; i < 3; i++ {
+		bkA.SetDegradedAt(time.Now().Add(-time.Minute))
+		s.autoRecoverDegraded(&aSrc)
+		seq = s.runtimeSeq()
+		if seq[0].Name != "A" || seq[1].Name != "B" {
+			t.Fatalf("chance %d: A 应恢复到原位置，got %v", i+1, sourceNames(seq))
+		}
+		if _, err := runGeneric(s, nil, nil); err != nil {
+			t.Fatalf("chance %d: %v", i+1, err)
+		}
+		seq = s.runtimeSeq()
+		if seq[0].Name != "B" || seq[1].Name != "A" {
+			t.Fatalf("chance %d: 4xx 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+		}
+	}
+
+	if bkA.State() != breaker.CircuitOpen {
+		t.Fatalf("三次 4xx 机会失败后应熔断 circuitOpen，got %v", bkA.State())
+	}
+}
+
 func TestListUpstreamModels_Responses(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
@@ -1177,4 +1368,91 @@ func TestReloadRefreshesBreakerCfg(t *testing.T) {
 	if _, st := bk.RecordFailure(); st != breaker.Degraded {
 		t.Fatalf("阈值热更新为 1 后，单次失败应即降级，got %v", st)
 	}
+}
+
+// TestBackgroundRecoveryRestoresPriority 覆盖「无请求流量时，后台恢复线程仍会
+// 在 degrade_interval 超时后把已降级源恢复到原始优先级位置」。
+// B 语义：超时只恢复位置、保留 degraded 状态；只有真实请求成功后才转 normal。
+func TestBackgroundRecoveryRestoresPriority(t *testing.T) {
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second),
+			DegradeInterval:  config.Duration(30 * time.Second),
+			DegradeThreshold: 1,
+			RecoverThreshold: 1,
+			CircuitInterval:  config.Duration(time.Minute),
+			HalfOpenProbes:   1,
+		},
+		Sources: []config.Source{
+			makeSource("A", "http://a", 0),
+			makeSource("B", "http://b", 1),
+		},
+	}
+	s := New(cfg)
+	defer s.StopRecovery()
+
+	// 强制 A 降级并后移（模拟一次上游失败）。
+	aSrc := s.holder.Current().OrderedSources()[0]
+	bkA := s.breakerFor(&aSrc)
+	oldSt, newSt := bkA.RecordFailure() // threshold=1 -> degraded
+	s.adjustOrder("A", oldSt, newSt)
+	// 把 degrade 计时拨到过去：degrade_interval(30s) 早已超时。
+	bkA.SetDegradedAt(time.Now().Add(-time.Minute))
+
+	seq := s.runtimeSeq()
+	if len(seq) != 2 || seq[0].Name != "B" || seq[1].Name != "A" {
+		t.Fatalf("setup: A 应已被后移，got %v", sourceNames(seq))
+	}
+
+	// 用短轮询周期启动后台恢复线程，验证无任何请求时也能恢复优先级。
+	s.recoveryPeriod = 10 * time.Millisecond
+	s.StartRecovery()
+
+	// 仅靠后台线程：A 位置应恢复到 position 0，但状态仍保持 degraded。
+	deadline := time.After(2 * time.Second)
+	for {
+		cur := s.runtimeSeq()
+		if len(cur) == 2 && cur[0].Name == "A" && cur[1].Name == "B" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("后台线程未把 A 恢复到 position 0：state=%v order=%v",
+				bkA.State(), sourceNames(cur))
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if bkA.State() != breaker.Degraded {
+		t.Fatalf("B 语义：超时只恢复位置，状态应保持 degraded，got %v", bkA.State())
+	}
+
+	// 只有真实请求成功后才转回 normal。
+	bkA.RecordSuccess() // recover_threshold=1 -> degraded -> normal
+	if bkA.State() != breaker.Normal {
+		t.Fatalf("真实成功后才应转 normal，got %v", bkA.State())
+	}
+}
+
+func sourceNames(seq []config.Source) []string {
+	out := make([]string, 0, len(seq))
+	for _, s := range seq {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// TestRecoveryStopIdempotentAndBeforeStart 覆盖 StartRecovery/StopRecovery 的
+// 边界顺序：Stop 先于 Start 时不得启动后台线程，多次 Stop 幂等不 panic。
+func TestRecoveryStopIdempotentAndBeforeStart(t *testing.T) {
+	cfg := &config.Config{
+		Sources: []config.Source{makeSource("a", "http://a", 0)},
+	}
+	s := New(cfg)
+
+	s.StopRecovery() // 先停：后续 Start 不得再启动无法停止的 goroutine
+	s.recoveryPeriod = 10 * time.Millisecond
+	s.StartRecovery()
+
+	s.StopRecovery()
+	s.StopRecovery() // 重复 Stop 必须安全
 }

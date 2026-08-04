@@ -430,11 +430,11 @@ func TestAutoRecoverDegradedElapsed(t *testing.T) {
 	if oldSt != Degraded {
 		t.Fatalf("old state: want Degraded, got %v", oldSt)
 	}
-	if newSt != Normal {
-		t.Fatalf("new state: want Normal, got %v", newSt)
+	if newSt != Degraded {
+		t.Fatalf("new state: want Degraded (B 语义，超时只恢复机会、状态保持 degraded), got %v", newSt)
 	}
-	if b.State() != Normal {
-		t.Fatalf("state after AutoRecover: want Normal, got %v", b.State())
+	if b.State() != Degraded {
+		t.Fatalf("state after AutoRecover: want Degraded (degraded 保留以便后续失败升级到熔断), got %v", b.State())
 	}
 }
 
@@ -475,7 +475,7 @@ func TestAutoRecoverSkipsCircuitOpen(t *testing.T) {
 	}
 }
 
-func TestAutoRecoverResetsDegradeCount(t *testing.T) {
+func TestAutoRecoverPreservesDegradeCount(t *testing.T) {
 	b := New(cfg(1, 1, "normal"))
 	b.RecordFailure() // -> degraded (degradeCount=1)
 	if b.DegradeCount() != 1 {
@@ -488,8 +488,41 @@ func TestAutoRecoverResetsDegradeCount(t *testing.T) {
 	b.now = func() time.Time { return start.Add(31 * time.Second) }
 
 	b.AutoRecover()
-	if b.DegradeCount() != 0 {
-		t.Fatalf("degradeCount should be 0 after AutoRecover, got %d", b.DegradeCount())
+	if b.DegradeCount() != 1 {
+		t.Fatalf("degradeCount should stay 1 after AutoRecover (保持 degraded 以允许升级到熔断), got %d", b.DegradeCount())
+	}
+}
+
+// TestAutoRecoverPreservesCircuitOpenPath 覆盖 B 语义的核心动机：degrade 超时
+// 只恢复机会、不清除 degradeCount；随后连续 DegradeThreshold 次失败必须能
+// 从 degraded 升级到 circuitOpen，而不是被反复重置回 normal 导致永不熔断。
+func TestAutoRecoverPreservesCircuitOpenPath(t *testing.T) {
+	b := New(cfg(3, 1, "normal"))
+	for i := 0; i < 3; i++ {
+		b.RecordFailure() // -> degraded (degradeCount=1)
+	}
+	if b.State() != Degraded {
+		t.Fatalf("setup: want degraded, got %v", b.State())
+	}
+
+	b.mu.Lock()
+	start := b.degradedAt
+	b.mu.Unlock()
+	b.now = func() time.Time { return start.Add(31 * time.Second) }
+
+	if _, _, recovered := b.AutoRecover(); !recovered {
+		t.Fatal("AutoRecover should return true after degrade_interval")
+	}
+	if b.State() != Degraded {
+		t.Fatalf("超时后应保持 degraded, got %v", b.State())
+	}
+
+	// 再给三次机会：连续 3 次失败 -> degraded 升级到 circuitOpen。
+	for i := 0; i < 3; i++ {
+		b.RecordFailure()
+	}
+	if b.State() != CircuitOpen {
+		t.Fatalf("三次失败后应触发熔断 circuitOpen, got %v", b.State())
 	}
 }
 
