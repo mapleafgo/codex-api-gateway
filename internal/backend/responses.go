@@ -12,14 +12,6 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
-	oaconstant "github.com/openai/openai-go/v3/shared/constant"
-)
-
-// 终态事件 wire 字符串，派生自 SDK shared/constant 以防止与规范值漂移。
-var (
-	evResponseCompleted  = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
-	evResponseIncomplete = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
-	evResponseFailed     = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
 )
 
 // ResponsesBackend 将 Responses 请求透传到 OpenAI Responses 上游（仅流式）。
@@ -57,12 +49,88 @@ func PrepareUpstreamBody(raw []byte, src *config.Source) (body []byte, clientMod
 	}
 	m["model"] = resolved
 	m["stream"] = true
+	rewriteReasoningSummaryToContent(m)
 
 	body, err = json.Marshal(m)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("marshal: %w", err)
 	}
 	return body, clientModel, resolved, nil
+}
+
+// rewriteReasoningSummaryToContent 把 OpenAI 标准 reasoning item 的 summary 明文
+// 折算进 content（reasoning_text part）：DeepSeek /responses 只支持 plain-text
+// content 并把它合并进相邻 assistant message，忽略 summary/encrypted_content；
+// 只透传 summary 会触发 "reasoning_text ... must be passed back" 400。
+func rewriteReasoningSummaryToContent(m map[string]any) {
+	input, ok := m["input"].([]any)
+	if !ok {
+		return
+	}
+	converted := 0
+	textLen := 0
+	for _, raw := range input {
+		item, ok := raw.(map[string]any)
+		if !ok || item["type"] != "reasoning" {
+			continue
+		}
+		if hasReasoningTextContent(item["content"]) {
+			continue
+		}
+		texts := reasoningSummaryTexts(item["summary"])
+		if len(texts) == 0 {
+			continue
+		}
+		parts := make([]any, 0, len(texts))
+		for _, t := range texts {
+			parts = append(parts, map[string]any{"type": "reasoning_text", "text": t})
+			textLen += len(t)
+		}
+		item["content"] = parts
+		converted++
+	}
+	if converted > 0 {
+		slog.Debug("responses: reasoning summary 折算为 content",
+			"model", m["model"],
+			"converted", converted,
+			"text_len", textLen)
+	}
+}
+
+func hasReasoningTextContent(v any) bool {
+	switch c := v.(type) {
+	case string:
+		return c != ""
+	case []any:
+		for _, raw := range c {
+			p, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if s, ok := p["text"].(string); ok && s != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func reasoningSummaryTexts(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var texts []string
+	for _, raw := range arr {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := p["text"].(string); ok && s != "" {
+			texts = append(texts, s)
+		}
+	}
+	return texts
 }
 
 // decodeObject 用 UseNumber 解码 JSON 对象，避免 map 重编码时大整数经 float64 丢精度。

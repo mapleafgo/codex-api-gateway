@@ -55,6 +55,99 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 	}
 }
 
+// TestPrepareUpstreamBody_ReasoningSummaryToContent 复现 DeepSeek /responses 400：
+// Codex 发送 OpenAI 标准 reasoning item（summary 形式），而 DeepSeek 只支持
+// plain-text content 并把它合并进相邻 assistant message，summary 会被忽略导致
+// "reasoning_text must be passed back"。网关透传时应把 summary 文本折算进
+// content（reasoning_text part），保留原始字段只做协议槽位对齐。
+func TestPrepareUpstreamBody_ReasoningSummaryToContent(t *testing.T) {
+	src := config.Source{ModelMap: map[string]string{"gpt-5": "deepseek-v4-flash"}}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"},{"type":"summary_text","text":"keep going"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Input) == 0 {
+		t.Fatal("input lost")
+	}
+	reasoning := m.Input[0]
+	if reasoning["type"] != "reasoning" {
+		t.Fatalf("first item type=%v", reasoning["type"])
+	}
+	content, ok := reasoning["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("reasoning content missing: %v", reasoning["content"])
+	}
+	first := content[0].(map[string]any)
+	if first["type"] != "reasoning_text" || first["text"] != "need tool" {
+		t.Fatalf("unexpected content part: %v", first)
+	}
+}
+
+// TestPrepareUpstreamBody_ReasoningContentStringNotOverwritten content 已是 plain-text
+// string 时不应被 summary 折算覆盖。
+func TestPrepareUpstreamBody_ReasoningContentStringNotOverwritten(t *testing.T) {
+	src := config.Source{ModelMap: map[string]string{"gpt-5": "deepseek-v4-flash"}}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"summary text"}],"content":"existing plain text"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Input[0]["content"]; got != "existing plain text" {
+		t.Fatalf("content overwritten: %v", got)
+	}
+}
+
+// TestPrepareUpstreamBody_ReasoningEmptySummaryUntouched summary 为空时不补 content。
+func TestPrepareUpstreamBody_ReasoningEmptySummaryUntouched(t *testing.T) {
+	src := config.Source{ModelMap: map[string]string{"gpt-5": "deepseek-v4-flash"}}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"reasoning","id":"r1","summary":[]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Input[0]["content"]; ok {
+		t.Fatalf("empty summary must not add content: %v", m.Input[0]["content"])
+	}
+}
+
 func TestRewriteClientModel_T2(t *testing.T) {
 	in := []byte(`{"type":"response.completed","response":{"id":"r1","model":"o3","usage":{"input_tokens":1,"output_tokens":2}}}`)
 	out := rewriteClientModel(in, "gpt-5")
