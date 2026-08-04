@@ -179,10 +179,59 @@ func TestMixAnthropicFailThenChatSuccess(t *testing.T) {
 	}
 }
 
-func TestLockedSourceNoSwitch(t *testing.T) {
+// TestEmptyChatResponseSwitchesToNext 复现 deepseek-v4-flash 空响应：
+// 首个 chat 源返回 HTTP 200 + 正常结束但无内容事件（仅 created/in_progress/completed），
+// scheduler 统一兜底：不锁定该源，failover 到下一个源。
+func TestEmptyChatResponseSwitchesToNext(t *testing.T) {
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-empty\",\"choices\":[]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer empty.Close()
+
+	goodCalled := atomic.Bool{}
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCalled.Store(true)
+		goodChatSSE(w)
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+		},
+		Sources: []config.Source{
+			makeChatSource("c-empty", empty.URL+"/v1", 0),
+			makeChatSource("c-good", good.URL+"/v1", 1),
+		},
+	}
+	s := New(cfg)
+	var events []model.SSEEvent
+	name, err := runGeneric(s, func(ev model.SSEEvent) error {
+		events = append(events, ev)
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !goodCalled.Load() {
+		t.Fatal("empty chat response must failover to next source")
+	}
+	if name != "c-good" {
+		t.Fatalf("source=%q want c-good", name)
+	}
+	if countEventType(events, "response.output_text.delta") == 0 {
+		t.Fatalf("client must receive content from second source")
+	}
+}
+
+func TestStatusOnlySourceSwitchesToNext(t *testing.T) {
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
-		// emit first event then drop
+		// 仅发 message_start（只合成 created/in_progress 状态事件，无内容事件）后断开
 		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
 		w.(http.Flusher).Flush()
 		hj := w.(http.Hijacker)
@@ -210,8 +259,8 @@ func TestLockedSourceNoSwitch(t *testing.T) {
 	}
 	s := New(cfg)
 	_, _ = runGeneric(s, func(model.SSEEvent) error { return nil }, nil)
-	if goodCalled.Load() {
-		t.Fatal("must not switch after first event locked the source")
+	if !goodCalled.Load() {
+		t.Fatal("source with only status events must switch to next source")
 	}
 }
 

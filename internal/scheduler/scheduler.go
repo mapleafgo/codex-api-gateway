@@ -460,7 +460,26 @@ func (s *Scheduler) trySourceGeneric(
 	log.Info("尝试上游源", "endpoint", src.BaseURL)
 
 	locked := false
+	// a/c 后端统一由 EventGate 兜底空响应：缓冲状态/终态事件，仅首个内容事件锁定源。
+	// r 透传后端不加 EventGate，保持上游事件原样透传语义。
+	var gate *backend.EventGate
+	if bt != config.BackendOpenAIResponses {
+		gate = backend.NewEventGate(onEvent)
+	}
 	wrapEvent := func(ev model.SSEEvent) error {
+		if gate != nil {
+			if err := gate.Send(ev); err != nil {
+				return err
+			}
+			if !locked && gate.HasContent() {
+				locked = true
+				timer.Stop()
+				oldState, newState := bk.RecordSuccess()
+				s.adjustOrder(src.Name, oldState, newState)
+				log.Info("上游源流已锁定", "old_state", oldState, "new_state", newState)
+			}
+			return nil
+		}
 		if !locked {
 			locked = true
 			timer.Stop()
@@ -473,14 +492,31 @@ func (s *Scheduler) trySourceGeneric(
 	// UpstreamEvent 是 backend.UpstreamEvent 的别名，回调直接透传（nil 时不上报）。
 	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
 	if !locked {
-		if ctx.Err() == nil {
-			if backend.IsClientError(err) {
-				log.Warn("上游源拒绝请求 (4xx)，不降级", "error", err)
-			} else {
-				oldState, newState := bk.RecordFailure()
-				s.adjustOrder(src.Name, oldState, newState)
-				log.Warn("上游源失败（未锁定）", "old_state", oldState, "new_state", newState, "error", err)
+		if gate != nil && gate.SawTerminalFailure() && err == nil {
+			// 已把错误/截断终态透传给客户端；不当作空响应 failover。
+			oldState, newState := bk.RecordSuccess()
+			s.adjustOrder(src.Name, oldState, newState)
+			log.Warn("上游源已透传失败终态，不计空响应 failover",
+				"old_state", oldState, "new_state", newState)
+			return true, nil
+		}
+		if ctx.Err() != nil {
+			// 客户端取消：保持源锁定语义，不触发 failover，由 server 记录取消。
+			return true, err
+		}
+		if err == nil {
+			err = backend.ErrEmptyResponse
+		}
+		if backend.IsClientError(err) {
+			log.Warn("上游源拒绝请求 (4xx)，不降级", "error", err)
+		} else {
+			oldState, newState := bk.RecordFailure()
+			s.adjustOrder(src.Name, oldState, newState)
+			attrs := []any{"old_state", oldState, "new_state", newState, "error", err}
+			if err == backend.ErrEmptyResponse {
+				attrs = append(attrs, "cause", "empty_response")
 			}
+			log.Warn("上游源失败（未锁定）", attrs...)
 		}
 		return false, err
 	}

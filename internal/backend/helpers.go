@@ -5,6 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	oaconstant "github.com/openai/openai-go/v3/shared/constant"
+)
+
+// 事件 wire 字符串，派生自 SDK shared/constant 以防止与规范值漂移。
+var (
+	evResponseCreated          = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
+	evResponseInProgress       = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
+	evResponseCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
+	evResponseIncomplete       = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
+	evResponseFailed           = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
+	evOutputTextDelta          = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
+	evOutputTextDone           = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDone]())
+	evReasoningTextDelta       = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDelta]())
+	evReasoningTextDone        = string(oaconstant.ValueOf[oaconstant.ResponseReasoningTextDone]())
+	evFunctionCallArgsDelta    = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDelta]())
+	evFunctionCallArgsDone     = string(oaconstant.ValueOf[oaconstant.ResponseFunctionCallArgumentsDone]())
+	evCustomToolCallInputDelta = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDelta]())
+	evCustomToolCallInputDone  = string(oaconstant.ValueOf[oaconstant.ResponseCustomToolCallInputDone]())
+	evWebSearchInProgress      = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallInProgress]())
+	evWebSearchSearching       = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
+	evWebSearchCompleted       = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
+	evOutputItemAdded          = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
 )
 
 // outcomeInput 汇聚各后端上游流扫描结束后终态归类所需的输入。
@@ -116,4 +140,114 @@ func IsClientError(err error) bool {
 		return false
 	}
 	return code >= 400 && code < 500
+}
+
+// ErrEmptyResponse 表示上游返回了数据（已过首字节）但未产出任何内容事件。
+// 网关不得向客户端发出合成终态，scheduler 可自然 failover 到下一个源。
+var ErrEmptyResponse = errors.New("upstream returned empty response (no content events)")
+
+// maxBufferedEvents 限制首个内容事件前缓冲的非内容事件数量，防止异常上游无界增长。
+const maxBufferedEvents = 64
+
+// isContentEvent 判断事件是否携带上游实际产出内容。使用白名单判定：
+// 未知事件一律视为非内容事件缓冲，避免新增状态/结构事件被误判为内容而锁定源。
+func isContentEvent(et string) bool {
+	switch et {
+	case evOutputTextDelta, evOutputTextDone,
+		evReasoningTextDelta, evReasoningTextDone,
+		evFunctionCallArgsDelta, evFunctionCallArgsDone,
+		evCustomToolCallInputDelta, evCustomToolCallInputDone,
+		evWebSearchInProgress, evWebSearchSearching, evWebSearchCompleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// isBufferableEvent 判断事件是否应作为“空响应候选”缓冲：既非内容事件，也不是
+// 明确携带错误/截断终态的事件（response.failed / response.incomplete 必须立即放行）。
+// response.completed 无内容时仍缓冲，以便 run 级空响应 failover 判定。
+func isBufferableEvent(et string) bool {
+	if isContentEvent(et) {
+		return false
+	}
+	switch et {
+	case evResponseFailed, evResponseIncomplete:
+		return false
+	default:
+		return true
+	}
+}
+
+// EventGate 缓冲非内容事件（状态/终态），直到出现首个内容事件才 flush 给客户端。
+// scheduler 在 a/c 后端使用，统一做空响应兜底：流结束时无内容事件，不锁定源，返回
+// ErrEmptyResponse 让请求 failover 到下一个源。
+// 解决上游返回 HTTP 200 + 空流（如 deepseek-v4-flash 对超大请求静默放弃）时
+// scheduler 误判源锁定、无法 failover 的问题。r 透传后端不用，保持原语义。
+// 非并发安全：Send/Flush/IsFlushed 必须由同一个流式扫描 goroutine 串行调用。
+type EventGate struct {
+	buf     []model.SSEEvent
+	flushed bool
+	content bool
+	failure bool
+	onEvent func(model.SSEEvent) error
+}
+
+// NewEventGate 创建一个事件门控，包装原始 onEvent 回调。
+func NewEventGate(onEvent func(model.SSEEvent) error) *EventGate {
+	return &EventGate{onEvent: onEvent}
+}
+
+// Send 处理单个事件：非内容事件缓冲，首个内容事件或明确错误/截断终态触发 flush 后直发。
+func (g *EventGate) Send(e model.SSEEvent) error {
+	if g.flushed {
+		return g.onEvent(e)
+	}
+	if isBufferableEvent(e.Type) {
+		if len(g.buf) >= maxBufferedEvents {
+			return fmt.Errorf("event gate: %d buffered non-content events before content", len(g.buf))
+		}
+		g.buf = append(g.buf, e)
+		return nil
+	}
+	// 首个内容事件或错误/截断终态：先 flush 缓冲，再发出当前事件。
+	// 内容事件才算“已产出内容”；错误/截断终态只是透传给客户端，不能当作空响应兜底已解除。
+	g.flushed = true
+	if isContentEvent(e.Type) {
+		g.content = true
+	} else {
+		g.failure = true
+	}
+	for _, b := range g.buf {
+		if err := g.onEvent(b); err != nil {
+			return err
+		}
+	}
+	g.buf = nil
+	return g.onEvent(e)
+}
+
+// IsFlushed 报告缓冲是否已被放行（内容事件或错误/截断终态）。
+func (g *EventGate) IsFlushed() bool { return g.flushed }
+
+// HasContent 报告是否已出现真实内容事件，用于 scheduler 决定是否锁定源。
+func (g *EventGate) HasContent() bool { return g.content }
+
+// SawTerminalFailure 报告是否已出现需要透传客户端的错误/截断终态事件。
+func (g *EventGate) SawTerminalFailure() bool { return g.failure }
+
+// Flush 无条件发出缓冲并置为已 flush。
+// 客户端取消等非空响应失败场景使用：保持源锁定语义，避免 scheduler 误判。
+func (g *EventGate) Flush() error {
+	if g.flushed {
+		return nil
+	}
+	g.flushed = true
+	for _, b := range g.buf {
+		if err := g.onEvent(b); err != nil {
+			return err
+		}
+	}
+	g.buf = nil
+	return nil
 }
