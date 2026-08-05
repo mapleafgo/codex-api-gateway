@@ -264,6 +264,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		return nil, err
 	}
 	out.Messages = msgs
+	dropEmptyAssistants(out)
 	ensureChatToolPaired(out)
 	out.Tools = convertTools(req.Tools, out.FreeformNames)
 	seen := map[string]struct{}{}
@@ -735,10 +736,52 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 	flushPending()
 	flushImages()
 	if pendingReasoning != "" {
-		// reasoning-only 历史也发 assistant（content:null + reasoning_content），对齐 opencode。
-		out = append(out, ChatMessage{Role: "assistant", ReasoningContent: pendingReasoning})
+		// Chat 协议要求 assistant 至少携带 content 或 tool_calls；孤立 reasoning
+		// 无后续 assistant/tool_call 可挂载，且该轮无 tool_call 时上游契约允许
+		// 省略回传，发 content:null 的 reasoning-only assistant 会被严格上游
+		// （Console）以 "content or tool_calls must be set" 400 拒绝。
+		slog.Warn("chatconvert: 丢弃孤立 reasoning（无后续 assistant/tool_call 可挂载）",
+			"chars", len(pendingReasoning),
+			"impact", "该 reasoning 不回传 Chat 上游；无 tool_call 轮次按契约可省略")
 	}
 	return out, nil
+}
+
+// dropEmptyAssistants 收口 Chat wire 合法性：assistant 无 content 且无 tool_calls
+// 的消息（含 reasoning-only 兜底产物）会被严格上游以
+// "Invalid assistant message: content or tool_calls must be set" 400。
+// 协议无槽位承载，只能 WARN+丢弃，不伪造 content 也不把 reasoning 迁移到其他轮次。
+func dropEmptyAssistants(out *ChatRequest) {
+	if out == nil || len(out.Messages) == 0 {
+		return
+	}
+	kept := out.Messages[:0]
+	dropped := 0
+	for _, m := range out.Messages {
+		if m.Role != "assistant" || assistantHasContent(m) || len(m.ToolCalls) > 0 {
+			kept = append(kept, m)
+			continue
+		}
+		dropped++
+	}
+	out.Messages = kept
+	if dropped > 0 {
+		slog.Warn("chatconvert: 丢弃空 assistant 消息（无 content 且无 tool_calls）",
+			"dropped_count", dropped,
+			"impact", "避免严格 Chat 上游因 assistant 缺 content/tool_calls 而 400；不伪造 content 或迁移 reasoning 到其他轮次")
+	}
+}
+
+// assistantHasContent 判断 assistant 消息是否携带可序列化的 content。
+// 纯空字符串视为无内容（严格上游同样 400），非字符串内容视为已承载。
+func assistantHasContent(m ChatMessage) bool {
+	if m.Content == nil {
+		return false
+	}
+	if s, ok := m.Content.(string); ok {
+		return s != ""
+	}
+	return true
 }
 
 const placeholderToolResultContent = "[no tool output available — this call's result was missing from the request history]"

@@ -1,6 +1,6 @@
 # Protocol Coverage Matrix
 
-日期: 2026-08-04（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
+日期: 2026-08-05（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
 
 本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `r` 见专节，**三路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
@@ -142,6 +142,10 @@
   回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
+
+### 2026-08-05
+
+- **孤立 reasoning 空 assistant 修复（Console 400）**：c 路径 `chatconvert` 不再把无后续 assistant/tool_call 可挂载的 `reasoning` 发成 `content:null` 且无 `tool_calls` 的 assistant；Chat 协议要求 assistant 至少携带 `content` 或 `tool_calls`，严格上游（Console）实测以 `Invalid assistant message: content or tool_calls must be set` 400 拒绝。改为 **WARN + 丢弃**（无 tool_call 轮次按厂商契约可省略 reasoning 回传），并在 `ToChat` 出口增加空 assistant 清洗兜底。
 
 ### 2026-08-04
 
@@ -297,7 +301,7 @@
 | `apply_patch_call_output` | role=tool | `lossy_supported` | |
 | `tool_search_call` | tool_calls name=`tool_search` | `supported` | arguments 原样/对象序列化 |
 | `tool_search_output` | 动态 tools + tool 消息 | `lossy_supported` | 注入 function 声明；result 文本为工具名列表 |
-| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；连续 assistant 段合并为一条，`content` / `reasoning_content` / `tool_calls` 同框且不重排；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
+| `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；连续 assistant 段合并为一条，`content` / `reasoning_content` / `tool_calls` 同框且不重排；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 无后续 assistant/tool_call 可挂载时 WARN+丢弃（Chat 要求 assistant 至少携带 `content` 或 `tool_calls`，Console 实测 400） |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
 | `code_interpreter_call` 历史 | none | `dropped` | 网关不支持 code_interpreter；静默忽略 |
 | `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批；缺 output 时由 `ensureChatToolPaired` 补占位 tool 消息 + WARN，不伪造 `[mcp_call]` |
@@ -383,7 +387,7 @@
 | usage 缺 `total_tokens` | 按 `prompt + completion` 兜底（同 opencode/pi） |
 | 出站 token logprobs | Chat `choices[].logprobs` → `response.output_text.delta/done.logprobs` + content part |
 | OfInputMessage / OfOutputMessage | chatconvert 防御分支（SDK 极少落点） |
-| assistant 无文本 | wire 显式 `content:null`（工具环/reasoning-only，对齐 opencode） |
+| assistant 无文本 | wire 显式 `content:null`（工具环）；孤立 reasoning-only 无 `content`/`tool_calls` 时丢弃（Chat 协议要求至少一项，Console 实测 400） |
 | tool 空输出 | wire 显式 `content:""` |
 
 ### 实现包

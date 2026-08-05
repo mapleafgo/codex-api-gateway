@@ -2118,7 +2118,15 @@ func TestToChat_AssistantToolCallMarshalsNullContent(t *testing.T) {
 	}
 }
 
-func TestToChat_ReasoningOnlyHistoryBecomesAssistant(t *testing.T) {
+// TestToChat_ReasoningOnlyHistoryDropped 复现 Console 400：
+// 孤立 reasoning 无后续 assistant 时不得发 content:null 且无 tool_calls 的
+// assistant（上游要求 assistant 至少携带 content 或 tool_calls），只能 WARN+丢弃。
+func TestToChat_ReasoningOnlyHistoryDropped(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
 	body := `{
 		"model":"gpt-4o",
 		"input":[
@@ -2127,12 +2135,86 @@ func TestToChat_ReasoningOnlyHistoryBecomesAssistant(t *testing.T) {
 		]
 	}`
 	out := mustChat(t, body, "gpt-4o")
-	if len(out.Messages) != 2 {
-		t.Fatalf("want user+assistant, got %+v", out.Messages)
+	if len(out.Messages) != 1 || out.Messages[0].Role != "user" {
+		t.Fatalf("want reasoning-only assistant dropped, got %+v", out.Messages)
 	}
-	asst := out.Messages[1]
-	if asst.Role != "assistant" || asst.Content != nil || asst.ReasoningContent != "think hard" {
-		t.Fatalf("reasoning assistant=%+v", asst)
+	if !strings.Contains(buf.String(), "孤立 reasoning") {
+		t.Fatalf("want WARN for dropped reasoning-only assistant, logs=%s", buf.String())
+	}
+}
+
+// TestToChat_ReasoningAfterEmptyAssistantDropped 复现 Console 400：
+// reasoning 后仅跟空 assistant 再回灌 user 时，空 assistant 被跳过，孤立
+// reasoning 不得残留成末尾空 assistant，出站消息必须全部合法。
+func TestToChat_ReasoningAfterEmptyAssistantDropped(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"think hard"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":""}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, m := range out.Messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		text, _ := m.Content.(string)
+		if text == "" && len(m.ToolCalls) == 0 {
+			t.Fatalf("assistant must carry content or tool_calls; msg=%+v; msgs=%+v", m, out.Messages)
+		}
+	}
+	if !strings.Contains(buf.String(), "孤立 reasoning") {
+		t.Fatalf("want WARN for dropped dangling reasoning, logs=%s", buf.String())
+	}
+}
+
+// TestDropEmptyAssistants 直接验证 ToChat 出口兜底：assistant 无 content 且
+// 无 tool_calls 时被丢弃，携带 content 或 tool_calls 的保留，并输出 WARN。
+func TestDropEmptyAssistants(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	out := &ChatRequest{Messages: []ChatMessage{
+		{Role: "user", Content: "check"},
+		// reasoning-only：无 content 且无 tool_calls，应丢弃。
+		{Role: "assistant", ReasoningContent: "think hard"},
+		// 空文本 content：同样视为无内容，应丢弃。
+		{Role: "assistant", Content: ""},
+		// 携带文本 content：保留。
+		{Role: "assistant", Content: "answer"},
+		// 携带 tool_calls：保留（即使 content 为空）。
+		{Role: "assistant", Content: nil, ToolCalls: []ChatToolCall{{ID: "c1", Function: ChatToolCallFunc{Name: "gen", Arguments: "{}"}}}},
+	}}
+
+	dropEmptyAssistants(out)
+
+	want := []string{"user", "assistant", "assistant"}
+	if len(out.Messages) != len(want) {
+		t.Fatalf("want %d messages, got %+v", len(want), out.Messages)
+	}
+	for i, m := range out.Messages {
+		if m.Role != want[i] {
+			t.Fatalf("want roles %v, got %+v", want, out.Messages)
+		}
+	}
+	if out.Messages[1].Content != "answer" {
+		t.Fatalf("text-content assistant must be kept, got %+v", out.Messages[1])
+	}
+	if len(out.Messages[2].ToolCalls) != 1 {
+		t.Fatalf("tool_calls assistant must be kept, got %+v", out.Messages[2])
+	}
+	if !strings.Contains(buf.String(), "空 assistant") {
+		t.Fatalf("want WARN for dropped empty assistants, logs=%s", buf.String())
 	}
 }
 

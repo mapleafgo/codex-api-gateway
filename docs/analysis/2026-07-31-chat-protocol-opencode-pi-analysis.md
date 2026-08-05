@@ -64,7 +64,7 @@
 | R4 | `developer` 角色 | 会话中折 `<system-update>` user；仅 `request.system` 是 system | 按模型能力选择 developer/system | `instructions` 是唯一 system；developer/system item 折 `<system-update>` user | 已实现 |
 | R5 | user 图片 | `image_url` 支持 | 支持并按模型能力降级占位 | `input_image` 真传 `image_url` part；`input_file` / 仅 `file_id` 报错 | 已实现（完整对齐 opencode） |
 | R6 | tool result 图片 | 图片收集后追加 user 消息 | 同上 | 文本留 `role=tool`，图片收集为后续独立 user `image_url` 消息 | 已实现（完整对齐 opencode） |
-| R7 | 空 assistant 消息 | 发送 `content:null` | 无内容且无 tool_calls 时跳过 | 工具环/reasoning-only assistant wire `content:null`；纯空文本仍跳过 | 已实现 |
+| R7 | 空 assistant 消息 | 发送 `content:null` | 无内容且无 tool_calls 时跳过 | 工具环 assistant wire `content:null`；孤立 reasoning-only 无 `content`/`tool_calls` 时丢弃（Console 实测 400） | 已实现 |
 | R8 | tool_call_id 归一化 | 原样 | 归一化长度/非法字符 | 原样透传（移除出站归一化） | 已实现（对齐 opencode） |
 | R9 | 有工具历史但无活动工具时 `tools` | 不发 | 发 `tools: []`（Anthropic 代理要求） | 仅工具历史场景发 `tools: []` | 已实现（对齐 pi） |
 | R10 | Chat `custom` 工具 + grammar | 不支持 | `type:custom` + grammar | 统一 function 化 | 边界 |
@@ -139,11 +139,12 @@ opencode `ToolSchemaProjection.openAI`（`tool-schema.ts:48-62`）会把：
 ### R7 空 assistant 消息
 
 - pi `convertMessages` 对无文本且无 tool_calls 的 assistant 直接跳过（`openai-completions.ts:1183-1198`）。
-- 我们 `convertEasyMessage` 对空文本 assistant 仍返回消息（`request.go:626-635`），`convertOutputMessage` 也无条件返回（`request.go:697-708`）。
+- 我们 `convertMessageRole` / `convertOutputMessage` 对空文本 assistant 已在源级跳过（`return false`）；工具环 assistant 由 `appendToolCall` 合并产生，wire 显式 `content:null`。
 
 风险：严格 Chat 上游可能对空 assistant 400。候选修复：空文本且无 tool_calls 的 assistant 跳过，或统一 `content: null`。
-已处理：`ChatMessage.MarshalJSON` 对 assistant 显式输出 `content:null`（工具环 / reasoning-only），
-tool 空输出显式 `content:""`；纯空文本且无 tool_calls / reasoning 的 assistant 仍跳过，不产生空消息。
+已处理：`ChatMessage.MarshalJSON` 对 assistant 显式输出 `content:null`（工具环），
+tool 空输出显式 `content:""`；纯空文本且无 tool_calls / reasoning 的 assistant 由源级跳过 + ToChat 出口 `dropEmptyAssistants` 兜底；孤立 reasoning-only
+（无 `content`/`tool_calls`）在 2026-08-05 起 **WARN + 丢弃**（Chat 要求 assistant 至少携带一项，Console 实测 400）。
 
 ### R8 tool_call_id 归一化
 
@@ -194,7 +195,7 @@ pi 在无活动工具但消息含工具历史（assistant toolCall / toolResult�
 - M3：developer/system 时序更新折 `<system-update>` user；compaction 折独立 user `<compaction>` 密文文本（opencode 的 compaction 是 user `<conversation-checkpoint>`，不是 system update）。
 - 字段收口：`compaction_trigger` 丢弃（请求控制信号，Codex 明确不保留）；`mcp_list_tools` 不转模型文本（opencode 无此类型，Codex 不把 AdditionalTools 转消息，工具经 ToolSpec/请求 tools 声明）。
 - R5/R6：`input_image` 真传 `image_url`；工具结果 / code_interpreter 图片聚合独立 user 消息。
-- R4/R7：developer 折 user；assistant `content:null`、tool `content:""`；reasoning-only 也发 assistant。
+- R4/R7：developer 折 user；assistant `content:null`、tool `content:""`；reasoning-only 孤立时丢弃（Console 400）。
 - reasoning effort：任意值原样透传，不拒绝（`max` 也透传）。
 - 字段裁剪：`prompt_cache_options`（mode/ttl）Chat 请求体无顶层槽位，删除透传、DEBUG 丢弃；
   `prompt_cache_key` / `max_tokens` + `max_completion_tokens` 双写保留（兼容端需要）。
