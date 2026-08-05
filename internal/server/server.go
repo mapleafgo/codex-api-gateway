@@ -671,7 +671,7 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 			"impact", "Anthropic 源不按 OpenAI options 调缓存；Chat 请求体无 prompt_cache_options 槽位")
 	}
 	if req.PromptCacheRetention != "" {
-		// deprecated 字段且语义不等价；网关用 anthropic.cache_ttl 配置，DEBUG 即可。
+		// deprecated 字段且语义不等价；网关固定 5m TTL，DEBUG 即可。
 		log.Debug("忽略 prompt_cache_retention（deprecated；与 Anthropic cache_control 语义不同）",
 			"field", "prompt_cache_retention",
 			"value", string(req.PromptCacheRetention),

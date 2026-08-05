@@ -96,8 +96,6 @@ type AnthropicCfg struct {
 	// CacheEnabled 控制是否自动注入 Anthropic prompt cache 断点。
 	// nil 表示使用默认值 true；指针用于区分缺省与显式 false。
 	CacheEnabled *bool `koanf:"cache_enabled" yaml:"cache_enabled,omitempty"`
-	// CacheTTL 是 prompt cache 时效，仅允许 5m 或 1h；空值默认 5m。
-	CacheTTL string `koanf:"cache_ttl" yaml:"cache_ttl,omitempty"`
 }
 
 // CacheEnabledValue 返回 prompt cache 的有效开关；缺省时保持历史行为并返回 true。
@@ -322,8 +320,7 @@ func Load(path string) (*Config, error) {
 	slog.Info("配置加载完成",
 		"breaker_max_retries", cfg.Breaker.MaxRetries,
 		"anthropic_default_max_tokens", cfg.Anthropic.DefaultMaxTokens,
-		"anthropic_cache_enabled", cfg.Anthropic.CacheEnabledValue(),
-		"anthropic_cache_ttl", cfg.Anthropic.CacheTTL)
+		"anthropic_cache_enabled", cfg.Anthropic.CacheEnabledValue())
 	return &cfg, nil
 }
 
@@ -412,7 +409,6 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.max_size_mb", &cfg.Logging.MaxSizeMB},
 		{"logging.max_backups", &cfg.Logging.MaxBackups},
 		{"anthropic.default_max_tokens", &cfg.Anthropic.DefaultMaxTokens},
-		{"anthropic.cache_ttl", &cfg.Anthropic.CacheTTL},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
 		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
@@ -548,12 +544,6 @@ func (c *Config) validate() error {
 	if c.Anthropic.CacheEnabled == nil {
 		enabled := true
 		c.Anthropic.CacheEnabled = &enabled
-	}
-	if c.Anthropic.CacheTTL == "" {
-		c.Anthropic.CacheTTL = "5m"
-	}
-	if c.Anthropic.CacheTTL != "5m" && c.Anthropic.CacheTTL != "1h" {
-		return fmt.Errorf("config: anthropic.cache_ttl must be \"5m\" or \"1h\", got %q", c.Anthropic.CacheTTL)
 	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
@@ -716,7 +706,7 @@ func warnDeprecatedFields(data []byte) {
 		return // real parse will report the error
 	}
 	if _, ok := raw["cache"]; ok {
-		slog.Warn("忽略已废弃配置字段", "field", "cache", "replacement", "anthropic.cache_enabled / anthropic.cache_ttl")
+		slog.Warn("忽略已废弃配置字段", "field", "cache", "replacement", "anthropic.cache_enabled")
 	}
 	scanDeprecated(raw)
 }
@@ -729,6 +719,8 @@ func scanDeprecated(m map[string]any) {
 			slog.Warn("忽略已废弃配置字段", "field", "priority", "replacement", "sources list order")
 		case "failure_threshold":
 			slog.Warn("忽略已废弃配置字段", "field", "failure_threshold", "replacement", "degrade_threshold")
+		case "cache_ttl":
+			slog.Warn("忽略已废弃配置字段", "field", "anthropic.cache_ttl", "replacement", "固定 5m，不再可配")
 		case "system_suffix":
 			slog.Warn("忽略已废弃配置字段", "field", "system_suffix", "replacement", "base_instructions.md（与 config 同级）")
 		case "base_instructions_file":
@@ -826,7 +818,6 @@ logging:
 anthropic:
   default_max_tokens: 16384      # 客户端未传 max_output_tokens 时使用
   cache_enabled: true            # 自动注入 Anthropic prompt cache 断点
-  cache_ttl: 5m                  # 5m | 1h
 `
 
 // WriteDefault 写入最小默认配置到 path。目录不存在时创建。

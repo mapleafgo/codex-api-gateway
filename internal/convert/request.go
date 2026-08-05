@@ -449,17 +449,14 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 	}
 	// 历史 MCP items 按变体分档：
 	//   - mcp_call：按扁平名直接回填标准 tool_use + tool_result（不注入 beta MCP 块）。
-	//   - mcp_list_tools：无 Anthropic 等价块，折成 developer marker（server + 工具名 + error），
-	//     保留「有哪些工具可用」的线索，lossy。
+	//   - mcp_list_tools：只注入工具声明，不写模型文本（对齐 c 路径）。
 	//   - mcp_approval_request / mcp_approval_response：Anthropic 无审批协议，网关不实现，
 	//     WARN + 丢弃，避免误导模型以为审批已发生。
 	if item.OfMcpCall != nil {
 		return appendMcpCall(out, item.OfMcpCall)
 	}
 	if item.OfMcpListTools != nil {
-		slog.Debug("丢弃历史 mcp_list_tools（opencode 无此类型；Codex 不把 AdditionalTools 转文本，工具经 ToolSpec/请求 tools 声明）",
-			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
-		return nil
+		return appendMcpListTools(out, item.OfMcpListTools)
 	}
 	if item.OfMcpApprovalRequest != nil || item.OfMcpApprovalResponse != nil {
 		slog.Warn("丢弃历史 MCP 审批 item（Anthropic 无审批协议，网关不实现）",
@@ -517,16 +514,21 @@ func appendItem(out *anthropic.MessageNewParams, sysParts *[]instructionPart, it
 			"item_type", mcpHistoryItemType(item), "item_id", mcpHistoryItemID(item))
 		return nil
 	}
-	if part, ok := unknownInputItemPart(item); ok {
-		*sysParts = append(*sysParts, part)
+	if typ, ok := unknownInputItemType(item); ok {
+		slog.Warn("丢弃未知 input item（SDK 未登记类型，网关未实现映射）",
+			"item_type", typ,
+			"impact", "该 item 不进入 system context，避免污染模型决策")
 	}
 	return nil
 }
 
-func unknownInputItemPart(item *oairesponses.ResponseInputItemUnionParam) (instructionPart, bool) {
+func unknownInputItemType(item *oairesponses.ResponseInputItemUnionParam) (string, bool) {
+	if item == nil {
+		return "", false
+	}
 	raw, err := json.Marshal(item)
 	if err != nil || string(raw) == "{}" || string(raw) == "null" {
-		return instructionPart{}, false
+		return "", false
 	}
 	typ := ""
 	if ptr := item.GetType(); ptr != nil {
@@ -542,10 +544,7 @@ func unknownInputItemPart(item *oairesponses.ResponseInputItemUnionParam) (instr
 	if typ == "" {
 		typ = "unknown"
 	}
-	return instructionPart{
-		role: model.RoleSystem,
-		text: fmt.Sprintf("<openai_input_item type=\"%s\">\n%s\n</openai_input_item>", typ, raw),
-	}, true
+	return typ, true
 }
 
 // appendOutputMessage 把 ResponseOutputMessage（assistant 输出形态）转成
@@ -1050,13 +1049,53 @@ func appendMcpCall(out *anthropic.MessageNewParams, call *oairesponses.ResponseI
 	if err := appendToolUse(out, call.ID, name, toolUseInputPassthrough(call.Arguments)); err != nil {
 		return err
 	}
-	resultContent := ""
 	if call.Error.Valid() && call.Error.Value != "" {
-		resultContent = call.Error.Value
-	} else if call.Output.Valid() {
-		resultContent = call.Output.Value
+		return appendToolResult(out, call.ID, call.Error.Value)
 	}
-	return appendToolResult(out, call.ID, resultContent)
+	if call.Output.Valid() {
+		return appendToolResult(out, call.ID, call.Output.Value)
+	}
+	// 缺输出时不补空 tool_result，交由 ensureToolUsePaired 补 is_error 占位 + WARN。
+	return nil
+}
+
+// appendMcpListTools 把历史 mcp_list_tools 的可用工具注入 out.Tools 声明，
+// 不写 system 文本、不转模型消息（对齐 c 路径与 tool_search_output）。
+func appendMcpListTools(out *anthropic.MessageNewParams, list *oairesponses.ResponseInputItemMcpListToolsParam) error {
+	if list == nil {
+		return nil
+	}
+	if list.Error.Valid() && list.Error.Value != "" {
+		slog.Warn("mcp_list_tools 返回错误，不注入工具声明",
+			"server_label", list.ServerLabel,
+			"error", list.Error.Value,
+			"impact", "工具列表不可用，历史 mcp_call 仍按扁平名回填")
+		return nil
+	}
+	count := 0
+	for _, tl := range list.Tools {
+		if tl.Name == "" {
+			continue
+		}
+		name := toolcatalog.ToolName("mcp__"+list.ServerLabel, tl.Name)
+		if hasTool(out, name) {
+			continue
+		}
+		var desc *string
+		if tl.Description.Valid() {
+			v := tl.Description.Value
+			desc = &v
+		}
+		schema, _ := tl.InputSchema.(map[string]any)
+		out.Tools = append(out.Tools, toolcatalog.ClientTool(name, schema, desc))
+		count++
+	}
+	if count > 0 {
+		slog.Debug("mcp_list_tools 历史注入工具声明",
+			"server_label", list.ServerLabel,
+			"tool_count", count)
+	}
+	return nil
 }
 
 // appendWebSearchCall 把历史 web_search_call 回放为 Anthropic
@@ -1796,12 +1835,9 @@ func applyAnthropicCacheControl(out *anthropic.MessageNewParams, cfg *config.Con
 	if cfg != nil && !cfg.Anthropic.CacheEnabledValue() {
 		return
 	}
-	ttl := anthropic.CacheControlEphemeralTTLTTL5m
-	if cfg != nil && cfg.Anthropic.CacheTTL == "1h" {
-		ttl = anthropic.CacheControlEphemeralTTLTTL1h
-	}
+	// TTL 固定 5m，不再可配。
 	cacheControl := anthropic.NewCacheControlEphemeralParam()
-	cacheControl.TTL = ttl
+	cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
 	out.CacheControl = cacheControl
 	if len(out.System) > 0 {
 		out.System[len(out.System)-1].CacheControl = cacheControl

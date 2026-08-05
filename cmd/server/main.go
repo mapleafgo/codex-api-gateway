@@ -53,8 +53,15 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	daemon := flag.Bool("d", false, "run in background (detach, like docker compose -d)")
 	daemonLong := flag.Bool("daemon", false, "alias of -d")
+	chdirHome := flag.Bool("chdir-home", false, "switch to user home directory before startup (autostart uses this)")
 	flag.Parse()
 	maybeDaemonize(*daemon || *daemonLong)
+	if *chdirHome {
+		if err := chdirUserHome(); err != nil {
+			slog.Error("切换到用户目录失败", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	absConfigPath, err := filepath.Abs(*configPath)
 	if err != nil {
@@ -89,20 +96,12 @@ func main() {
 		urlMu    sync.RWMutex
 		adminURL string
 	)
-	// 开机自启 Spec：用当前可执行文件 + 绝对 config 路径，工作目录为二进制所在目录。
-	// Executable 失败时不展示菜单项（托盘仍可用）。
-	var autoSpec *autostart.Spec
-	if exe, err := os.Executable(); err != nil {
-		slog.Debug("无法解析可执行文件路径，隐藏开机自启菜单", "error", err)
-	} else {
-		exe, _ = filepath.EvalSymlinks(exe)
-		autoSpec = &autostart.Spec{
-			AppID:       "codex-api-gateway",
-			DisplayName: "Codex API Gateway",
-			Exec:        exe,
-			Args:        []string{"-config", absConfigPath},
-			WorkDir:     filepath.Dir(exe),
-		}
+	// 开机自启 Spec：用当前可执行文件 + 绝对 config 路径。
+	// 工作目录取用户目录，与直接从 $HOME 启动一致，避免自启时落到二进制目录
+	// 导致相对路径（gateway.log/gateway.pid 等）与直接打开不同。
+	autoSpec := autostartSpec(absConfigPath)
+	if autoSpec == nil {
+		slog.Debug("无法解析可执行文件路径，隐藏开机自启菜单")
 	}
 
 	t := tray.New(tray.Config{
@@ -266,6 +265,41 @@ func adminURLFromListen(listen string) string {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/"
+}
+
+// autostartSpec 用当前可执行文件与 config 路径构建自启 Spec。
+// WorkDir 取用户目录，使自启与直接从 $HOME 启动的工作目录一致。
+// os.Executable 失败时返回 nil（托盘菜单隐藏该项）。
+func autostartSpec(configPath string) *autostart.Spec {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	absConfig, err := filepath.Abs(configPath)
+	if err != nil {
+		absConfig = configPath
+	}
+	workDir, err := os.UserHomeDir()
+	if err != nil {
+		workDir = filepath.Dir(absConfig)
+	}
+	return &autostart.Spec{
+		AppID:       "codex-api-gateway",
+		DisplayName: "Codex API Gateway",
+		Exec:        exe,
+		Args:        []string{"-config", absConfig, "-chdir-home"},
+		WorkDir:     workDir,
+	}
+}
+
+// chdirUserHome 把进程工作目录切到用户目录，供自启路径使用。
+func chdirUserHome() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return os.Chdir(home)
 }
 
 // shutdownHandler 统一执行优雅关闭：

@@ -20,7 +20,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
-WORKDIR="$(cd "$(dirname "$BIN")" && pwd)"
+WORKDIR="$HOME"
 
 mkdir -p "$AUTOSTART_DIR" "$APPS_DIR" "$ICONS_DIR"
 
@@ -32,8 +32,8 @@ else
   ICON_VALUE=""
 fi
 
-# Exec: 绝对路径 + 显式 config，工作目录与二进制同目录（首次运行可生成 config.yaml）
-EXEC_LINE="\"$BIN\" -config \"$CONFIG\""
+# Exec: 绝对路径 + 显式 config + 切到用户目录（与直接启动一致）
+EXEC_LINE="\"$BIN\" -config \"$CONFIG\" -chdir-home"
 
 tmp="$(mktemp)"
 cat >"$tmp" <<DESKTOP

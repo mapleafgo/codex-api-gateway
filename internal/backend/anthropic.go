@@ -247,7 +247,6 @@ func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams
 		"max_tokens", anthReq.MaxTokens,
 		"max_tokens_source", maxTokensSource,
 		"cache_enabled", anthReq.CacheControl.Type != "",
-		"cache_ttl", string(anthReq.CacheControl.TTL),
 		"messages", len(anthReq.Messages),
 		"assistant_messages", assistantMsgs,
 		"user_messages", userMsgs,

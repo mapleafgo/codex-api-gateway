@@ -435,9 +435,8 @@ type breakerView struct {
 	Recovery         string `json:"recovery"`
 }
 type anthropicView struct {
-	DefaultMaxTokens int    `json:"default_max_tokens"`
-	CacheEnabled     bool   `json:"cache_enabled"`
-	CacheTTL         string `json:"cache_ttl"`
+	DefaultMaxTokens int  `json:"default_max_tokens"`
+	CacheEnabled     bool `json:"cache_enabled"`
 }
 type sourceView struct {
 	Name         string            `json:"name"`
@@ -506,7 +505,6 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Anthropic: anthropicView{
 			DefaultMaxTokens: cfg.Anthropic.DefaultMaxTokens,
 			CacheEnabled:     cfg.Anthropic.CacheEnabledValue(),
-			CacheTTL:         cfg.Anthropic.CacheTTL,
 		},
 		Sources: make([]sourceView, 0, len(cfg.Sources)),
 		Models:  make([]modelViewItem, 0, len(cfg.ModelOverrides)),

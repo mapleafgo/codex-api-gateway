@@ -52,11 +52,9 @@ breaker:
 
 # Anthropic Messages 转换（仅 backend_type: a 生效）
 # default_max_tokens：客户端未传 max_output_tokens 时的上游输出额度。
-# cache_ttl：5m 适合连续多轮；1h 适合两轮间隔较长的任务。
 anthropic:
   default_max_tokens: 16384
-  cache_enabled: true
-  cache_ttl: 5m
+  cache_enabled: true    # 自动注入 Anthropic prompt cache（TTL 固定 5m）
 
 #
 # 基线指令（base_instructions.md）：与本配置文件同级放置，不在 YAML 中配置路径。

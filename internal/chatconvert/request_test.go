@@ -523,6 +523,76 @@ func TestToChat_OrphanToolCallGetsPlaceholder(t *testing.T) {
 	}
 }
 
+// 客户端丢 function_call 只回灌 function_call_output 时，Chat 上游不允许
+// 出现无前驱 assistant(tool_calls) 的 role=tool（Console 实测 400）。
+// 孤儿结果既不能伪造 assistant.tool_calls，也不能伪装成 user 输入，
+// 网关只做 WARN + 丢弃，保证 wire 合法且不污染后续决策。
+func TestToChat_OrphanToolOutputDropped(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+			{"type":"function_call_output","call_id":"call_orphan","output":"command output"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	for _, m := range out.Messages {
+		if m.Role == "tool" {
+			t.Fatalf("orphan tool message must not reach Chat upstream: %+v", out.Messages)
+		}
+		if s, ok := m.Content.(string); ok && strings.Contains(s, "command output") {
+			t.Fatalf("orphan output must not be disguised as user text: %+v", out.Messages)
+		}
+	}
+	if len(out.Messages) != 2 || out.Messages[1].Role != "assistant" {
+		t.Fatalf("want orphan output dropped after assistant, got %+v", out.Messages)
+	}
+	if !strings.Contains(buf.String(), "孤儿 tool") {
+		t.Fatalf("want WARN for orphan tool output, logs=%s", buf.String())
+	}
+}
+
+// mcp_call 缺 output 时不得伪造 "[mcp_call]" 结果，应交给
+// ensureChatToolPaired 补占位 tool 消息 + WARN。
+func TestToChat_McpCallMissingOutputGetsPlaceholder(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	body := `{
+		"model":"gpt-4o",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"weather"}]},
+			{"type":"mcp_call","id":"mcp_1","server_label":"weather","name":"get","arguments":"{}","status":"completed"}
+		]
+	}`
+	out := mustChat(t, body, "gpt-4o")
+	found := false
+	for _, m := range out.Messages {
+		if m.Role != "tool" || m.ToolCallID != "mcp_1" {
+			continue
+		}
+		found = true
+		s, _ := m.Content.(string)
+		if !strings.Contains(s, "no tool output") || strings.Contains(s, "mcp_call") {
+			t.Fatalf("want placeholder content, got %+v", m.Content)
+		}
+	}
+	if !found {
+		t.Fatalf("want placeholder tool message for mcp_1, got %+v", out.Messages)
+	}
+	if !strings.Contains(buf.String(), "补占位 tool 消息") {
+		t.Fatalf("want WARN for placeholder, logs=%s", buf.String())
+	}
+}
+
 // function_call 与 function_call_output 之间夹杂 assistant 文本时，
 // convertMessages 会先 flush tool_calls assistant，导致 tool 落在文本之后；
 // ensureChatToolPaired 必须把 tool 挪回 assistant(tool_calls) 紧邻位置。

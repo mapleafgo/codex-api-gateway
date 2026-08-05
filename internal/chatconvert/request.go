@@ -675,7 +675,9 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			name, args, result := mcpHistoryArgs(call)
 			appendToolCall(call.ID, name, args)
 			flushPending()
-			appendToolMessage(call.ID, result, nil)
+			if result != "" {
+				appendToolMessage(call.ID, result, nil)
+			}
 		case item.OfMcpListTools != nil:
 			list := item.OfMcpListTools
 			names := make([]string, 0, len(list.Tools))
@@ -741,8 +743,10 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 
 const placeholderToolResultContent = "[no tool output available — this call's result was missing from the request history]"
 
-// ensureChatToolPaired 为缺少 role=tool 回包的 tool_call 补占位 tool 消息。
-// 同时把已有但位置不对的 tool 消息挪到对应 assistant 之后：
+// ensureChatToolPaired 为缺少 role=tool 回包的 tool_call 补占位 tool 消息，
+// 把已有但位置不对的 tool 消息挪到对应 assistant 之后；
+// 无前驱 assistant(tool_calls) 的孤儿 tool 输出只能丢弃（严格上游拒绝
+// role=tool 无 tool_calls 前驱，伪造前驱或伪装 user 都会污染模型决策）：
 // 严格 Chat 上游（如 JD）要求 assistant(tool_calls) 后必须紧跟各 tool_call_id 的 tool 消息。
 func ensureChatToolPaired(out *ChatRequest) {
 	if out == nil || len(out.Messages) == 0 {
@@ -775,16 +779,22 @@ func ensureChatToolPaired(out *ChatRequest) {
 	newMsgs := make([]ChatMessage, 0, len(out.Messages)+len(claimed))
 	emitted := make(map[string]struct{}, len(claimed))
 	missingCount := 0
+	orphanCount := 0
+	var orphanIDs []string
 
 	for _, m := range out.Messages {
 		if m.Role == "tool" {
-			// 被 assistant 声明的 tool 统一在 assistant 后重放；这里只保留无归属的孤儿 tool。
+			// 被 assistant 声明的 tool 统一在 assistant 后重放；
+			// 无归属的孤儿 tool 不能原样发出，只能丢弃。
 			if m.ToolCallID != "" {
 				if _, ok := claimed[m.ToolCallID]; ok {
 					continue
 				}
 			}
-			newMsgs = append(newMsgs, m)
+			orphanCount++
+			if m.ToolCallID != "" {
+				orphanIDs = append(orphanIDs, m.ToolCallID)
+			}
 			continue
 		}
 
@@ -815,6 +825,12 @@ func ensureChatToolPaired(out *ChatRequest) {
 	}
 
 	out.Messages = newMsgs
+	if orphanCount > 0 {
+		slog.Warn("chatconvert: 丢弃孤儿 tool 输出（input 缺少对应 function_call）",
+			"tool_call_ids", strings.Join(orphanIDs, ","),
+			"orphan_count", orphanCount,
+			"impact", "避免严格 Chat 上游因 role=tool 无前驱 assistant(tool_calls) 而 400；不伪造前驱或 user 文本污染模型决策")
+	}
 	if missingCount > 0 {
 		slog.Warn("chatconvert: 补占位 tool 消息（历史缺少 tool output）",
 			"placeholder_count", missingCount,
@@ -831,6 +847,18 @@ func chatToolPairingAlreadyValid(msgs []ChatMessage, toolByID map[string]ChatMes
 	// 每个 claimed id 都必须有 tool 消息。
 	for id := range claimed {
 		if _, ok := toolByID[id]; !ok {
+			return false
+		}
+	}
+	// 无归属的孤儿 tool 也必须走重建：原样发出会触发严格上游 400。
+	for _, m := range msgs {
+		if m.Role != "tool" {
+			continue
+		}
+		if m.ToolCallID == "" {
+			return false
+		}
+		if _, ok := claimed[m.ToolCallID]; !ok {
 			return false
 		}
 	}

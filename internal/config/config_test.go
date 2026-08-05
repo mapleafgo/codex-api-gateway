@@ -169,9 +169,6 @@ sources:
 	if cfg.Anthropic.CacheEnabled == nil || !*cfg.Anthropic.CacheEnabled {
 		t.Fatalf("default anthropic.cache_enabled: got %v, want true", cfg.Anthropic.CacheEnabled)
 	}
-	if cfg.Anthropic.CacheTTL != "5m" {
-		t.Fatalf("default anthropic.cache_ttl: got %q, want 5m", cfg.Anthropic.CacheTTL)
-	}
 }
 
 func TestAnthropicConfigLoadsExplicitValues(t *testing.T) {
@@ -181,7 +178,6 @@ func TestAnthropicConfigLoadsExplicitValues(t *testing.T) {
 anthropic:
   default_max_tokens: 32768
   cache_enabled: false
-  cache_ttl: 1h
 sources:
   - name: s1
     base_url: http://upstream
@@ -196,15 +192,11 @@ sources:
 	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
 		t.Fatalf("anthropic.cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
 	}
-	if cfg.Anthropic.CacheTTL != "1h" {
-		t.Fatalf("anthropic.cache_ttl: got %q, want 1h", cfg.Anthropic.CacheTTL)
-	}
 }
 
 func TestAnthropicConfigEnvironmentOverrides(t *testing.T) {
 	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__DEFAULT_MAX_TOKENS", "24576")
 	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__CACHE_ENABLED", "false")
-	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__CACHE_TTL", "1h")
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -223,9 +215,6 @@ sources:
 	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
 		t.Fatalf("env cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
 	}
-	if cfg.Anthropic.CacheTTL != "1h" {
-		t.Fatalf("env cache_ttl: got %q, want 1h", cfg.Anthropic.CacheTTL)
-	}
 }
 
 func TestAnthropicConfigRejectsInvalidValues(t *testing.T) {
@@ -238,13 +227,6 @@ func TestAnthropicConfigRejectsInvalidValues(t *testing.T) {
 			body: `
 anthropic:
   default_max_tokens: -1
-`,
-		},
-		{
-			name: "unsupported cache ttl",
-			body: `
-anthropic:
-  cache_ttl: 30m
 `,
 		},
 	}
@@ -278,8 +260,8 @@ cache:
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Anthropic.CacheTTL != "5m" {
-		t.Fatalf("legacy cache.ttl must not override anthropic.cache_ttl: got %q", cfg.Anthropic.CacheTTL)
+	if cfg.Anthropic.CacheEnabled == nil || !*cfg.Anthropic.CacheEnabled {
+		t.Fatalf("legacy cache.ttl must not change anthropic.cache_enabled: got %v", cfg.Anthropic.CacheEnabled)
 	}
 }
 

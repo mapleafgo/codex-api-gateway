@@ -21,7 +21,7 @@ func newTestDeps(t *testing.T) (*Deps, string) {
 	cfg := &config.Config{
 		Server:    config.ServerCfg{Listen: ":0"},
 		Logging:   config.LoggingCfg{Level: "info", Format: "text"},
-		Anthropic: config.AnthropicCfg{DefaultMaxTokens: 16384, CacheEnabled: ptrBool(true), CacheTTL: "5m"},
+		Anthropic: config.AnthropicCfg{DefaultMaxTokens: 16384, CacheEnabled: ptrBool(true)},
 		Sources: []config.Source{
 			{Name: "s1", BaseURL: "https://example.com", APIKey: "k1", DefaultModel: "m1"},
 		},
@@ -131,13 +131,12 @@ func TestConfigRoundTrip(t *testing.T) {
 	if len(view.Sources) != 1 || view.Sources[0].Name != "s1" {
 		t.Fatalf("sources = %+v", view.Sources)
 	}
-	if view.Anthropic.DefaultMaxTokens != 16384 || !view.Anthropic.CacheEnabled || view.Anthropic.CacheTTL != "5m" {
+	if view.Anthropic.DefaultMaxTokens != 16384 || !view.Anthropic.CacheEnabled {
 		t.Fatalf("anthropic = %+v", view.Anthropic)
 	}
 	view.Anthropic = anthropicView{
 		DefaultMaxTokens: 32768,
 		CacheEnabled:     false,
-		CacheTTL:         "1h",
 	}
 
 	// POST：加一个 source
@@ -174,7 +173,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		t.Errorf("models = %v", cur.ModelOverrides)
 	}
 	if cur.Anthropic.DefaultMaxTokens != 32768 || cur.Anthropic.CacheEnabled == nil ||
-		*cur.Anthropic.CacheEnabled || cur.Anthropic.CacheTTL != "1h" {
+		*cur.Anthropic.CacheEnabled {
 		t.Errorf("anthropic config not preserved: %+v", cur.Anthropic)
 	}
 }
@@ -208,7 +207,6 @@ func TestAnthropicConfigCard(t *testing.T) {
 		`t('anthropicParams')`,
 		`cfg.anthropic.default_max_tokens`,
 		`cfg.anthropic.cache_enabled`,
-		`cfg.anthropic.cache_ttl`,
 		`t('loggingParams')`,
 		`class="ui-grid-3"`,
 	} {

@@ -335,6 +335,29 @@ func TestUnsupportedInputItemPreservedAsSystemContext(t *testing.T) {
 	}
 }
 
+// SDK 未来新增但网关尚未登记的 input item 由解码阶段丢弃，不得 raw dump
+// 进 system 或请求体，避免污染模型上下文。
+func TestUnknownInputItemDroppedWithoutPollution(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"future_item","payload":"x"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.System) != 0 {
+		t.Fatalf("unknown item must not enter system: %+v", out.System)
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "future_item") || strings.Contains(string(data), "openai_input_item") {
+		t.Fatalf("unknown item must not leak into request: %s", data)
+	}
+}
+
 func TestWebSearchToolMapsToAnthropicServerTool(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search","filters":{"allowed_domains":["example.com","docs.example.com"]}}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
@@ -2192,10 +2215,9 @@ func TestTopLevelCacheControlForMessageHistory(t *testing.T) {
 	}
 }
 
-// TestCacheControlTTLFromConfig 复现 gap④:TTL 必须从 config.Anthropic.CacheTTL 读,
-// "1h" 时顶层 cache_control 用 1h,默认 5m。
-func TestCacheControlTTLFromConfig(t *testing.T) {
-	t.Run("default 5m", func(t *testing.T) {
+// TestCacheControlTTL5m 验证 prompt cache TTL 固定为 5m。
+func TestCacheControlTTL5m(t *testing.T) {
+	t.Run("fixed 5m", func(t *testing.T) {
 		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
 		out, err := ToAnthropic(req, &config.Config{})
 		if err != nil {
@@ -2203,16 +2225,6 @@ func TestCacheControlTTLFromConfig(t *testing.T) {
 		}
 		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL5m {
 			t.Fatalf("default TTL want 5m, got %v", out.CacheControl.TTL)
-		}
-	})
-	t.Run("1h from config", func(t *testing.T) {
-		req := mustReq(t, `{"model":"gpt-5","input":"hi","stream":true}`)
-		out, err := ToAnthropic(req, &config.Config{Anthropic: config.AnthropicCfg{CacheTTL: "1h"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out.CacheControl.TTL != anthropic.CacheControlEphemeralTTLTTL1h {
-			t.Fatalf("configured TTL want 1h, got %v", out.CacheControl.TTL)
 		}
 	})
 	t.Run("disabled", func(t *testing.T) {
@@ -2345,8 +2357,9 @@ func TestCodeInterpreterCallHistoryDropped(t *testing.T) {
 	}
 }
 
-// TestMcpHistoryListDropped：mcp_list_tools 不折文本（opencode 无此类型；Codex 不转消息）。
-func TestMcpHistoryListDropped(t *testing.T) {
+// TestMcpHistoryListInjectsToolDeclarations：mcp_list_tools 只注入工具声明，
+// 不写 system 文本、不转模型消息（对齐 c 路径与 tool_search_output）。
+func TestMcpHistoryListInjectsToolDeclarations(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]},
 		{"type":"mcp_list_tools","id":"mcp_lt_1","server_label":"weather","tools":[{"name":"get","description":"d","input_schema":{}}]}
@@ -2358,12 +2371,15 @@ func TestMcpHistoryListDropped(t *testing.T) {
 	if len(out.System) != 0 {
 		t.Fatalf("mcp_list_tools must not enter system: %+v", out.System)
 	}
+	if findTool(out.Tools, "mcp__weather__get") == nil {
+		t.Fatalf("mcp_list_tools must inject tool declaration, tools=%+v", out.Tools)
+	}
 	data, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "mcp_list_tools") || strings.Contains(string(data), "weather") {
-		t.Fatalf("mcp_list_tools must be dropped: %s", data)
+	if strings.Contains(string(data), "mcp_list_tools") {
+		t.Fatalf("mcp_list_tools must not become model text: %s", data)
 	}
 }
 

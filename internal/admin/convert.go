@@ -27,7 +27,6 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 		Anthropic: config.AnthropicCfg{
 			DefaultMaxTokens: in.Anthropic.DefaultMaxTokens,
 			CacheEnabled:     &cacheEnabled,
-			CacheTTL:         in.Anthropic.CacheTTL,
 		},
 	}
 	for _, sv := range in.Sources {

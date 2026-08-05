@@ -107,7 +107,7 @@ Codex 会自动在 `base_url` 后拼接 `/responses` 和 `/models`。**不要把
 | Windows | `HKCU\...\CurrentVersion\Run` |
 | macOS | `~/Library/LaunchAgents/codex-api-gateway.plist` |
 
-自启命令为当前可执行文件 + `-config <绝对路径>`，工作目录为二进制所在目录，登录图形会话后自动带上 `DISPLAY`/`WAYLAND_DISPLAY`，托盘「打开」管理页可正常冷启动浏览器。
+自启命令为当前可执行文件 + `-config <绝对路径> -chdir-home`，进程启动后自动切换到用户目录（`$HOME`，与直接从用户目录启动一致），登录图形会话后自动带上 `DISPLAY`/`WAYLAND_DISPLAY`，托盘「打开」管理页可正常冷启动浏览器。
 
 **不要用** `systemd --user` 无图形环境拉起网关——浏览器冷启动会静默失败。若以前启用过：
 

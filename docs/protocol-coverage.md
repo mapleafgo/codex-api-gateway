@@ -30,7 +30,7 @@
 详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
 
 - **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`function.strict`/`service_tier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、usage（含 details）、`finish_reason` 终态。
-- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；`text.verbosity`/`safety_identifier`/`prompt_cache_key` 为 Responses 专有字段，Chat 无顶层等价，**DEBUG + 丢弃**（2026-08-01）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger / mcp_list_tools 历史 **丢弃**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
+- **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；`text.verbosity`/`safety_identifier`/`prompt_cache_key` 为 Responses 专有字段，Chat 无顶层等价，**DEBUG + 丢弃**（2026-08-01）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger 历史 **丢弃**，`mcp_list_tools` 历史**只注入工具声明**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
 - **与 a 路径关系**：Anthropic 源仍是 Responses↔Messages **直转**；Chat 是并行 Backend，不经 Chat 中枢转 Anthropic。
 
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
@@ -63,7 +63,7 @@
 - Codex CLI → Anthropic 兼容后端的 **Responses ↔ Messages 直转**。
 - 客户端自带完整 `input` 回灌；网关无 session store。
 - 可语义映射的 tool / content / SSE 生命周期；有损处登记 `lossy_supported` 并说明损失。
-- 网关按 `anthropic.cache_enabled` 自主控制 Anthropic `cache_control`，不依赖 OpenAI prompt cache key。MCP 由 Codex 客户端本地执行：网关只声明扁平 `mcp__<server>__<tool>` function，不再注入 beta MCP 配置；`anthropic.cache_ttl=1h` 时带 `extended-cache-ttl-2025-04-11` beta。
+- 网关按 `anthropic.cache_enabled` 自主控制 Anthropic `cache_control`（TTL 固定 5m），不依赖 OpenAI prompt cache key。MCP 由 Codex 客户端本地执行：网关只声明扁平 `mcp__<server>__<tool>` function，不再注入 beta MCP 配置。
 
 ### 2. 产品范围外（声明不做）
 
@@ -160,7 +160,7 @@
 ### 2026-07-31
 
 - **Chat 字段裁剪（对齐 opencode）**：`prompt_cache_options` 无 Chat 顶层槽位，删除透传、DEBUG 丢弃；`max_output_tokens` 出站保留 `max_tokens` + `max_completion_tokens` 双写（兼容旧上游与新模型）。
-- **compaction 类历史收口（Codex/opencode 对照）**：`compaction` 折独立 user `<compaction>` 密文文本（opencode 对应物是 user `<conversation-checkpoint>`，不再走 `<system-update>`；a 路径在 Anthropic 交替约束下并入相邻 user）；`compaction_trigger` 是请求控制信号，Codex 明确丢弃；`mcp_list_tools` 不转模型文本（opencode 无此类型，Codex 不把 AdditionalTools 转消息，工具经 ToolSpec/请求 tools 声明）。
+- **compaction 类历史收口（Codex/opencode 对照）**：`compaction` 折独立 user `<compaction>` 密文文本（opencode 对应物是 user `<conversation-checkpoint>`，不再走 `<system-update>`；a 路径在 Anthropic 交替约束下并入相邻 user）；`compaction_trigger` 是请求控制信号，Codex 明确丢弃；`mcp_list_tools` 只注入 `mcp__<server>__<tool>` 工具声明，不写模型文本。
 - **透传收口（用户决策）**：`reasoning_effort` 任意值原样透传，不再拒绝 `max`；`tool_call_id` 原样透传，移除出站归一化（对齐 opencode，不改写客户端可见 call_id）。
 
 ### 2026-08-01
@@ -183,7 +183,7 @@
 
 - **文档对齐实现**
   - Anthropic `stream server_tool_use`：未 catalog 的 server tool（web_fetch 等）与对应 result 为 **WARN + skip**，不是 `response.failed`（修正「仍显式失败」过时表述）。
-  - 补充「未知 Input Item 兜底」：`unknownInputItemPart` 仅对 SDK 未登记类型 raw_preserved；已知无等价类型保持 dropped。
+  - 未知 Input Item：SDK 未登记类型在解码阶段丢弃，不 raw dump 进 system；转换层保留防御分支 WARN + 丢弃。
 - **deferred 全 A 收口**
   - `reasoning.generate_summary` / `text.verbosity` / `context_management` / `max_tool_calls` → `unsupported_by_backend`（WARN + 忽略；不实现语义模拟）。`prompt_cache_retention` 同其它 prompt_cache_* 为 DEBUG + 忽略。
   - `prompt_cache_key` / `prompt_cache_options` / `prompt_cache_retention` 均为 DEBUG + 忽略（网关已自主 cache_control，可控协议差异）。
@@ -196,7 +196,7 @@
 - **hosted server tool 历史回灌**
   - `web_search_call` 历史：`server_tool_use(web_search)` + 空 `web_search_tool_result` + sources URL 折可见文本（Anthropic required `encrypted_content` 无 OpenAI 来源，填空会 400）。
   - `mcp_call` 历史：按扁平名 `mcp__<server>__<tool>` 直接回填标准 `tool_use` + `tool_result`，不重建 beta MCP 块。
-  - `mcp_list_tools` 历史：折 developer marker（server + 工具名 + error），lossy 保留可用工具线索。
+  - `mcp_list_tools` 历史：只注入 `mcp__<server>__<tool>` 工具声明，不写模型文本。
   - `mcp_approval_request` / `response`：Anthropic 无审批协议，**不实现**，WARN + 丢弃。
   - `code_interpreter_call` 的 image 输出：丢弃 + WARN；logs 保留，并写入可读占位（`image output omitted`）。
 - **出站流式**
@@ -288,9 +288,9 @@
 | `message` / EasyInputMessage | role + content | `lossy_supported` | `user` 纯文本为 string、含图片为 `[text,image_url]` parts；`developer`/`system` 折 `<system-update>` user；assistant 无文本跳过 |
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
 | `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；`id` / `tool_call_id` 原样透传（不归一化） |
-| `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错 |
+| `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错；输入缺对应 `function_call` 时孤儿 tool 输出 WARN + 丢弃 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"s":...}` freeform；相邻合并 |
-| `custom_tool_call_output` | role=tool | `supported` | |
+| `custom_tool_call_output` | role=tool | `supported` | 同 `function_call_output`；孤儿 tool 输出 WARN + 丢弃 |
 | `shell_call` / `local_shell_call` | tool_calls name=`shell` / `local_shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema；`local_shell` 用独立函数名区分回程 |
 | `shell_call_output` / `local_shell_call_output` | role=tool | `lossy_supported` | status/stdout 折文本 |
 | `apply_patch_call` | tool_calls name=`apply_patch` | `supported` | operation/path/diff 结构化 JSON 进 function arguments，含 status/caller |
@@ -300,7 +300,7 @@
 | `reasoning` | assistant `reasoning_content` | `lossy_supported` | 明文 summary/content 折入同轮/下一条 assistant；连续 assistant 段合并为一条，`content` / `reasoning_content` / `tool_calls` 同框且不重排；`encrypted_content` 丢弃（DEBUG）；孤立 reasoning 也发 assistant（`content:null` + `reasoning_content`，同 opencode） |
 | `web_search_call` 历史 | assistant tool_calls + tool 文本 | `lossy_supported` | query/sources 折文本 |
 | `code_interpreter_call` 历史 | none | `dropped` | 网关不支持 code_interpreter；静默忽略 |
-| `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批 |
+| `mcp_call` 历史 | `mcp__server__tool` + tool result | `lossy_supported` | 无审批；缺 output 时由 `ensureChatToolPaired` 补占位 tool 消息 + WARN，不伪造 `[mcp_call]` |
 | computer / file_search / image_generation / program / program_output / item_reference 历史 | none | `dropped` | **WARN** 跳过（`itemType` 显式识别，禁止静默 unknown） |
 | `compaction` | none | `dropped` | 密文不可解读（只对生成它的服务端有效），WARN 丢弃；Codex local 压缩以明文摘要 user 消息回灌，不经 compaction item |
 | `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
@@ -354,7 +354,7 @@
 | 出站 logprobs `bytes` 字段 | Chat TokenLogprob.bytes 不映射到 Responses（官方 delta logprobs 无 bytes） |
 | Responses-only：`max_tool_calls` / `background` / `conversation` / `context_management` / `prompt` 模板 | 无 Chat 等价或产品边界外 |
 | Chat-only：`frequency_penalty` / `presence_penalty` / `seed` / `stop` / `n` / `logit_bias` / `prediction` / `audio`/`modalities` / `web_search_options` | Responses 请求无对应顶层字段，无法从客户端映射 |
-| orphan tool 配对 | **已补**：缺 output 时 WARN + 占位 `role=tool` |
+| orphan tool 配对 | **已补**：缺 output 时 WARN + 占位 `role=tool`；无前驱 output 时 WARN + 丢弃（不伪造 tool_calls / user 文本） |
 
 ### 收口内已打磨（2026-07-22）
 
@@ -363,7 +363,7 @@
 | Chat `reasoning_content` 出站 + 入站回灌 | 出站→Responses reasoning + `reasoning_text.*`；入站折 `assistant.reasoning_content`（工具环同框）；无 encrypted |
 | computer/file_search/image_generation 等历史 | 显式 WARN + drop（非 unknown 静默） |
 | compaction 历史 | WARN + 丢弃（密文不可解读；Codex local 压缩以明文摘要 user 消息回灌，不走 compaction item） |
-| compaction_trigger / mcp_list_tools 历史 | DEBUG 丢弃：前者是请求控制信号（Codex 明确不保留）；后者 opencode 无此类型、Codex 不转文本（工具经 ToolSpec/请求 tools 声明） |
+| compaction_trigger / mcp_list_tools 历史 | compaction_trigger DEBUG 丢弃（请求控制信号）；mcp_list_tools 只注入工具声明，不转模型文本 |
 | tool_calls 分片 name 晚到 | 有 name 再 `output_item.added`，避免误判 function |
 | `delta.content` 数组 | 解析 text part，不整段 Feed 失败 |
 | `developer` role | 会话中折 `<system-update>` user；`instructions` 才是唯一 `role=system`（对齐 opencode） |
@@ -429,7 +429,7 @@
 | `truncation` | response echo only | `raw_preserved` | Anthropic 无直接等价策略 |
 | `include` | partial | `lossy_supported` | 已满足：`reasoning.encrypted_content`、`web_search_call.action.sources`、`message.input_image.image_url`；`message.output_text.logprobs` 仅 Chat 源 satisfied；其余（file_search/computer 等）WARN + 忽略 |
 | `prompt_cache_key` | none | `unsupported_by_backend` | Anthropic 用内容 hash 缓存(cache_control)，不认客户端 key；网关已自主设 cache_control；非空时 **DEBUG + 忽略**（Codex 常发，可控协议差异） |
-| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 可配；MCP toolset inject 后重定位 tools 末项断点；`1h` 带 `extended-cache-ttl-2025-04-11`），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **DEBUG + 忽略** |
+| `prompt_cache_options` | none | `unsupported_by_backend` | 网关已自主在 system/tools/顶层设 cache_control（TTL 固定 5m；MCP toolset inject 后重定位 tools 末项断点），OpenAI options 结构对 Anthropic 无意义；mode/ttl 非空时 **DEBUG + 忽略** |
 | `prompt_cache_retention` | none | `unsupported_by_backend` | deprecated（in_memory/24h），与 Anthropic cache_control 语义不同；非空时 **DEBUG + 忽略**（不映射 TTL） |
 | `prompt` | none | `unsupported_by_backend` | 引用 prompt template 与变量，需服务端模板存储与解析；网关无 OpenAI prompt 存储能力；`prompt.id` 非空时 **WARN + 忽略** |
 | `background` | none | `unsupported_by_backend` | 当前网关只支持同步 SSE |
@@ -469,7 +469,7 @@
 | `file_search_call` | none | `dropped` | 历史回灌 WARN + 丢弃（不 raw dump）；工具声明阶段 fail-fast |
 | `computer_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `computer_call_output` | none | `dropped` | 同上 |
-| `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；`web_search_tool_result` 必须放在 assistant 消息（DeepSeek 400 实测）；无 encrypted 时 result content 空；URL 折可见文本；open_page/find 折 query。出站 stream 见 Output/SSE |
+| `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；`web_search_tool_result` 必须放在 assistant 消息（DeepSeek 400 实测）；无 encrypted 时 result content 空；URL 折成同一 assistant 消息内可见文本（lossy，非 tool_result）；open_page/find 折 query。出站 stream 见 Output/SSE |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
 | `function_call_output` | user `tool_result` | `supported` | `output` string 或 content 数组（`input_text`/`input_image`/`input_file`）→ tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
@@ -485,10 +485,10 @@
 | `shell_call_output` | user `tool_result` | `lossy_supported` | stdout/stderr + `[status]`/`[max_output_length]`/`[exit_code]`/`[timeout]` 折文本；caller 不映射 |
 | `apply_patch_call` | assistant `tool_use` name=`apply_patch` | `supported` | operation/path/diff 结构化 JSON 透传；`status`/`caller` 折入 tool_use.input |
 | `apply_patch_call_output` | user `tool_result` | `lossy_supported` | `[status=…]` + 可选日志文本；caller 不映射 |
-| `mcp_list_tools` | none | `dropped` | opencode 无此类型；Codex 不把 AdditionalTools 转文本（工具经 ToolSpec/请求 tools 声明）；DEBUG 丢弃 |
+| `mcp_list_tools` | 注入 `mcp__<server>__<tool>` 工具声明 | `lossy_supported` | 不写模型文本；`Error` 非空 WARN 且不注入 |
 | `mcp_approval_request` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
-| `mcp_call` | `tool_use` name=`mcp__<server>__<tool>` + `tool_result` | `supported` | 扁平名直接回填；error 文本并入 tool_result |
+| `mcp_call` | `tool_use` name=`mcp__<server>__<tool>` + `tool_result` | `supported` | 扁平名直接回填；error 文本并入 tool_result；缺 output 时由 `ensureToolUsePaired` 补 `is_error` 占位 + WARN |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
 | `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
 | `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
@@ -500,7 +500,7 @@
 
 | OpenAI item | Anthropic 映射 | 当前状态 | 说明 |
 |---|---|---|---|
-| SDK 尚未登记 / `GetType` 未知的 input item | system raw marker `<openai_input_item>` | `raw_preserved` | **仅**作为前向兼容兜底：已知无等价类型（file_search / computer / image_generation / program / item_reference / additional_tools / MCP approval 等）一律 `dropped`（WARN + 不 dump）。未知类型仍注入 system 以免整段历史静默蒸发；与「禁止把已知无等价 JSON 灌 system」不冲突。若产品希望未知也 drop，可改此兜底。 |
+| SDK 尚未登记 / `GetType` 未知的 input item | none | `dropped` | 解码阶段即丢弃，不 raw dump 进 system；转换层保留防御 WARN。遇到新类型再补显式映射，不预注入占位上下文 |
 
 ## 转换后完整性保证
 
@@ -574,7 +574,7 @@
 | `apply_patch_call` | `custom_tool_call` name=`apply_patch` | `lossy_supported` | 出站以 `custom_tool_call` 形态发出（Codex 实测可消费）；不生成专用 `apply_patch_call` item type |
 | `apply_patch_call_output` | request replay only | `supported` | 不作为 output item 生成；入站历史转 `tool_result` 见 Input Item |
 | `mcp_call` | `function_call` namespace=`mcp__<server>` name=`<tool>` | `lossy_supported` | 上游若返回 MCP 工具调用，按扁平名回成 function_call 交客户端执行；不再生成 mcp_call item 与事件链 |
-| `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史丢弃（DEBUG） |
+| `mcp_list_tools` | none | `unsupported_by_backend` | 出站不生成；历史只注入工具声明，不写模型文本 |
 | `mcp_approval_request` | none | `unsupported_by_backend` | 出站不生成；`require_approval≠never` 降级 never + WARN；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 | `mcp_approval_response` | none | `unsupported_by_backend` | 出站不生成；历史回灌见 Input Item（`dropped`，WARN + 丢弃） |
 

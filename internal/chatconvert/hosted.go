@@ -145,8 +145,6 @@ func mcpHistoryArgs(call *oairesponses.ResponseInputItemMcpCallParam) (name, arg
 		result = call.Error.Value
 	} else if call.Output.Valid() {
 		result = call.Output.Value
-	} else {
-		result = "[mcp_call]"
 	}
 	return name, args, result
 }

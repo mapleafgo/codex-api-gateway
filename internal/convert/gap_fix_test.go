@@ -171,3 +171,33 @@ func TestMcpCallHistoryReplay(t *testing.T) {
 		t.Fatalf("mcp result output lost: %s", s)
 	}
 }
+
+// TestMcpCallHistoryMissingOutputGetsPlaceholder：mcp_call 缺 output 时不得
+// 静默补空 tool_result，应交由 ensureToolUsePaired 补 is_error 占位 + WARN。
+func TestMcpCallHistoryMissingOutputGetsPlaceholder(t *testing.T) {
+	buf, restore := captureWarnLogger(t)
+	defer restore()
+	req := mustReq(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"weather"}]},
+		{"type":"mcp_call","id":"mcp_1","server_label":"weather","name":"get","arguments":"{}","status":"completed"},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
+	],"stream":true}`)
+	out, err := ToAnthropic(req, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := findToolResult(out.Messages, "mcp_1")
+	if tr == nil {
+		t.Fatalf("want placeholder tool_result for mcp_1, messages=%+v", out.Messages)
+	}
+	if !tr.IsError.Valid() || !tr.IsError.Value {
+		t.Fatalf("placeholder must be is_error: %+v", tr)
+	}
+	if len(tr.Content) == 0 || tr.Content[0].OfText == nil ||
+		!strings.Contains(tr.Content[0].OfText.Text, "no tool output") {
+		t.Fatalf("placeholder content=%+v", tr.Content)
+	}
+	if !strings.Contains(buf.String(), "补占位 tool_result") {
+		t.Fatalf("expected WARN for placeholder, got: %s", buf.String())
+	}
+}
