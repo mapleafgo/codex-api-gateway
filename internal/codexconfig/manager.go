@@ -35,7 +35,7 @@ type Manager struct {
 }
 
 // New 创建 Manager。baseURL 返回网关 base URL（含 /v1），
-// 为空时 Enable/IsEnabled 返回明确错误。
+// 为空时 Enable 返回明确错误，IsEnabled 视为未启用。
 func New(baseURL func() string) *Manager {
 	return &Manager{baseURL: baseURL}
 }

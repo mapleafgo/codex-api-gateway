@@ -10,30 +10,40 @@ func isTableHeader(line string) bool {
 
 // topLevelKey 读取顶层键值（只扫描首个表头之前的行），返回 (值, 是否存在)。
 func topLevelKey(lines []string, key string) (string, bool) {
-	prefix := key + " ="
 	for _, line := range lines {
 		if isTableHeader(line) {
 			return "", false
 		}
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, prefix) {
-			return parseStringValue(trimmed[len(prefix):]), true
+		if rest, ok := valueAfterKey(line, key); ok {
+			return parseStringValue(rest), true
 		}
 	}
 	return "", false
 }
 
-// parseStringValue 从 "xxx" 形式提取字符串值；无法解析时返回空串。
+// valueAfterKey 从行首解析出等号后的值片段；命中 target 键时返回该片段。
+// 兼容 = 两侧有无空格（如 model_provider="x" / base_url = 'x'）。
+func valueAfterKey(line, target string) (string, bool) {
+	idx := strings.IndexByte(line, '=')
+	if idx < 0 {
+		return "", false
+	}
+	if key := strings.TrimSpace(line[:idx]); key != target {
+		return "", false
+	}
+	return strings.TrimSpace(line[idx+1:]), true
+}
+
+// parseStringValue 从 "xxx" 或 'xxx' 形式提取字符串值；无法解析时返回空串。
 func parseStringValue(rest string) string {
-	start := strings.IndexByte(rest, '"')
-	if start < 0 {
+	if len(rest) < 2 || (rest[0] != '"' && rest[0] != '\'') {
 		return ""
 	}
-	end := strings.LastIndexByte(rest, '"')
-	if end <= start {
-		return ""
+	q := rest[0]
+	if end := strings.IndexByte(rest[1:], q); end >= 0 {
+		return rest[1 : 1+end]
 	}
-	return rest[start+1 : end]
+	return ""
 }
 
 // upsertTopLevelKey 设置顶层键：已存在则整行替换，否则插入到首个表头之前。
@@ -44,7 +54,7 @@ func upsertTopLevelKey(lines []string, key, value string) []string {
 			lines = append(lines[:i], append([]string{replacement}, lines[i:]...)...)
 			return lines
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), key+" =") {
+		if _, ok := valueAfterKey(line, key); ok {
 			lines[i] = replacement
 			return lines
 		}
@@ -58,7 +68,7 @@ func removeTopLevelKey(lines []string, key string) []string {
 		if isTableHeader(line) {
 			return lines
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), key+" =") {
+		if _, ok := valueAfterKey(line, key); ok {
 			return append(lines[:i], lines[i+1:]...)
 		}
 	}
@@ -135,8 +145,8 @@ func tableValue(lines []string, header, key string) (string, bool) {
 			if isTableHeader(trimmed) {
 				return "", false
 			}
-			if strings.HasPrefix(trimmed, key+" =") {
-				return parseStringValue(trimmed[len(key)+2:]), true
+			if rest, ok := valueAfterKey(lines[j], key); ok {
+				return parseStringValue(rest), true
 			}
 		}
 	}

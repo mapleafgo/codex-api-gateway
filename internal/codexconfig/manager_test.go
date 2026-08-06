@@ -75,6 +75,24 @@ func TestEnableMissingConfigErrorsWithoutCreating(t *testing.T) {
 	assertNotExist(t, backupPath(home))
 }
 
+func TestEnableWithNoSpaceModelProviderProducesSingleKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	path := seedConfigFile(t, home, "model_provider=\"openai\"\n")
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if strings.Count(got, "model_provider =") != 1 {
+		t.Fatalf("无空格写法下启用不应产生重复键:\n%s", got)
+	}
+	if !strings.Contains(got, `model_provider = "codex-api-gateway"`) {
+		t.Fatalf("未正确替换 model_provider:\n%s", got)
+	}
+}
+
 func TestEnablePreservesExistingConfigAndBacksUp(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

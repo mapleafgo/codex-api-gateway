@@ -119,3 +119,33 @@ func TestTableValue(t *testing.T) {
 		t.Fatalf("tableValue=(%q,%v) want (http://x/v1,true)", v, ok)
 	}
 }
+
+func TestTopLevelKeyNoSpaceAndSingleQuote(t *testing.T) {
+	lines := splitLines(t, "model_provider=\"openai\"\n[projects.x]\n")
+	v, ok := topLevelKey(lines, "model_provider")
+	if !ok || v != "openai" {
+		t.Fatalf("topLevelKey=(%q,%v) want (openai,true)", v, ok)
+	}
+}
+
+func TestUpsertTopLevelKeyReplacesNoSpaceExisting(t *testing.T) {
+	lines := splitLines(t, "model_provider=\"openai\"\n[projects.x]\n")
+	got := joinLines(t, upsertTopLevelKey(lines, "model_provider", "codex-api-gateway"))
+	if strings.Count(got, "model_provider") != 1 {
+		t.Fatalf("不应产生重复键:\n%s", got)
+	}
+	if !strings.Contains(got, `model_provider = "codex-api-gateway"`) {
+		t.Fatalf("未替换无空格键:\n%s", got)
+	}
+}
+
+func TestTableValueSingleQuote(t *testing.T) {
+	lines := splitLines(t,
+		"[model_providers.codex-api-gateway]\n"+
+			"base_url='http://x/v1'\n"+
+			"[projects.x]\n")
+	v, ok := tableValue(lines, "[model_providers.codex-api-gateway]", "base_url")
+	if !ok || v != "http://x/v1" {
+		t.Fatalf("tableValue=(%q,%v) want (http://x/v1,true)", v, ok)
+	}
+}
