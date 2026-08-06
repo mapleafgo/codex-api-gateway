@@ -136,11 +136,11 @@ sources:
 	if cfg.Breaker.FirstByteTimeout != Duration(12*time.Second) {
 		t.Fatalf("default first_byte_timeout: got %v, want 12s", cfg.Breaker.FirstByteTimeout)
 	}
-	if cfg.Breaker.CircuitInterval != Duration(1*time.Minute) {
-		t.Fatalf("default circuit_interval: got %v, want 1m", cfg.Breaker.CircuitInterval)
+	if cfg.Breaker.CircuitInterval != Duration(30*time.Minute) {
+		t.Fatalf("default circuit_interval: got %v, want 30m", cfg.Breaker.CircuitInterval)
 	}
-	if cfg.Breaker.DegradeInterval != Duration(30*time.Second) {
-		t.Fatalf("default degrade_interval: got %v, want 30s", cfg.Breaker.DegradeInterval)
+	if cfg.Breaker.DegradeInterval != Duration(1*time.Minute) {
+		t.Fatalf("default degrade_interval: got %v, want 1m", cfg.Breaker.DegradeInterval)
 	}
 	if cfg.Breaker.DegradeThreshold != 3 {
 		t.Fatalf("default degrade_threshold: got %d, want 3", cfg.Breaker.DegradeThreshold)

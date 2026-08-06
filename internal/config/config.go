@@ -547,8 +547,8 @@ func (c *Config) validate() error {
 	}
 	def := BreakerCfg{
 		FirstByteTimeout: Duration(12 * time.Second),
-		CircuitInterval:  Duration(1 * time.Minute),
-		DegradeInterval:  Duration(30 * time.Second),
+		CircuitInterval:  Duration(30 * time.Minute),
+		DegradeInterval:  Duration(1 * time.Minute),
 		DegradeThreshold: 3,
 		RecoverThreshold: 1,
 		HalfOpenProbes:   1,

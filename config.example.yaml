@@ -44,8 +44,8 @@ breaker:
   first_byte_timeout: 12s   # 流式请求等待首个字节的最长时间，超时计为失败
   degrade_threshold: 3      # normal→degraded 需连续 N 次失败；degraded 机会窗口累计 N 次失败（中间无成功）→ circuitOpen
   recover_threshold: 1      # degraded→normal 与 halfOpen→normal 所需的连续成功次数
-  degrade_interval: 30s     # degraded 源超过此间隔无新失败则恢复到原始优先级进入机会窗口
-  circuit_interval: 1m      # 熔断(circuitOpen)后多久转为半开(halfOpen)探测
+  degrade_interval: 1m      # degraded 源超过此间隔无新失败则恢复到原始优先级进入机会窗口
+  circuit_interval: 30m     # 熔断(circuitOpen)后多久转为半开(halfOpen)探测
   half_open_probes: 1       # halfOpen 状态允许放行的探测请求数
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
   max_retries: 0            # 失败重试次数；仅全局生效，不被单源 breaker 覆盖

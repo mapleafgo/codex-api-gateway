@@ -287,7 +287,8 @@ breaker:
   first_byte_timeout: 12s
   degrade_threshold: 3
   recover_threshold: 1
-  circuit_interval: 1m
+  degrade_interval: 1m
+  circuit_interval: 30m
   half_open_probes: 1
   recovery: normal
   max_retries: 0
