@@ -160,6 +160,7 @@ func (b *Breaker) RecordSuccess() (State, State) {
 		case config.RecoveryDegraded:
 			b.st = Degraded
 			b.degradeCount = 1
+			b.degradedAt = b.now()
 		default: // RecoveryNormal
 			b.st = Normal
 			b.degradeCount = 0

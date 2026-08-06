@@ -154,6 +154,50 @@ func TestCircuitOpenHalfOpenRecoveryDegraded(t *testing.T) {
 	}
 }
 
+// TestHalfOpenRecoveryDegradedResetsDegradedAt 覆盖：半开探测成功恢复到 degraded
+// 时，必须像 RecordFailure 进入 degraded 一样重新初始化 degradedAt。否则旧时间戳
+// 会让 AutoRecover 立刻判定 degrade_interval 已超时，跳过正常的恢复冷却。
+func TestHalfOpenRecoveryDegradedResetsDegradedAt(t *testing.T) {
+	b := New(cfg(3, 1, "degraded"))
+	for i := 0; i < 6; i++ {
+		b.RecordFailure() // -> degraded -> circuitOpen
+	}
+	if b.State() != CircuitOpen {
+		t.Fatalf("setup: want circuitOpen, got %v", b.State())
+	}
+	advanceTime(b, 31*time.Second) // past circuit_interval (30s)
+	if !b.Allow() {
+		t.Fatal("should halfOpen after circuit_interval")
+	}
+	_, st := b.RecordSuccess() // recovery=degraded -> degraded
+	if st != Degraded {
+		t.Fatalf("want degraded after halfOpen success, got %v", st)
+	}
+
+	b.mu.Lock()
+	fresh := b.degradedAt
+	now := b.now()
+	b.mu.Unlock()
+	if fresh.IsZero() {
+		t.Fatal("degradedAt should be set after halfOpen->degraded recovery")
+	}
+
+	// 半开恢复成 degraded 后 degradedAt 必须重置为当前时刻（否则旧时间戳会让
+	// AutoRecover 立即判定 degrade_interval 已超时），同一时刻不得自动恢复。
+	if !fresh.Equal(now) {
+		t.Fatalf("degradedAt should be fresh after halfOpen recovery: got %v want %v", fresh, now)
+	}
+	if _, _, recovered := b.AutoRecover(); recovered {
+		t.Fatal("AutoRecover should be false immediately after halfOpen->degraded recovery")
+	}
+
+	// 超过 degrade_interval 后应恢复（机会窗口）。
+	advanceTime(b, 31*time.Second)
+	if _, _, recovered := b.AutoRecover(); !recovered {
+		t.Fatal("AutoRecover should be true after degrade_interval")
+	}
+}
+
 // --- halfOpen probe failure resets circuit_interval ---
 
 func TestHalfOpenFailResets(t *testing.T) {
