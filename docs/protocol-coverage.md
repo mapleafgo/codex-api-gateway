@@ -143,6 +143,10 @@
 
 ## 变更记录
 
+### 2026-08-06
+
+- **c 路径 assistant 统一携带 reasoning_content（Console 400）**：`chatconvert` 对所有 assistant 消息显式输出 `reasoning_content`，历史无 reasoning item 时补空串，对齐 opencode Chat 消息 schema；避免跨源历史（来自不返回 reasoning 的 cline 等源）发给 Console/DeepSeek thinking-mode 时以 `The reasoning_content ... must be passed back` 400 拒绝。
+
 ### 2026-08-05
 
 - **孤立 reasoning 空 assistant 修复（Console 400）**：c 路径 `chatconvert` 不再把无后续 assistant/tool_call 可挂载的 `reasoning` 发成 `content:null` 且无 `tool_calls` 的 assistant；Chat 协议要求 assistant 至少携带 `content` 或 `tool_calls`，严格上游（Console）实测以 `Invalid assistant message: content or tool_calls must be set` 400 拒绝。改为 **WARN + 丢弃**（无 tool_call 轮次按厂商契约可省略 reasoning 回传），并在 `ToChat` 出口增加空 assistant 清洗兜底。
@@ -268,7 +272,7 @@
 | `tool_choice` | `tool_choice` | `lossy_supported` | mode + function/custom/shell/apply_patch 名；**allowed_tools 精确过滤** tools 列表 + mode；hosted choice：web_search 映射为同名 function 强制选择，其余（含 code_interpreter）与 mcp/programmatic DEBUG 后忽略 |
 | `stream` | 固定 `true` | `supported` | 客户端 stream 与否不影响上游 |
 | `stream_options` | `include_usage: true` | `supported` | 网关强制打开 usage 末包 |
-| `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`（任意值透传，不拒绝）；历史 reasoning 回灌 `message.reasoning_content`（无 encrypted）；不 hardcode 厂商 thinking 开关 |
+| `reasoning.*` | partial | `lossy_supported` | `effort`→`reasoning_effort`（任意值透传，不拒绝）；历史 reasoning 回灌 `message.reasoning_content`；c 路径所有 assistant 统一携带 `reasoning_content`（缺失补空串，对齐 opencode）；不 hardcode 厂商 thinking 开关 |
 | `text.format` structured | none | `dropped` | 网关不支持 structured output；`json_schema`/`json_object` 忽略，不写 `response_format` |
 | `text.verbosity` | none | `dropped` | Responses 专有字段，Chat 无顶层等价；非空时 **DEBUG + 丢弃**（2026-08-01） |
 | `service_tier` | `service_tier` | `supported` | Chat 官方字段透传；a 路径仍忽略 |

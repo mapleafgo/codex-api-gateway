@@ -1767,6 +1767,42 @@ func TestToChat_ReasoningContentFromContentFallback(t *testing.T) {
 	}
 }
 
+// TestToChat_AssistantAlwaysCarriesReasoningContent 复现 Console 400：
+// c 路径统一为历史 assistant 显式携带 reasoning_content，即使没有 reasoning
+// item 也补空串，避免上游以 "reasoning_content ... must be passed back" 400。
+func TestToChat_AssistantAlwaysCarriesReasoningContent(t *testing.T) {
+	body := `{
+		"model":"deepseek-v4-flash-free",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"check"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"let me check"}]},
+			{"type":"function_call","id":"fc1","call_id":"call_1","name":"get_logs","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","output":"ok"},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+		]
+	}`
+	for _, model := range []string{"gpt-4o", "deepseek-v4-flash-free", "glm-latest"} {
+		out := mustChat(t, body, model)
+		assistants := 0
+		for _, m := range out.Messages {
+			if m.Role != "assistant" {
+				continue
+			}
+			assistants++
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(raw, []byte(`"reasoning_content":""`)) {
+				t.Fatalf("model %s assistant must carry empty reasoning_content: %s", model, raw)
+			}
+		}
+		if assistants == 0 {
+			t.Fatalf("model %s: want assistant messages: %+v", model, out.Messages)
+		}
+	}
+}
+
 func TestToChat_EmptyAssistantOutputSkipped(t *testing.T) {
 	out := mustChat(t, `{
 		"model":"gpt-4o",

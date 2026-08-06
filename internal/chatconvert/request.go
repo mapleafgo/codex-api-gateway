@@ -77,6 +77,9 @@ type ChatMessage struct {
 	ReasoningContent string         `json:"reasoning_content,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 	ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
+	// emitReasoningContent 统一 Chat wire 输出：assistant 即使没有 reasoning
+	// 文本也显式输出 reasoning_content（部分上游要求字段必须存在）。
+	emitReasoningContent bool
 }
 
 // ChatContentPart 是 user 消息的多模态内容项（text | image_url）。
@@ -97,13 +100,18 @@ type ChatImageURL struct {
 func (m ChatMessage) MarshalJSON() ([]byte, error) {
 	switch m.Role {
 	case "assistant":
+		var reasoningContent *string
+		if m.ReasoningContent != "" || m.emitReasoningContent {
+			v := m.ReasoningContent
+			reasoningContent = &v
+		}
 		return json.Marshal(struct {
 			Role             string         `json:"role"`
 			Content          any            `json:"content"`
-			ReasoningContent string         `json:"reasoning_content,omitempty"`
+			ReasoningContent *string        `json:"reasoning_content,omitempty"`
 			ToolCallID       string         `json:"tool_call_id,omitempty"`
 			ToolCalls        []ChatToolCall `json:"tool_calls,omitempty"`
-		}{m.Role, m.Content, m.ReasoningContent, m.ToolCallID, m.ToolCalls})
+		}{m.Role, m.Content, reasoningContent, m.ToolCallID, m.ToolCalls})
 	case "tool":
 		content := m.Content
 		if content == nil {
@@ -264,6 +272,7 @@ func ToChat(req *oairesponses.ResponseNewParams, model string) (*ChatRequest, er
 		return nil, err
 	}
 	out.Messages = msgs
+	markAssistantReasoningContentWire(out)
 	dropEmptyAssistants(out)
 	ensureChatToolPaired(out)
 	out.Tools = convertTools(req.Tools, out.FreeformNames)
@@ -745,6 +754,17 @@ func convertMessages(req *oairesponses.ResponseNewParams, freeform map[string]st
 			"impact", "该 reasoning 不回传 Chat 上游；无 tool_call 轮次按契约可省略")
 	}
 	return out, nil
+}
+
+// markAssistantReasoningContentWire 统一为所有 assistant 消息显式输出
+// reasoning_content：历史缺失时补空串。部分 Chat 上游（Console/DeepSeek
+// thinking-mode）要求该字段必须存在，统一补空避免 400。
+func markAssistantReasoningContentWire(out *ChatRequest) {
+	for i := range out.Messages {
+		if out.Messages[i].Role == "assistant" {
+			out.Messages[i].emitReasoningContent = true
+		}
+	}
 }
 
 // dropEmptyAssistants 收口 Chat wire 合法性：assistant 无 content 且无 tool_calls
