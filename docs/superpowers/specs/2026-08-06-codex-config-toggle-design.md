@@ -1,8 +1,8 @@
-# Codex「应用 Codex」托盘开关设计
+# Codex「应用到 Codex」托盘开关设计
 
 ## 概述
 
-系统托盘新增可勾选项「应用 Codex」：勾选后把本机 Codex CLI 的用户配置
+系统托盘新增可勾选项「应用到 Codex」：勾选后把本机 Codex CLI 的用户配置
 `$CODEX_HOME/config.toml` 指向本网关；取消勾选恢复启用前的
 `model_provider` 原值。我们的 provider 块常驻文件、不随开关增删，
 但每次启用都会整体覆盖为当前网关地址，保证端口变更后重新勾选即可刷新。
@@ -103,8 +103,8 @@ command = "echo codex-local"
 ## 托盘 UI 与 main 注入
 
 - `tray.Config` 增加 `Codex *codexconfig.Manager` 字段；
-  非 nil 时显示「应用 Codex」勾选项。
-- 菜单顺序：打开 → 分隔 → ☑ 应用 Codex → ☑ 开机自启 → 分隔 → 退出。
+  非 nil 时显示「应用到 Codex」勾选项。
+- 菜单顺序：打开 → 分隔 → ☑ 应用到 Codex → ☑ 开机自启 → 分隔 → 退出。
 - 点击逻辑复用「开机自启」模式：查询状态 → 切换 → 成功重建菜单。
 - `cmd/server` 在创建托盘时注入 Manager（base URL 闭包），
   `config.Load` 完成后写入实际地址；托盘仍最先启动，不破坏现有退出体验。
@@ -123,7 +123,7 @@ command = "echo codex-local"
 
 ## 文档
 
-- README「系统托盘」节补充「应用 Codex」说明：备份文件路径、
+- README「系统托盘」节补充「应用到 Codex」说明：备份文件路径、
   恢复语义、端口变更后重新勾选刷新。
 - 本设计文档。
 

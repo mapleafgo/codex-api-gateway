@@ -46,7 +46,7 @@ type Config struct {
 	OpenURLFunc func() string
 	// Autostart 非 nil 时显示「开机自启」勾选菜单；为 OS 自启注册的真相源。
 	Autostart *autostart.Spec
-	// Codex 非 nil 时显示「应用 Codex」勾选菜单，把 Codex CLI 指向本网关。
+	// Codex 非 nil 时显示「应用到 Codex」勾选菜单，把 Codex CLI 指向本网关。
 	Codex *codexconfig.Manager
 	// ForceSignal 为 true 时跳过图形托盘，仅监听 SIGINT/SIGTERM。
 	// 正常无需设置：systray 不可用或提前返回时 runTray 会自动降级为信号模式。
@@ -163,7 +163,7 @@ func (t *Tray) buildMenu() *systray.Menu {
 		} else {
 			enabled = on
 		}
-		menu.AddCheckbox("应用 Codex", enabled, t.onCodexToggle)
+		menu.AddCheckbox("应用到 Codex", enabled, t.onCodexToggle)
 	}
 	if t.cfg.Autostart != nil {
 		enabled := false
@@ -192,7 +192,7 @@ func (t *Tray) refreshMenu() {
 	tr.SetMenu(t.buildMenu())
 }
 
-// RefreshMenu 重建托盘菜单（用于 base URL 就绪后刷新「应用 Codex」勾选态）。
+// RefreshMenu 重建托盘菜单（用于 base URL 就绪后刷新「应用到 Codex」勾选态）。
 func (t *Tray) RefreshMenu() {
 	t.refreshMenu()
 }

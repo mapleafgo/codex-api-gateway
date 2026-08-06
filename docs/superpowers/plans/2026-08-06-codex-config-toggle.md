@@ -1,8 +1,8 @@
-# Codex「应用 Codex」托盘开关 Implementation Plan
+# Codex「应用到 Codex」托盘开关 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 系统托盘新增「应用 Codex」勾选项，把 Codex CLI 的 `$CODEX_HOME/config.toml` 指向本网关；取消勾选恢复启用前的 `model_provider` 原值。
+**Goal:** 系统托盘新增「应用到 Codex」勾选项，把 Codex CLI 的 `$CODEX_HOME/config.toml` 指向本网关；取消勾选恢复启用前的 `model_provider` 原值。
 
 **Architecture:** 新增 `internal/codexconfig`：`FindCodexHome` 一比一复刻 codex-rs 的 `CODEX_HOME` 判定；行级精确编辑 `config.toml`（不重排、不解析重写），备份原 `model_provider` 到侧车 JSON；启用时整体覆盖 `codex-api-gateway` provider 块并置 `model_provider`，禁用只恢复 `model_provider`。托盘复用「开机自启」的 `AddCheckbox` + 重建菜单模式，`main` 注入 base URL 并在配置就绪后刷新菜单。
 
@@ -29,11 +29,11 @@
 | `internal/codexconfig/toml_edit_test.go` | 行级编辑助手测试 |
 | `internal/codexconfig/manager.go` | `Manager`：`IsEnabled/Enable/Disable` + 备份 |
 | `internal/codexconfig/manager_test.go` | 开关全流程测试 |
-| `internal/tray/tray.go` | `Config.Codex` 字段、「应用 Codex」勾选项、`RefreshMenu` |
+| `internal/tray/tray.go` | `Config.Codex` 字段、「应用到 Codex」勾选项、`RefreshMenu` |
 | `internal/tray/tray_test.go` | 托盘开关回调测试 |
 | `cmd/server/main.go` | 注入 base URL 闭包、config 加载后刷新菜单 |
 | `cmd/server/main_test.go` | `codexBaseURL` 测试 |
-| `README.md` | 系统托盘节补充「应用 Codex」说明（不提交，见全局约束） |
+| `README.md` | 系统托盘节补充「应用到 Codex」说明（不提交，见全局约束） |
 
 ---
 
@@ -126,7 +126,7 @@ Expected: `FAIL`，`undefined: FindCodexHome`（包目录刚创建）。
 
 ```go
 // Package codexconfig 读写 Codex CLI 的用户配置目录与 config.toml，
-// 供托盘「应用 Codex」开关复用 codex-rs 的配置目录判定逻辑。
+// 供托盘「应用到 Codex」开关复用 codex-rs 的配置目录判定逻辑。
 package codexconfig
 
 import (
@@ -847,7 +847,7 @@ type backupState struct {
 	ModelProvider *string `json:"model_provider"`
 }
 
-// Manager 管理 Codex「应用 Codex」开关：修改 $CODEX_HOME/config.toml 的
+// Manager 管理 Codex「应用到 Codex」开关：修改 $CODEX_HOME/config.toml 的
 // model_provider 与 codex-api-gateway provider 块。方法并发安全。
 type Manager struct {
 	baseURL func() string
@@ -1064,7 +1064,7 @@ Expected: `PASS`
 
 ```bash
 git add internal/codexconfig/manager.go internal/codexconfig/manager_test.go
-git commit -m "feat(codexconfig): 新增「应用 Codex」开关管理器"
+git commit -m "feat(codexconfig): 新增「应用到 Codex」开关管理器"
 ```
 
 ---
@@ -1194,7 +1194,7 @@ import 追加：
 `Config` 结构体追加字段（`Autostart` 之后）：
 
 ```go
-	// Codex 非 nil 时显示「应用 Codex」勾选菜单，把 Codex CLI 指向本网关。
+	// Codex 非 nil 时显示「应用到 Codex」勾选菜单，把 Codex CLI 指向本网关。
 	Codex *codexconfig.Manager
 ```
 
@@ -1214,7 +1214,7 @@ func (t *Tray) buildMenu() *systray.Menu {
 		} else {
 			enabled = on
 		}
-		menu.AddCheckbox("应用 Codex", enabled, t.onCodexToggle)
+		menu.AddCheckbox("应用到 Codex", enabled, t.onCodexToggle)
 	}
 	if t.cfg.Autostart != nil {
 		enabled := false
@@ -1236,7 +1236,7 @@ func (t *Tray) buildMenu() *systray.Menu {
 `refreshMenu` 之后追加导出方法与回调：
 
 ```go
-// RefreshMenu 重建托盘菜单（用于 base URL 就绪后刷新「应用 Codex」勾选态）。
+// RefreshMenu 重建托盘菜单（用于 base URL 就绪后刷新「应用到 Codex」勾选态）。
 func (t *Tray) RefreshMenu() {
 	t.refreshMenu()
 }
@@ -1323,7 +1323,7 @@ Expected: 全部 `PASS`。
 
 ```bash
 git add cmd/server/main.go cmd/server/main_test.go internal/tray/tray.go internal/tray/tray_test.go
-git commit -m "feat(tray): 托盘新增「应用 Codex」勾选项"
+git commit -m "feat(tray): 托盘新增「应用到 Codex」勾选项"
 ```
 
 ---
@@ -1338,9 +1338,9 @@ git commit -m "feat(tray): 托盘新增「应用 Codex」勾选项"
 在 README「开机自启（推荐托盘勾选）」小节之后追加：
 
 ```markdown
-### 应用 Codex（推荐托盘勾选）
+### 应用到 Codex（推荐托盘勾选）
 
-托盘菜单提供 **「应用 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
+托盘菜单提供 **「应用到 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
 `$CODEX_HOME/config.toml` 指向本网关（新增 `model_providers.codex-api-gateway`
 并置 `model_provider = "codex-api-gateway"`，`base_url` 自动取当前监听端口）；
 取消勾选恢复启用前的 `model_provider` 原值。
@@ -1368,14 +1368,14 @@ Expected: 全部通过。
 ```bash
 git status --short
 git add internal/ cmd/ docs/superpowers/specs/2026-08-06-codex-config-toggle-design.md docs/superpowers/plans/2026-08-06-codex-config-toggle.md
-git commit -m "feat(codexconfig): 托盘「应用 Codex」开关实现与设计文档"
+git commit -m "feat(codexconfig): 托盘「应用到 Codex」开关实现与设计文档"
 ```
 
 若工作区此时只有本任务的产物且无用户改动，可另行提交 README：
 
 ```bash
 git add README.md
-git commit -m "docs: README 补充「应用 Codex」托盘开关说明"
+git commit -m "docs: README 补充「应用到 Codex」托盘开关说明"
 ```
 
 否则 README 变更留给用户确认，最终答复中说明。

@@ -117,9 +117,9 @@ systemctl --user disable --now codex-api-gateway.service
 
 可选：`task install-autostart` 仍可安装应用菜单快捷方式（兼写 autostart desktop，与托盘开关读写同一文件）。
 
-### 应用 Codex（推荐托盘勾选）
+### 应用到 Codex（推荐托盘勾选）
 
-托盘菜单提供 **「应用 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
+托盘菜单提供 **「应用到 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
 `$CODEX_HOME/config.toml` 指向本网关（新增 `model_providers.codex-api-gateway`
 并置 `model_provider = "codex-api-gateway"`，`base_url` 自动取当前监听端口）；
 取消勾选恢复启用前的 `model_provider` 原值。
@@ -130,7 +130,7 @@ systemctl --user disable --now codex-api-gateway.service
 
 ### 手动配置 Codex CLI（可选）
 
-一般不需要手动配置：直接用上方托盘「应用 Codex」勾选即可。以下内容保留给脚本化或特殊场景参考。
+一般不需要手动配置：直接用上方托盘「应用到 Codex」勾选即可。以下内容保留给脚本化或特殊场景参考。
 
 **方式一：改 `~/.codex/config.toml`**
 
