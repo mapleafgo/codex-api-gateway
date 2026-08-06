@@ -117,23 +117,35 @@ systemctl --user disable --now codex-api-gateway.service
 
 可选：`task install-autostart` 仍可安装应用菜单快捷方式（兼写 autostart desktop，与托盘开关读写同一文件）。
 
+### 应用 Codex（推荐托盘勾选）
 
-### 配置 Codex CLI 指向网关
+托盘菜单提供 **「应用 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
+`$CODEX_HOME/config.toml` 指向本网关（新增 `model_providers.codex-api-gateway`
+并置 `model_provider = "codex-api-gateway"`，`base_url` 自动取当前监听端口）；
+取消勾选恢复启用前的 `model_provider` 原值。
 
-网关启动并配好上游源后，让 Codex CLI 走网关而不是直连 OpenAI。Codex 支持三种等价方式，任选其一。
+- 启用前的原值备份在 `~/.codex/codex-api-gateway-backup.json`，恢复后自动删除。
+- `config.toml` 不存在时不自动创建，请先运行一次 codex 生成配置。
+- 网关监听端口变更后，重新勾选一次即可刷新 provider 块的 `base_url`。
 
-**方式一：改 `~/.codex/config.toml`（推荐，一劳永逸）**
+### 手动配置 Codex CLI（可选）
+
+一般不需要手动配置：直接用上方托盘「应用 Codex」勾选即可。以下内容保留给脚本化或特殊场景参考。
+
+**方式一：改 `~/.codex/config.toml`**
 
 在 `[model_providers]` 下加一个自定义 provider，`base_url` 指向网关根（含 `/v1`，不要带 `/responses` 或 `/models`），`wire_api` 必须设为 `responses`（网关是 OpenAI Responses 兼容端点）：
 
 ```toml
-model_provider = "custom"
+model_provider = "codex-api-gateway"
 
-[model_providers.gateway]
-name = "codex-api-gateway"
+[model_providers.codex-api-gateway]
+name = "Codex API Gateway"
 base_url = "http://127.0.0.1:8383/v1"
-requires_openai_auth = true   # 网关不校验 key，但 Codex 需要此字段为 true 才会带 Authorization 头
 wire_api = "responses"
+
+[model_providers.codex-api-gateway.auth]
+command = "echo codex-local"   # 输出占位符即可，网关 /v1/* 不校验入站 Authorization
 ```
 
 `model` 填网关 `models` 段声明的别名（即 `model_map` 的键，例如 `gpt-5`），网关再映射成上游真实模型。
@@ -143,11 +155,11 @@ wire_api = "responses"
 不改配置文件，用 `-c` 传 TOML 键值（点路径表示嵌套），优先级高于 `config.toml`：
 
 ```bash
-codex -c 'model_provider="custom"' \
-      -c 'model_providers.gateway.name="codex-api-gateway"' \
-      -c 'model_providers.gateway.base_url="http://127.0.0.1:8383/v1"' \
-      -c 'model_providers.gateway.requires_openai_auth=true' \
-      -c 'model_providers.gateway.wire_api="responses"' \
+codex -c 'model_provider="codex-api-gateway"' \
+      -c 'model_providers.codex-api-gateway.name="Codex API Gateway"' \
+      -c 'model_providers.codex-api-gateway.base_url="http://127.0.0.1:8383/v1"' \
+      -c 'model_providers.codex-api-gateway.wire_api="responses"' \
+      -c 'model_providers.codex-api-gateway.auth.command="echo codex-local"' \
       -m gpt-5
 ```
 
