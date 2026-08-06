@@ -18,8 +18,11 @@
 - 配置文件：`codex-rs/core/src/config/mod.rs` 的
   `CONFIG_TOML_FILE = "config.toml"`；用户层即 `$CODEX_HOME/config.toml`。
 - provider 字段：`codex-rs/model-provider-info/src/lib.rs` 的
-  `ModelProviderInfo`，`wire_api` 仅支持 `responses`，
-  `requires_openai_auth` 默认 `false`（跳过登录界面、凭据不走 auth.json）。
+  `ModelProviderInfo`，`wire_api` 仅支持 `responses`；
+  `requires_openai_auth` 默认 `false`（跳过登录界面、凭据不走 auth.json），
+  且 `auth` 与 `requires_openai_auth = true` 冲突（validate 报
+  `provider auth cannot be combined with requires_openai_auth`），
+  因此我们的块不写该字段，保持默认 false 语义。
 - 编辑方式：codex 自身用 `ConfigEditsBuilder`（`core/src/config/edit.rs`）
   做文档级精确编辑并原子写回；本设计对齐该思路，行级精确编辑，不重排文件。
 
@@ -33,6 +36,8 @@
 - 备份文件 `~/.codex/codex-api-gateway-backup.json`（0600）只存启用前的
   `model_provider` 原值。
 - 禁用只恢复 `model_provider`；我们的 provider 块保留，不增不删。
+- provider 块只写 `auth.command`，不写 `requires_openai_auth`，
+  避免与 codex 的 auth 冲突校验相撞。
 - 不自动创建 `~/.codex` 或 `config.toml`；配置文件缺失时启用直接报错。
 
 ## API
@@ -61,7 +66,7 @@ base URL 由 main 注入：`adminURLFromListen(cfg.Server.Listen) + "/v1"`。
 3. 若备份文件尚不存在，写入当前 `model_provider` 原值（无则 `null`）。
 4. 整体覆盖 `[model_providers.codex-api-gateway]` 块（含嵌套 `auth` 表），
    内容为当前 base URL、`wire_api = "responses"`、
-   `requires_openai_auth = false`、`auth.command = "echo codex-local"`。
+   `auth.command = "echo codex-local"`；不写 `requires_openai_auth`。
 5. 设置顶层 `model_provider = "codex-api-gateway"`。
 6. 原子写回，保留原文件权限（新文件 0600）。
 
@@ -70,7 +75,6 @@ base URL 由 main 注入：`adminURLFromListen(cfg.Server.Listen) + "/v1"`。
 name = "Codex API Gateway"
 base_url = "http://127.0.0.1:9870/v1"
 wire_api = "responses"
-requires_openai_auth = false
 
 [model_providers.codex-api-gateway.auth]
 command = "echo codex-local"
