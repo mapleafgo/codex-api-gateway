@@ -13,11 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/admin"
 	"github.com/mapleafgo/codex-api-gateway/internal/autostart"
+	"github.com/mapleafgo/codex-api-gateway/internal/codexconfig"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/configwatch"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
@@ -104,6 +106,18 @@ func main() {
 		slog.Debug("无法解析可执行文件路径，隐藏开机自启菜单")
 	}
 
+	// Codex base URL 在 config.Load 前未知：托盘先创建，配置就绪后
+	// 写入 codexBase 并刷新菜单，勾选态按真实监听地址判定。
+	var (
+		codexMu   sync.RWMutex
+		codexBase string
+	)
+	codexMgr := codexconfig.New(func() string {
+		codexMu.RLock()
+		defer codexMu.RUnlock()
+		return codexBase
+	})
+
 	t := tray.New(tray.Config{
 		Tooltip: "codex-api-gateway",
 		// -d 后台模式同样启用托盘：systray 异常或提前返回时 tray 包内部
@@ -116,6 +130,7 @@ func main() {
 			return adminURL
 		},
 		Autostart: autoSpec,
+		Codex:     codexMgr,
 	})
 	go t.Run()
 
@@ -215,6 +230,10 @@ func main() {
 	urlMu.Lock()
 	adminURL = adminURLFromListen(cfg.Server.Listen)
 	urlMu.Unlock()
+	codexMu.Lock()
+	codexBase = codexBaseURL(cfg.Server.Listen)
+	codexMu.Unlock()
+	t.RefreshMenu()
 
 	// 阻塞直到托盘退出（tray.Quit / 信号 / tray 内部降级退出），
 	// 或 HTTP server 运行期自行退出（listener 被外部关闭等）——后者若只等
@@ -265,6 +284,11 @@ func adminURLFromListen(listen string) string {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port) + "/"
+}
+
+// codexBaseURL 把 server.listen 转成 Codex provider 的 base_url（含 /v1）。
+func codexBaseURL(listen string) string {
+	return strings.TrimSuffix(adminURLFromListen(listen), "/") + "/v1"
 }
 
 // autostartSpec 用当前可执行文件与 config 路径构建自启 Spec。

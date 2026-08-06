@@ -1,8 +1,12 @@
 package tray
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/codexconfig"
 )
 
 // TestNewDefaultsTooltip 验证 Tooltip 为空时填充默认文案。
@@ -160,6 +164,44 @@ func TestMergeEnv(t *testing.T) {
 			t.Fatal("不应覆盖已有 DISPLAY")
 		}
 	}
+}
+
+func TestOnCodexToggleEnablesAndRestores(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	path := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("model_provider = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := codexconfig.New(func() string { return "http://127.0.0.1:8383/v1" })
+	tr := New(Config{Codex: mgr})
+
+	tr.onCodexToggle()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `model_provider = "codex-api-gateway"`) {
+		t.Fatalf("勾选后应启用 Codex:\n%s", data)
+	}
+
+	tr.onCodexToggle()
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `model_provider = "openai"`) {
+		t.Fatalf("取消勾选后应恢复:\n%s", data)
+	}
+}
+
+func TestRefreshMenuSafeWhenNoTray(t *testing.T) {
+	tr := New(Config{})
+	tr.RefreshMenu() // 不应 panic
 }
 
 // TestWithDesktopSessionEnvSkipsWhenDisplayPresent 已有 DISPLAY 时不改 env。

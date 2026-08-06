@@ -31,6 +31,7 @@ import (
 	"github.com/gogpu/systray"
 	"github.com/mapleafgo/codex-api-gateway/assets"
 	"github.com/mapleafgo/codex-api-gateway/internal/autostart"
+	"github.com/mapleafgo/codex-api-gateway/internal/codexconfig"
 )
 
 // logoBytes 从共享 assets 包获取，托盘与管理页 favicon 共用同一份 logo。
@@ -45,6 +46,8 @@ type Config struct {
 	OpenURLFunc func() string
 	// Autostart 非 nil 时显示「开机自启」勾选菜单；为 OS 自启注册的真相源。
 	Autostart *autostart.Spec
+	// Codex 非 nil 时显示「应用 Codex」勾选菜单，把 Codex CLI 指向本网关。
+	Codex *codexconfig.Manager
 	// ForceSignal 为 true 时跳过图形托盘，仅监听 SIGINT/SIGTERM。
 	// 正常无需设置：systray 不可用或提前返回时 runTray 会自动降级为信号模式。
 	// 仅作为显式禁用托盘的逃生开关（如 GATEWAY_NO_TRAY=1）。
@@ -153,6 +156,15 @@ func (t *Tray) buildMenu() *systray.Menu {
 		menu.Add("打开", t.onOpen)
 		menu.AddSeparator()
 	}
+	if t.cfg.Codex != nil {
+		enabled := false
+		if on, err := t.cfg.Codex.IsEnabled(); err != nil {
+			slog.Debug("查询 Codex 接入状态失败", "error", err)
+		} else {
+			enabled = on
+		}
+		menu.AddCheckbox("应用 Codex", enabled, t.onCodexToggle)
+	}
 	if t.cfg.Autostart != nil {
 		enabled := false
 		if on, err := t.cfg.Autostart.IsEnabled(); err != nil {
@@ -161,6 +173,8 @@ func (t *Tray) buildMenu() *systray.Menu {
 			enabled = on
 		}
 		menu.AddCheckbox("开机自启", enabled, t.onAutostartToggle)
+	}
+	if t.cfg.Codex != nil || t.cfg.Autostart != nil {
 		menu.AddSeparator()
 	}
 	menu.Add("退出", t.onQuit)
@@ -176,6 +190,37 @@ func (t *Tray) refreshMenu() {
 		return
 	}
 	tr.SetMenu(t.buildMenu())
+}
+
+// RefreshMenu 重建托盘菜单（用于 base URL 就绪后刷新「应用 Codex」勾选态）。
+func (t *Tray) RefreshMenu() {
+	t.refreshMenu()
+}
+
+// onCodexToggle 切换 Codex 接入；失败时保持原勾选并记 WARN。
+func (t *Tray) onCodexToggle() {
+	if t.cfg.Codex == nil {
+		return
+	}
+	on, err := t.cfg.Codex.IsEnabled()
+	if err != nil {
+		slog.Warn("查询 Codex 接入状态失败", "error", err)
+		return
+	}
+	if on {
+		if err := t.cfg.Codex.Disable(); err != nil {
+			slog.Warn("关闭 Codex 接入失败", "error", err)
+			return
+		}
+		slog.Info("已关闭 Codex 接入")
+	} else {
+		if err := t.cfg.Codex.Enable(); err != nil {
+			slog.Warn("开启 Codex 接入失败", "error", err)
+			return
+		}
+		slog.Info("已开启 Codex 接入")
+	}
+	t.refreshMenu()
 }
 
 // onAutostartToggle 切换开机自启；失败时保持原勾选并记 WARN。
