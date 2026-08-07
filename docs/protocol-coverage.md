@@ -323,7 +323,7 @@
 | `apply_patch` | function name=`apply_patch` | `supported` | freeform `parameters={s:string}`；历史按客户端 operation/path/diff 直接回填（见 Input Item）；回程对 structured JSON 输出兜底折 V4A |
 | `tool_search` | function name=`tool_search` | `supported` | |
 | `namespace` | 展平 `ns__name` function | `lossy_supported` | 仅 function/custom 子项；嵌套 function 同样做 schema 投影 |
-| `web_search` | function `web_search` | `lossy_supported` | 无 server 搜索 |
+| `web_search` | function `web_search` | `lossy_supported` | 仅当源显式 `supports_web_search: true` 时 function 化；c 缺省 false 会先剥掉声明 |
 | `code_interpreter` | none | `unsupported_by_backend` | 网关不支持；声明跳过（Debug） |
 | `mcp` | `mcp__{server}__{tool}`（allowed_tools 列表） | `lossy_supported` | `server_description` 折入工具 description；连接/审批不注入；filter 不展开 |
 | file_search / computer / image_generation / programmatic | none | `unsupported_by_backend` | 声明跳过 |

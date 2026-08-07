@@ -12,7 +12,10 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
+	oaconstant "github.com/openai/openai-go/v3/shared/constant"
 )
+
+var allowedToolsType = string(oaconstant.ValueOf[oaconstant.AllowedTools]())
 
 // ResponsesBackend 将 Responses 请求透传到 OpenAI Responses 上游（仅流式）。
 type ResponsesBackend struct {
@@ -107,7 +110,7 @@ func neutralizeRawWebSearchToolChoice(m map[string]any) bool {
 		delete(m, "tool_choice")
 		return true
 	}
-	if typ != "allowed_tools" {
+	if typ != allowedToolsType {
 		return false
 	}
 	rawTools, ok := rawTC["tools"].([]any)
