@@ -439,23 +439,24 @@ type anthropicView struct {
 	CacheEnabled     bool `json:"cache_enabled"`
 }
 type sourceView struct {
-	Name         string            `json:"name"`
-	BaseURL      string            `json:"base_url"`
-	APIKey       string            `json:"api_key"`
-	BackendType  string            `json:"backend_type"`
-	ModelMap     map[string]string `json:"model_map"`
-	DefaultModel string            `json:"default_model"`
-	Breaker      *breakerView      `json:"breaker,omitempty"`
-	Disabled     bool              `json:"disabled"`
-	Headers      map[string]string `json:"headers,omitempty"`
+	Name              string            `json:"name"`
+	BaseURL           string            `json:"base_url"`
+	APIKey            string            `json:"api_key"`
+	BackendType       string            `json:"backend_type"`
+	ModelMap          map[string]string `json:"model_map"`
+	DefaultModel      string            `json:"default_model"`
+	Breaker           *breakerView      `json:"breaker,omitempty"`
+	Disabled          bool              `json:"disabled"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	SupportsWebSearch *bool             `json:"supports_web_search,omitempty"`
 }
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
 type modelViewItem struct {
-	Slug           string `json:"slug"`
-	ContextWindow  *int64 `json:"context_window,omitempty"`
-	SupportsImage  *bool  `json:"supports_image,omitempty"`
-	SupportsSearch *bool  `json:"supports_search,omitempty"`
+	Slug                        string `json:"slug"`
+	ContextWindow               *int64 `json:"context_window,omitempty"`
+	AcceptsImage                *bool  `json:"accepts_image,omitempty"`
+	SupportsImageDetailOriginal *bool  `json:"supports_image_detail_original,omitempty"`
 }
 
 // adminConfigInput 是 POST /admin/api/config 接收的视图，与 adminConfigView 同构。
@@ -515,8 +516,9 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
 			BackendType: bt,
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
-			Disabled: src.Disabled,
-			Headers:  src.Headers,
+			Disabled:          src.Disabled,
+			Headers:           src.Headers,
+			SupportsWebSearch: src.SupportsWebSearch,
 		}
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
@@ -534,10 +536,10 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	for _, slug := range cfg.ConfiguredModelSlugs() {
 		override := cfg.ModelOverrides[slug]
 		view.Models = append(view.Models, modelViewItem{
-			Slug:           slug,
-			ContextWindow:  override.ContextWindow,
-			SupportsImage:  override.SupportsImageDetailOriginal,
-			SupportsSearch: override.SupportsSearchTool,
+			Slug:                        slug,
+			ContextWindow:               override.ContextWindow,
+			AcceptsImage:                override.AcceptsImage,
+			SupportsImageDetailOriginal: override.SupportsImageDetailOriginal,
 		})
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -822,14 +824,15 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	next.Sources = make([]config.Source, len(cur.Sources)+1)
 	copy(next.Sources, cur.Sources)
 	next.Sources[len(cur.Sources)] = config.Source{
-		Name:         name,
-		BaseURL:      baseURL,
-		APIKey:       strings.TrimSpace(in.APIKey),
-		BackendType:  norm,
-		ModelMap:     map[string]string{},
-		DefaultModel: strings.TrimSpace(in.DefaultModel),
-		Disabled:     in.Disabled,
-		Headers:      headers,
+		Name:              name,
+		BaseURL:           baseURL,
+		APIKey:            strings.TrimSpace(in.APIKey),
+		BackendType:       norm,
+		ModelMap:          map[string]string{},
+		DefaultModel:      strings.TrimSpace(in.DefaultModel),
+		Disabled:          in.Disabled,
+		Headers:           headers,
+		SupportsWebSearch: in.SupportsWebSearch,
 	}
 	if err := next.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
@@ -971,8 +974,8 @@ func (h *handler) handleAddModel(w http.ResponseWriter, r *http.Request) {
 	next.ModelSlugOrder = append(next.ModelSlugOrder, slug)
 	next.ModelOverrides[slug] = config.ModelOverride{
 		ContextWindow:               in.ContextWindow,
-		SupportsImageDetailOriginal: in.SupportsImage,
-		SupportsSearchTool:          in.SupportsSearch,
+		AcceptsImage:                in.AcceptsImage,
+		SupportsImageDetailOriginal: in.SupportsImageDetailOriginal,
 	}
 	if err := next.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})

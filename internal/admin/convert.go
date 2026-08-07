@@ -37,8 +37,9 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 		src := config.Source{
 			Name: sv.Name, BaseURL: sv.BaseURL, APIKey: sv.APIKey,
 			BackendType: bt, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
-			Disabled: sv.Disabled,
-			Headers:  sv.Headers,
+			Disabled:          sv.Disabled,
+			Headers:           sv.Headers,
+			SupportsWebSearch: sv.SupportsWebSearch,
 		}
 		if sv.Breaker != nil {
 			b := breakerViewToCfg(*sv.Breaker)
@@ -59,8 +60,8 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 			order = append(order, slug)
 			cfg.ModelOverrides[slug] = config.ModelOverride{
 				ContextWindow:               mv.ContextWindow,
-				SupportsImageDetailOriginal: mv.SupportsImage,
-				SupportsSearchTool:          mv.SupportsSearch,
+				AcceptsImage:                mv.AcceptsImage,
+				SupportsImageDetailOriginal: mv.SupportsImageDetailOriginal,
 			}
 		}
 		cfg.ModelSlugOrder = order

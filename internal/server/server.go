@@ -152,7 +152,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	不注入（保持零值）：
 //	  - default_reasoning_level / service_tiers / default_service_tier 等
 //
-// config.yaml models.<slug> 可覆盖 context_window / supports_image / supports_search；
+// config.yaml models.<slug> 可覆盖 context_window / accepts_image / supports_image_detail_original；
 // 其余字段硬编码统一注入。
 func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 	emptyStr := ""
@@ -261,7 +261,7 @@ func (s *Server) resolveModelOverride(slug string) (config.ModelOverride, bool) 
 }
 
 // applyModelOverride 把 ModelOverride 覆盖到 CodexModelInfo（仅覆盖非 nil 字段）。
-// 开放 context_window / supports_image / supports_search；其余能力由 codexModelInfo 默认注入。
+// 开放 context_window / accepts_image / supports_image_detail_original；其余能力固定注入。
 func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 	// context_window 同时应用到 ContextWindow 与 MaxContextWindow：Codex ModelInfo 协议
 	// 要求两个字段，网关场景二者相等，config 只暴露一个 context_window 输入。
@@ -269,15 +269,13 @@ func applyModelOverride(info *model.CodexModelInfo, ov *config.ModelOverride) {
 		info.ContextWindow = ov.ContextWindow
 		info.MaxContextWindow = ov.ContextWindow
 	}
+	// AcceptsImage 控制 input_modalities：true/nil 含 image（能识别图片），
+	// false 仅 text（Codex 发请求前会 strip 掉历史里的所有图片）。
+	if ov.AcceptsImage != nil && !*ov.AcceptsImage {
+		info.InputModalities = []string{"text"}
+	}
 	if ov.SupportsImageDetailOriginal != nil {
 		info.SupportsImageDetailOriginal = *ov.SupportsImageDetailOriginal
-	}
-	if ov.SupportsSearchTool != nil {
-		info.SupportsSearchTool = *ov.SupportsSearchTool
-		// 关闭搜索时一并清空 web_search 工具类型，避免 Codex 仍声明 web 搜索。
-		if !*ov.SupportsSearchTool {
-			info.WebSearchToolType = ""
-		}
 	}
 }
 
@@ -851,8 +849,6 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			clientToolNames = append(clientToolNames, t.OfCustom.Name)
 		case t.OfWebSearch != nil:
 			counts["web_search"]++
-		case t.OfWebSearchPreview != nil:
-			counts["web_search_preview"]++
 		case t.OfCodeInterpreter != nil:
 			counts["code_interpreter"]++
 		case t.OfApplyPatch != nil:
@@ -880,7 +876,7 @@ func toolSummaryAttrs(tools []oairesponses.ToolUnionParam) []any {
 			counts["other"]++
 		}
 	}
-	keys := []string{"mcp", "function", "custom", "web_search", "web_search_preview", "code_interpreter", "apply_patch", "shell", "local_shell", "tool_search", "namespace", "other"}
+	keys := []string{"mcp", "function", "custom", "web_search", "code_interpreter", "apply_patch", "shell", "local_shell", "tool_search", "namespace", "other"}
 	attrs := []any{slog.Int("total", len(tools))}
 	for _, k := range keys {
 		if counts[k] > 0 {

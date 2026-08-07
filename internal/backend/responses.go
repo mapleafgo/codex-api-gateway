@@ -49,6 +49,9 @@ func PrepareUpstreamBody(raw []byte, src *config.Source, log *slog.Logger) (body
 	}
 	m["model"] = resolved
 	m["stream"] = true
+	if !src.SupportsWebSearchValue() {
+		stripWebSearchTools(m, log)
+	}
 	rewriteReasoningSummaryToContent(m, log)
 
 	body, err = json.Marshal(m)
@@ -56,6 +59,83 @@ func PrepareUpstreamBody(raw []byte, src *config.Source, log *slog.Logger) (body
 		return nil, "", "", fmt.Errorf("marshal: %w", err)
 	}
 	return body, clientModel, resolved, nil
+}
+
+// stripWebSearchTools 从 Responses 请求 tools 数组里剥掉 hosted web_search 声明。
+// r 直通路径原样透传 tools 给上游；上游若只支持标准 OpenAI Responses（不认识
+// web_search hosted tool），声明会导致 400/断流。按源能力控制后，仅在此源不支持
+// web_search 时剥除，保留其他工具不变。
+func stripWebSearchTools(m map[string]any, log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
+	rawTools, ok := m["tools"].([]any)
+	if ok {
+		out := make([]any, 0, len(rawTools))
+		removed := 0
+		for _, raw := range rawTools {
+			obj, ok := raw.(map[string]any)
+			if ok {
+				typ, _ := obj["type"].(string)
+				if isWebSearchTypeString(typ) {
+					removed++
+					continue
+				}
+			}
+			out = append(out, raw)
+		}
+		if removed > 0 {
+			m["tools"] = out
+			log.Debug("responses: 源不支持 hosted web_search，剥掉工具声明",
+				"removed", removed)
+		}
+	}
+	if neutralizeRawWebSearchToolChoice(m) {
+		log.Debug("responses: 源不支持 hosted web_search，清理 tool_choice/allowed_tools")
+	}
+}
+
+// neutralizeRawWebSearchToolChoice 从透传 JSON 里移除 tool_choice / allowed_tools
+// 对 hosted web_search 的引用。true 表示发生了修改。
+func neutralizeRawWebSearchToolChoice(m map[string]any) bool {
+	rawTC, ok := m["tool_choice"].(map[string]any)
+	if !ok {
+		return false
+	}
+	typ, _ := rawTC["type"].(string)
+	if isWebSearchTypeString(typ) {
+		delete(m, "tool_choice")
+		return true
+	}
+	if typ != "allowed_tools" {
+		return false
+	}
+	rawTools, ok := rawTC["tools"].([]any)
+	if !ok {
+		return false
+	}
+	out := make([]any, 0, len(rawTools))
+	for _, raw := range rawTools {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		entryType, _ := entry["type"].(string)
+		if isWebSearchTypeString(entryType) {
+			continue
+		}
+		out = append(out, raw)
+	}
+	if len(out) == len(rawTools) {
+		return false
+	}
+	if len(out) == 0 {
+		delete(m, "tool_choice")
+		return true
+	}
+	rawTC["tools"] = out
+	return true
 }
 
 // rewriteReasoningSummaryToContent 把 OpenAI 标准 reasoning item 的 summary 明文

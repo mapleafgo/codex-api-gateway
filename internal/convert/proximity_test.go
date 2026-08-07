@@ -133,7 +133,7 @@ func TestEnsureToolResultProximity(t *testing.T) {
 // TestDecodeHostedToolChoiceRestored SDK union 会把 hosted tool_choice JSON
 // 误解到 OfAllowedTools；DecodeResponseNewParams 必须从 raw 恢复为 OfHostedTool。
 func TestDecodeHostedToolChoiceRestored(t *testing.T) {
-	for _, typ := range []string{"web_search", "web_search_preview", "code_interpreter"} {
+	for _, typ := range []string{"web_search", "code_interpreter"} {
 		req, err := DecodeResponseNewParams([]byte(
 			`{"model":"gpt-5","input":"hi","stream":true,"tool_choice":{"type":"` + typ + `"}}`))
 		if err != nil {

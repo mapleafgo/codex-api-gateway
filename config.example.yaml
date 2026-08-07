@@ -66,14 +66,16 @@ anthropic:
 # per-slug 能力覆盖；只返回在此显式列出的模型，不合并上游 /v1/models 列表，
 # 也不暴露 sources.model_map 的别名。
 # 网关不向上游拉取模型列表，context_window 等能力字段必须在此显式补充。
-# 仅 context_window / supports_image / supports_search 可 per-slug 覆盖；其余能力
-# （parallel_tool_calls / reasoning_summaries / web_search_tool_type /
-# input_modalities / use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
+# 仅 context_window / accepts_image / supports_image_detail_original 可 per-slug 覆盖；
+# 其余能力（parallel_tool_calls / reasoning_summaries / web_search_tool_type /
+# use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
+# supports_search_tool 始终返回 true（client-side standalone 搜索开关，关闭也无法
+# 阻止 hosted web search，故不开放覆盖）。
 # models:
 #   gpt-5.5:                        # slug，客户端请求时使用的模型名
 #     context_window: 200000        # 最大上下文 token 数（同步到 max_context_window）
-#     # supports_image: false       # 是否支持图片识别（原尺寸 detail，默认 false）
-#     # supports_search: false      # 显式 false 时关闭 tool_search 搜索能力（默认 true）
+#     # accepts_image: false        # false 时禁止图片输入（input_modalities 仅 text），默认 true
+#     # supports_image_detail_original: true  # true 时发送原图分辨率不压缩，默认 false
 #   glm-5.2:
 #     context_window: 131072
 
@@ -81,12 +83,16 @@ anthropic:
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
 # 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，
 # 智谱 https://open.bigmodel.cn/api/anthropic，Messages 路径同为 /v1/messages。
+# supports_web_search：该源是否支持 hosted web_search 工具。不支持时网关会在转发前
+# 剥掉 web_search 工具声明，避免上游不认识导致 400/断流。nil 时按 backend_type 默认：
+# Anthropic(a)/Responses(r) 默认支持（true），仅 Chat(c) 默认不支持（false）。
 sources:
   - name: anthropic-official                # 源标识，用于日志与故障转移定位
     base_url: https://api.anthropic.com     # 网关根地址，代码自动补 /v1/messages
     api_key: ${ANTHROPIC_KEY}               # 密钥，支持 ${ENV_VAR} 展开
     model_map: { gpt-5: claude-sonnet-4-20250514 }  # 请求 model → 后端 model 映射
     default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
+    # supports_web_search: true             # 可选覆盖；默认按 backend_type（a/r=true/c=false）
     # disabled: true                        # 人工停用：true 时不参与调度；管理页可即时切换
     # headers:                              # 可选：追加到上游请求的自定义 header（如 X-Api-Key、anthropic-beta 覆盖）
     #   X-Custom: value                     # 保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖，会被跳过（Debug 记录）

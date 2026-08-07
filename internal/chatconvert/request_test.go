@@ -1424,11 +1424,6 @@ func TestConvertToolChoiceHosted(t *testing.T) {
 			wantName: "web_search",
 		},
 		{
-			name:     "web_search_preview 归并到 web_search",
-			tc:       hosted(oairesponses.ToolChoiceTypesTypeWebSearchPreview),
-			wantName: "web_search",
-		},
-		{
 			name:     "code_interpreter 无映射，降级为 nil（网关不支持）",
 			tc:       hosted(oairesponses.ToolChoiceTypesTypeCodeInterpreter),
 			wantName: "",

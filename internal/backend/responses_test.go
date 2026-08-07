@@ -55,6 +55,117 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 	}
 }
 
+// TestPrepareUpstreamBody_StripsWebSearchWhenUnsupported 验证 r 路径在源不支持
+// hosted web_search 时剥掉 tools 里的 {"type":"web_search"}，保留其他工具。
+func TestPrepareUpstreamBody_StripsWebSearchWhenUnsupported(t *testing.T) {
+	off := false
+	src := config.Source{
+		ModelMap:          map[string]string{"gpt-5": "o3"},
+		BackendType:       config.BackendOpenAIResponses,
+		SupportsWebSearch: &off,
+	}
+	raw := []byte(`{"model":"gpt-5","tools":[{"type":"function","name":"f1"},{"type":"web_search"},{"type":"function","name":"f2"}]}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tools) != 2 {
+		t.Fatalf("web_search 未剥除，tools=%v", m.Tools)
+	}
+	for _, tl := range m.Tools {
+		if tl["type"] == "web_search" {
+			t.Fatalf("web_search 仍保留: %v", m.Tools)
+		}
+	}
+}
+
+// TestPrepareUpstreamBody_KeepsWebSearchWhenSupported 验证 r 路径在源支持
+// hosted web_search 时原样透传，不剥除 web_search 工具。
+func TestPrepareUpstreamBody_KeepsWebSearchWhenSupported(t *testing.T) {
+	on := true
+	src := config.Source{
+		ModelMap:          map[string]string{"gpt-5": "o3"},
+		BackendType:       config.BackendOpenAIResponses,
+		SupportsWebSearch: &on,
+	}
+	raw := []byte(`{"model":"gpt-5","tools":[{"type":"web_search"}]}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"web_search"`)) {
+		t.Fatalf("支持的源应保留 web_search, got %s", body)
+	}
+}
+
+// TestPrepareUpstreamBody_NeutralizesToolChoiceWhenUnsupported 验证 r 路径在源
+// 不支持 hosted web_search 时，除剥掉 tools 外还清除指向 web_search 的 tool_choice。
+func TestPrepareUpstreamBody_NeutralizesToolChoiceWhenUnsupported(t *testing.T) {
+	off := false
+	src := config.Source{
+		ModelMap:          map[string]string{"gpt-5": "o3"},
+		BackendType:       config.BackendOpenAIResponses,
+		SupportsWebSearch: &off,
+	}
+	raw := []byte(`{"model":"gpt-5","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["tool_choice"]; ok {
+		t.Fatalf("web_search tool_choice 未清除: %s", body)
+	}
+	if tools, ok := m["tools"].([]any); !ok || len(tools) != 0 {
+		t.Fatalf("web_search tools 未剥除: %s", body)
+	}
+}
+
+// TestPrepareUpstreamBody_FiltersAllowedToolsWhenUnsupported 验证 r 路径剥除
+// allowed_tools 里的 web_search 条目，保留其余工具。
+func TestPrepareUpstreamBody_FiltersAllowedToolsWhenUnsupported(t *testing.T) {
+	off := false
+	src := config.Source{
+		ModelMap:          map[string]string{"gpt-5": "o3"},
+		BackendType:       config.BackendOpenAIResponses,
+		SupportsWebSearch: &off,
+	}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"tools":[{"type":"function","name":"f"},{"type":"web_search"}],
+		"tool_choice":{
+			"type":"allowed_tools",
+			"mode":"required",
+			"tools":[{"type":"function","name":"f"},{"type":"web_search"}]
+		}
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Tools      []map[string]any `json:"tools"`
+		ToolChoice struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tools) != 1 || len(m.ToolChoice.Tools) != 1 {
+		t.Fatalf("web_search 未过滤, tools=%v tool_choice=%v", m.Tools, m.ToolChoice.Tools)
+	}
+}
+
 // TestPrepareUpstreamBody_ReasoningSummaryToContent 复现 DeepSeek /responses 400：
 // Codex 发送 OpenAI 标准 reasoning item（summary 形式），而 DeepSeek 只支持
 // plain-text content 并把它合并进相邻 assistant message，summary 会被忽略导致

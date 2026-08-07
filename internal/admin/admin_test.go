@@ -776,7 +776,7 @@ func TestAddModel(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	body := `{"slug":"glm-latest","context_window":200000,"supports_image":false,"supports_search":true}`
+	body := `{"slug":"glm-latest","context_window":200000,"accepts_image":true,"supports_image_detail_original":false}`
 	resp, err = http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -793,8 +793,11 @@ func TestAddModel(t *testing.T) {
 	if !ok || ov.ContextWindow == nil || *ov.ContextWindow != 200000 {
 		t.Fatalf("override=%+v ok=%v", ov, ok)
 	}
-	if ov.SupportsSearchTool == nil || !*ov.SupportsSearchTool {
-		t.Fatalf("supports_search=%v", ov.SupportsSearchTool)
+	if ov.AcceptsImage == nil || !*ov.AcceptsImage {
+		t.Fatalf("accepts_image=%v", ov.AcceptsImage)
+	}
+	if ov.SupportsImageDetailOriginal == nil || *ov.SupportsImageDetailOriginal {
+		t.Fatalf("supports_image_detail_original=%v", ov.SupportsImageDetailOriginal)
 	}
 
 	resp2, err := http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(body))

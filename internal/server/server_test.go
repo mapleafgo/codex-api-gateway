@@ -1507,19 +1507,22 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	}
 }
 
-func TestModelsEndpointSupportsSearchOverride(t *testing.T) {
+// TestModelsEndpointAcceptsImageOverride 验证 accepts_image=false 时，
+// /v1/models 返回的 input_modalities 仅含 text（不含 image），
+// Codex 会在发请求前 strip 掉历史中的图片，真正禁止图片识别。
+func TestModelsEndpointAcceptsImageOverride(t *testing.T) {
 	off := false
 	ctxWindow := int64(100000)
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:0"}},
 		ModelOverrides: map[string]config.ModelOverride{
-			"no-search": {
-				ContextWindow:      &ctxWindow,
-				SupportsSearchTool: &off,
+			"no-image": {
+				ContextWindow: &ctxWindow,
+				AcceptsImage:  &off,
 			},
 		},
-		ModelSlugOrder: []string{"no-search"},
+		ModelSlugOrder: []string{"no-image"},
 	}
 	srv := New(cfg)
 	ts := httptest.NewServer(srv.Handler())
@@ -1537,18 +1540,14 @@ func TestModelsEndpointSupportsSearchOverride(t *testing.T) {
 		t.Fatalf("models=%d", len(ml.Models))
 	}
 	m0 := ml.Models[0]
-	if m0.SupportsSearchTool {
-		t.Fatalf("supports_search_tool should be false when override false")
-	}
-	if m0.WebSearchToolType != "" {
-		t.Fatalf("web_search_tool_type should clear when search disabled, got %q", m0.WebSearchToolType)
+	if len(m0.InputModalities) != 1 || m0.InputModalities[0] != "text" {
+		t.Fatalf("accepts_image=false 时 input_modalities 应仅 text, got %v", m0.InputModalities)
 	}
 }
 
 // TestModelsEndpointCapabilityFieldsAlwaysExplicit 验证 supports_image_detail_original
-// 与 supports_search_tool 去掉 omitempty 后，即使值为 false 也必须在 JSON 里显式
-// 出现，而非被省略让客户端靠 serde default 推断（Go struct decode 区分不了
-// 缺失与 false，故用 raw map 检查 key 存在性）。
+// 去掉 omitempty 后，即使值为 false 也必须在 JSON 里显式出现，而非被省略让客户端靠
+// serde default 推断（Go struct decode 区分不了缺失与 false，故用 raw map 检查 key 存在性）。
 func TestModelsEndpointCapabilityFieldsAlwaysExplicit(t *testing.T) {
 	off := false
 	cfg := &config.Config{
@@ -1557,7 +1556,6 @@ func TestModelsEndpointCapabilityFieldsAlwaysExplicit(t *testing.T) {
 		ModelOverrides: map[string]config.ModelOverride{
 			"basic": {
 				SupportsImageDetailOriginal: &off,
-				SupportsSearchTool:          &off,
 			},
 		},
 		ModelSlugOrder: []string{"basic"},
@@ -1582,9 +1580,6 @@ func TestModelsEndpointCapabilityFieldsAlwaysExplicit(t *testing.T) {
 	m := raw.Models[0]
 	if v, ok := m["supports_image_detail_original"]; !ok || strings.TrimSpace(string(v)) != "false" {
 		t.Fatalf("supports_image_detail_original 应显式返回 false, got: %v (present=%v)", string(m["supports_image_detail_original"]), ok)
-	}
-	if v, ok := m["supports_search_tool"]; !ok || strings.TrimSpace(string(v)) != "false" {
-		t.Fatalf("supports_search_tool 应显式返回 false, got: %v (present=%v)", string(m["supports_search_tool"]), ok)
 	}
 }
 

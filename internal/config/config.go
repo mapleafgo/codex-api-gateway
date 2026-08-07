@@ -149,6 +149,25 @@ type Source struct {
 	// Headers 是追加到上游请求的自定义 header 键值对（如 X-Api-Key、anthropic-beta 覆盖）。
 	// 保留头（content-type / authorization / accept / x-api-key / anthropic-version / anthropic-beta）不可被覆盖，静默跳过。
 	Headers map[string]string `koanf:"headers" yaml:"headers,omitempty"`
+	// SupportsWebSearch 显式声明该上游是否支持 hosted web_search 工具。
+	// nil 时按 backend_type 给默认（见 SupportsWebSearchValue）。上游不支持时网关
+	// 会在发请求前剥掉 web_search 工具，避免上游 400/断流。
+	SupportsWebSearch *bool `koanf:"supports_web_search" yaml:"supports_web_search,omitempty"`
+}
+
+// SupportsWebSearchValue 返回上游对 hosted web_search 的有效开关。
+// 显式配置优先；nil 时按 backend_type 默认：Anthropic(a)/Responses(r) 直通默认支持，
+// 仅 Chat(c) 默认不支持（Chat 无 hosted web_search 对应物，网关负责剥掉避免上游报错）。
+func (s Source) SupportsWebSearchValue() bool {
+	if s.SupportsWebSearch != nil {
+		return *s.SupportsWebSearch
+	}
+	if n, err := NormalizeBackendType(s.BackendType); err == nil {
+		if n == BackendOpenAIChat {
+			return false
+		}
+	}
+	return true
 }
 
 // NormalizeBackendType normalizes and validates the backend_type value.
@@ -168,23 +187,27 @@ func NormalizeBackendType(s string) (string, error) {
 }
 
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
-// 开放 per-model 差异：context_window / supports_image / supports_search。
-// 其余能力（parallel_tool_calls / reasoning_summaries / input_modalities /
+// 开放 per-model 差异：context_window / accepts_image / supports_image_detail_original。
+// 其余能力（parallel_tool_calls / reasoning_summaries /
 // use_responses_lite 等）由 codexModelInfo 硬编码统一注入。
+// supports_search_tool 始终返回 true：它是 client-side standalone 搜索开关，
+// 关闭也无法阻止 hosted web search（由 provider capabilities + web_search_mode 决定），
+// 暴露该开关只会误导用户以为能关掉搜索，故移除 per-model 覆盖。
 // 所有字段均为指针（nil = 不覆盖，沿用 codexModelInfo 默认）。
 type ModelOverride struct {
 	// ContextWindow 最大上下文 token 数。同时应用到 CodexModelInfo 的 ContextWindow 与
 	// MaxContextWindow（Codex ModelInfo 协议要求两个字段，网关场景二者相等，故 config
 	// 只暴露一个 context_window 输入）。
 	ContextWindow *int64 `koanf:"context_window" yaml:"context_window"`
-	// SupportsImageDetailOriginal 是否支持图片识别（原尺寸 detail）。默认 false。
-	// 配置 yaml key 用 supports_image（更简洁），输出给 Codex 的 JSON 仍为
-	// supports_image_detail_original（对齐 codex ModelInfo 字段名）。
-	SupportsImageDetailOriginal *bool `koanf:"supports_image" yaml:"supports_image"`
-	// SupportsSearchTool 是否启用 tool_search / 延迟加载工具与 web 搜索声明。
-	// yaml/json 用 supports_search；输出给 Codex 为 supports_search_tool。
-	// nil 时沿用 codexModelInfo 默认 true；显式 false 时关闭搜索能力。
-	SupportsSearchTool *bool `koanf:"supports_search" yaml:"supports_search"`
+	// AcceptsImage 是否接受图片输入（控制 Codex ModelInfo.input_modalities 是否含 image）。
+	// 这才是真正控制「模型能否识别图片」的维度：false 时 Codex 会在发请求前
+	// strip 掉历史中的全部图片，模型根本看不到图。nil 时沿用默认 true。
+	AcceptsImage *bool `koanf:"accepts_image" yaml:"accepts_image"`
+	// SupportsImageDetailOriginal 是否发送原图分辨率（detail=original，不压缩）。
+	// 这是「清晰度档位」维度，与 AcceptsImage（能否看图）不同：
+	// AcceptsImage=false 时模型完全不看图；AcceptsImage=true 但本字段=false 时
+	// 模型能看图，但图片被压成 high 质量。默认 false（压缩）。
+	SupportsImageDetailOriginal *bool `koanf:"supports_image_detail_original" yaml:"supports_image_detail_original"`
 }
 
 // MarshalYAML 序列化为 YAML。BaseInstructions / ModelSlugOrder 是运行时字段，

@@ -111,13 +111,6 @@ func TestDeclareWebSearchMapsAllowedDomains(t *testing.T) {
 	}
 }
 
-func TestDeclareWebSearchPreviewNoDomains(t *testing.T) {
-	decls, _ := Declare(oairesponses.ToolUnionParam{OfWebSearchPreview: &oairesponses.WebSearchPreviewToolParam{}})
-	if decls[0].OfWebSearchTool20260209 == nil || len(decls[0].OfWebSearchTool20260209.AllowedDomains) != 0 {
-		t.Fatalf("web_search_preview must map to empty-domain server tool")
-	}
-}
-
 func TestDeclareCodeInterpreterUnsupported(t *testing.T) {
 	if _, err := Declare(oairesponses.ToolUnionParam{OfCodeInterpreter: &oairesponses.ToolCodeInterpreterParam{}}); err == nil {
 		t.Fatal("code_interpreter must fail fast (gateway 不支持)")
@@ -337,21 +330,5 @@ func TestDeclareWebSearchSearchContextSizeDoesNotPanic(t *testing.T) {
 	got := logs.String()
 	if !strings.Contains(got, "search_context_size") || !strings.Contains(got, "high") {
 		t.Fatalf("expected WARN for search_context_size, logs: %s", got)
-	}
-}
-
-func TestDeclareWebSearchPreviewMapsUserLocation(t *testing.T) {
-	decls, err := Declare(oairesponses.ToolUnionParam{OfWebSearchPreview: &oairesponses.WebSearchPreviewToolParam{
-		UserLocation: oairesponses.WebSearchPreviewToolUserLocationParam{
-			City:    oparam.NewOpt("Beijing"),
-			Country: oparam.NewOpt("CN"),
-		},
-	}})
-	if err != nil {
-		t.Fatalf("Declare: %v", err)
-	}
-	ws := decls[0].OfWebSearchTool20260209
-	if ws == nil || !ws.UserLocation.City.Valid() || ws.UserLocation.City.Value != "Beijing" {
-		t.Fatalf("preview user_location not mapped: %+v", decls)
 	}
 }

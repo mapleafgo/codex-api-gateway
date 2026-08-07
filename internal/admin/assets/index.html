@@ -1085,7 +1085,7 @@ html[data-theme="dark"] .ui-select {
                     <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
                            x-model="src.api_key" autocomplete="off" spellcheck="false">
                   </div>
-                  <label class="ui-field ui-span-2">
+                  <label class="ui-field">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
                       opts() { const s = this.q.toLowerCase(); return (upstreamModels[src.name]||[]).map(m=>m.id).filter(o => !s || o.toLowerCase().includes(s)); },
@@ -1110,6 +1110,10 @@ html[data-theme="dark"] .ui-select {
                         </template>
                       </div>
                     </div>
+                  </label>
+                  <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px; height:34px; align-self:end">
+                    <input type="checkbox" x-model="src.supports_web_search">
+                    <span class="ui-label" style="margin:0" x-text="t('supportsWebSearch')"></span>
                   </label>
                 </div>
                 <fieldset class="ui-fieldset">
@@ -1246,13 +1250,13 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('contextWindow')"></span>
                     <input type="number" class="ui-input ui-input-sm mono" x-model.number="m.context_window" autocomplete="off" inputmode="numeric">
                   </label>
-                  <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
-                    <input type="checkbox" x-model="m.supports_image">
-                    <span class="ui-label" style="margin:0" x-text="t('supportsImage')"></span>
+                 <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
+                    <input type="checkbox" x-model="m.accepts_image">
+                    <span class="ui-label" style="margin:0" x-text="t('acceptsImage')"></span>
                   </label>
                   <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
-                    <input type="checkbox" x-model="m.supports_search">
-                    <span class="ui-label" style="margin:0" x-text="t('supportsSearch')"></span>
+                    <input type="checkbox" x-model="m.supports_image_detail_original">
+                    <span class="ui-label" style="margin:0" x-text="t('imageDetailOriginal')"></span>
                   </label>
                 </div>
               </div>
@@ -1461,7 +1465,7 @@ html[data-theme="dark"] .ui-select {
           <div>
             <template x-if="f.type === 'checkbox'">
               <label class="ui-field" style="flex-direction:row; align-items:center; gap:8px">
-                <input type="checkbox" x-model="f.value">
+                <input type="checkbox" x-model="f.value" @change="f._touched = true">
                 <span class="ui-label" x-text="f.label"></span>
               </label>
             </template>
@@ -1472,7 +1476,7 @@ html[data-theme="dark"] .ui-select {
                      x-data="uiSel()"
                      x-init="model = f.value; opts = f.options || []"
                      x-effect="if (f.value !== model) model = f.value; opts = f.options || []"
-                     @sel-change="f.value = $event.detail">
+                     @sel-change="onFormSelectChange(f, $event.detail)">
                   <button type="button" class="ui-sel-btn"
                           @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
                     <span x-text="label"></span>
@@ -1601,12 +1605,12 @@ function app() {
     headerName: '头名称', headerValue: '值', addHeader: '新增请求头',
     duplicateSrc: '复制',
     delete: '删除', noSources: '尚未配置供应商',
-     srcToc: '供应商导航', addSrcOk: '供应商已添加', addModelOk: '模型已添加',
+     srcToc: '供应商导航', supportsWebSearch: '支持 Web 搜索', addSrcOk: '供应商已添加', addModelOk: '模型已添加',
      deleteSrcOk: '供应商已删除', deleteModelOk: '模型已删除',
      deleteSrcConfirm: '确认删除该供应商？删除后即时生效。',
      deleteModelConfirmPrefix: '删除模型 ', deleteModelConfirmSuffix: ' ？删除后即时生效。',
      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
-      slug: '模型标识', contextWindow: '上下文窗口', supportsImage: '支持图片', supportsSearch: '支持搜索', actions: '操作',
+      slug: '模型标识', contextWindow: '上下文窗口', acceptsImage: '接受图片', imageDetailOriginal: '原图分辨率', actions: '操作',
       globalParams: '服务端参数', loggingParams: '日志参数', anthropicParams: 'Anthropic', breaker: '断路器',
       anthropicDefaultMaxTokens: '默认输出额度', anthropicDefaultMaxTokensHint: '客户端未传 max_output_tokens 时写入上游 max_tokens',
       anthropicCacheEnabled: '启用 Prompt Cache',
@@ -1671,12 +1675,12 @@ function app() {
     headerName: 'Header name', headerValue: 'Value', addHeader: 'Add header',
     duplicateSrc: 'Duplicate',
     delete: 'Delete', noSources: 'No sources configured',
-     srcToc: 'Sources', addSrcOk: 'Source added', addModelOk: 'Model added',
+     srcToc: 'Sources', supportsWebSearch: 'Support web search', addSrcOk: 'Source added', addModelOk: 'Model added',
      deleteSrcOk: 'Source deleted', deleteModelOk: 'Model deleted',
      deleteSrcConfirm: 'Delete this source? Takes effect immediately.',
      deleteModelConfirmPrefix: 'Delete model ', deleteModelConfirmSuffix: '? Takes effect immediately.',
      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
-      slug: 'Slug', contextWindow: 'Context window', supportsImage: 'Image', supportsSearch: 'Search', actions: 'Actions',
+      slug: 'Slug', contextWindow: 'Context window', acceptsImage: 'Accept image', imageDetailOriginal: 'Original resolution', actions: 'Actions',
       globalParams: 'Server Parameters', loggingParams: 'Logging', anthropicParams: 'Anthropic', breaker: 'Breaker',
       anthropicDefaultMaxTokens: 'Default output budget', anthropicDefaultMaxTokensHint: 'Used as upstream max_tokens when the client omits max_output_tokens',
       anthropicCacheEnabled: 'Enable Prompt Cache',
@@ -2008,13 +2012,16 @@ function app() {
         const data = await r.json();
         if (!Array.isArray(data.models)) data.models = [];
         data.models.forEach(m => {
-          // 未配置时默认开启搜索（对齐 codexModelInfo 默认 true）
-          if (m.supports_search == null) m.supports_search = true;
+          // 未配置时默认接受图片输入（对齐 codexModelInfo 默认 input_modalities 含 image）
+          if (m.accepts_image == null) m.accepts_image = true;
+          if (m.supports_image_detail_original == null) m.supports_image_detail_original = false;
           // 分配稳定 _id 作 x-for key，避免编辑 slug 时 Alpine 重建 DOM 丢焦点
           if (!m._id) m._id = 'mdl_' + Math.random().toString(36).slice(2, 10);
         });
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
+          // 未配置时按 backend_type 默认：仅 Chat(c) 默认不支持，a/r 均默认支持
+          if (s.supports_web_search == null) s.supports_web_search = (s.backend_type || 'a') !== 'c';
           if (!s._id) s._id = 'src_' + Math.random().toString(36).slice(2, 10);
         });
         data.server = data.server || {};
@@ -2039,8 +2046,8 @@ function app() {
         const payload = JSON.parse(JSON.stringify(this.cfg));
         payload.models = (payload.models || []).map(m => {
           const item = { slug: (m.slug || '').trim() };
-          if (m.supports_image != null) item.supports_image = !!m.supports_image;
-          if (m.supports_search != null) item.supports_search = !!m.supports_search;
+          if (m.accepts_image != null) item.accepts_image = !!m.accepts_image;
+          if (m.supports_image_detail_original != null) item.supports_image_detail_original = !!m.supports_image_detail_original;
           if (m.context_window != null && m.context_window !== '') item.context_window = Number(m.context_window) || 0;
           return item;
         }).filter(m => m.slug);
@@ -2113,6 +2120,7 @@ function app() {
           { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
           { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
+          { key: 'supports_web_search', label: this.t('supportsWebSearch'), type: 'checkbox', value: true, syncFrom: 'backend_type', syncDefault(v) { return v !== 'c'; } },
         ],
       }).then(async (v) => {
         if (!v) return;
@@ -2131,11 +2139,11 @@ function app() {
           const r = await fetch('/admin/api/sources', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), default_model: (v.default_model || '').trim(), disabled: false }),
+            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), model_map: {}, default_model: (v.default_model || '').trim(), disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
+          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), model_map: {}, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
           this.cfg.sources.push(item);
           this.patchSnapshotAppend('sources', item);
           this.notify(this.t('addSrcOk') + ': ' + name, 'success');
@@ -2570,8 +2578,8 @@ function app() {
         fields: [
           { key: 'slug', label: this.t('slug'), type: 'text', value: '', placeholder: 'glm-latest' },
           { key: 'context_window', label: this.t('contextWindow'), type: 'number', value: 200000, placeholder: '200000' },
-          { key: 'supports_image', label: this.t('supportsImage'), type: 'checkbox', value: false },
-          { key: 'supports_search', label: this.t('supportsSearch'), type: 'checkbox', value: true },
+          { key: 'accepts_image', label: this.t('acceptsImage'), type: 'checkbox', value: true },
+          { key: 'supports_image_detail_original', label: this.t('imageDetailOriginal'), type: 'checkbox', value: false },
         ],
       }).then(async (v) => {
         if (!v || !v.slug) return;
@@ -2582,11 +2590,11 @@ function app() {
           const r = await fetch('/admin/api/models/add', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false }),
+            body: JSON.stringify({ slug, context_window: Number(v.context_window) || 0, accepts_image: !!v.accepts_image, supports_image_detail_original: !!v.supports_image_detail_original }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-          const item = { _id: 'mdl_' + Math.random().toString(36).slice(2, 10), slug, context_window: Number(v.context_window) || 0, supports_image: !!v.supports_image, supports_search: v.supports_search !== false };
+          const item = { _id: 'mdl_' + Math.random().toString(36).slice(2, 10), slug, context_window: Number(v.context_window) || 0, accepts_image: !!v.accepts_image, supports_image_detail_original: !!v.supports_image_detail_original };
           this.cfg.models.push(item);
           this.patchSnapshotAppend('models', item);
           this.notify(this.t('addModelOk') + ': ' + slug, 'success');
@@ -2767,6 +2775,17 @@ function app() {
           const el = document.querySelector('.ui-modal-box input');
           if (el) { el.focus(); if (el.select) el.select(); }
         });
+      });
+    },
+    // 表单内 select 变化：记录新值，并联动同表单里 syncFrom 指向本字段的
+    // 复选框按其 syncDefault 重算默认（仅当用户未手动改过）。
+    onFormSelectChange(f, value) {
+      f.value = value;
+      const fields = this.modal.fields || [];
+      fields.forEach(cb => {
+        if (cb.syncFrom === f.key && !cb._touched && typeof cb.syncDefault === 'function') {
+          cb.value = cb.syncDefault(value);
+        }
       });
     },
     confirmModal() {

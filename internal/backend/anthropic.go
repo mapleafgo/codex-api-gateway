@@ -55,6 +55,9 @@ func (b *AnthropicBackend) Execute(
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
+	if !src.SupportsWebSearchValue() {
+		stripWebSearchToolsFromParams(req, log)
+	}
 	clientModel := string(req.Model)
 	anthReq, err := convert.ToAnthropic(req, cfg)
 	if err != nil {

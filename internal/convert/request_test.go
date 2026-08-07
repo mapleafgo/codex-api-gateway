@@ -374,17 +374,6 @@ func TestWebSearchToolMapsToAnthropicServerTool(t *testing.T) {
 	}
 }
 
-func TestWebSearchPreviewToolMapsToAnthropicServerTool(t *testing.T) {
-	req := mustReq(t, `{"model":"gpt-5","input":"hi","tools":[{"type":"web_search_preview"}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatalf("web_search_preview must not fail fast: %v", err)
-	}
-	if findWebSearchTool(out.Tools) == nil {
-		t.Fatalf("web_search_preview not mapped: %+v", out.Tools)
-	}
-}
-
 func TestWebSearchUserLocationViaToAnthropic(t *testing.T) {
 	req := mustReq(t, `{
 		"model":"gpt-5",
@@ -1666,7 +1655,7 @@ func TestToolChoiceModes(t *testing.T) {
 		{name: "unknown mode", toolChoice: `"unsupported"`},
 		{name: "unknown type", toolChoice: `{"type":"unsupported"}`, wantErr: true},
 		// hosted tool_choice 恢复为 OfHostedTool：a 路径按「不代劳拒绝」Debug 后忽略。
-		{name: "hosted tool", toolChoice: `{"type":"web_search_preview"}`},
+		{name: "hosted tool", toolChoice: `{"type":"web_search"}`},
 	}
 
 	for _, tt := range tests {

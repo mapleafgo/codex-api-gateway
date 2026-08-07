@@ -41,6 +41,32 @@ sources:
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+// TestSupportsWebSearchValue 验证 SupportsWebSearchValue 的默认与显式覆盖语义：
+// nil 时按 backend_type（Anthropic(a)/Responses(r)=true、只 Chat(c)=false），
+// 显式配置优先。
+func TestSupportsWebSearchValue(t *testing.T) {
+	cases := []struct {
+		name string
+		src  Source
+		want bool
+	}{
+		{name: "a 默认支持", src: Source{Name: "s", BackendType: BackendAnthropic}, want: true},
+		{name: "c 默认不支持", src: Source{Name: "s", BackendType: BackendOpenAIChat}, want: false},
+		{name: "r 默认支持", src: Source{Name: "s", BackendType: BackendOpenAIResponses}, want: true},
+		{name: "显式 true 覆盖 c", src: Source{Name: "s", BackendType: BackendOpenAIChat, SupportsWebSearch: boolPtr(true)}, want: true},
+		{name: "显式 false 覆盖 r", src: Source{Name: "s", BackendType: BackendOpenAIResponses, SupportsWebSearch: boolPtr(false)}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.src.SupportsWebSearchValue(); got != tc.want {
+				t.Fatalf("SupportsWebSearchValue()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadExpandsInlineEnvPlaceholders(t *testing.T) {
 	t.Setenv("TEST_ANTHROPIC_KEY", "secret123")
 
@@ -605,11 +631,10 @@ func TestConfiguredModelSlugsEmpty(t *testing.T) {
 	}
 }
 
-// TestLoadModelOverridesParsesSupportsImage 验证 models.<slug> 下的 supports_image
-// 配置能被正确解析到 ModelOverride.SupportsImageDetailOriginal，并经 codexModelInfo
-// 输出为 Codex 的 supports_image_detail_original JSON 字段。
-// yaml key 故意用 supports_image（简洁），输出仍对齐 Codex 原字段名。
-func TestLoadModelOverridesParsesSupportsImage(t *testing.T) {
+// TestLoadModelOverridesParsesSupportsImageDetailOriginal 验证 models.<slug> 下的
+// supports_image_detail_original 配置能被正确解析到 ModelOverride.SupportsImageDetailOriginal，
+// 并经 codexModelInfo 输出为 Codex 的 supports_image_detail_original JSON 字段。
+func TestLoadModelOverridesParsesSupportsImageDetailOriginal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
@@ -621,7 +646,7 @@ sources:
 models:
   gpt-5:
     context_window: 200000
-    supports_image: true
+    supports_image_detail_original: true
 `), 0644)
 
 	cfg, err := Load(path)
@@ -636,11 +661,13 @@ models:
 		t.Fatalf("context_window 解析错误: %v", ov.ContextWindow)
 	}
 	if ov.SupportsImageDetailOriginal == nil || !*ov.SupportsImageDetailOriginal {
-		t.Fatalf("supports_image 未解析到 SupportsImageDetailOriginal: %v", ov.SupportsImageDetailOriginal)
+		t.Fatalf("supports_image_detail_original 未解析: %v", ov.SupportsImageDetailOriginal)
 	}
 }
 
-func TestLoadModelOverridesParsesSupportsSearch(t *testing.T) {
+// TestLoadModelOverridesParsesAcceptsImage 验证 models.<slug> 下的 accepts_image=false
+// 配置能被正确解析到 ModelOverride.AcceptsImage（控制 input_modalities 是否含 image）。
+func TestLoadModelOverridesParsesAcceptsImage(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
@@ -652,7 +679,7 @@ sources:
 models:
   cheap:
     context_window: 100000
-    supports_search: false
+    accepts_image: false
 `), 0644)
 
 	cfg, err := Load(path)
@@ -663,8 +690,8 @@ models:
 	if !ok {
 		t.Fatalf("models.cheap 未被解析")
 	}
-	if override.SupportsSearchTool == nil || *override.SupportsSearchTool {
-		t.Fatalf("supports_search=false 未解析: %v", override.SupportsSearchTool)
+	if override.AcceptsImage == nil || *override.AcceptsImage {
+		t.Fatalf("accepts_image=false 未解析: %v", override.AcceptsImage)
 	}
 }
 

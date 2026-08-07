@@ -41,7 +41,7 @@ func Inspect(t oairesponses.ToolUnionParam) ([]Identity, error) {
 		return out, nil
 	case t.OfMcp != nil:
 		return inspectMCP(t.OfMcp), nil
-	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
+	case t.OfWebSearch != nil:
 		return []Identity{{OpenAIType: model.ToolTypeWebSearch, Name: "web_search"}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))

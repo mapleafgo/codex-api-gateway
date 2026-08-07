@@ -2,11 +2,100 @@ package backend
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 )
+
+// TestStripWebSearchToolsFromParams 验证 a/c 路径按源能力剥除 web_search 工具声明，
+// 仅移除 hosted web_search，其余工具原样保留。
+func TestStripWebSearchToolsFromParams(t *testing.T) {
+	raw := []byte(`{"model":"g","tools":[
+		{"type":"function","name":"f1"},
+		{"type":"web_search"},
+		{"type":"function","name":"f2"}
+	]}`)
+	req, err := convert.DecodeResponseNewParams(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(req.Tools) != 3 {
+		t.Fatalf("初始 tools=%d", len(req.Tools))
+	}
+	stripWebSearchToolsFromParams(req, slog.Default())
+	// 保留 f1/f2 两个 function，剥掉 web_search。
+	if len(req.Tools) != 2 {
+		t.Fatalf("剥除后 tools=%d, want 2", len(req.Tools))
+	}
+	for _, tl := range req.Tools {
+		if tl.OfWebSearch != nil {
+			t.Fatalf("web_search 仍保留: %+v", tl)
+		}
+	}
+}
+
+// TestStripWebSearchToolsFromParams_NoOpWhenEmpty 验证无工具时剥除为空操作。
+func TestStripWebSearchToolsFromParams_NoOpWhenEmpty(t *testing.T) {
+	req, err := convert.DecodeResponseNewParams([]byte(`{"model":"g"}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stripWebSearchToolsFromParams(req, nil)
+	if len(req.Tools) != 0 {
+		t.Fatalf("空工具列表应不变, tools=%v", req.Tools)
+	}
+}
+
+// TestStripWebSearchToolsFromParams_NeutralizesToolChoice 验证剥除 web_search
+// 工具时同步清掉指向 hosted web_search 的 tool_choice，避免泄漏给 Chat/Anthropic。
+func TestStripWebSearchToolsFromParams_NeutralizesToolChoice(t *testing.T) {
+	req, err := convert.DecodeResponseNewParams([]byte(`{
+		"model":"g",
+		"tools":[{"type":"web_search"}],
+		"tool_choice":{"type":"web_search"}
+	}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stripWebSearchToolsFromParams(req, slog.Default())
+	if req.ToolChoice.OfHostedTool != nil || req.ToolChoice.OfAllowedTools != nil ||
+		req.ToolChoice.OfToolChoiceMode.Valid() {
+		t.Fatalf("web_search tool_choice 未清除: %+v", req.ToolChoice)
+	}
+}
+
+// TestStripWebSearchToolsFromParams_FiltersAllowedTools 验证 allowed_tools 里的
+// web_search 条目被过滤，剩余工具仍保留强制选择语义。
+func TestStripWebSearchToolsFromParams_FiltersAllowedTools(t *testing.T) {
+	req, err := convert.DecodeResponseNewParams([]byte(`{
+		"model":"g",
+		"tools":[
+			{"type":"function","name":"f"},
+			{"type":"web_search"}
+		],
+		"tool_choice":{
+			"type":"allowed_tools",
+			"mode":"required",
+			"tools":[
+				{"type":"function","name":"f"},
+				{"type":"web_search"}
+			]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stripWebSearchToolsFromParams(req, slog.Default())
+	if req.ToolChoice.OfAllowedTools == nil || len(req.ToolChoice.OfAllowedTools.Tools) != 1 {
+		t.Fatalf("allowed_tools 未过滤: %+v", req.ToolChoice)
+	}
+	if typ, _ := req.ToolChoice.OfAllowedTools.Tools[0]["type"].(string); typ != "function" {
+		t.Fatalf("allowed_tools 应只剩 function, got %v", req.ToolChoice.OfAllowedTools.Tools)
+	}
+}
 
 // TestIsClientErrorExcludesRateLimit 429/408 是传输可用性信号，
 // 不得按"请求非法"处理（否则限流源永不降级、整轮不重试）。

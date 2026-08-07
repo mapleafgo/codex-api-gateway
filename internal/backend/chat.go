@@ -44,6 +44,9 @@ func (b *ChatBackend) Execute(
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
+	if !src.SupportsWebSearchValue() {
+		stripWebSearchToolsFromParams(req, log)
+	}
 	clientModel := string(req.Model)
 	resolved := resolveModel(&src, clientModel)
 

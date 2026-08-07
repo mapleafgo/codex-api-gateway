@@ -73,8 +73,6 @@ func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) 
 			OfSpecificShellToolChoice: &oairesponses.ToolChoiceShellParam{},
 		}
 	case string(oairesponses.ToolChoiceTypesTypeFileSearch),
-		string(oairesponses.ToolChoiceTypesTypeWebSearchPreview),
-		string(oairesponses.ToolChoiceTypesTypeWebSearchPreview2025_03_11),
 		string(oairesponses.ToolChoiceTypesTypeComputer),
 		string(oairesponses.ToolChoiceTypesTypeComputerUse),
 		string(oairesponses.ToolChoiceTypesTypeComputerUsePreview),

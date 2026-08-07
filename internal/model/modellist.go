@@ -44,6 +44,7 @@ type CodexModelsResponse struct {
 //     true（启用 skill 发现引导），非空时默认 false
 //   - web_search_tool_type: web search 能力类型 text|text_and_image（仅声明，不自动注册工具）
 //   - input_modalities: 支持的输入模态 ["text","image"]
+//     （config models.<slug>.accepts_image=false 可剥掉 image，禁止图片输入）
 //   - effective_context_window_percent: 输入 token 占窗口百分比
 //   - default_reasoning_summary: 默认 reasoning summary auto|none|detailed|concise（网关固定返回 auto；
 //     字段无 omitempty，始终显式返回，不让客户端靠 serde default 推断）

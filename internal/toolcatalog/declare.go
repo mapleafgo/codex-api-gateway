@@ -66,17 +66,6 @@ func Declare(t oairesponses.ToolUnionParam) ([]anthropic.ToolUnionParam, error) 
 		return []anthropic.ToolUnionParam{
 			webSearchTool(ws.Filters.AllowedDomains, ws.UserLocation.City, ws.UserLocation.Country, ws.UserLocation.Region, ws.UserLocation.Timezone),
 		}, nil
-	case t.OfWebSearchPreview != nil:
-		wp := t.OfWebSearchPreview
-		if wp.SearchContextSize != "" {
-			slog.Warn("忽略 web_search_preview.search_context_size（Anthropic web_search 无等价字段），对应数据被丢弃",
-				"field", "search_context_size",
-				"value", string(wp.SearchContextSize),
-				"impact", "不会调整 Anthropic 搜索上下文规模")
-		}
-		return []anthropic.ToolUnionParam{
-			webSearchTool(nil, wp.UserLocation.City, wp.UserLocation.Country, wp.UserLocation.Region, wp.UserLocation.Timezone),
-		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tool type %q: Anthropic backend has no safe equivalent", openaiToolType(t))
 	}

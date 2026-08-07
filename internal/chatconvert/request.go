@@ -1594,7 +1594,7 @@ func toolUnionToChat(t oairesponses.ToolUnionParam, freeform map[string]struct{}
 			}
 		}
 		return out
-	case t.OfWebSearch != nil, t.OfWebSearchPreview != nil:
+	case t.OfWebSearch != nil:
 		return []ChatTool{webSearchToolDecl()}
 	case t.OfMcp != nil:
 		return mcpDeclsFromTool(t.OfMcp)
@@ -1775,9 +1775,7 @@ func convertToolChoice(tc oairesponses.ResponseNewParamsToolChoiceUnion) any {
 // toolcatalog/chatnames.go），强制选择按同名 function 下发即可。
 func convertHostedToolChoice(hosted *oairesponses.ToolChoiceTypesParam) any {
 	switch hosted.Type {
-	case oairesponses.ToolChoiceTypesType(toolcatalog.ChatNameWebSearch),
-		oairesponses.ToolChoiceTypesTypeWebSearchPreview,
-		oairesponses.ToolChoiceTypesTypeWebSearchPreview2025_03_11:
+	case oairesponses.ToolChoiceTypesType(toolcatalog.ChatNameWebSearch):
 		return namedFunctionChoice(toolcatalog.ChatNameWebSearch)
 	default:
 		slog.Debug("chatconvert: tool_choice hosted 类型无 Chat 等价，降级为默认选择",

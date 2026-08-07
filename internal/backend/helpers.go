@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	oairesponses "github.com/openai/openai-go/v3/responses"
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
 )
 
@@ -35,6 +37,77 @@ var (
 	evWebSearchCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
 	evOutputItemAdded           = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
 )
+
+// stripWebSearchToolsFromParams 从 Responses 请求的工具列表里剥掉 hosted web_search 声明。
+// a/c 后端把 req.Tools 转成上游格式（Anthropic server tool / Chat function）；
+// 若上游只支持标准工具（不认识 hosted web_search），保留会导致上游 400/断流。
+// 按源能力（config.Source.SupportsWebSearchValue）决定是否调用；剥除工具的同时
+// 同步清理指向 web_search 的 tool_choice / allowed_tools，避免残留引用。
+func stripWebSearchToolsFromParams(req *oairesponses.ResponseNewParams, log *slog.Logger) {
+	if req == nil {
+		return
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	if len(req.Tools) > 0 {
+		out := make([]oairesponses.ToolUnionParam, 0, len(req.Tools))
+		removed := 0
+		for _, t := range req.Tools {
+			if t.OfWebSearch != nil {
+				removed++
+				continue
+			}
+			out = append(out, t)
+		}
+		if removed > 0 {
+			req.Tools = out
+			log.Debug("backend: 源不支持 hosted web_search，剥掉工具声明", "removed", removed)
+		}
+	}
+	if neutralizeWebSearchToolChoice(&req.ToolChoice) {
+		log.Debug("backend: 源不支持 hosted web_search，清理 tool_choice/allowed_tools")
+	}
+}
+
+// isWebSearchTypeString 判断 tool / tool_choice 的 wire 字符串是否属于 hosted
+// web_search 形态。Codex 实际只发 "web_search"，日期后缀来自 OpenAI SDK 常量。
+func isWebSearchTypeString(t string) bool {
+	return t == model.ToolTypeWebSearch ||
+		t == string(oairesponses.WebSearchToolTypeWebSearch2025_08_26)
+}
+
+// neutralizeWebSearchToolChoice 移除 tool_choice 中对 hosted web_search 的引用：
+// 直接 hosted 选择清空，allowed_tools 列表过滤；全空时清空整个 tool_choice。
+func neutralizeWebSearchToolChoice(tc *oairesponses.ResponseNewParamsToolChoiceUnion) bool {
+	if tc == nil {
+		return false
+	}
+	if hosted := tc.OfHostedTool; hosted != nil && isWebSearchTypeString(string(hosted.Type)) {
+		*tc = oairesponses.ResponseNewParamsToolChoiceUnion{}
+		return true
+	}
+	if allowed := tc.OfAllowedTools; allowed != nil {
+		out := make([]map[string]any, 0, len(allowed.Tools))
+		for _, entry := range allowed.Tools {
+			typ, _ := entry["type"].(string)
+			if isWebSearchTypeString(typ) {
+				continue
+			}
+			out = append(out, entry)
+		}
+		if len(out) == len(allowed.Tools) {
+			return false
+		}
+		if len(out) == 0 {
+			*tc = oairesponses.ResponseNewParamsToolChoiceUnion{}
+			return true
+		}
+		allowed.Tools = out
+		return true
+	}
+	return false
+}
 
 // outcomeInput 汇聚各后端上游流扫描结束后终态归类所需的输入。
 // status/code/errText 是后端各自的初值，三者差异必须由调用方显式给出，
