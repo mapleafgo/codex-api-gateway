@@ -15,7 +15,7 @@ func TestLoadOverridesWithEnvProvider(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
 server: {listen: ":9090"}
-breaker: {first_byte_timeout: 8s, degrade_threshold: 3, recover_threshold: 1, circuit_interval: 20s, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, degrade_threshold: 3, degraded_recovery_threshold: 1, circuit_interval: 20s, circuit_recovery_threshold: 1, recovery: normal}
 sources:
   - name: official
     base_url: https://api.anthropic.com
@@ -171,11 +171,11 @@ sources:
 	if cfg.Breaker.DegradeThreshold != 3 {
 		t.Fatalf("default degrade_threshold: got %d, want 3", cfg.Breaker.DegradeThreshold)
 	}
-	if cfg.Breaker.RecoverThreshold != 1 {
-		t.Fatalf("default recover_threshold: got %d, want 1", cfg.Breaker.RecoverThreshold)
+	if cfg.Breaker.DegradedRecoveryThreshold != 1 {
+		t.Fatalf("default degraded_recovery_threshold: got %d, want 1", cfg.Breaker.DegradedRecoveryThreshold)
 	}
-	if cfg.Breaker.HalfOpenProbes != 1 {
-		t.Fatalf("default half_open_probes: got %d, want 1", cfg.Breaker.HalfOpenProbes)
+	if cfg.Breaker.CircuitRecoveryThreshold != 1 {
+		t.Fatalf("default circuit_recovery_threshold: got %d, want 1", cfg.Breaker.CircuitRecoveryThreshold)
 	}
 	if cfg.Breaker.MaxRetries != 0 {
 		t.Fatalf("default max_retries: got %d, want 0", cfg.Breaker.MaxRetries)
@@ -430,14 +430,14 @@ func TestOrderedSourcesListOrder(t *testing.T) {
 func TestBreakerForMergesPerSource(t *testing.T) {
 	c := &Config{
 		Breaker: BreakerCfg{
-			FirstByteTimeout: Duration(12 * time.Second),
-			CircuitInterval:  Duration(60 * time.Second),
-			DegradeInterval:  Duration(30 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			HalfOpenProbes:   1,
-			MaxRetries:       2,
-			Recovery:         "normal",
+			FirstByteTimeout:          Duration(12 * time.Second),
+			CircuitInterval:           Duration(60 * time.Second),
+			DegradeInterval:           Duration(30 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                2,
+			Recovery:                  "normal",
 		},
 	}
 	src := &Source{
@@ -462,8 +462,8 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	if merged.FirstByteTimeout != Duration(12*time.Second) {
 		t.Fatalf("global first_byte_timeout not inherited: got %v", merged.FirstByteTimeout)
 	}
-	if merged.RecoverThreshold != 1 {
-		t.Fatalf("global recover_threshold not inherited: got %d", merged.RecoverThreshold)
+	if merged.DegradedRecoveryThreshold != 1 {
+		t.Fatalf("global degraded_recovery_threshold not inherited: got %d", merged.DegradedRecoveryThreshold)
 	}
 	if merged.Recovery != "normal" {
 		t.Fatalf("global recovery not inherited: got %q", merged.Recovery)
@@ -744,7 +744,7 @@ func TestLoadWarnsDeprecatedSystemSuffix(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(cfgPath, []byte(`
-breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, recover_threshold: 1, half_open_probes: 1, recovery: normal}
+breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, degraded_recovery_threshold: 1, circuit_recovery_threshold: 1, recovery: normal}
 system_suffix: "legacy"
 sources:
   - name: official

@@ -1354,9 +1354,9 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-hint" x-text="t('fbtHint')"></span>
               </label>
               <label class="ui-field">
-                <span class="ui-label" x-text="t('circuitInterval')"></span>
-                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.circuit_interval" autocomplete="off" spellcheck="false">
-                <span class="ui-hint" x-text="t('circuitIntervalHint')"></span>
+                <span class="ui-label" x-text="t('degradeThreshold')"></span>
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.degrade_threshold" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('degradeThresholdHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('degradeInterval')"></span>
@@ -1364,24 +1364,19 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-hint" x-text="t('degradeIntervalHint')"></span>
               </label>
               <label class="ui-field">
-                <span class="ui-label" x-text="t('degradeThreshold')"></span>
-                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.degrade_threshold" autocomplete="off" inputmode="numeric">
-                <span class="ui-hint" x-text="t('degradeThresholdHint')"></span>
+                <span class="ui-label" x-text="t('degradedRecoveryThreshold')"></span>
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.degraded_recovery_threshold" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('degradedRecoveryThresholdHint')"></span>
               </label>
               <label class="ui-field">
-                <span class="ui-label" x-text="t('recoverThreshold')"></span>
-                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.recover_threshold" autocomplete="off" inputmode="numeric">
-                <span class="ui-hint" x-text="t('recoverThresholdHint')"></span>
+                <span class="ui-label" x-text="t('circuitInterval')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.circuit_interval" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('circuitIntervalHint')"></span>
               </label>
               <label class="ui-field">
-                <span class="ui-label" x-text="t('halfOpenProbes')"></span>
-                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.half_open_probes" autocomplete="off" inputmode="numeric">
-                <span class="ui-hint" x-text="t('halfOpenProbesHint')"></span>
-              </label>
-              <label class="ui-field">
-                <span class="ui-label" x-text="t('maxRetries')"></span>
-                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.max_retries" autocomplete="off" inputmode="numeric">
-                <span class="ui-hint" x-text="t('maxRetriesHint')"></span>
+                <span class="ui-label" x-text="t('circuitRecoveryThreshold')"></span>
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.circuit_recovery_threshold" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('circuitRecoveryThresholdHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('recovery')"></span>
@@ -1391,6 +1386,11 @@ html[data-theme="dark"] .ui-select {
                     <template x-for="(o,i) in opts" :key="o.v"><div class="ui-sel-item" :class="i===ai&&'is-active'" @mousedown.prevent="pick(o.v)" x-text="o.l"></div></template>
                   </div>
                 </div>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('maxRetries')"></span>
+                <input type="number" class="ui-input ui-input-sm mono" x-model.number="cfg.breaker.max_retries" autocomplete="off" inputmode="numeric">
+                <span class="ui-hint" x-text="t('maxRetriesHint')"></span>
               </label>
             </div>
           </fieldset>
@@ -1635,13 +1635,13 @@ function app() {
       healthHintDisabled: '已人工停用，不参与调度',
       fbt: '首字节超时', circuitInterval: '熔断探测间隔', degradeInterval: '降级恢复间隔',
       degradeThreshold: '降级阈值',
-      recoverThreshold: '恢复阈值', halfOpenProbes: '半开探测数',
-      maxRetries: '最大重试', recovery: '恢复策略',
+      degradedRecoveryThreshold: '降级恢复阈值', circuitRecoveryThreshold: '熔断恢复阈值',
+      maxRetries: '全失败重试', recovery: '恢复策略',
       recoveryNormal: '正常（恢复全部能力）', recoveryDegraded: '降级（保持低流量）',
       fbtHint: '上游响应首字节超时时间', circuitIntervalHint: '熔断后转为半开探测的等待时间',
-      degradeIntervalHint: '降级后自动恢复为正常的等待时间',
-      degradeThresholdHint: '连续失败次数触发熔断', recoverThresholdHint: '半开状态下允许通过的请求数',
-      halfOpenProbesHint: '半开状态探测请求数', maxRetriesHint: '失败后最大重试次数（0=不重试）',
+      degradeIntervalHint: '降级后恢复原始优先级（状态仍降级）的等待时间',
+      degradeThresholdHint: '连续失败触发降级；机会窗口内再失败升级为熔断', degradedRecoveryThresholdHint: '降级恢复到正常所需的连续成功次数',
+      circuitRecoveryThresholdHint: '熔断恢复所需的连续探测成功次数', maxRetriesHint: '所有源全失败后的整轮重试次数（0=不重试）',
       guidanceHint: '固定读取与 config.yaml 同级的 base_instructions.md；非空时整体替换 Codex 内置 BASE_INSTRUCTIONS，保存后自动热重载。',
       guidancePlaceholder: '在此编辑基线指令…',
       reload: '重新载入', saving: '保存中…', saveGuidance: '保存基线指令',
@@ -1706,13 +1706,13 @@ function app() {
       fbt: 'First byte timeout', circuitInterval: 'Circuit probe interval',
       degradeInterval: 'Degrade recovery interval',
       degradeThreshold: 'Degrade threshold',
-      recoverThreshold: 'Recover threshold', halfOpenProbes: 'Half-open probes',
-      maxRetries: 'Max retries', recovery: 'Recovery',
+      degradedRecoveryThreshold: 'Degrade recover', circuitRecoveryThreshold: 'Circuit recover',
+      maxRetries: 'All-fail retry', recovery: 'Recovery',
       recoveryNormal: 'Normal (full recovery)', recoveryDegraded: 'Degraded (low traffic)',
       fbtHint: 'Upstream first byte timeout', circuitIntervalHint: 'Wait before circuit→half-open probe',
-      degradeIntervalHint: 'Wait before degraded→normal auto-recovery',
-      degradeThresholdHint: 'Consecutive failures to trigger breaker', recoverThresholdHint: 'Requests allowed in half-open state',
-      halfOpenProbesHint: 'Half-open probe count', maxRetriesHint: 'Max retries on failure (0=none)',
+      degradeIntervalHint: 'Wait before degraded source regains its priority slot (state stays degraded)',
+      degradeThresholdHint: 'Consecutive failures degrade the source; further chance failures trip the circuit', degradedRecoveryThresholdHint: 'Consecutive successes for degraded to normal',
+      circuitRecoveryThresholdHint: 'Consecutive probe successes for circuit recovery', maxRetriesHint: 'Whole-round retries after all sources fail (0=none)',
       guidanceHint: 'Always uses base_instructions.md next to config.yaml; non-empty content replaces Codex BASE_INSTRUCTIONS. Auto-reloads on save.',
       guidancePlaceholder: 'Edit base instructions here…',
       reload: 'Reload', saving: 'Saving…', saveGuidance: 'Save base instructions',

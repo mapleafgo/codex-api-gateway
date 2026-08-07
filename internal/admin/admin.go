@@ -425,14 +425,14 @@ type loggingView struct {
 	MaxBackups int    `json:"max_backups"`
 }
 type breakerView struct {
-	FirstByteTimeout string `json:"first_byte_timeout"`
-	CircuitInterval  string `json:"circuit_interval"`
-	DegradeInterval  string `json:"degrade_interval"`
-	DegradeThreshold int    `json:"degrade_threshold"`
-	RecoverThreshold int    `json:"recover_threshold"`
-	HalfOpenProbes   int    `json:"half_open_probes"`
-	MaxRetries       int    `json:"max_retries"`
-	Recovery         string `json:"recovery"`
+	FirstByteTimeout          string `json:"first_byte_timeout"`
+	DegradeThreshold          int    `json:"degrade_threshold"`
+	DegradeInterval           string `json:"degrade_interval"`
+	DegradedRecoveryThreshold int    `json:"degraded_recovery_threshold"`
+	CircuitInterval           string `json:"circuit_interval"`
+	CircuitRecoveryThreshold  int    `json:"circuit_recovery_threshold"`
+	Recovery                  string `json:"recovery"`
+	MaxRetries                int    `json:"max_retries"`
 }
 type anthropicView struct {
 	DefaultMaxTokens int  `json:"default_max_tokens"`
@@ -494,14 +494,14 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			MaxSizeMB: cfg.Logging.MaxSizeMB, MaxBackups: cfg.Logging.MaxBackups,
 		},
 		Breaker: breakerView{
-			FirstByteTimeout: time.Duration(cfg.Breaker.FirstByteTimeout).String(),
-			CircuitInterval:  time.Duration(cfg.Breaker.CircuitInterval).String(),
-			DegradeInterval:  time.Duration(cfg.Breaker.DegradeInterval).String(),
-			DegradeThreshold: cfg.Breaker.DegradeThreshold,
-			RecoverThreshold: cfg.Breaker.RecoverThreshold,
-			HalfOpenProbes:   cfg.Breaker.HalfOpenProbes,
-			MaxRetries:       cfg.Breaker.MaxRetries,
-			Recovery:         cfg.Breaker.Recovery,
+			FirstByteTimeout:          time.Duration(cfg.Breaker.FirstByteTimeout).String(),
+			DegradeThreshold:          cfg.Breaker.DegradeThreshold,
+			DegradeInterval:           time.Duration(cfg.Breaker.DegradeInterval).String(),
+			DegradedRecoveryThreshold: cfg.Breaker.DegradedRecoveryThreshold,
+			CircuitInterval:           time.Duration(cfg.Breaker.CircuitInterval).String(),
+			CircuitRecoveryThreshold:  cfg.Breaker.CircuitRecoveryThreshold,
+			Recovery:                  cfg.Breaker.Recovery,
+			MaxRetries:                cfg.Breaker.MaxRetries,
 		},
 		Anthropic: anthropicView{
 			DefaultMaxTokens: cfg.Anthropic.DefaultMaxTokens,
@@ -522,13 +522,13 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		}
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
-				FirstByteTimeout: time.Duration(src.Breaker.FirstByteTimeout).String(),
-				CircuitInterval:  time.Duration(src.Breaker.CircuitInterval).String(),
-				DegradeInterval:  time.Duration(src.Breaker.DegradeInterval).String(),
-				DegradeThreshold: src.Breaker.DegradeThreshold,
-				RecoverThreshold: src.Breaker.RecoverThreshold,
-				HalfOpenProbes:   src.Breaker.HalfOpenProbes,
-				Recovery:         src.Breaker.Recovery,
+				FirstByteTimeout:          time.Duration(src.Breaker.FirstByteTimeout).String(),
+				DegradeThreshold:          src.Breaker.DegradeThreshold,
+				DegradeInterval:           time.Duration(src.Breaker.DegradeInterval).String(),
+				DegradedRecoveryThreshold: src.Breaker.DegradedRecoveryThreshold,
+				CircuitInterval:           time.Duration(src.Breaker.CircuitInterval).String(),
+				CircuitRecoveryThreshold:  src.Breaker.CircuitRecoveryThreshold,
+				Recovery:                  src.Breaker.Recovery,
 			}
 		}
 		view.Sources = append(view.Sources, sv)

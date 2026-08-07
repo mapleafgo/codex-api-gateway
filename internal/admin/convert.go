@@ -71,14 +71,14 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 
 func breakerViewToCfg(b breakerView) config.BreakerCfg {
 	return config.BreakerCfg{
-		FirstByteTimeout: config.Duration(parseDur(b.FirstByteTimeout, 12*time.Second)),
-		CircuitInterval:  config.Duration(parseDur(b.CircuitInterval, 1*time.Minute)),
-		DegradeInterval:  config.Duration(parseDur(b.DegradeInterval, 30*time.Second)),
-		DegradeThreshold: b.DegradeThreshold,
-		RecoverThreshold: b.RecoverThreshold,
-		HalfOpenProbes:   b.HalfOpenProbes,
-		MaxRetries:       b.MaxRetries,
-		Recovery:         b.Recovery,
+		FirstByteTimeout:          config.Duration(parseDur(b.FirstByteTimeout, 12*time.Second)),
+		DegradeThreshold:          b.DegradeThreshold,
+		DegradeInterval:           config.Duration(parseDur(b.DegradeInterval, 1*time.Minute)),
+		DegradedRecoveryThreshold: b.DegradedRecoveryThreshold,
+		CircuitInterval:           config.Duration(parseDur(b.CircuitInterval, 30*time.Minute)),
+		CircuitRecoveryThreshold:  b.CircuitRecoveryThreshold,
+		Recovery:                  b.Recovery,
+		MaxRetries:                b.MaxRetries,
 	}
 }
 

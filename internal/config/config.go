@@ -106,13 +106,17 @@ func (a AnthropicCfg) CacheEnabledValue() bool {
 // BreakerCfg configures upstream failover and circuit breaking.
 type BreakerCfg struct {
 	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout,omitempty"`
-	CircuitInterval  Duration `koanf:"circuit_interval" yaml:"circuit_interval,omitempty"`
-	DegradeInterval  Duration `koanf:"degrade_interval" yaml:"degrade_interval,omitempty"`
 	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold,omitempty"`
-	RecoverThreshold int      `koanf:"recover_threshold" yaml:"recover_threshold,omitempty"`
-	HalfOpenProbes   int      `koanf:"half_open_probes" yaml:"half_open_probes,omitempty"`
-	MaxRetries       int      `koanf:"max_retries" yaml:"max_retries,omitempty"`
-	Recovery         string   `koanf:"recovery" yaml:"recovery,omitempty"`
+	DegradeInterval  Duration `koanf:"degrade_interval" yaml:"degrade_interval,omitempty"`
+	// DegradedRecoveryThreshold 是降级恢复阈值：degraded 恢复到 normal 所需的连续成功次数。
+	DegradedRecoveryThreshold int      `koanf:"degraded_recovery_threshold" yaml:"degraded_recovery_threshold,omitempty"`
+	CircuitInterval           Duration `koanf:"circuit_interval" yaml:"circuit_interval,omitempty"`
+	// CircuitRecoveryThreshold 是熔断恢复阈值：halfOpen 恢复到 normal/degraded
+	// 所需的连续探测成功次数。
+	CircuitRecoveryThreshold int    `koanf:"circuit_recovery_threshold" yaml:"circuit_recovery_threshold,omitempty"`
+	Recovery                 string `koanf:"recovery" yaml:"recovery,omitempty"`
+	// MaxRetries 是所有源全部失败后的整轮重试次数（0=不重试；仅全局生效）。
+	MaxRetries int `koanf:"max_retries" yaml:"max_retries,omitempty"`
 }
 
 // Backend* 是 Source.BackendType 的合法取值：
@@ -436,8 +440,8 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
 		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
 		{"breaker.degrade_threshold", &cfg.Breaker.DegradeThreshold},
-		{"breaker.recover_threshold", &cfg.Breaker.RecoverThreshold},
-		{"breaker.half_open_probes", &cfg.Breaker.HalfOpenProbes},
+		{"breaker.degraded_recovery_threshold", &cfg.Breaker.DegradedRecoveryThreshold},
+		{"breaker.circuit_recovery_threshold", &cfg.Breaker.CircuitRecoveryThreshold},
 		{"breaker.max_retries", &cfg.Breaker.MaxRetries},
 		{"breaker.recovery", &cfg.Breaker.Recovery},
 	}
@@ -479,8 +483,8 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 	breakerPrefix := prefix + ".breaker"
 	if !hasAnyEnv(k, breakerPrefix,
 		"first_byte_timeout", "circuit_interval", "degrade_interval",
-		"degrade_threshold", "recover_threshold",
-		"half_open_probes", "recovery") {
+		"degrade_threshold", "degraded_recovery_threshold",
+		"circuit_recovery_threshold", "recovery") {
 		return nil
 	}
 	if src.Breaker == nil {
@@ -494,8 +498,8 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 		{breakerPrefix + ".circuit_interval", &src.Breaker.CircuitInterval},
 		{breakerPrefix + ".degrade_interval", &src.Breaker.DegradeInterval},
 		{breakerPrefix + ".degrade_threshold", &src.Breaker.DegradeThreshold},
-		{breakerPrefix + ".recover_threshold", &src.Breaker.RecoverThreshold},
-		{breakerPrefix + ".half_open_probes", &src.Breaker.HalfOpenProbes},
+		{breakerPrefix + ".degraded_recovery_threshold", &src.Breaker.DegradedRecoveryThreshold},
+		{breakerPrefix + ".circuit_recovery_threshold", &src.Breaker.CircuitRecoveryThreshold},
 		{breakerPrefix + ".recovery", &src.Breaker.Recovery},
 	}
 	for _, override := range overrides {
@@ -569,14 +573,14 @@ func (c *Config) validate() error {
 		c.Anthropic.CacheEnabled = &enabled
 	}
 	def := BreakerCfg{
-		FirstByteTimeout: Duration(12 * time.Second),
-		CircuitInterval:  Duration(30 * time.Minute),
-		DegradeInterval:  Duration(1 * time.Minute),
-		DegradeThreshold: 3,
-		RecoverThreshold: 1,
-		HalfOpenProbes:   1,
-		MaxRetries:       0,
-		Recovery:         RecoveryNormal,
+		FirstByteTimeout:          Duration(12 * time.Second),
+		DegradeThreshold:          3,
+		DegradeInterval:           Duration(1 * time.Minute),
+		DegradedRecoveryThreshold: 1,
+		CircuitInterval:           Duration(30 * time.Minute),
+		CircuitRecoveryThreshold:  1,
+		Recovery:                  RecoveryNormal,
+		MaxRetries:                0,
 	}
 	c.Breaker = applyDefaults(c.Breaker, def)
 	if c.Breaker.Recovery != RecoveryNormal && c.Breaker.Recovery != RecoveryDegraded {
@@ -636,8 +640,8 @@ func validateBreakerNonNegative(scope string, b *BreakerCfg) error {
 		{"circuit_interval", int64(b.CircuitInterval)},
 		{"degrade_interval", int64(b.DegradeInterval)},
 		{"degrade_threshold", int64(b.DegradeThreshold)},
-		{"recover_threshold", int64(b.RecoverThreshold)},
-		{"half_open_probes", int64(b.HalfOpenProbes)},
+		{"degraded_recovery_threshold", int64(b.DegradedRecoveryThreshold)},
+		{"circuit_recovery_threshold", int64(b.CircuitRecoveryThreshold)},
 		{"max_retries", int64(b.MaxRetries)},
 	}
 	for _, c := range checks {
@@ -662,11 +666,11 @@ func applyDefaults(b, def BreakerCfg) BreakerCfg {
 	if b.DegradeThreshold == 0 {
 		b.DegradeThreshold = def.DegradeThreshold
 	}
-	if b.RecoverThreshold == 0 {
-		b.RecoverThreshold = def.RecoverThreshold
+	if b.DegradedRecoveryThreshold == 0 {
+		b.DegradedRecoveryThreshold = def.DegradedRecoveryThreshold
 	}
-	if b.HalfOpenProbes == 0 {
-		b.HalfOpenProbes = def.HalfOpenProbes
+	if b.CircuitRecoveryThreshold == 0 {
+		b.CircuitRecoveryThreshold = def.CircuitRecoveryThreshold
 	}
 	if b.MaxRetries == 0 {
 		b.MaxRetries = def.MaxRetries
@@ -709,11 +713,11 @@ func (c *Config) BreakerFor(s *Source) BreakerCfg {
 	if m.DegradeThreshold != 0 {
 		merged.DegradeThreshold = m.DegradeThreshold
 	}
-	if m.RecoverThreshold != 0 {
-		merged.RecoverThreshold = m.RecoverThreshold
+	if m.DegradedRecoveryThreshold != 0 {
+		merged.DegradedRecoveryThreshold = m.DegradedRecoveryThreshold
 	}
-	if m.HalfOpenProbes != 0 {
-		merged.HalfOpenProbes = m.HalfOpenProbes
+	if m.CircuitRecoveryThreshold != 0 {
+		merged.CircuitRecoveryThreshold = m.CircuitRecoveryThreshold
 	}
 	if m.Recovery != "" {
 		merged.Recovery = m.Recovery

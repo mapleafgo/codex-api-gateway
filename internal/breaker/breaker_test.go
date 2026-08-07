@@ -10,12 +10,12 @@ import (
 // cfg is a test helper that builds a BreakerCfg with sensible defaults.
 func cfg(degrade, recover int, recovery string) config.BreakerCfg {
 	return config.BreakerCfg{
-		DegradeThreshold: degrade,
-		RecoverThreshold: recover,
-		CircuitInterval:  config.Duration(30 * time.Second),
-		DegradeInterval:  config.Duration(30 * time.Second),
-		HalfOpenProbes:   1,
-		Recovery:         recovery,
+		DegradeThreshold:          degrade,
+		DegradedRecoveryThreshold: recover,
+		CircuitInterval:           config.Duration(30 * time.Second),
+		DegradeInterval:           config.Duration(30 * time.Second),
+		CircuitRecoveryThreshold:  1,
+		Recovery:                  recovery,
 	}
 }
 
@@ -265,14 +265,14 @@ func TestSuccessStreakResetOnFailure(t *testing.T) {
 
 // --- halfOpen probe limits ---
 
-func TestHalfOpenProbesLimit(t *testing.T) {
+func TestCircuitRecoveryThresholdLimit(t *testing.T) {
 	b := New(config.BreakerCfg{
-		DegradeThreshold: 1,
-		RecoverThreshold: 1,
-		CircuitInterval:  config.Duration(30 * time.Second),
-		DegradeInterval:  config.Duration(30 * time.Second),
-		HalfOpenProbes:   1,
-		Recovery:         "normal",
+		DegradeThreshold:          1,
+		DegradedRecoveryThreshold: 1,
+		CircuitInterval:           config.Duration(30 * time.Second),
+		DegradeInterval:           config.Duration(30 * time.Second),
+		CircuitRecoveryThreshold:  1,
+		Recovery:                  "normal",
 	})
 	b.RecordFailure() // normal -> degraded
 	b.RecordFailure() // degraded -> circuitOpen
@@ -281,20 +281,20 @@ func TestHalfOpenProbesLimit(t *testing.T) {
 	if !b.Allow() {
 		t.Fatal("first Allow (transition) should succeed")
 	}
-	// With HalfOpenProbes=1, the transition consumed the slot
+	// With CircuitRecoveryThreshold=1, the transition consumed the slot
 	if b.Allow() {
 		t.Fatal("second Allow should be rejected (probes exhausted)")
 	}
 }
 
-func TestHalfOpenProbesLimitMultiple(t *testing.T) {
+func TestCircuitRecoveryThresholdLimitMultiple(t *testing.T) {
 	b := New(config.BreakerCfg{
-		DegradeThreshold: 1,
-		RecoverThreshold: 1,
-		CircuitInterval:  config.Duration(30 * time.Second),
-		DegradeInterval:  config.Duration(30 * time.Second),
-		HalfOpenProbes:   2,
-		Recovery:         "normal",
+		DegradeThreshold:          1,
+		DegradedRecoveryThreshold: 1,
+		CircuitInterval:           config.Duration(30 * time.Second),
+		DegradeInterval:           config.Duration(30 * time.Second),
+		CircuitRecoveryThreshold:  2,
+		Recovery:                  "normal",
 	})
 	b.RecordFailure() // -> degraded
 	b.RecordFailure() // -> circuitOpen
@@ -304,10 +304,61 @@ func TestHalfOpenProbesLimitMultiple(t *testing.T) {
 		t.Fatal("first Allow (transition) should succeed")
 	}
 	if !b.Allow() {
-		t.Fatal("second Allow should succeed (HalfOpenProbes=2)")
+		t.Fatal("second Allow should succeed (CircuitRecoveryThreshold=2)")
 	}
 	if b.Allow() {
 		t.Fatal("third Allow should be rejected (probes exhausted)")
+	}
+}
+
+// TestHalfOpenRequiresProbeSuccesses 验证半开探测需要连续成功达到
+// circuit_recovery_threshold 才按 recovery 策略恢复，首个成功不能提前恢复。
+func TestHalfOpenRequiresProbeSuccesses(t *testing.T) {
+	b := New(config.BreakerCfg{
+		DegradeThreshold:          1,
+		DegradedRecoveryThreshold: 1,
+		CircuitInterval:           config.Duration(30 * time.Second),
+		DegradeInterval:           config.Duration(30 * time.Second),
+		CircuitRecoveryThreshold:  2,
+		Recovery:                  "normal",
+	})
+	b.RecordFailure() // -> degraded
+	b.RecordFailure() // -> circuitOpen
+	advanceTime(b, 31*time.Second)
+
+	if !b.Allow() {
+		t.Fatal("first Allow (transition) should succeed")
+	}
+	if _, st := b.RecordSuccess(); st != HalfOpen {
+		t.Fatalf("首次半开成功不应恢复，got %v", st)
+	}
+	if _, st := b.RecordSuccess(); st != Normal {
+		t.Fatalf("连续 circuit_recovery_threshold 次成功后才应恢复 normal，got %v", st)
+	}
+}
+
+// TestHalfOpenFailureResetsCircuitOpen 验证半开探测中途失败即回到 circuitOpen。
+func TestHalfOpenFailureResetsCircuitOpen(t *testing.T) {
+	b := New(config.BreakerCfg{
+		DegradeThreshold:          1,
+		DegradedRecoveryThreshold: 1,
+		CircuitInterval:           config.Duration(30 * time.Second),
+		DegradeInterval:           config.Duration(30 * time.Second),
+		CircuitRecoveryThreshold:  2,
+		Recovery:                  "normal",
+	})
+	b.RecordFailure() // -> degraded
+	b.RecordFailure() // -> circuitOpen
+	advanceTime(b, 31*time.Second)
+
+	if !b.Allow() {
+		t.Fatal("first Allow (transition) should succeed")
+	}
+	if _, st := b.RecordSuccess(); st != HalfOpen {
+		t.Fatalf("首次成功应保持 halfOpen，got %v", st)
+	}
+	if _, st := b.RecordFailure(); st != CircuitOpen {
+		t.Fatalf("半开失败应回到 circuitOpen，got %v", st)
 	}
 }
 

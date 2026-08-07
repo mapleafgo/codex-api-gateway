@@ -90,7 +90,7 @@ func TestFailoverOnUpstreamError(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeSource("bad", bad.URL, 0),
@@ -121,7 +121,7 @@ func TestAllSourcesFail(t *testing.T) {
 	defer bad.Close()
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("bad", bad.URL, 0)},
 	}
 	s := New(cfg)
@@ -145,7 +145,7 @@ func TestMixAnthropicFailThenChatSuccess(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeSource("a-bad", badA.URL, 0),
@@ -206,7 +206,7 @@ func TestEmptyChatResponseSwitchesToNext(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeChatSource("c-empty", empty.URL+"/v1", 0),
@@ -257,7 +257,7 @@ func TestFailureTerminalBeforeContentNoFailover(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeChatSource("c-fail", failing.URL+"/v1", 0),
@@ -305,7 +305,7 @@ func TestStatusOnlySourceSwitchesToNext(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeSource("flaky", flaky.URL, 0),
@@ -334,7 +334,7 @@ func TestSlowFirstByteLongStream(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(50 * time.Millisecond), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeSource("slow", slow.URL, 0),
@@ -372,7 +372,7 @@ func TestModelMapResolvedBeforeStream(t *testing.T) {
 	src.ModelMap = map[string]string{"x": "mapped-model"}
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{src},
 	}
 	s := New(cfg)
@@ -399,7 +399,7 @@ func TestRetryOnAllFail(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(time.Second), MaxRetries: 5,
-			DegradeThreshold: 100, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 100, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
@@ -424,7 +424,7 @@ func TestNoRetryWhenMaxRetriesZero(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
@@ -445,7 +445,7 @@ func TestRetryCtxCancel(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(time.Second), MaxRetries: -1,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
@@ -472,12 +472,12 @@ func TestDegradeMovesSourceToEnd(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			makeSource("A", bad.URL, 0),
@@ -515,12 +515,12 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: flipFlop.URL, OriginalIndex: 0, BackendType: config.BackendAnthropic,
@@ -551,6 +551,156 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 	}
 }
 
+// TestSourceHealthPrioritySkipsDisabledAndCircuitOpen 验证运行时优先级计数
+// 不把 disabled / circuitOpen 源占位，active 源应从 1 开始连续编号。
+func TestSourceHealthPrioritySkipsDisabledAndCircuitOpen(t *testing.T) {
+	dis := makeSource("disabled", "https://disabled.example", 0)
+	dis.Disabled = true
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:         config.Duration(time.Second),
+			DegradeThreshold:         1,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
+			Recovery:                 "normal",
+		},
+		Sources: []config.Source{
+			dis,
+			makeSource("active", "https://active.example", 1),
+			makeSource("open", "https://open.example", 2),
+		},
+	}
+	s := New(cfg)
+	openSrc, ok := s.sourceByName("open")
+	if !ok {
+		t.Fatal("missing open")
+	}
+	bk := s.breakerFor(&openSrc)
+	bk.RecordFailure() // threshold=1 -> degraded
+	bk.RecordFailure() // degraded -> circuitOpen
+	s.adjustOrder("open", breaker.Degraded, breaker.CircuitOpen)
+
+	hs := s.SourceHealth()
+	if len(hs) != 3 {
+		t.Fatalf("health len=%d", len(hs))
+	}
+	for _, h := range hs {
+		if h.Name == "active" && (h.Priority != 1 || h.Disabled) {
+			t.Fatalf("active 源应拿到 priority=1，got %+v", h)
+		}
+		if h.Name == "disabled" && (h.Priority != 0 || !h.Disabled) {
+			t.Fatalf("disabled 源不应参与优先级，got %+v", h)
+		}
+		if h.Name == "open" && h.Priority != 0 {
+			t.Fatalf("circuitOpen 源不应参与优先级，got %+v", h)
+		}
+	}
+}
+
+// TestCircuitOpenRemovedFromRuntimeSeq 验证熔断源不进入运行时候选队列。
+func TestCircuitOpenRemovedFromRuntimeSeq(t *testing.T) {
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:         config.Duration(time.Second),
+			DegradeThreshold:         1,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
+			Recovery:                 "normal",
+		},
+		Sources: []config.Source{
+			makeSource("A", "https://a.example", 0),
+			makeSource("B", "https://b.example", 1),
+		},
+	}
+	s := New(cfg)
+	aSrc, _ := s.sourceByName("A")
+	bk := s.breakerFor(&aSrc)
+	bk.RecordFailure() // -> degraded
+	bk.RecordFailure() // -> circuitOpen
+	s.adjustOrder("A", breaker.Degraded, breaker.CircuitOpen)
+
+	for _, src := range s.runtimeSeq() {
+		if src.Name == "A" {
+			t.Fatalf("circuitOpen 源不应出现在 runtimeSeq，got %v", sourceNames(s.runtimeSeq()))
+		}
+	}
+}
+
+// TestHalfOpenTransitionRestoresPriority 验证 circuitOpen 到期进入 halfOpen 时
+// 立即回到原始运行优先级，否则在队尾拿不到探测机会。
+func TestHalfOpenTransitionRestoresPriority(t *testing.T) {
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:         config.Duration(time.Second),
+			DegradeThreshold:         1,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
+			Recovery:                 "normal",
+		},
+		Sources: []config.Source{
+			makeSource("A", "https://a.example", 0),
+			makeSource("B", "https://b.example", 1),
+		},
+	}
+	s := New(cfg)
+	s.moveToEnd("A")
+	s.adjustOrder("A", breaker.CircuitOpen, breaker.HalfOpen)
+	if s.order[0].name != "A" {
+		t.Fatalf("halfOpen 应恢复原始位置 [A, B]，got %v", orderNames(s.order))
+	}
+}
+
+func TestRestoreOriginalUsesCurrentConfigOrder(t *testing.T) {
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:         config.Duration(time.Second),
+			DegradeThreshold:         1,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
+			Recovery:                 "normal",
+		},
+		Sources: []config.Source{
+			makeSource("A", "https://a.example", 0),
+			makeSource("B", "https://b.example", 1),
+		},
+	}
+	s := New(cfg)
+	aSrc, _ := s.sourceByName("A")
+	bk := s.breakerFor(&aSrc)
+	bk.RecordFailure() // threshold=1 -> degraded
+	s.adjustOrder("A", breaker.Normal, breaker.Degraded)
+	if s.order[0].name != "B" {
+		t.Fatalf("setup: A 应已后移，got %v", orderNames(s.order))
+	}
+
+	// 模拟 configwatch 已 Replace 但尚未 Reload：当前配置顺序是 B 在前。
+	cfg2 := &config.Config{
+		Breaker: cfg.Breaker,
+		Sources: []config.Source{
+			makeSource("B", "https://b.example", 0),
+			makeSource("A", "https://a.example", 1),
+		},
+	}
+	s.holder.Replace(cfg2)
+	s.restoreOriginal("A")
+
+	if s.order[0].name != "B" || s.order[1].name != "A" {
+		t.Fatalf("应按当前配置顺序恢复为 [B, A]，got %v", orderNames(s.order))
+	}
+}
+
+func orderNames(order []orderEntry) []string {
+	out := make([]string, len(order))
+	for i := range order {
+		out[i] = order[i].name
+	}
+	return out
+}
+
 func TestCircuitOpenSourceSkipped(t *testing.T) {
 	var aCalls atomic.Int64
 	var bCalls atomic.Int64
@@ -567,12 +717,12 @@ func TestCircuitOpenSourceSkipped(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			makeSource("A", badCounted.URL, 0),
@@ -607,12 +757,12 @@ func TestAllCircuitOpenTriggersRetry(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(3 * time.Millisecond),
-			HalfOpenProbes:   1,
-			MaxRetries:       3,
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(3 * time.Millisecond),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                3,
 		},
 		Sources: []config.Source{
 			makeSource("A", bad.URL, 0),
@@ -661,7 +811,7 @@ func TestWatchdogFiresRecordsFailure(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(30 * time.Millisecond), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{makeSource("hang", "http://"+ln.Addr().String(), 0)},
 	}
@@ -685,7 +835,7 @@ func TestConcurrentExecuteRuntimeOrderStable(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
 			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
-			DegradeThreshold: 100, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+			DegradeThreshold: 100, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			makeSource("a", srv.URL, 0),
@@ -719,7 +869,7 @@ func TestOnUpstreamUsage(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second),
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("good", srv.URL, 0)},
 	}
 	s := New(cfg)
@@ -768,10 +918,10 @@ func TestLockedStreamClientCancelNotRecordedAsFailed(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 100,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
+			FirstByteTimeout:         config.Duration(2 * time.Second),
+			DegradeThreshold:         100,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{makeSource("up", upstream.URL, 0)},
 	}
@@ -817,7 +967,7 @@ func TestOnUpstreamTTFB(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("good", srv.URL, 0)},
 	}
 	s := New(cfg)
@@ -837,7 +987,7 @@ func TestOnUpstreamTTFBZeroOnConnectFail(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(time.Second), MaxRetries: 0,
-			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("bad", srv.URL, 0)},
 	}
 	s := New(cfg)
@@ -851,13 +1001,13 @@ func TestOnUpstreamTTFBZeroOnConnectFail(t *testing.T) {
 func TestSourceHealthAndPromote(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(time.Second),
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(time.Second),
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			{Name: "a", BaseURL: "https://a.example", APIKey: "k", DefaultModel: "m"},
@@ -928,11 +1078,11 @@ func TestDisabledSourceSkipped(t *testing.T) {
 	dis.Disabled = true
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 5,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:         config.Duration(2 * time.Second),
+			DegradeThreshold:         5,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
 		},
 		Sources: []config.Source{
 			dis,
@@ -988,11 +1138,11 @@ func TestAllSourcesDisabled(t *testing.T) {
 	b.Disabled = true
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 5,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:         config.Duration(2 * time.Second),
+			DegradeThreshold:         5,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
 		},
 		Sources: []config.Source{a, b},
 	}
@@ -1021,14 +1171,14 @@ func TestSchedulerAutoRecoverDegradedSource(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeInterval:  config.Duration(30 * time.Millisecond),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeInterval:           config.Duration(30 * time.Millisecond),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			makeSource("s1", good.URL, 0),
@@ -1068,14 +1218,14 @@ func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeInterval:  config.Duration(30 * time.Second),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeInterval:           config.Duration(30 * time.Second),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			makeSource("s1", good.URL, 0),
@@ -1111,14 +1261,14 @@ func TestSchedulerDegradedSourceNotStarvedByHealthySource(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeInterval:  config.Duration(30 * time.Millisecond),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeInterval:           config.Duration(30 * time.Millisecond),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			makeSource("B", goodB.URL, 0), // 原本居首的降级源
@@ -1159,14 +1309,14 @@ func TestDegradedChanceFailuresMoveToEndAndCircuitOpen(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeInterval:  config.Duration(30 * time.Second),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeInterval:           config.Duration(30 * time.Second),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			makeSource("A", badA.URL, 0),
@@ -1203,8 +1353,12 @@ func TestDegradedChanceFailuresMoveToEndAndCircuitOpen(t *testing.T) {
 			t.Fatalf("chance %d: %v", i+1, err)
 		}
 		seq = s.runtimeSeq()
-		if seq[0].Name != "B" || seq[1].Name != "A" {
-			t.Fatalf("chance %d: 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+		if i < 2 {
+			if seq[0].Name != "B" || seq[1].Name != "A" {
+				t.Fatalf("chance %d: 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+			}
+		} else if len(seq) != 1 || seq[0].Name != "B" {
+			t.Fatalf("chance %d: 熔断后 A 应移出 runtimeSeq，got %v", i+1, sourceNames(seq))
 		}
 	}
 
@@ -1226,14 +1380,14 @@ func TestClientErrorDegradesAndChanceFailuresCircuitOpen(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			DegradeInterval:  config.Duration(30 * time.Second),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
-			Recovery:         "normal",
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			DegradeInterval:           config.Duration(30 * time.Second),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
 			makeSource("A", badA.URL, 0),
@@ -1270,8 +1424,12 @@ func TestClientErrorDegradesAndChanceFailuresCircuitOpen(t *testing.T) {
 			t.Fatalf("chance %d: %v", i+1, err)
 		}
 		seq = s.runtimeSeq()
-		if seq[0].Name != "B" || seq[1].Name != "A" {
-			t.Fatalf("chance %d: 4xx 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+		if i < 2 {
+			if seq[0].Name != "B" || seq[1].Name != "A" {
+				t.Fatalf("chance %d: 4xx 机会失败后 A 应重新移到队尾，got %v", i+1, sourceNames(seq))
+			}
+		} else if len(seq) != 1 || seq[0].Name != "B" {
+			t.Fatalf("chance %d: 熔断后 A 应移出 runtimeSeq，got %v", i+1, sourceNames(seq))
 		}
 	}
 
@@ -1314,7 +1472,7 @@ func TestListUpstreamModels_Responses(t *testing.T) {
 func TestRuntimeSeqSurvivesReplaceBeforeReload(t *testing.T) {
 	base := config.BreakerCfg{
 		FirstByteTimeout: config.Duration(time.Second),
-		DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+		DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 	}
 	holder := config.NewHolder(&config.Config{
 		Breaker: base,
@@ -1352,7 +1510,7 @@ func TestReloadRefreshesBreakerCfg(t *testing.T) {
 		return &config.Config{
 			Breaker: config.BreakerCfg{
 				FirstByteTimeout: config.Duration(time.Second),
-				DegradeThreshold: threshold, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1,
+				DegradeThreshold: threshold, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
 			},
 			Sources: []config.Source{makeSource("a", "http://a", 0)},
 		}
@@ -1376,12 +1534,12 @@ func TestReloadRefreshesBreakerCfg(t *testing.T) {
 func TestBackgroundRecoveryRestoresPriority(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(2 * time.Second),
-			DegradeInterval:  config.Duration(30 * time.Second),
-			DegradeThreshold: 1,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeInterval:           config.Duration(30 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
 		},
 		Sources: []config.Source{
 			makeSource("A", "http://a", 0),
@@ -1427,7 +1585,7 @@ func TestBackgroundRecoveryRestoresPriority(t *testing.T) {
 	}
 
 	// 只有真实请求成功后才转回 normal。
-	bkA.RecordSuccess() // recover_threshold=1 -> degraded -> normal
+	bkA.RecordSuccess() // degraded_recovery_threshold=1 -> degraded -> normal
 	if bkA.State() != breaker.Normal {
 		t.Fatalf("真实成功后才应转 normal，got %v", bkA.State())
 	}

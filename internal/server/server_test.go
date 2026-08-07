@@ -1132,7 +1132,7 @@ func TestResponsesPassthroughBackend(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
 			BackendType: config.BackendOpenAIResponses,
@@ -1195,7 +1195,7 @@ func TestPreviousResponseIDNoDiscardWarnWithResponsesSource(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
 			BackendType: config.BackendOpenAIResponses,
@@ -1238,7 +1238,7 @@ func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
 			BackendType: config.BackendOpenAIResponses,
@@ -1475,7 +1475,7 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &config.Config{
-		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), HalfOpenProbes: 1},
+		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
 		}},

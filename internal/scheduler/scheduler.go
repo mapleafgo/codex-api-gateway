@@ -30,10 +30,9 @@ const defaultBackoff = 10 * time.Second
 // Scheduler.recoveryPeriod before calling StartRecovery.
 const defaultRecoveryPeriod = 1 * time.Minute
 
-// orderEntry tracks a source's runtime position and its original config index.
+// orderEntry tracks a source's runtime position.
 type orderEntry struct {
-	name          string
-	originalIndex int
+	name string
 }
 
 // Scheduler routes requests across prioritized sources with failover.
@@ -93,7 +92,7 @@ func New(cfg any) *Scheduler {
 	srcs := holder.Current().OrderedSources()
 	order := make([]orderEntry, len(srcs))
 	for i, s := range srcs {
-		order[i] = orderEntry{name: s.Name, originalIndex: s.OriginalIndex}
+		order[i] = orderEntry{name: s.Name}
 	}
 	cur := holder.Current()
 	slog.Info("调度器初始化", "sources", len(order),
@@ -174,7 +173,7 @@ func (s *Scheduler) Reload() {
 	srcs := cur.OrderedSources()
 	newOrder := make([]orderEntry, len(srcs))
 	for i, src := range srcs {
-		newOrder[i] = orderEntry{name: src.Name, originalIndex: src.OriginalIndex}
+		newOrder[i] = orderEntry{name: src.Name}
 	}
 	s.ordMu.Lock()
 	s.order = newOrder
@@ -201,15 +200,22 @@ func (s *Scheduler) Reload() {
 
 // SourceHealth 返回当前配置中各源的运行时健康态，按运行时优先级排序。
 func (s *Scheduler) SourceHealth() []SourceHealth {
-	seq := s.runtimeSeq()
+	seq := s.healthSeq()
 	out := make([]SourceHealth, 0, len(seq))
-	for i, src := range seq {
+	activePriority := 0
+	for _, src := range seq {
 		bk := s.breakerFor(&src)
+		state := bk.State()
+		priority := 0
+		if !src.Disabled && state != breaker.CircuitOpen {
+			activePriority++
+			priority = activePriority
+		}
 		out = append(out, SourceHealth{
 			Name:         src.Name,
-			State:        bk.State().String(),
+			State:        state.String(),
 			DegradeCount: bk.DegradeCount(),
-			Priority:     i + 1,
+			Priority:     priority,
 			Disabled:     src.Disabled,
 		})
 	}
@@ -241,11 +247,29 @@ func (s *Scheduler) breakerFor(src *config.Source) *breaker.Breaker {
 	return b
 }
 
-// runtimeSeq returns sources in the current runtime order (runtimeOrder).
+// runtimeSeq returns sources in the current runtime order (runtimeOrder)。
+// disabled 与 circuitOpen 源不参与运行时候选队列；SourceHealth 通过
+// healthSeq 仍展示它们，但 priority 不计入。
+func (s *Scheduler) runtimeSeq() []config.Source {
+	all := s.healthSeq()
+	out := make([]config.Source, 0, len(all))
+	for _, src := range all {
+		if src.Disabled {
+			continue
+		}
+		if s.breakerFor(&src).State() == breaker.CircuitOpen {
+			continue
+		}
+		out = append(out, src)
+	}
+	return out
+}
+
+// healthSeq returns sources in the current runtime order (runtimeOrder)。
 // holder.Replace 与 Reload 之间存在窗口（configwatch 先 Replace 再回调），
 // 此时 order 仍是旧配置的：必须按 name 对齐新配置，不能盲信 originalIndex
 // ——删源时索引越界 panic，重排时静默选错源。
-func (s *Scheduler) runtimeSeq() []config.Source {
+func (s *Scheduler) healthSeq() []config.Source {
 	s.ordMu.RLock()
 	defer s.ordMu.RUnlock()
 	srcs := s.holder.Current().OrderedSources()
@@ -304,14 +328,45 @@ func (s *Scheduler) restoreOriginal(name string) {
 	if !found {
 		return
 	}
-	// Insert at originalIndex position.
-	pos := entry.originalIndex
-	if pos > len(s.order) {
-		pos = len(s.order)
+	idx := s.currentConfigIndex(name)
+	if idx < 0 {
+		return
+	}
+	// 按当前配置顺序找插入位：跳过 disabled / circuitOpen 这类不参与
+	// 运行时优先级的源，保证恢复后相对其他活跃源的顺序正确。
+	pos := len(s.order)
+	for i, e := range s.order {
+		if !s.participatesForRestore(e.name) {
+			continue
+		}
+		if s.currentConfigIndex(e.name) > idx {
+			pos = i
+			break
+		}
 	}
 	s.order = append(s.order, orderEntry{})
 	copy(s.order[pos+1:], s.order[pos:])
 	s.order[pos] = entry
+}
+
+// participatesForRestore 判断源是否占据运行时优先级槽位：停用和熔断不占位。
+func (s *Scheduler) participatesForRestore(name string) bool {
+	src, ok := s.sourceByName(name)
+	if !ok || src.Disabled {
+		return false
+	}
+	return s.breakerFor(&src).State() != breaker.CircuitOpen
+}
+
+// currentConfigIndex 返回源在当前配置顺序中的下标，未找到返回 -1。
+func (s *Scheduler) currentConfigIndex(name string) int {
+	srcs := s.holder.Current().OrderedSources()
+	for i := range srcs {
+		if srcs[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // sourceByName 在当前配置的源列表中按 name 查找，未找到返回 ok=false。
@@ -411,7 +466,8 @@ func (s *Scheduler) ExecuteGeneric(
 				"source", firstClientErr.source, "elapsed", time.Since(start).String(), "error", firstClientErr.err)
 			return firstClientErr.source, firstClientErr.err
 		}
-		// max_retries 由 config 校验保证 >= 0：mr 表示首轮之外的整轮重试次数。
+		// max_retries 由 config 校验保证 >= 0：mr 表示所有源全部失败后、
+		// 首轮之外额外执行的整轮重试次数。
 		if attempt >= mr {
 			break
 		}
@@ -455,16 +511,21 @@ func (s *Scheduler) tryRoundGeneric(
 		s.autoRecoverDegraded(&src)
 	}
 
-	for _, src := range s.runtimeSeq() {
+	for _, src := range s.healthSeq() {
 		if src.Disabled {
 			log.Debug("跳过上游源", "source", src.Name, "reason", "disabled")
 			continue
 		}
 
 		bk := s.breakerFor(&src)
-		if !bk.Allow() {
+		allowed, oldState, newState := bk.AllowTransition()
+		if !allowed {
 			log.Warn("跳过上游源", "source", src.Name, "reason", "breaker_open")
 			continue
+		}
+		if oldState != newState {
+			// circuitOpen -> halfOpen 也要回到原位置，否则在队尾拿不到探测机会。
+			s.adjustOrder(src.Name, oldState, newState)
 		}
 		*attemptNo++
 		locked, err := s.trySourceGeneric(ctx, &src, bk, rawBody, onEvent, onUpstream, *attemptNo)
@@ -608,6 +669,7 @@ func (s *Scheduler) trySourceGeneric(
 
 // adjustOrder modifies the runtime order based on state transitions.
 // Only move/restore when the state actually changes:
+//   - circuitOpen -> halfOpen -> restoreOriginal（给探测机会）
 //   - degraded/circuitOpen (from a less-degraded state) -> moveToEnd
 //   - normal (from degraded/halfOpen recovery)           -> restoreOriginal
 func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
@@ -615,6 +677,9 @@ func (s *Scheduler) adjustOrder(name string, oldState, newState breaker.State) {
 		return // no transition, no order change
 	}
 	switch newState {
+	case breaker.HalfOpen:
+		s.restoreOriginal(name)
+		slog.Info("上游源进入半开，运行优先级恢复", "source", name, "old_state", oldState, "new_state", newState)
 	case breaker.Degraded, breaker.CircuitOpen:
 		s.moveToEnd(name)
 		slog.Warn("上游源运行优先级后移", "source", name, "old_state", oldState, "new_state", newState)

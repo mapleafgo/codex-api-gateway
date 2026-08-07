@@ -37,18 +37,18 @@ logging:
 # 状态机：
 #   normal ──(连续 N 次失败)──> degraded(该源序列后移)
 #   degraded ──(超过 degrade_interval 无新失败)──> 恢复到原始优先级位置（进入机会窗口，状态仍保持 degraded）
-#   degraded 机会窗口内 ──(真实请求成功 recover_threshold 次)──> normal
+#   degraded 机会窗口内 ──(真实请求成功 degraded_recovery_threshold 次)──> normal
 #   degraded 机会窗口内 ──(失败)──> 重新移到队尾等下一次机会；连续 N 次机会失败 ──> circuitOpen(熔断)
 #   circuitOpen ──(circuit_interval 结束)──> halfOpen(放行探测) ──(探测成功)──> 由 recovery 决定回到 normal/degraded
 breaker:
   first_byte_timeout: 12s   # 流式请求等待首个字节的最长时间，超时计为失败
   degrade_threshold: 3      # normal→degraded 需连续 N 次失败；degraded 机会窗口累计 N 次失败（中间无成功）→ circuitOpen
-  recover_threshold: 1      # degraded→normal 与 halfOpen→normal 所需的连续成功次数
   degrade_interval: 1m      # degraded 源超过此间隔无新失败则恢复到原始优先级进入机会窗口
+  degraded_recovery_threshold: 1      # degraded 恢复到 normal 所需的连续成功次数（降级恢复阈值）
   circuit_interval: 30m     # 熔断(circuitOpen)后多久转为半开(halfOpen)探测
-  half_open_probes: 1       # halfOpen 状态允许放行的探测请求数
+  circuit_recovery_threshold: 1       # halfOpen 恢复到 normal/degraded 所需的连续探测成功次数（熔断恢复阈值）
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
-  max_retries: 0            # 失败重试次数；仅全局生效，不被单源 breaker 覆盖
+  max_retries: 0            # 所有源全部失败后的整轮重试次数（0=不重试）；仅全局生效，不被单源 breaker 覆盖
 
 # Anthropic Messages 转换（仅 backend_type: a 生效）
 # default_max_tokens：客户端未传 max_output_tokens 时的上游输出额度。

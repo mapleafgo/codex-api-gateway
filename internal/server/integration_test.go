@@ -634,10 +634,10 @@ func TestIntegrationFirstErrorFailsOver(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: errorA.URL},
@@ -693,10 +693,10 @@ func TestIntegrationFailover(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100, // high so A doesn't degrade in this test
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100, // high so A doesn't degrade in this test
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: badA.URL},
@@ -738,11 +738,11 @@ func TestIntegrationFailoverUsesSuccessfulSourceID(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: badA.URL},
@@ -782,11 +782,11 @@ func TestIntegrationServerSideFailureAdvancesSequenceNumber(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0,
 		},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
@@ -820,12 +820,12 @@ func TestIntegrationDegradeReorder(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 3,
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			DegradeThreshold:          3,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: badA.URL},
@@ -878,11 +878,11 @@ func TestIntegrationRetry(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100, // high so it doesn't circuit-open
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       1, // initial + 1 retry = 2 rounds
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100, // high so it doesn't circuit-open
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               1, // initial + 1 retry = 2 rounds
 		},
 		Sources: []config.Source{{Name: "bad", BaseURL: bad.URL}},
 	}
@@ -910,11 +910,11 @@ func TestIntegrationRetryMaxZero(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 100,
-			CircuitInterval:  config.Duration(time.Minute),
-			HalfOpenProbes:   1,
-			MaxRetries:       0, // no retry
+			FirstByteTimeout:         config.Duration(5 * time.Second),
+			DegradeThreshold:         100,
+			CircuitInterval:          config.Duration(time.Minute),
+			CircuitRecoveryThreshold: 1,
+			MaxRetries:               0, // no retry
 		},
 		Sources: []config.Source{{Name: "bad", BaseURL: bad.URL}},
 	}
@@ -973,12 +973,12 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			DegradeThreshold:          1, // 1 failure -> degraded, 2nd -> circuitOpen
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(500 * time.Millisecond), // generous: avoids CI-load timing flakes
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: upstreamA.URL},
@@ -1094,12 +1094,12 @@ func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{
-			FirstByteTimeout: config.Duration(5 * time.Second),
-			DegradeThreshold: 1, // 1 failure -> degraded, 2nd -> circuitOpen
-			RecoverThreshold: 1,
-			CircuitInterval:  config.Duration(time.Minute), // long circuit_interval: A stays open
-			HalfOpenProbes:   1,
-			MaxRetries:       0,
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			DegradeThreshold:          1, // 1 failure -> degraded, 2nd -> circuitOpen
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute), // long circuit_interval: A stays open
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
 		},
 		Sources: []config.Source{
 			{Name: "A", BaseURL: upstreamA.URL},

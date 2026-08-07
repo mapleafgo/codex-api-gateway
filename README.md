@@ -11,8 +11,8 @@ Codex CLI 只能走 OpenAI Responses API。本网关在本地提供 Responses �
 | `backend_type` | 上游 | 路径 |
 |---|---|---|
 | `a`（默认） | Anthropic Messages | Responses → Messages → Responses SSE |
-| `c` | OpenAI Chat Completions（仅流式） | Responses → Chat → Responses SSE |
-| `r` | OpenAI Responses 透传（仅流式） | 最小改写透传 + 出站 model 别名回写 |
+| `c` | OpenAI Chat Completions | Responses → Chat → Responses SSE |
+| `r` | OpenAI Responses 透传 | 最小改写透传 + 出站 model 别名回写 |
 
 ```text
 Codex CLI
@@ -28,7 +28,7 @@ codex-api-gateway  ── 协议适配 / 透传 + 多源路由 + 熔断
 
 ### OpenAI Chat 兼容上游（backend_type: c）
 
-除默认 Anthropic（`a`）外，源可配置为 OpenAI Chat Completions 兼容后端（`c`，**仅流式**）。Responses 透传见下一节 `r`：
+除默认 Anthropic（`a`）外，源可配置为 OpenAI Chat Completions 兼容后端（`c`）。Responses 透传见下一节 `r`：
 
 ```yaml
 sources:
@@ -298,10 +298,10 @@ sources:
 breaker:
   first_byte_timeout: 12s
   degrade_threshold: 3
-  recover_threshold: 1
   degrade_interval: 1m
+  degraded_recovery_threshold: 1
   circuit_interval: 30m
-  half_open_probes: 1
+  circuit_recovery_threshold: 1
   recovery: normal
   max_retries: 0
 ```
@@ -313,11 +313,11 @@ breaker:
 | `first_byte_timeout` | 等待上游首个流式事件的最长时间，超时计为失败 |
 | `degrade_threshold` | 连续失败达阈值后降级，再达阈值后熔断 |
 | `degrade_interval` | 降级源超过此间隔无新失败后恢复到原始优先级位置进入机会窗口（状态仍保持 `degraded`；机会内失败重新排到队尾，连续 N 次机会失败后熔断） |
-| `recover_threshold` | `degraded`/`halfOpen` 恢复到 `normal` 所需的连续成功次数 |
+| `degraded_recovery_threshold` | `degraded` 恢复到 `normal` 所需的连续成功次数（降级恢复阈值） |
 | `circuit_interval` | 熔断后进入半开探测前的等待时间 |
-| `half_open_probes` | 半开状态允许的探测请求数 |
+| `circuit_recovery_threshold` | `halfOpen` 恢复到 `normal`/`degraded` 所需的连续探测成功次数（熔断恢复阈值） |
 | `recovery` | 半开探测成功后恢复到 `normal` 或 `degraded` |
-| `max_retries` | 所有源失败后的整轮重试次数（仅全局，单源不覆盖） |
+| `max_retries` | 所有源全部失败后的整轮重试次数（0=不重试；仅全局，单源不覆盖） |
 
 单源可覆盖部分断路器参数，零值字段继承全局：
 
