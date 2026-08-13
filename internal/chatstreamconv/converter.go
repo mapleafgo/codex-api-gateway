@@ -311,8 +311,10 @@ func (c *Converter) SetDeclaredNames(names map[string]toolcatalog.Identity) {
 
 // resolveToolName 按声明映射还原 namespace/name；未声明时回退 "__" 拆分。
 func (c *Converter) resolveToolName(flat string) (string, string) {
+	// 先按声明精确匹配；上游可能丢弃 namespace 前缀（只返回 spawn_agent 而非
+	// collaboration__spawn_agent），此时按 name 做唯一回退还原 namespace。
 	if c.declaredNames != nil {
-		if id, ok := c.declaredNames[flat]; ok {
+		if id, ok := toolcatalog.ResolveIdentityFromFlat(c.declaredNames, flat); ok {
 			return id.Namespace, id.Name
 		}
 	}

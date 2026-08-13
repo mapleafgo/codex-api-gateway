@@ -31,7 +31,83 @@ func DecodeResponseNewParams(data []byte) (*oairesponses.ResponseNewParams, erro
 	// 列表只认 input_text/input_image/input_file，output_text 被静默丢弃 → 上游
 	// 收到空 assistant 消息 → 模型表现为"丢上下文"。从 raw JSON 恢复。
 	restoreAssistantOutputTextFromRaw(data, &req)
+	// Codex 子 agent 的 NEW_TASK/Message 投递使用 type=agent_message（稳定版
+	// openai-go ResponseInputItemUnionParam 不认此类型，解析后所有 Of* 为 nil）。
+	// 从 raw JSON 提取 content text，重建为 user role 的 EasyInputMessageParam，
+	// 使 appendItem 能正常映射到 Anthropic user message。
+	restoreAgentMessageFromRaw(data, &req)
 	return &req, nil
+}
+
+// restoreAgentMessageFromRaw 从 raw JSON 把 type=agent_message 的 input item
+// 重建为 user role 的 EasyInputMessageParam。agent_message 是 Codex 多 agent
+// 通信的投递载体（NEW_TASK / Message），稳定版 SDK 不认此类型（所有 Of* 为 nil，
+// 被 appendItem 的 unknownInputItemType 分支丢弃），子 agent 因此收不到任务。
+func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams) {
+	var raw struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil || len(raw.Input) == 0 {
+		return
+	}
+	if raw.Input[0] != '[' {
+		return
+	}
+	var rawItems []json.RawMessage
+	if err := json.Unmarshal(raw.Input, &rawItems); err != nil {
+		return
+	}
+	items := req.Input.OfInputItemList
+	restored := 0
+	for i := range rawItems {
+		var probe struct {
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(rawItems[i], &probe); err != nil {
+			continue
+		}
+		if probe.Type != "agent_message" {
+			continue
+		}
+		// agent_message content 是 []ContentItem，取 input_text 的 text 拼接
+		var parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(probe.Content, &parts); err != nil || len(parts) == 0 {
+			continue
+		}
+		var sb strings.Builder
+		for _, p := range parts {
+			if p.Text != "" {
+				if sb.Len() > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString(p.Text)
+			}
+		}
+		if sb.Len() == 0 {
+			continue
+		}
+		// SDK 不认 agent_message，按索引对齐时该位置可能是空结构或已被丢弃。
+		// 统一追加为 user message，保证任务文本进入上游请求。
+		items = append(items, oairesponses.ResponseInputItemUnionParam{
+			OfMessage: &oairesponses.EasyInputMessageParam{
+				Role: oairesponses.EasyInputMessageRoleUser,
+				Type: oairesponses.EasyInputMessageTypeMessage,
+				Content: oairesponses.EasyInputMessageContentUnionParam{
+					OfString: oparam.NewOpt(sb.String()),
+				},
+			},
+		})
+		restored++
+	}
+	if restored > 0 {
+		req.Input.OfInputItemList = items
+		slog.Debug("从 raw 重建 agent_message 为 user message",
+			"restored", restored)
+	}
 }
 
 func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) {

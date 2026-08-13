@@ -285,7 +285,9 @@ func (c *Converter) resolveDeclaredName(item *model.OutputItem, flat string) {
 	if item == nil || flat == "" || c.declaredToolNames == nil {
 		return
 	}
-	if id, ok := c.declaredToolNames[flat]; ok {
+	// 先精确匹配；上游可能丢弃 namespace 前缀（只返回 spawn_agent 而非
+	// collaboration__spawn_agent），此时按 name 做唯一回退还原 namespace。
+	if id, ok := toolcatalog.ResolveIdentityFromFlat(c.declaredToolNames, flat); ok {
 		item.Namespace = id.Namespace
 		item.Name = id.Name
 	}

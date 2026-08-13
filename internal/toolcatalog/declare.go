@@ -162,6 +162,35 @@ func ToolName(namespace, name string) string {
 	return namespace + "__" + name
 }
 
+// ResolveIdentityFromFlat 从请求声明的扁平工具名映射还原身份。
+// 先按 flat 精确匹配；未命中且 flat 不含 "__"（上游可能丢弃了 namespace 前缀，
+// 如只返回 spawn_agent 而非 collaboration__spawn_agent）时，在声明的 values 里
+// 按 Name 做唯一回退匹配，补回 namespace。name 非唯一（多个 namespace 同名）
+// 时不回退，避免猜错。
+func ResolveIdentityFromFlat(declared map[string]Identity, flat string) (Identity, bool) {
+	if declared == nil {
+		return Identity{}, false
+	}
+	if id, ok := declared[flat]; ok {
+		return id, true
+	}
+	if strings.Contains(flat, "__") {
+		return Identity{}, false
+	}
+	var hit Identity
+	found := false
+	for _, id := range declared {
+		if id.Name == flat {
+			if found {
+				return Identity{}, false // 同名多 namespace，歧义不回退
+			}
+			hit = id
+			found = true
+		}
+	}
+	return hit, found
+}
+
 func optionalString(v oparam.Opt[string]) *string {
 	if !v.Valid() {
 		return nil
