@@ -909,7 +909,9 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 	if tm, ok := m0["tool_mode"]; !ok || strings.TrimSpace(string(tm)) != `"direct"` {
 		t.Fatalf(`tool_mode 应为 "direct", got: %v (present=%v)`, string(m0["tool_mode"]), ok)
 	}
-	// multi_agent_version 默认注入 "v2"（对齐官方 gpt-5.6 catalog）
+	// multi_agent_version 注入 "v2"：Codex 多 agent 是纯客户端编排（子 agent 通过
+	// 网关发 /v1/responses 请求），不依赖上游。V2 让 spawn_agent 等工具 Direct
+	// 可见（模型直接调用）；V1 在 supports_search_tool=true 时工具变 Deferred。
 	if mav, ok := m0["multi_agent_version"]; !ok || strings.TrimSpace(string(mav)) != `"v2"` {
 		t.Fatalf(`multi_agent_version 应为 "v2", got: %v (present=%v)`, string(m0["multi_agent_version"]), ok)
 	}

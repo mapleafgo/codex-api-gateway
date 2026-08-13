@@ -2,6 +2,22 @@ package model
 
 import "encoding/json"
 
+// plaintextCollabTools 是 Codex collaboration namespace 下通过 inter-agent
+// 消息投递任务/通信的工具。网关对这些 function_call 注入空的
+// encrypted_function_args 信号，让 Codex 走明文投递（DirectPlaintextMessage），
+// 而不是把内容塞进 encrypted_content——后者 openai-go SDK 不识别，子 agent 收不到。
+var plaintextCollabTools = map[string]bool{
+	"spawn_agent":   true,
+	"send_message":  true,
+	"followup_task": true,
+}
+
+// IsPlaintextCollabTool 报告 namespace/name 是否是走 plaintext 投递的
+// collaboration 工具。Codex 的 ToolRouter.direct_source 依此切明文/密文分支。
+func IsPlaintextCollabTool(namespace, name string) bool {
+	return namespace == "collaboration" && plaintextCollabTools[name]
+}
+
 // OutputItem is a self-contained output item (message/tool call/reasoning)
 // used both for emitted output_item.added/done events and for session storage.
 type OutputItem struct {
@@ -146,18 +162,26 @@ func (i OutputItem) MarshalJSON() ([]byte, error) {
 		// added 时空串经 omitempty 不输出会导致 serde 反序列化失败、item 被丢弃、
 		// active_item 不被设置，表现为 "FunctionCallArgumentsDelta without active item"。
 		// call_id/name 同为 required，始终输出。
-		return json.Marshal(struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-			Status    string `json:"status,omitempty"`
-			Namespace string `json:"namespace,omitempty"`
-		}{
+		type functionCallWire struct {
+			Type                  string          `json:"type"`
+			ID                    string          `json:"id"`
+			CallID                string          `json:"call_id"`
+			Name                  string          `json:"name"`
+			Arguments             string          `json:"arguments"`
+			Status                string          `json:"status,omitempty"`
+			Namespace             string          `json:"namespace,omitempty"`
+			EncryptedFunctionArgs json.RawMessage `json:"encrypted_function_args,omitempty"`
+		}
+		w := functionCallWire{
 			Type: i.Type, ID: i.ID, CallID: i.CallID, Name: i.Name,
 			Arguments: i.Arguments, Status: i.Status, Namespace: i.Namespace,
-		})
+		}
+		// collaboration 工具的 function_call 注空数组触发 Codex 明文投递
+		// （ConventionalCollabTool），openai-go 不识别 encrypted_content。
+		if IsPlaintextCollabTool(i.Namespace, i.Name) {
+			w.EncryptedFunctionArgs = json.RawMessage("[]")
+		}
+		return json.Marshal(w)
 	}
 	if i.Type == ItemTypeCustomToolCall {
 		// input 同 arguments，是 required String，空串经 omitempty 不输出会导致

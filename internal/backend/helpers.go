@@ -36,6 +36,7 @@ var (
 	evWebSearchSearching        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
 	evWebSearchCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
 	evOutputItemAdded           = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
+	evOutputItemDone            = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemDone]())
 )
 
 // stripWebSearchToolsFromParams 从 Responses 请求的工具列表里剥掉 hosted web_search 声明。

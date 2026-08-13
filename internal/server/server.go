@@ -145,8 +145,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 //	  - tool_mode="direct"：强制标准工具模式（function 工具独立发送、模型直接调用），
 //	    覆盖 Codex features.code_mode* 配置。第三方上游（GLM 等）无 code_mode DSL
 //	    训练，显式 direct 比依赖客户端默认更稳，避免误走 code_mode 造成降级。
-//	  - multi_agent_version="v2"：对齐 gpt-5.6 catalog。启用多 agent 协作工具
-//	    （spawn_csv/agent_jobs 等），V2 不受 spawn depth 限制。
+//	  - multi_agent_version="v2"：Codex 多 agent 是纯客户端本地编排（进程内创建
+//	    子 thread/session，子 agent 经网关发 /v1/responses 请求），不依赖上游编排
+//	    后端。声明 v2 让 spawn_agent/wait_agent 等工具 Direct 可见；不声明默认 V1，
+//	    工具在 supports_search_tool=true 时变 Deferred，模型需 tool_search 才发现。
 //	  - comp_hash="3000"：对齐 gpt-5.6 catalog 压缩兼容哈希。连续两 turn 不同会
 //	    触发 Codex 前置压缩；网关统一注入，避免客户端切模型时误触发。
 //	不注入（保持零值）：
@@ -199,7 +201,12 @@ func (s *Server) codexModelInfo(slug string) model.CodexModelInfo {
 		// tool_mode="direct"：强制标准工具调用模式（function 工具独立发送、模型直接
 		// 调用），覆盖 Codex features.code_mode* 配置。第三方上游无 code_mode DSL 训练，
 		// 显式 direct 避免客户端默认走 code_mode 造成降级。
-		ToolMode:          &toolMode,
+		ToolMode: &toolMode,
+		// multi_agent_version="v2"：Codex 多 agent 完全是客户端本地编排（进程内创建
+		// 子 thread/session，子 agent 通过网关发 /v1/responses 请求），不依赖上游编排
+		// 后端。声明 v2 让 spawn_agent/wait_agent 等工具 Direct 可见（模型直接调用）；
+		// 不声明则默认走 V1（Collab），工具在 supports_search_tool=true 时变 Deferred，
+		// 模型需先 tool_search 才能发现，很少主动 spawn。
 		MultiAgentVersion: &multiAgentV2,
 		// comp_hash="3000"：对齐官方 gpt-5.6 catalog 的压缩兼容性哈希。
 		// 连续两 turn 的 comp_hash 不同时，Codex 会触发 previous-model inline compact；

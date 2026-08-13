@@ -269,6 +269,44 @@ func rewriteClientModel(data []byte, clientModel string) []byte {
 	return out
 }
 
+// rewriteCollabPlaintextArgs 对 output_item.added/done 里的 collaboration
+// function_call 注入空 encrypted_function_args 信号，让 Codex 走明文投递
+// （DirectPlaintextMessage），避免任务内容被塞进 openai-go 不认识的
+// encrypted_content。与 rewriteClientModel 同属最小改写的透传层。
+func rewriteCollabPlaintextArgs(data []byte) []byte {
+	m, err := decodeObject(data)
+	if err != nil || m == nil {
+		return data
+	}
+	rawItem, ok := m["item"]
+	if !ok {
+		return data
+	}
+	item, ok := rawItem.(map[string]any)
+	if !ok || item["type"] != "function_call" {
+		return data
+	}
+	namespace, _ := item["namespace"].(string)
+	name, _ := item["name"].(string)
+	if !model.IsPlaintextCollabTool(namespace, name) {
+		return data
+	}
+	// 透传层"结果归上游"：上游已携带有效字段（如真 OpenAI 多 agent 加密编排）
+	// 时原样保留，仅在缺失时才注入明文信号，避免替上游改判能力。
+	if _, exists := item["encrypted_function_args"]; exists {
+		return data
+	}
+	item["encrypted_function_args"] = []any{}
+	out, err := json.Marshal(m)
+	if err != nil {
+		slog.Debug("responses: rewriteCollabPlaintextArgs marshal failed", "error", err)
+		return data
+	}
+	slog.Debug("responses: collaboration 工具注入明文 encrypted_function_args 信号",
+		"tool", name)
+	return out
+}
+
 // parseUsageFromEvent 尽力从终态事件解析 usage（仅观测，失败返回 0）。
 func parseUsageFromEvent(eventType string, data []byte) (inTok, outTok, cacheRead, cacheCreate int, ok bool) {
 	switch eventType {
@@ -385,6 +423,9 @@ func (b *ResponsesBackend) Execute(
 			terminalError = parseResponseError(data)
 		}
 		data = rewriteClientModel(data, clientModel)
+		if et == evOutputItemAdded || et == evOutputItemDone {
+			data = rewriteCollabPlaintextArgs(data)
+		}
 		if err := onEvent(model.SSEEvent{Type: et, Data: data}); err != nil {
 			return err
 		}

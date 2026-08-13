@@ -283,6 +283,63 @@ func TestRewriteClientModel_PreservesLargeNumbers(t *testing.T) {
 	}
 }
 
+func TestRewriteCollabPlaintextArgs(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		inject bool
+	}{
+		{
+			name:   "spawn_agent collaboration inject",
+			in:     `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_0","call_id":"c1","name":"spawn_agent","namespace":"collaboration","arguments":"{\"message\":\"hi\"}"}}`,
+			inject: true,
+		},
+		{
+			name:   "ordinary tool no inject",
+			in:     `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_0","call_id":"c1","name":"get_weather","arguments":"{}"}}`,
+			inject: false,
+		},
+		{
+			name:   "non-collab namespace no inject",
+			in:     `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_0","call_id":"c1","name":"spawn_agent","namespace":"other","arguments":"{}"}}`,
+			inject: false,
+		},
+		{
+			name:   "non-function item no inject",
+			in:     `{"type":"response.output_item.done","item":{"type":"message","id":"m1","role":"assistant","content":[]}}`,
+			inject: false,
+		},
+	}
+	for _, tc := range cases {
+		out := rewriteCollabPlaintextArgs([]byte(tc.in))
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("%s: unmarshal: %v: %s", tc.name, err, out)
+		}
+		item, ok := got["item"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: item missing: %s", tc.name, out)
+		}
+		_, present := item["encrypted_function_args"]
+		if present != tc.inject {
+			t.Fatalf("%s: encrypted_function_args present=%v want=%v: %s", tc.name, present, tc.inject, out)
+		}
+		if tc.inject {
+			arr, ok := item["encrypted_function_args"].([]any)
+			if !ok || len(arr) != 0 {
+				t.Fatalf("%s: encrypted_function_args want 空数组: %s", tc.name, out)
+			}
+		}
+	}
+
+	// 上游已携带加密参数时原样保留，不做明文信号覆盖（透传层结果归上游）。
+	preserved := `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_0","call_id":"c1","name":"spawn_agent","namespace":"collaboration","encrypted_function_args":["a","b"],"arguments":"{}"}}`
+	out := rewriteCollabPlaintextArgs([]byte(preserved))
+	if !bytes.Contains(out, []byte(`"encrypted_function_args":["a","b"]`)) {
+		t.Fatalf("上游已携带 encrypted_function_args 应原样保留: %s", out)
+	}
+}
+
 func TestParseUsageFromEvent_CacheWriteTokens(t *testing.T) {
 	data := []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":10,"input_tokens_details":{"cached_tokens":60,"cache_write_tokens":30}}}}`)
 	inTok, outTok, cacheRead, cacheCreate, ok := parseUsageFromEvent("response.completed", data)

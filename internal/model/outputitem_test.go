@@ -258,6 +258,49 @@ func TestFunctionCallItemMarshalsRequiredArguments(t *testing.T) {
 	if got["arguments"] != "" {
 		t.Fatalf("arguments want empty string, got %v: %s", got["arguments"], raw)
 	}
+	if _, ok := got["encrypted_function_args"]; ok {
+		t.Fatalf("普通 function_call 不应注入 encrypted_function_args: %s", raw)
+	}
+}
+
+// TestFunctionCallItemMarshalsCollabPlaintextSignal 锁定 collaboration 工具的
+// function_call 注入空 encrypted_function_args 数组。这是 Codex 判定
+// DirectPlaintextMessage（明文投递）的信号，缺失会退化为密文，子 agent 收不到任务。
+func TestFunctionCallItemMarshalsCollabPlaintextSignal(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		namespace string
+		want      bool
+	}{
+		{name: "spawn_agent", namespace: "collaboration", want: true},
+		{name: "send_message", namespace: "collaboration", want: true},
+		{name: "followup_task", namespace: "collaboration", want: true},
+		{name: "spawn_agent", namespace: "", want: false},
+		{name: "get_weather", namespace: "collaboration", want: false},
+	} {
+		item := OutputItem{
+			Type: ItemTypeFunctionCall, ID: "fc_0", Status: ResponseStatusCompleted,
+			CallID: "call_1", Name: tc.name, Namespace: tc.namespace,
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("marshal %s/%s: %v", tc.namespace, tc.name, err)
+		}
+		var got map[string]any
+		_ = json.Unmarshal(raw, &got)
+		_, present := got["encrypted_function_args"]
+		if present != tc.want {
+			t.Fatalf("namespace=%q name=%q: encrypted_function_args present=%v want=%v, raw=%s",
+				tc.namespace, tc.name, present, tc.want, raw)
+		}
+		if tc.want {
+			arr, ok := got["encrypted_function_args"].([]any)
+			if !ok || len(arr) != 0 {
+				t.Fatalf("namespace=%q name=%q: encrypted_function_args want 空数组, got=%v, raw=%s",
+					tc.namespace, tc.name, got["encrypted_function_args"], raw)
+			}
+		}
+	}
 }
 
 // TestCustomToolCallItemMarshalsRequiredInput 锁定 custom_tool_call item 的
