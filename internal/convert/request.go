@@ -33,16 +33,19 @@ func DecodeResponseNewParams(data []byte) (*oairesponses.ResponseNewParams, erro
 	restoreAssistantOutputTextFromRaw(data, &req)
 	// Codex 子 agent 的 NEW_TASK/Message 投递使用 type=agent_message（稳定版
 	// openai-go ResponseInputItemUnionParam 不认此类型，解析后所有 Of* 为 nil）。
-	// 从 raw JSON 提取 content text，重建为 user role 的 EasyInputMessageParam，
-	// 使 appendItem 能正常映射到 Anthropic user message。
+	// 从 raw JSON 提取 content text，映射为 assistant role 的 EasyInputMessageParam
+	// 并按 raw 数组位置插入，保证对话顺序不变且任务文本进入上游请求。
 	restoreAgentMessageFromRaw(data, &req)
 	return &req, nil
 }
 
 // restoreAgentMessageFromRaw 从 raw JSON 把 type=agent_message 的 input item
-// 重建为 user role 的 EasyInputMessageParam。agent_message 是 Codex 多 agent
-// 通信的投递载体（NEW_TASK / Message），稳定版 SDK 不认此类型（所有 Of* 为 nil，
-// 被 appendItem 的 unknownInputItemType 分支丢弃），子 agent 因此收不到任务。
+// 重建为 assistant role 的 EasyInputMessageParam 并按 raw 数组位置插入。
+// agent_message 是 Codex 多 agent 通信的投递载体（NEW_TASK / MESSAGE / FINAL_ANSWER），
+// 稳定版 SDK 的 discriminator 不认此类型，遇到它时整个 input 数组解码为 0 条。
+// role 固定为 assistant：Codex 源码 InterAgentMessage::role() 和
+// InterAgentCompletionMessage::role() 都返回 "assistant"
+// （codex-rs/core/src/context/inter_agent_message.rs:46）。
 func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams) {
 	var raw struct {
 		Input json.RawMessage `json:"input"`
@@ -90,22 +93,43 @@ func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams
 		if sb.Len() == 0 {
 			continue
 		}
-		// SDK 不认 agent_message，按索引对齐时该位置可能是空结构或已被丢弃。
-		// 统一追加为 user message，保证任务文本进入上游请求。
-		items = append(items, oairesponses.ResponseInputItemUnionParam{
+		// insertPos 是 raw 数组中 [0,i) 区间内非 agent_message 条目数，即 SDK 已解码
+		// items 中该 agent_message 应插入的位置（SDK 跳过 agent_message 使列表更短）。
+		// Codex 源码 InterAgentMessage::role() 和 InterAgentCompletionMessage::role()
+		// 都返回 "assistant"（codex-rs/core/src/context/inter_agent_message.rs:46）。
+		// agent_message 是 agent 侧的通信，始终用 assistant role。
+		insertPos := 0
+		for j := 0; j < i; j++ {
+			var t struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(rawItems[j], &t) == nil && t.Type == "agent_message" {
+				continue
+			}
+			insertPos++
+		}
+		msg := oairesponses.ResponseInputItemUnionParam{
 			OfMessage: &oairesponses.EasyInputMessageParam{
-				Role: oairesponses.EasyInputMessageRoleUser,
+				Role: oairesponses.EasyInputMessageRoleAssistant,
 				Type: oairesponses.EasyInputMessageTypeMessage,
 				Content: oairesponses.EasyInputMessageContentUnionParam{
 					OfString: oparam.NewOpt(sb.String()),
 				},
 			},
-		})
+		}
+		if insertPos >= len(items) {
+			items = append(items, msg)
+		} else {
+			items = append(items, oairesponses.ResponseInputItemUnionParam{})
+			copy(items[insertPos+1:], items[insertPos:])
+			items[insertPos] = msg
+		}
 		restored++
 	}
 	if restored > 0 {
 		req.Input.OfInputItemList = items
-		slog.Debug("从 raw 重建 agent_message 为 user message",
+		slog.Debug("从 raw 重建 agent_message 并按位置插入",
+			"model", string(req.Model),
 			"restored", restored)
 	}
 }
