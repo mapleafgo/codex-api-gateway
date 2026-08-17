@@ -734,11 +734,11 @@ func (c *Converter) resetThinkEnd() {
 // longestTagPrefixLen 返回 s 尾部作为 tag 前缀的最大长度（用于跨 chunk 残缺标签续接）。
 func longestTagPrefixLen(s, tag string) int {
 	best := 0
-	max := len(tag)
-	if len(s) < max {
-		max = len(s)
+	limit := len(tag)
+	if len(s) < limit {
+		limit = len(s)
 	}
-	for l := 1; l <= max; l++ {
+	for l := 1; l <= limit; l++ {
 		if strings.HasSuffix(s, tag[:l]) {
 			best = l
 		}

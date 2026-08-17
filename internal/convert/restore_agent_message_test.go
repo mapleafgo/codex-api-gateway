@@ -10,8 +10,8 @@ import (
 // 避免污染 user/assistant turn 边界或产生连续同 role 消息。
 func TestRestoreAgentMessageMergeIntoPreviousToolResult(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     string
+		name       string
+		input      string
 		wantInPrev string
 	}{
 		{
