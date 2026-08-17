@@ -1,7 +1,9 @@
 package chatstreamconv
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -1179,6 +1181,270 @@ func TestReasoningContentBeforeText(t *testing.T) {
 	}
 	if rsDelta < 0 || textDelta < 0 || rsDelta >= textDelta {
 		t.Fatalf("reasoning delta should precede text delta: rs=%d text=%d types=%v", rsDelta, textDelta, types)
+	}
+}
+
+// TestThinkTagReasoningExtraction 验证 content 中的字面 <think>...</think> 思维链
+// 被抽取为 reasoning item（与 reasoning_content 同构），且不泄漏进 output_text。
+func TestThinkTagReasoningExtraction(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-v4-flash")
+	var types []string
+	var outText, reasonText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			typ, _ := m["type"].(string)
+			types = append(types, typ)
+			switch typ {
+			case "response.output_text.delta":
+				outText += m["delta"].(string)
+			case "response.reasoning_text.delta":
+				reasonText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"role":"assistant","content":"<think>先想一步</think>答案是 42"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	if !strings.Contains(reasonText, "先想一步") {
+		t.Fatalf("want reasoning text from <think>, got %q", reasonText)
+	}
+	if strings.Contains(reasonText, "答案是 42") {
+		t.Fatalf("answer must not leak into reasoning: %q", reasonText)
+	}
+	if !strings.Contains(outText, "答案是 42") {
+		t.Fatalf("want answer in output_text, got %q", outText)
+	}
+	if strings.Contains(outText, "先想一步") || strings.Contains(outText, "<think>") || strings.Contains(outText, "</think>") {
+		t.Fatalf("think block must not leak into output_text: %q", outText)
+	}
+	rsIdx, txIdx := -1, -1
+	for i, s := range types {
+		if s == "response.reasoning_text.delta" && rsIdx < 0 {
+			rsIdx = i
+		}
+		if s == "response.output_text.delta" && txIdx < 0 {
+			txIdx = i
+		}
+	}
+	if rsIdx < 0 || txIdx < 0 || rsIdx >= txIdx {
+		t.Fatalf("reasoning delta must precede text delta: rs=%d tx=%d", rsIdx, txIdx)
+	}
+}
+
+// TestThinkTagSplitAcrossChunks 验证被 chunk 边界截断的 <think>/</think> 标签
+// 仍能正确拼回：思考内容进 reasoning，标签外答案进 output_text。
+func TestThinkTagSplitAcrossChunks(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-v4-flash")
+	var outText, reasonText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			switch m["type"].(string) {
+			case "response.output_text.delta":
+				outText += m["delta"].(string)
+			case "response.reasoning_text.delta":
+				reasonText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"content":"<thi"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"nk>rea"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"son"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"ing<"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"/think>a"}}]}`,
+		`{"id":"c1","choices":[{"delta":{"content":"nswer"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	if reasonText != "reasoning" {
+		t.Fatalf("want reasoning='reasoning', got %q", reasonText)
+	}
+	if outText != "answer" {
+		t.Fatalf("want output_text='answer', got %q", outText)
+	}
+}
+
+// TestThinkTagWithLeadingText 验证 正文 + <think> + 正文 三段顺序：
+// 首段正文先作为 message，思考作为 reasoning，末段正文作为新的 message。
+func TestThinkTagWithLeadingText(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-v4-flash")
+	var outText, reasonText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			switch m["type"].(string) {
+			case "response.output_text.delta":
+				outText += m["delta"].(string)
+			case "response.reasoning_text.delta":
+				reasonText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"content":"before<think>mid</think>after"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	if reasonText != "mid" {
+		t.Fatalf("want reasoning='mid', got %q", reasonText)
+	}
+	if outText != "beforeafter" {
+		t.Fatalf("want output_text='beforeafter', got %q", outText)
+	}
+}
+
+// TestThinkTagCloseTagWithTrailingSpace 验证闭合标签 '>' 前的空白（如 </think >）
+// 被容忍：思考内容仍进 reasoning，标签之后的正文进 output_text，不丢内容。
+func TestThinkTagCloseTagWithTrailingSpace(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-v4-flash")
+	var outText, reasonText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			switch m["type"].(string) {
+			case "response.output_text.delta":
+				outText += m["delta"].(string)
+			case "response.reasoning_text.delta":
+				reasonText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"content":"<think>reason</think >answer"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	if reasonText != "reason" {
+		t.Fatalf("want reasoning='reason', got %q", reasonText)
+	}
+	if outText != "answer" {
+		t.Fatalf("want output_text='answer', got %q", outText)
+	}
+}
+
+// TestThinkTagTruncatedOpenTagAtEnd 验证流在开标签中途截断时，残留的半个标签
+// 被丢弃而非泄漏进 output_text。
+func TestThinkTagTruncatedOpenTagAtEnd(t *testing.T) {
+	c := New()
+	c.SetClientModel("deepseek-v4-flash")
+	var outText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m["type"].(string) == "response.output_text.delta" {
+				outText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"content":"before<thi"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	collect(c.FeedDone())
+	if strings.Contains(outText, "<thi") || strings.Contains(outText, "<think") {
+		t.Fatalf("truncated open tag must not leak into output_text: %q", outText)
+	}
+	if outText != "before" {
+		t.Fatalf("want output_text='before', got %q", outText)
+	}
+}
+
+// TestThinkTagUnterminatedAtEnd 验证流在思考块内结束（无闭标签）时：已下发的思考文本
+// 仍由 closeReasoning 收尾为 reasoning item，残留的半个闭标签前缀被丢弃并 WARN。
+func TestThinkTagUnterminatedAtEnd(t *testing.T) {
+	var warns bytes.Buffer
+	c := New()
+	c.SetLogger(slog.New(slog.NewTextHandler(&warns, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	c.SetClientModel("deepseek-v4-flash")
+	var outText, reasonText string
+	collect := func(evs []model.SSEEvent) {
+		for _, e := range evs {
+			var m map[string]any
+			if err := json.Unmarshal(e.Data, &m); err != nil {
+				t.Fatal(err)
+			}
+			switch m["type"].(string) {
+			case "response.output_text.delta":
+				outText += m["delta"].(string)
+			case "response.reasoning_text.delta":
+				reasonText += m["delta"].(string)
+			}
+		}
+	}
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"content":"<think>deep thought"}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	for _, ch := range chunks {
+		evs, err := c.Feed([]byte(ch))
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect(evs)
+	}
+	collect(c.FeedDone())
+	if reasonText != "deep thought" {
+		t.Fatalf("want reasoning='deep thought', got %q", reasonText)
+	}
+	if outText != "" {
+		t.Fatalf("want empty output_text, got %q", outText)
+	}
+	if !strings.Contains(warns.String(), "unterminated <think> block") {
+		t.Fatalf("want WARN for unterminated think block, got: %q", warns.String())
 	}
 }
 

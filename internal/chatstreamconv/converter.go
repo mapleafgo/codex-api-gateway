@@ -40,6 +40,14 @@ var (
 
 const refusalFallback = "I can't help with that."
 
+// Chat 兼容推理模型（部分 DeepSeek / 火山 / 阿里等端点）把思维链以字面
+// <think>...</think> 文本塞进 delta.content，而非独立 reasoning_content 字段。
+// 网关按 OpenAI Responses 协议把这些标签内文本抽取为 reasoning item。
+const (
+	thinkOpenTag  = "<think>"
+	thinkCloseTag = "</think>"
+)
+
 // Converter 将 Chat chunk 流转为 Responses SSE。
 type Converter struct {
 	log         *slog.Logger
@@ -81,6 +89,13 @@ type Converter struct {
 	reasonItemID string
 	reasonIndex  int
 	reasonBuf    strings.Builder
+
+	// 流式抽取 content 中的 <think>...</think> 思维链：标签内文本路由到 reasoning
+	// item（与 reasoning_content 同构），标签外文本作为 output_text。inThink 标记
+	// 当前是否处于思考块内；thinkTagBuf 缓存 chunk 边界处可能是标签开头/结尾的
+	// 不完整前缀，避免把被截断的标签误判为正文而泄漏。
+	inThink     bool
+	thinkTagBuf strings.Builder
 
 	// tool_calls 按 index 累积
 	tools map[int]*toolAccum
@@ -396,7 +411,8 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 	}
 	if content := deltaContentText(ch.Delta.Content); content != "" || len(lps) > 0 {
 		// 部分上游可能拆成「先 content 后 logprobs」两包；有 logprobs 无 content 时仅累积概率。
-		out = append(out, c.feedText(content, lps)...)
+		// feedContentWithThink 同时抽取 <think>...</think> 思维链（与 reasoning_content 同构）。
+		out = append(out, c.feedContentWithThink(content, lps)...)
 	}
 	for _, tc := range ch.Delta.ToolCalls {
 		out = append(out, c.feedToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments, tc.Custom.Name, tc.Custom.Input)...)
@@ -536,6 +552,148 @@ func (c *Converter) feedText(delta string, logprobs []model.TokenLogprob) []mode
 	}
 	out = append(out, model.MarshalEvent(evOutputTextDelta, ev))
 	return out
+}
+
+// feedContentWithThink 把 Chat delta.content 流式切分为正文与思维链：
+// <think>...</think> 标签内文本路由到 feedReasoning（reasoning item），
+// 标签外文本路由到 feedText（output_text）。标签可跨 chunk 出现，故用
+// inThink + thinkTagBuf 在 chunk 边界缓存可能不完整的前缀，避免误判。
+func (c *Converter) feedContentWithThink(content string, logprobs []model.TokenLogprob) []model.SSEEvent {
+	if content == "" && len(logprobs) == 0 {
+		return nil
+	}
+	s := c.thinkTagBuf.String() + content
+	c.thinkTagBuf.Reset()
+	var out []model.SSEEvent
+	lpSent := false
+	takeLP := func() []model.TokenLogprob {
+		if len(logprobs) > 0 && !lpSent {
+			lpSent = true
+			return logprobs
+		}
+		return nil
+	}
+	// logprobs 对齐原语义：整体绑定到首个正文段。content 被切分为 think + text
+	// 后，logprobs 数组（覆盖全部 content token）与首段正文不再逐 token 对齐，
+	// 属有损近似；reasoning 段不携带 logprobs（与 reasoning_content 路径一致）。
+	for len(s) > 0 {
+		if !c.inThink {
+			if start, end, ok := findThinkTag(s, "think"); ok {
+				if start > 0 {
+					out = append(out, c.feedText(s[:start], takeLP())...)
+				}
+				c.inThink = true
+				s = s[end:]
+				continue
+			}
+			// 无完整开标签：仅保留可能是开标签前缀的后缀，其余作为正文下发。
+			k := thinkTagPrefixLen(s, thinkOpenTag)
+			if k < len(s) {
+				out = append(out, c.feedText(s[:len(s)-k], takeLP())...)
+			}
+			c.thinkTagBuf.WriteString(s[len(s)-k:])
+			break
+		}
+		// inThink：抽取思考文本直到完整闭标签。
+		if start, end, ok := findThinkTag(s, "/think"); ok {
+			if start > 0 {
+				out = append(out, c.feedReasoning(s[:start])...)
+			}
+			c.inThink = false
+			s = s[end:]
+			continue
+		}
+		// 无完整闭标签：仅保留可能是闭标签前缀的后缀，其余作为思考下发。
+		k := thinkTagPrefixLen(s, thinkCloseTag)
+		if k < len(s) {
+			out = append(out, c.feedReasoning(s[:len(s)-k])...)
+		}
+		c.thinkTagBuf.WriteString(s[len(s)-k:])
+		break
+	}
+	// 仅当本段 content 本身为空（原始“仅 logprobs”场景）时，按原语义透传一份
+	// 空 delta。若 content 非空但整体路由到 reasoning（推理优先），则不补空
+	// message，避免把推理 token 的 logprobs 挂到一条空 output_text 上。
+	if content == "" && !lpSent {
+		out = append(out, c.feedText("", logprobs)...)
+	}
+	return out
+}
+
+// thinkTagPrefixLen 返回 s 末尾应当保留、作为 tag 前缀的最大长度（其余可安全下发）。
+// 即最长后缀 s[len(s)-k:] 是 tag 的 proper prefix（长度 < len(tag)）。
+func thinkTagPrefixLen(s, tag string) int {
+	max := len(tag) - 1
+	if max > len(s) {
+		max = len(s)
+	}
+	for k := max; k >= 1; k-- {
+		if strings.HasPrefix(tag, s[len(s)-k:]) {
+			return k
+		}
+	}
+	return 0
+}
+
+// flushThinkBuffer 在流结束时清算 chunk 边界残留在 thinkTagBuf 的不完整标签前缀。
+// inThink 态下残留的是闭标签前缀（真实思考早已在流式阶段进 reasonBuf），直接丢弃；
+// 非思考态下残留的“疑似开标签前缀”若整体即为 <think> 的不完整前缀，视为被截断的标签
+// 而非正文并丢弃，避免把半个标签泄漏进 output_text。其余情况视为普通正文下发。
+func (c *Converter) flushThinkBuffer() []model.SSEEvent {
+	if c.thinkTagBuf.Len() == 0 {
+		// 思考态下 buffer 为空说明整段思考文本已在流式阶段作为 reasoning 下发，仅缺闭标签。
+		if c.inThink {
+			c.inThink = false
+			c.log.Warn("chatstreamconv: stream ended with unterminated <think> block; reasoning kept, close tag missing",
+				"response_id", c.respID)
+		}
+		return nil
+	}
+	buf := c.thinkTagBuf.String()
+	c.thinkTagBuf.Reset()
+	if c.inThink {
+		// 流结束仍在思考态：thinking 内容已在流式阶段作为 reasoning 下发，此处残留的
+		// 只是不完整的闭标签前缀。属不可预期的协议中断，WARN 留痕。
+		c.inThink = false
+		c.log.Warn("chatstreamconv: stream ended with unterminated <think> block; trailing partial close tag dropped",
+			"response_id", c.respID, "prefix", buf)
+		return nil
+	}
+	// 非思考态残留：若整体是 <think> 的不完整前缀，按被截断标签丢弃而非泄漏为正文。
+	if thinkTagPrefixLen(buf, thinkOpenTag) == len(buf) {
+		c.log.Warn("chatstreamconv: stream ended with truncated <think> open tag; prefix dropped",
+			"response_id", c.respID, "prefix", buf)
+		return nil
+	}
+	return c.feedText(buf, nil)
+}
+
+// findThinkTag 在 s 中查找形如 <name\s*> 的标签，返回标签起始下标 start（'<' 处）
+// 与闭合 '>' 之后的下标 end。兼容标签名与 '>' 之间的空白（如 </think >），同时保留
+// 核心标签 <name> 供跨 chunk 前缀缓冲（thinkTagPrefixLen）复用。未找到返回 ok=false。
+func findThinkTag(s, name string) (start, end int, ok bool) {
+	marker := "<" + name
+	from := 0
+	for {
+		idx := strings.Index(s[from:], marker)
+		if idx < 0 {
+			return 0, 0, false
+		}
+		start = from + idx
+		j := start + len(marker)
+		for j < len(s) && isSpace(s[j]) {
+			j++
+		}
+		if j < len(s) && s[j] == '>' {
+			return start, j + 1, true
+		}
+		// 命中形如 "<thinkable" 的撞前缀：跳过继续找下一次出现。
+		from = start + 1
+	}
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 // feedReasoning 把 Chat delta.reasoning_content 映射为 Responses reasoning item + reasoning_text 事件。
@@ -804,6 +962,7 @@ func (c *Converter) closeMessage() []model.SSEEvent {
 
 func (c *Converter) closeOpenItems() []model.SSEEvent {
 	var out []model.SSEEvent
+	out = append(out, c.flushThinkBuffer()...)
 	if c.reasonOpen {
 		out = append(out, c.closeReasoning()...)
 	}
@@ -989,6 +1148,8 @@ func (c *Converter) prepareRefusalOutput() []model.SSEEvent {
 	c.contentLogprobs = nil
 	c.reasonOpen = false
 	c.reasonBuf.Reset()
+	c.inThink = false
+	c.thinkTagBuf.Reset()
 	c.tools = map[int]*toolAccum{}
 	c.outputItems = nil
 

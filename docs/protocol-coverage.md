@@ -335,6 +335,7 @@
 | 首 chunk | `response.created` / `in_progress` | `supported` | |
 | `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
+| `delta.content` 内 `<think>...</think>` 思维链 | 抽取为 reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 标签可跨 chunk 流式拼接；标签本身不进 output_text；兼容闭合标签 `>` 前的空白（如 `</think >`）；流末若开标签被截断或半开（缺闭标签），残留标签前缀丢弃并 WARN，已下发的思考文本保留为 reasoning |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
 | `delta.tool_calls` name=`shell` / `local_shell` / `apply_patch` | `custom_tool_call` + input delta/done | `supported` | 参数在 `output_item.done` 一次给出；`SanitizeClientToolInput` 对单键 JSON 对象按任意键名取值解包；apply_patch 若输出 structured JSON 兜底折 V4A |
