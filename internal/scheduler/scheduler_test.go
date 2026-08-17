@@ -319,6 +319,33 @@ func TestStatusOnlySourceSwitchesToNext(t *testing.T) {
 	}
 }
 
+func TestStatusEventStopsFirstByteWatchdog(t *testing.T) {
+	slowContent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		w.(http.Flusher).Flush()
+		time.Sleep(150 * time.Millisecond)
+		goodAnthropicSSE(w)
+	}))
+	defer slowContent.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(50 * time.Millisecond), MaxRetries: 0,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
+		},
+		Sources: []config.Source{makeSource("slow-content", slowContent.URL, 0)},
+	}
+	s := New(cfg)
+	name, err := runGeneric(s, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if name != "slow-content" {
+		t.Fatalf("source=%q want slow-content", name)
+	}
+}
+
 func TestSlowFirstByteLongStream(t *testing.T) {
 	// first source times out before first byte; second succeeds
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

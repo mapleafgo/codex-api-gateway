@@ -4,31 +4,38 @@ import (
 	"testing"
 )
 
-// 按 Codex 源码，agent_message 始终映射为 assistant role
-// （InterAgentMessage::role() 和 InterAgentCompletionMessage::role() 都返回 "assistant"）。
-func TestRestoreAgentMessageRoleByContext(t *testing.T) {
+// agent_message 表示另一个 agent 的通信内容（NEW_TASK / MESSAGE / FINAL_ANSWER）。
+// 在父 agent 历史里它由 wait_agent 等协作工具触发返回，因此协议上最接近的
+// 等价物是工具结果：合并进前一个 function_call_output，而不是独立成一条消息，
+// 避免污染 user/assistant turn 边界或产生连续同 role 消息。
+func TestRestoreAgentMessageMergeIntoPreviousToolResult(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantRole string
+		name      string
+		input     string
+		wantInPrev string
 	}{
 		{
-			name: "task delivery: agent_message after developer messages → assistant",
+			name: "agent_message after wait_agent output → merged into tool result",
 			input: `[
-				{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev1"}]},
-				{"type":"agent_message","content":[{"type":"input_text","text":"task"}]}
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"do work"}]},
+				{"type":"function_call","id":"fc_1","call_id":"c1","name":"wait_agent","arguments":"{}"},
+				{"type":"function_call_output","call_id":"c1","output":"{\"message\":\"Wait completed.\"}"},
+				{"type":"agent_message","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\n子 agent 已完成"}]}
 			]`,
-			wantRole: "assistant",
+			wantInPrev: "Message Type: FINAL_ANSWER\n子 agent 已完成",
 		},
 		{
-			name: "sub-agent reply: agent_message after function_call_output → assistant",
+			name: "agent_message encrypted content envelope → text merged",
 			input: `[
 				{"type":"message","role":"user","content":[{"type":"input_text","text":"do work"}]},
 				{"type":"function_call","id":"fc_1","call_id":"c1","name":"wait_agent","arguments":"{}"},
 				{"type":"function_call_output","call_id":"c1","output":"done"},
-				{"type":"agent_message","content":[{"type":"input_text","text":"FINAL_ANSWER"}]}
+				{"type":"agent_message","content":[
+					{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\n"},
+					{"type":"encrypted_content","encrypted_content":"secret"}
+				]}
 			]`,
-			wantRole: "assistant",
+			wantInPrev: "Message Type: NEW_TASK\nPayload:\n",
 		},
 	}
 	for _, tc := range tests {
@@ -38,52 +45,46 @@ func TestRestoreAgentMessageRoleByContext(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode error: %v", err)
 			}
-			found := false
+			merged := false
 			for _, item := range req.Input.OfInputItemList {
-				if item.OfMessage == nil {
+				fco := item.OfFunctionCallOutput
+				if fco == nil {
 					continue
 				}
-				if string(item.OfMessage.Role) == tc.wantRole {
-					found = true
+				out := fco.Output.OfString.Value
+				if out != "" && out != "done" && out != `{"message":"Wait completed."}` {
+					merged = true
 					break
 				}
 			}
-			if !found {
-				t.Errorf("want role %q not found among %d items", tc.wantRole, len(req.Input.OfInputItemList))
+			if !merged {
+				t.Errorf("agent_message not merged into previous function_call_output, items=%d", len(req.Input.OfInputItemList))
 			}
 		})
 	}
 }
 
-// 恢复后的 agent_message 必须包含原始内容文本，且位置正确。
-func TestRestoreAgentMessageContentAndPosition(t *testing.T) {
+// 没有前置工具结果时，agent_message 回退为独立 user 消息，保证内容不丢。
+func TestRestoreAgentMessageFallbackUser(t *testing.T) {
 	body := []byte(`{"input":[
 		{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev1"}]},
-		{"type":"message","role":"user","content":[{"type":"input_text","text":"do work"}]},
-		{"type":"function_call","id":"fc_1","call_id":"c1","name":"wait_agent","arguments":"{}"},
-		{"type":"function_call_output","call_id":"c1","output":"done"},
-		{"type":"agent_message","content":[{"type":"input_text","text":"FINAL_ANSWER: 子agent已完成"}]}
+		{"type":"agent_message","content":[{"type":"input_text","text":"独立通知"}]}
 	]}`)
 
 	req, err := DecodeResponseNewParams(body)
 	if err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
-	items := req.Input.OfInputItemList
-	if len(items) != 5 {
-		t.Fatalf("want 5 items, got %d", len(items))
-	}
 
-	// 位置 3 是 function_call_output，位置 4 是恢复的 agent_message。
-	last := items[len(items)-1]
+	last := req.Input.OfInputItemList[len(req.Input.OfInputItemList)-1]
 	if last.OfMessage == nil {
-		t.Fatalf("last item should be restored agent_message")
+		t.Fatalf("last item should be fallback user message")
 	}
-	if string(last.OfMessage.Role) != "assistant" {
-		t.Errorf("want assistant role, got %s", last.OfMessage.Role)
+	if string(last.OfMessage.Role) != "user" {
+		t.Errorf("want user role, got %s", last.OfMessage.Role)
 	}
 	got := last.OfMessage.Content.OfString.Value
-	if got != "FINAL_ANSWER: 子agent已完成" {
-		t.Errorf("want content %q, got %q", "FINAL_ANSWER: 子agent已完成", got)
+	if got != "独立通知" {
+		t.Errorf("want content %q, got %q", "独立通知", got)
 	}
 }

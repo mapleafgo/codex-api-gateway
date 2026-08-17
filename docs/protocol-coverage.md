@@ -335,7 +335,7 @@
 | 首 chunk | `response.created` / `in_progress` | `supported` | |
 | `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
-| `delta.content` 内 `<think>...</think>` 思维链 | 抽取为 reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 标签可跨 chunk 流式拼接；标签本身不进 output_text；兼容闭合标签 `>` 前的空白（如 `</think >`）；流末若开标签被截断或半开（缺闭标签），残留标签前缀丢弃并 WARN，已下发的思考文本保留为 reasoning |
+| `delta.content` 内 `</think>` 思维链 | reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 不标准上游以 `</think>` 同时作为开/闭标签（toggle）：首个 `</think>` 进入思考、下一个 `</think>` 退出；标准 `<think>` 视为显式开标签；相邻且文本为空的同标签去重（如 `</think></think>` 视为单个分隔）；标签本身不进 `output_text`；可跨 chunk 拼接；流末半开 `</think>` 块已下发思考保留为 reasoning、截断前缀丢弃；content 仅剩孤立闭标签（思考已由 `reasoning_content` 下发）时剥离不开启新思考块 |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
 | `delta.tool_calls` name=`shell` / `local_shell` / `apply_patch` | `custom_tool_call` + input delta/done | `supported` | 参数在 `output_item.done` 一次给出；`SanitizeClientToolInput` 对单键 JSON 对象按任意键名取值解包；apply_patch 若输出 structured JSON 兜底折 V4A |

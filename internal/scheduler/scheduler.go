@@ -603,13 +603,15 @@ func (s *Scheduler) trySourceGeneric(
 		gate = backend.NewEventGate(onEvent)
 	}
 	wrapEvent := func(ev model.SSEEvent) error {
+		// 首字节超时只约束上游开始出流；状态事件虽仍会被 EventGate 缓冲，
+		// 但已证明连接和响应体可用，不能把长思考/长输出误判为首字节超时。
+		timer.Stop()
 		if gate != nil {
 			if err := gate.Send(ev); err != nil {
 				return err
 			}
 			if !locked && gate.HasContent() {
 				locked = true
-				timer.Stop()
 				oldState, newState := bk.RecordSuccess()
 				s.adjustOrder(src.Name, oldState, newState)
 				log.Info("上游源流已锁定", "old_state", oldState, "new_state", newState)
@@ -618,7 +620,6 @@ func (s *Scheduler) trySourceGeneric(
 		}
 		if !locked {
 			locked = true
-			timer.Stop()
 			oldState, newState := bk.RecordSuccess()
 			s.adjustOrder(src.Name, oldState, newState)
 			log.Info("上游源流已锁定", "old_state", oldState, "new_state", newState)
