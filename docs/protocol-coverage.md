@@ -40,7 +40,7 @@
 
 客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
-- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；其余键原样保留（含 `previous_response_id`、tools、include 等）
+- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；完全明文的 `agent_message` 按原位置折为 assistant `message`（兼容不认识 Codex 扩展的上游），含 `encrypted_content` 时保持原生 `agent_message` 交给上游；其余键原样保留（含 `previous_response_id`、tools、include 等）
 - **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
 - **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
@@ -142,6 +142,10 @@
   回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
+
+### 2026-08-18
+
+- **子 agent `agent_message` 回灌修复**：Codex 0.147 多 agent V2 的父子通信 `type=agent_message` 不被 openai-go SDK 识别；a/c 请求解码必须从 raw JSON 按原位置恢复为 assistant 消息，禁止并入 `function_call_output`。真实 `codex app-server` 端到端验证 `wait_agent` 结果与子 agent `FINAL_ANSWER` 保持相邻但独立，父 agent 最终答复不再拿到被合并错位的子回复。随后补齐 r 路径：完全明文的 `agent_message` 在 outbound Responses body 中按原位置折为 assistant `message`，确保 GLM/DeepSeek 等 unknown-extension 兼容上游不会丢掉子 agent 初始 `NEW_TASK` / follow-up `MESSAGE`；带密文的 item 保持原生透传。2026-08-18 第二次生产复现（`01a0151b`，chat 协议）定位到两个 raw 恢复互相错位：先恢复 `output_text` 时 SDK 列表已少 1，按“raw index ↔ SDK index”直读会覆盖/丢弃后面真正的 `role=user` 最新输入；现在 `agent_message` 先从 raw 整体重建 items，`output_text` 再按同序恢复，c 路径真实 follow-up 测试覆盖该回归。
 
 ### 2026-08-06
 
@@ -295,6 +299,7 @@
 |---|---|---|---|
 | `message` / EasyInputMessage | role + content | `lossy_supported` | `user` 纯文本为 string、含图片为 `[text,image_url]` parts；`developer`/`system` 折 `<system-update>` user；assistant 无文本跳过 |
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
+| `agent_message` | 按原位置恢复为 assistant message | `lossy_supported` | Codex 多 agent `NEW_TASK` / `MESSAGE` / `FINAL_ANSWER`；明文 `input_text` 保留，`encrypted_content` 本地不可解读则丢弃密文；禁止并入工具结果；必须先于 `output_text` 恢复整体重建 items，避免错位覆盖后续 user 输入 |
 | `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；`id` / `tool_call_id` 原样透传（不归一化） |
 | `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错；输入缺对应 `function_call` 时孤儿 tool 输出 WARN + 丢弃 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"s":...}` freeform；相邻合并 |
@@ -335,7 +340,7 @@
 | 首 chunk | `response.created` / `in_progress` | `supported` | |
 | `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
-| `delta.content` 内 `</think>` 思维链 | reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 不标准上游以 `</think>` 同时作为开/闭标签（toggle）：首个 `</think>` 进入思考、下一个 `</think>` 退出；标准 `<think>` 视为显式开标签；相邻且文本为空的同标签去重（如 `</think></think>` 视为单个分隔）；标签本身不进 `output_text`；可跨 chunk 拼接；流末半开 `</think>` 块已下发思考保留为 reasoning、截断前缀丢弃；content 仅剩孤立闭标签（思考已由 `reasoning_content` 下发）时剥离不开启新思考块 |
+| `delta.content` 内 `<think>...</think>` 思维链 | reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 标准 `<think>` 视为显式开标签，`</think>` 仅作开块收尾；块外孤立闭标签（无开标签、也无 `reasoning_content`）剥离，不开启新思考块；相邻且文本为空的同标签去重；标签本身不进 `output_text`；可跨 chunk 拼接；流末半开 `<think>` 块已下发思考保留为 reasoning、截断前缀丢弃 |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
 | `delta.tool_calls` name=`shell` / `local_shell` / `apply_patch` | `custom_tool_call` + input delta/done | `supported` | 参数在 `output_item.done` 一次给出；`SanitizeClientToolInput` 对单键 JSON 对象按任意键名取值解包；apply_patch 若输出 structured JSON 兜底折 V4A |
@@ -475,6 +480,7 @@
 | `message` + history `content[refusal]` | assistant text | `lossy_supported` | refusal 折成可见文本 |
 | `input_message` | message | `supported` | SDK 三个 `message` discriminator 实测几乎总落到 `OfMessage`；无独立分支需求 |
 | `output_message` | assistant text | `supported` | 兜底：若 SDK 解到 `OfOutputMessage` 则转 assistant text；真·Codex wire 通常是 `type=message` + `output_text` |
+| `agent_message` | 按原位置恢复为 assistant text | `lossy_supported` | Codex 多 agent `NEW_TASK` / `MESSAGE` / `FINAL_ANSWER`；明文 `input_text` 保留，`encrypted_content` 本地不可解读则丢弃密文；禁止并入 `tool_result` |
 | `file_search_call` | none | `dropped` | 历史回灌 WARN + 丢弃（不 raw dump）；工具声明阶段 fail-fast |
 | `computer_call` | none | `dropped` | 历史回灌 WARN + 丢弃；工具声明 fail-fast |
 | `computer_call_output` | none | `dropped` | 同上 |
