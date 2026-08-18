@@ -159,6 +159,16 @@ func main() {
 
 	srv := server.New(cfg)
 	defer srv.Close()
+	syncModelCatalog := func() error {
+		data, err := srv.ModelCatalogJSON()
+		if err != nil {
+			return err
+		}
+		return codexMgr.WriteModelsCatalog(data)
+	}
+	if err := syncModelCatalog(); err != nil {
+		slog.Warn("初始化模型目录同步失败", "error", err)
+	}
 	// 后台恢复线程：保证无请求流量时，degrade_interval 已超时的降级源也能
 	// 恢复到原始优先级位置（状态保持 degraded，等真实成功或累计机会失败熔断）。
 	srv.Scheduler().StartRecovery()
@@ -169,7 +179,16 @@ func main() {
 	// 日志系统（logging.level/format/file）通过 applyLogging 同步重配置，
 	// 使管理页修改日志配置即时生效。
 	// watcher 不可用不阻断启动，管理页保存改为退化为手动 Load+Replace。
-	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), srv.ReloadScheduler, applyLogging)
+	onReload := func() error {
+		if err := srv.ReloadScheduler(); err != nil {
+			return err
+		}
+		if err := syncModelCatalog(); err != nil {
+			slog.Error("配置热重载后同步模型目录失败", "error", err)
+		}
+		return nil
+	}
+	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), onReload, applyLogging)
 	if werr != nil {
 		slog.Warn("配置热重载不可用（fsnotify 初始化失败），管理页保存需重启生效", "error", werr)
 	} else {
@@ -178,7 +197,7 @@ func main() {
 	}
 
 	mux := srv.Mux()
-	adminMount(mux, srv, absConfigPath, watcher, applyLogging)
+	adminMount(mux, srv, absConfigPath, watcher, applyLogging, syncModelCatalog)
 
 	// HTTP server 用 *http.Server 以支持 Shutdown；由 tray/shutdown 协调关闭。
 	// appCtx 在退出时 cancel，通过 BaseContext 注入每个请求：管理页 SSE、
@@ -368,7 +387,7 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 // adminMount 挂载管理页到 mux，reload 回调统一从磁盘重载。
 // watcher 为 nil 时退化为手动 Load+Replace+Reload+重配置日志。
 // applyLogging 在每次成功重载后把新的 logging 配置应用到运行中的日志系统。
-func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg) error) {
+func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg) error, syncModelCatalog func() error) {
 	reload := func() {
 		if w != nil {
 			w.Reload()
@@ -410,7 +429,8 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 			}
 			return out
 		},
-		PromoteSource: srv.Scheduler().PromoteSource,
+		PromoteSource:    srv.Scheduler().PromoteSource,
+		SyncModelCatalog: syncModelCatalog,
 	})
 }
 

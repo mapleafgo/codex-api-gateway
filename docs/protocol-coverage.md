@@ -143,9 +143,17 @@
 
 ## 变更记录
 
+### 2026-08-19
+
+
+
+- **重建 c 路径正文思维标签解析（LangChain 1:1）**：`chatstreamconv` 按 langchainjs `ChatDeepSeek` `_streamResponseChunks` 状态机解析 `delta.content` 内的 `<think>` / `</think>`，取代 2026-08-18 的“原样透传”行为。标签之间文本归 reasoning item，标签外文本归 `output_text`；残缺标签前缀跨 chunk 暂存，流末按当前思维状态收口，原生 `reasoning_content` 分片原样透传。`</think>` 在非思维态下作为开标签（toggle），连续同标签去重（同一 chunk 与跨 chunk）。
+
+
 ### 2026-08-18
 
 - **子 agent `agent_message` 回灌修复**：Codex 0.147 多 agent V2 的父子通信 `type=agent_message` 不被 openai-go SDK 识别；a/c 请求解码必须从 raw JSON 按原位置恢复为 assistant 消息，禁止并入 `function_call_output`。真实 `codex app-server` 端到端验证 `wait_agent` 结果与子 agent `FINAL_ANSWER` 保持相邻但独立，父 agent 最终答复不再拿到被合并错位的子回复。随后补齐 r 路径：完全明文的 `agent_message` 在 outbound Responses body 中按原位置折为 assistant `message`，确保 GLM/DeepSeek 等 unknown-extension 兼容上游不会丢掉子 agent 初始 `NEW_TASK` / follow-up `MESSAGE`；带密文的 item 保持原生透传。2026-08-18 第二次生产复现（`01a0151b`，chat 协议）定位到两个 raw 恢复互相错位：先恢复 `output_text` 时 SDK 列表已少 1，按“raw index ↔ SDK index”直读会覆盖/丢弃后面真正的 `role=user` 最新输入；现在 `agent_message` 先从 raw 整体重建 items，`output_text` 再按同序恢复，c 路径真实 follow-up 测试覆盖该回归。
+| `delta.content` 内思维标签（如 `<think>a</think>b`） | 标签剥离：思维块归 reasoning item + `reasoning_text.delta/done`，标签外文本归 `output_text` | `supported` | LangChain 式状态机解析；`</think>` 非思维态下作为开标签（toggle）；连续同标签去重；原生 reasoning 分片不二次解析 |
 
 ### 2026-08-06
 
@@ -340,7 +348,7 @@
 | 首 chunk | `response.created` / `in_progress` | `supported` | |
 | `delta.reasoning_content` / `delta.reasoning` | reasoning item + `reasoning_text.delta/done` | `lossy_supported` | 先于 content/tool；终态 `summary:[{summary_text}]`；无 encrypted/signature |
 | `delta.content` | message + `output_text.delta` | `supported` | string；兼容 content part 数组（取 text） |
-| `delta.content` 内 `<think>...</think>` 思维链 | reasoning item + `reasoning_text.delta/done`（与 `reasoning_content` 同构），标签外文本为 `output_text` | `lossy_supported` | 标准 `<think>` 视为显式开标签，`</think>` 仅作开块收尾；块外孤立闭标签（无开标签、也无 `reasoning_content`）剥离，不开启新思考块；相邻且文本为空的同标签去重；标签本身不进 `output_text`；可跨 chunk 拼接；流末半开 `<think>` 块已下发思考保留为 reasoning、截断前缀丢弃 |
+| `delta.content` 内思维标签（如 `<think>...</think>`） | 作为普通 `output_text` 原样透传 | `supported` | 网关不再解析/剥离正文标签；标签处理交由上层或上游 |
 | `choices[].logprobs.content` | `output_text.delta/done.logprobs` | `supported` | 需请求 `top_logprobs` 且上游返回；无 bytes 字段；`include=message.output_text.logprobs` 在 Chat 源不再 WARN |
 | `delta.tool_calls` function | `function_call` 链 + arguments delta/done | `supported` | 按 index 累积；**name 到齐再 open**（兼容先 id 后 name；opencode 对缺 id/name 直接报错，我们保留宽容以兼容分片上游） |
 | `delta.tool_calls` name=`shell` / `local_shell` / `apply_patch` | `custom_tool_call` + input delta/done | `supported` | 参数在 `output_item.done` 一次给出；`SanitizeClientToolInput` 对单键 JSON 对象按任意键名取值解包；apply_patch 若输出 structured JSON 兜底折 V4A |

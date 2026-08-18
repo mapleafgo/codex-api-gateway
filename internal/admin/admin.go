@@ -53,6 +53,9 @@ type Deps struct {
 	SourceHealth func() []SourceHealthView
 	// PromoteSource 手动将源提升回 normal。nil 时 promote 接口 501。
 	PromoteSource func(name string) error
+	// SyncModelCatalog 在配置写盘并热重载成功后同步 $CODEX_HOME/models.json。
+	// nil 时跳过；返回错误时接口报错但 config.yaml 已保存。
+	SyncModelCatalog func() error
 }
 
 type handler struct {
@@ -1085,6 +1088,12 @@ func (h *handler) writeConfigYAMLLocked(cfg *config.Config) error {
 	}
 	if h.deps.ReloadFromDisk != nil {
 		h.deps.ReloadFromDisk()
+	}
+	if h.deps.SyncModelCatalog != nil {
+		if err := h.deps.SyncModelCatalog(); err != nil {
+			slog.Error("管理页保存后同步模型目录失败", "error", err)
+			return fmt.Errorf("sync model catalog: %w", err)
+		}
 	}
 	return nil
 }

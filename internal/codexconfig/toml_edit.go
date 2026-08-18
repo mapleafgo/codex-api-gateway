@@ -1,6 +1,9 @@
 package codexconfig
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // isTableHeader 判断行是否为 TOML 表头（[xxx] 或 [[xxx]]）。
 func isTableHeader(line string) bool {
@@ -41,14 +44,27 @@ func parseStringValue(rest string) string {
 	}
 	q := rest[0]
 	if end := strings.IndexByte(rest[1:], q); end >= 0 {
+		if q == '"' {
+			if unquoted, err := strconv.Unquote(rest[:1+end+1]); err == nil {
+				return unquoted
+			}
+			return ""
+		}
 		return rest[1 : 1+end]
 	}
 	return ""
 }
 
+// tomlQuote 输出 TOML 基本字符串，转义反斜杠和双引号。
+func tomlQuote(value string) string {
+	escaped := strings.ReplaceAll(value, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	return `"` + escaped + `"`
+}
+
 // upsertTopLevelKey 设置顶层键：已存在则整行替换，否则插入到首个表头之前。
 func upsertTopLevelKey(lines []string, key, value string) []string {
-	replacement := key + ` = "` + value + `"`
+	replacement := key + ` = ` + tomlQuote(value)
 	for i, line := range lines {
 		if isTableHeader(line) {
 			lines = append(lines[:i], append([]string{replacement}, lines[i:]...)...)

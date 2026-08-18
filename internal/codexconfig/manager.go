@@ -17,6 +17,7 @@ const (
 	authCommand  = "echo codex-local"
 
 	backupFileName = "codex-api-gateway-backup.json"
+	modelsFileName = "models.json"
 )
 
 // providerHeader 是我们要整体覆盖的表头。
@@ -24,7 +25,8 @@ var providerHeader = "[model_providers." + providerID + "]"
 
 // backupState 记录启用前的 model_provider 原值，null 表示原文件无该键。
 type backupState struct {
-	ModelProvider *string `json:"model_provider"`
+	ModelProvider    *string `json:"model_provider"`
+	ModelCatalogJSON *string `json:"model_catalog_json"`
 }
 
 // Manager 管理 Codex「应用 Codex」开关：修改 $CODEX_HOME/config.toml 的
@@ -45,7 +47,7 @@ func New(baseURL func() string) *Manager {
 func (m *Manager) IsEnabled() (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, path, err := resolveConfigPaths()
+	home, path, err := resolveConfigPaths()
 	if err != nil {
 		return false, err
 	}
@@ -56,11 +58,35 @@ func (m *Manager) IsEnabled() (bool, error) {
 		}
 		return false, fmt.Errorf("codexconfig: 读取 %s 失败: %w", path, err)
 	}
-	return isEnabled(raw, m.currentBaseURL()), nil
+	return isEnabled(raw, m.currentBaseURL(), modelsCatalogPath(home)), nil
+}
+
+// CatalogPath 返回 Codex 模型目录文件 models.json 的绝对路径。
+func (m *Manager) CatalogPath() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	home, _, err := resolveConfigPaths()
+	if err != nil {
+		return "", err
+	}
+	return modelsCatalogPath(home), nil
+}
+
+// WriteModelsCatalog 把模型目录 JSON 原子写入 $CODEX_HOME/models.json。
+// 目录或配置缺失时返回错误，不自动创建 Codex 配置目录。
+func (m *Manager) WriteModelsCatalog(data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	home, _, err := resolveConfigPaths()
+	if err != nil {
+		return err
+	}
+	return writeBytes(modelsCatalogPath(home), data)
 }
 
 // Enable 把 Codex 指向本网关：备份原 model_provider、整体覆盖 provider 块、
-// 设置 model_provider。config.toml 缺失时返回错误，不自建文件。
+// 设置 model_provider，并写入 model_catalog_json 指向 models.json。
+// config.toml 缺失时返回错误，不自建文件。
 func (m *Manager) Enable() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -80,7 +106,8 @@ func (m *Manager) Enable() error {
 		}
 		return fmt.Errorf("codexconfig: 读取 %s 失败: %w", path, err)
 	}
-	if isEnabled(raw, base) {
+	catalogPath := modelsCatalogPath(home)
+	if isEnabled(raw, base, catalogPath) {
 		return nil
 	}
 	lines := strings.Split(string(raw), "\n")
@@ -94,6 +121,7 @@ func (m *Manager) Enable() error {
 
 	lines = upsertTableBlock(lines, providerHeader, providerBlock(base))
 	lines = upsertTopLevelKey(lines, "model_provider", providerID)
+	lines = upsertTopLevelKey(lines, "model_catalog_json", catalogPath)
 	return writeConfig(path, lines)
 }
 
@@ -135,6 +163,11 @@ func (m *Manager) Disable() error {
 	} else {
 		lines = upsertTopLevelKey(lines, "model_provider", *state.ModelProvider)
 	}
+	if state.ModelCatalogJSON == nil {
+		lines = removeTopLevelKey(lines, "model_catalog_json")
+	} else {
+		lines = upsertTopLevelKey(lines, "model_catalog_json", *state.ModelCatalogJSON)
+	}
 	if err := writeConfig(path, lines); err != nil {
 		return err
 	}
@@ -153,6 +186,10 @@ func resolveConfigPaths() (home, configPath string, err error) {
 	return home, filepath.Join(home, "config.toml"), nil
 }
 
+func modelsCatalogPath(home string) string {
+	return filepath.Join(home, modelsFileName)
+}
+
 func (m *Manager) currentBaseURL() string {
 	if m.baseURL == nil {
 		return ""
@@ -160,8 +197,9 @@ func (m *Manager) currentBaseURL() string {
 	return m.baseURL()
 }
 
-// isEnabled 判断给定文件内容是否已指向本网关。
-func isEnabled(raw []byte, base string) bool {
+// isEnabled 判断给定文件内容是否已指向本网关，且 model_catalog_json
+// 指向当前 models.json 路径。
+func isEnabled(raw []byte, base, catalogPath string) bool {
 	if base == "" {
 		return false
 	}
@@ -171,7 +209,11 @@ func isEnabled(raw []byte, base string) bool {
 		return false
 	}
 	blockBase, ok := tableValue(lines, providerHeader, "base_url")
-	return ok && blockBase == base
+	if !ok || blockBase != base {
+		return false
+	}
+	catalog, ok := topLevelKey(lines, "model_catalog_json")
+	return ok && catalog == catalogPath
 }
 
 // providerBlock 返回完整的 provider 表块（含嵌套 auth 表）。
@@ -194,6 +236,9 @@ func writeBackup(path string, lines []string) error {
 	if ok {
 		state.ModelProvider = &value
 	}
+	if catalog, ok := topLevelKey(lines, "model_catalog_json"); ok {
+		state.ModelCatalogJSON = &catalog
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("codexconfig: 序列化备份失败: %w", err)
@@ -206,7 +251,11 @@ func writeBackup(path string, lines []string) error {
 
 // writeConfig 原子写回 config.toml：临时文件 + rename，保留原文件权限。
 func writeConfig(path string, lines []string) error {
-	content := []byte(strings.Join(lines, "\n") + "\n")
+	return writeBytes(path, []byte(strings.Join(lines, "\n")+"\n"))
+}
+
+// writeBytes 原子写文件：临时文件 + rename，保留原文件权限；新文件 0600。
+func writeBytes(path string, data []byte) error {
 	mode := os.FileMode(0o600)
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
@@ -221,7 +270,7 @@ func writeConfig(path string, lines []string) error {
 		_ = tmp.Close()
 		return fmt.Errorf("codexconfig: 设置临时文件权限失败: %w", err)
 	}
-	if _, err := tmp.Write(content); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("codexconfig: 写入临时文件失败: %w", err)
 	}

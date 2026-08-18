@@ -139,6 +139,19 @@ func TestUpsertTopLevelKeyReplacesNoSpaceExisting(t *testing.T) {
 	}
 }
 
+func TestUpsertTopLevelKeyEscapesWindowsPath(t *testing.T) {
+	pathValue := `C:\Users\alice\.codex\models.json`
+	lines := splitLines(t, "# c\n[projects.x]\n")
+	got := joinLines(t, upsertTopLevelKey(lines, "model_catalog_json", pathValue))
+	if !strings.Contains(got, `model_catalog_json = "C:\\Users\\alice\\.codex\\models.json"`) {
+		t.Fatalf("Windows 路径未转义:\n%s", got)
+	}
+	v, ok := topLevelKey(splitLines(t, got), "model_catalog_json")
+	if !ok || v != pathValue {
+		t.Fatalf("topLevelKey=(%q,%v) want (%q,true)", v, ok, pathValue)
+	}
+}
+
 func TestTableValueSingleQuote(t *testing.T) {
 	lines := splitLines(t,
 		"[model_providers.codex-api-gateway]\n"+

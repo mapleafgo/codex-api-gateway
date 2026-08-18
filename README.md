@@ -121,12 +121,15 @@ systemctl --user disable --now codex-api-gateway.service
 
 托盘菜单提供 **「应用到 Codex」** 勾选项：勾选后把 Codex CLI 的用户配置
 `$CODEX_HOME/config.toml` 指向本网关（新增 `model_providers.codex-api-gateway`
-并置 `model_provider = "codex-api-gateway"`，`base_url` 自动取当前监听端口）；
-取消勾选恢复启用前的 `model_provider` 原值。
+并置 `model_provider = "codex-api-gateway"`，顶层 `model_catalog_json` 指向
+`$CODEX_HOME/models.json`，`base_url` 自动取当前监听端口）；取消勾选恢复启用前的
+`model_provider` 与 `model_catalog_json` 原值。
 
 - 启用前的原值备份在 `~/.codex/codex-api-gateway-backup.json`，恢复后自动删除。
 - `config.toml` 不存在时不自动创建，请先运行一次 codex 生成配置。
 - 网关监听端口变更后，重新勾选一次即可刷新 provider 块的 `base_url`。
+- 管理页新增/删除/排序模型并保存后，网关会同步刷新 `$CODEX_HOME/models.json`，
+  文件内容与 `/v1/models` 一致，Codex 通过 `model_catalog_json` 读取最新模型目录。
 
 ### 手动配置 Codex CLI（可选）
 

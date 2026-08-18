@@ -102,6 +102,18 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	// 能力字段（关键是 supports_search_tool=true）。
 	cur := s.holder.Current()
 	names := cur.ConfiguredModelSlugs()
+	resp := s.codexModels(names)
+	w.Header().Set("content-type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("写出模型列表响应失败", "error", err)
+	} else {
+		slog.Info("模型列表响应完成", "models", len(resp.Models))
+	}
+}
+
+// codexModels 按当前配置构建 Codex 模型目录，保证 /v1/models 与
+// models.json 使用同一份模型信息。
+func (s *Server) codexModels(names []string) model.CodexModelsResponse {
 	infos := make([]model.CodexModelInfo, 0, len(names))
 	for i, name := range names {
 		info := s.codexModelInfo(name)
@@ -110,13 +122,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		info.Priority = i + 1
 		infos = append(infos, info)
 	}
-	resp := model.CodexModelsResponse{Models: infos}
-	w.Header().Set("content-type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("写出模型列表响应失败", "error", err)
-	} else {
-		slog.Info("模型列表响应完成", "models", len(infos))
-	}
+	return model.CodexModelsResponse{Models: infos}
+}
+
+// ModelCatalogJSON 返回与 /v1/models 完全一致的模型目录 JSON，
+// 供管理页/配置同步写入 $CODEX_HOME/models.json。
+func (s *Server) ModelCatalogJSON() ([]byte, error) {
+	cur := s.holder.Current()
+	return json.Marshal(s.codexModels(cur.ConfiguredModelSlugs()))
 }
 
 // codexModelInfo 为一个模型 slug 构造 Codex ModelInfo，补齐网关所需的全部字段。

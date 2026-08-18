@@ -2,12 +2,17 @@
   "version": "0.16.2",
   "integration_state_schema": 1,
   "installed_integrations": [
-    "codex"
+    "codex",
+    "codebuddy"
   ],
   "integration_settings": {
     "codex": {
       "script": "py",
       "invoke_separator": "-"
+    },
+    "codebuddy": {
+      "script": "py",
+      "invoke_separator": "."
     }
   },
   "integration": "codex",

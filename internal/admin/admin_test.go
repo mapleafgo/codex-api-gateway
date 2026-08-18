@@ -201,6 +201,95 @@ func TestPanicRecovery(t *testing.T) {
 func ptrInt64(v int64) *int64 { return &v }
 func ptrBool(v bool) *bool    { return &v }
 
+func seedModelSlugs(t *testing.T, deps *Deps) {
+	t.Helper()
+	cur := deps.Holder.Current()
+	next := *cur
+	next.ModelOverrides = map[string]config.ModelOverride{
+		"a": {},
+		"b": {},
+	}
+	next.ModelSlugOrder = []string{"a", "b"}
+	deps.Holder.Replace(&next)
+}
+
+func TestModelMutationAPIsSyncModelCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+		want []string
+	}{
+		{name: "add", path: "/admin/api/models/add", body: `{"slug":"c"}`, want: []string{"a", "b", "c"}},
+		{name: "delete", path: "/admin/api/models/delete", body: `{"slug":"a"}`, want: []string{"b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, _ := newTestDeps(t)
+			seedModelSlugs(t, deps)
+			var syncs [][]string
+			deps.SyncModelCatalog = func() error {
+				order := append([]string(nil), deps.Holder.Current().ModelSlugOrder...)
+				syncs = append(syncs, order)
+				return nil
+			}
+
+			mux := http.NewServeMux()
+			Mount(mux, *deps)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			resp, err := http.Post(srv.URL+tc.path, "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d, want 200", resp.StatusCode)
+			}
+			if len(syncs) == 0 {
+				t.Fatal("模型变更后未触发 SyncModelCatalog")
+			}
+			got := syncs[len(syncs)-1]
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("sync order=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestModelMutationReportsCatalogSyncFailure(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	seedModelSlugs(t, deps)
+	deps.SyncModelCatalog = func() error {
+		return fmt.Errorf("disk full")
+	}
+
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/models/add", "application/json", strings.NewReader(`{"slug":"c"}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", resp.StatusCode)
+	}
+	cur := deps.Holder.Current()
+	found := false
+	for _, slug := range cur.ModelSlugOrder {
+		if slug == "c" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("models.yaml 已保存，但 holder 顺序缺少 c: %v", cur.ModelSlugOrder)
+	}
+}
+
 func TestAnthropicConfigCard(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{

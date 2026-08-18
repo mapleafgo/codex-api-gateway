@@ -28,6 +28,10 @@ func backupPath(home string) string {
 	return filepath.Join(home, ".codex", backupFileName)
 }
 
+func codexModelsPath(home string) string {
+	return filepath.Join(home, ".codex", "models.json")
+}
+
 func seedConfigFile(t *testing.T, home, content string) string {
 	t.Helper()
 	dir := filepath.Join(home, ".codex")
@@ -292,5 +296,107 @@ func TestIsEnabledFalseWhenConfigMissing(t *testing.T) {
 	on, err := m.IsEnabled()
 	if err != nil || on {
 		t.Fatalf("缺失配置时 IsEnabled=(%v,%v) 应为 (false,nil)", on, err)
+	}
+}
+
+func TestEnableWritesModelCatalogJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	path := seedConfigFile(t, home, seedConfig)
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	want := `model_catalog_json = "` + codexModelsPath(home) + `"`
+	if !strings.Contains(got, want) {
+		t.Fatalf("启用后缺少 %q，实际内容:\n%s", want, got)
+	}
+	data, err := os.ReadFile(backupPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state backupState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.ModelCatalogJSON != nil {
+		t.Fatalf("原无 model_catalog_json 时备份应为 null，实际 %+v", state)
+	}
+}
+
+func TestDisableRemovesModelCatalogJSONWhenOriginallyAbsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	path := seedConfigFile(t, home, seedConfig)
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if strings.Contains(got, "model_catalog_json =") {
+		t.Fatalf("原无 model_catalog_json 时应删除该键:\n%s", got)
+	}
+	assertNotExist(t, backupPath(home))
+}
+
+func TestEnableBacksUpAndDisableRestoresExistingModelCatalogJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	custom := `model_catalog_json = "/custom/models.json"
+` + seedConfig
+	path := seedConfigFile(t, home, custom)
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if !strings.Contains(got, `model_catalog_json = "`+codexModelsPath(home)+`"`) {
+		t.Fatalf("启用后未覆盖 model_catalog_json:\n%s", got)
+	}
+	data, err := os.ReadFile(backupPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state backupState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.ModelCatalogJSON == nil || *state.ModelCatalogJSON != "/custom/models.json" {
+		t.Fatalf("备份应保存自定义路径 /custom/models.json，实际 %+v", state)
+	}
+	if err := m.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	got = readFile(t, path)
+	if !strings.Contains(got, `model_catalog_json = "/custom/models.json"`) {
+		t.Fatalf("禁用后未恢复自定义 model_catalog_json:\n%s", got)
+	}
+}
+
+func TestWriteModelsCatalog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	data := []byte(`{"models":[]}`)
+	if err := m.WriteModelsCatalog(data); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, codexModelsPath(home))
+	if got != string(data) {
+		t.Fatalf("models.json = %q, want %q", got, data)
+	}
+	if on, err := m.IsEnabled(); err != nil || on {
+		t.Fatalf("仅写模型目录不应启用 Codex，on=%v err=%v", on, err)
 	}
 }
