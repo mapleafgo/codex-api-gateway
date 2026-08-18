@@ -55,6 +55,78 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 	}
 }
 
+// TestPrepareUpstreamBody_RewritesPlaintextAgentMessage 验证 r 路径把
+// Codex 多 agent 的明文 agent_message 按 wire 等价物恢复为 assistant message。
+// Responses 兼容上游不认识 agent_message 扩展时不能静默丢掉初始任务。
+func TestPrepareUpstreamBody_RewritesPlaintextAgentMessage(t *testing.T) {
+	src := config.Source{BackendType: config.BackendOpenAIResponses}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"context"}]},
+			{
+				"type":"agent_message",
+				"id":"am_1",
+				"author":"/root",
+				"recipient":"/root/child",
+				"content":[{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\nCHILD_TASK"}]
+			}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Input) != 2 {
+		t.Fatalf("input length=%d want 2: %s", len(payload.Input), body)
+	}
+	got := payload.Input[1]
+	if got["type"] != "message" || got["role"] != "assistant" {
+		t.Fatalf("agent_message must become assistant message, got %#v", got)
+	}
+	if got["id"] != "am_1" {
+		t.Fatalf("id changed: %#v", got)
+	}
+	if _, ok := got["author"]; ok {
+		t.Fatalf("agent-specific author must be removed: %#v", got)
+	}
+	if _, ok := got["recipient"]; ok {
+		t.Fatalf("agent-specific recipient must be removed: %#v", got)
+	}
+	if !bytes.Contains(body, []byte("CHILD_TASK")) {
+		t.Fatalf("task text missing: %s", body)
+	}
+}
+
+func TestPrepareUpstreamBody_PreservesEncryptedAgentMessage(t *testing.T) {
+	src := config.Source{BackendType: config.BackendOpenAIResponses}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{
+				"type":"agent_message",
+				"content":[
+					{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\n"},
+					{"type":"encrypted_content","encrypted_content":"secret"}
+				]
+			}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"type":"agent_message"`)) || !bytes.Contains(body, []byte(`"encrypted_content":"secret"`)) {
+		t.Fatalf("encrypted agent_message should remain native for capable upstream: %s", body)
+	}
+}
+
 // TestPrepareUpstreamBody_StripsWebSearchWhenUnsupported 验证 r 路径在源不支持
 // hosted web_search 时剥掉 tools 里的 {"type":"web_search"}，保留其他工具。
 func TestPrepareUpstreamBody_StripsWebSearchWhenUnsupported(t *testing.T) {

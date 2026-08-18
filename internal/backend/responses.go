@@ -56,6 +56,7 @@ func PrepareUpstreamBody(raw []byte, src *config.Source, log *slog.Logger) (body
 		stripWebSearchTools(m, log)
 	}
 	rewriteReasoningSummaryToContent(m, log)
+	rewritePlaintextAgentMessages(m, log)
 
 	body, err = json.Marshal(m)
 	if err != nil {
@@ -217,6 +218,53 @@ func reasoningSummaryTexts(v any) []string {
 		}
 	}
 	return texts
+}
+
+// rewritePlaintextAgentMessages 把完全明文的 Codex agent_message 就地折成
+// 标准 assistant message。Responses 兼容上游不认识 agent_message 扩展时会把
+// 初始 NEW_TASK / follow-up MESSAGE 静默丢掉；带 encrypted_content 的消息可能
+// 属于原生支持该扩展的上游，保持原样交给上游裁决。
+func rewritePlaintextAgentMessages(m map[string]any, log *slog.Logger) {
+	input, ok := m["input"].([]any)
+	if !ok {
+		return
+	}
+	converted := 0
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || item["type"] != "agent_message" {
+			continue
+		}
+		content, ok := item["content"].([]any)
+		if !ok || len(content) == 0 {
+			continue
+		}
+		plaintext := true
+		for _, rawContent := range content {
+			part, ok := rawContent.(map[string]any)
+			if !ok || part["type"] != model.ContentTypeInputText {
+				plaintext = false
+				break
+			}
+		}
+		if !plaintext {
+			continue
+		}
+		item["type"] = model.ItemTypeMessage
+		item["role"] = model.RoleAssistant
+		delete(item, "author")
+		delete(item, "recipient")
+		converted++
+	}
+	if converted == 0 {
+		return
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Debug("responses: 明文 agent_message 折为 assistant message",
+		"converted", converted,
+		"impact", "NEW_TASK/MESSAGE 文本保留，位置不变")
 }
 
 // decodeObject 用 UseNumber 解码 JSON 对象，避免 map 重编码时大整数经 float64 丢精度。
