@@ -26,25 +26,24 @@ func DecodeResponseNewParams(data []byte) (*oairesponses.ResponseNewParams, erro
 		return nil, err
 	}
 	restoreToolChoiceFromRaw(data, &req)
+	// 必须先恢复 agent_message：SDK 遇到该类型会把整段 input 解成空列表，
+	// 后续 assistant output_text 恢复若按“raw index ↔ SDK index”直读，
+	// 会把紧随其后的 output_text 错写到真正的下一条 user 消息上。
+	restoreAgentMessageFromRaw(data, &req)
 	// Codex 回灌历史 assistant 消息的 content 使用 output_text（与 Responses 输出
 	// item 同形）。openai-go 把 type=message 统一解到 EasyInputMessage，其 content
 	// 列表只认 input_text/input_image/input_file，output_text 被静默丢弃 → 上游
 	// 收到空 assistant 消息 → 模型表现为"丢上下文"。从 raw JSON 恢复。
 	restoreAssistantOutputTextFromRaw(data, &req)
-	// Codex 子 agent 的 NEW_TASK/Message 投递使用 type=agent_message（稳定版
-	// openai-go ResponseInputItemUnionParam 不认此类型，解析后所有 Of* 为 nil）。
-	// 从 raw JSON 提取 content text，优先并入前置 function_call_output（wait_agent
-	// 结果）作为工具返回，无前置工具时回退为 user 消息，避免污染 turn 边界。
-	restoreAgentMessageFromRaw(data, &req)
 	return &req, nil
 }
 
 // restoreAgentMessageFromRaw 从 raw JSON 把 type=agent_message 的 input item
 // 恢复到 SDK 解码后的 items 中。agent_message 是 Codex 多 agent 通信的投递载体
 // （NEW_TASK / MESSAGE / FINAL_ANSWER），稳定版 SDK 的 discriminator 不认此类型，
-// 遇到它时整个 input 数组解码为 0 条。优先把 agent_message 文本并入前置
-// function_call_output（通常是 wait_agent 的返回），像工具结果一样呈现，
-// 避免独立成消息污染 user/assistant turn 边界。无前置工具时回退为 user 消息。
+// 遇到它时整个 input 数组解码为 0 条。因此这里直接从 raw 整体重建 items：
+// 普通 item 逐个解回 SDK 结构，agent_message 在对应位置转成 assistant 消息，
+// 保证后续恢复 output_text 时 raw index 与 items index 始终同序。
 func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams) {
 	var raw struct {
 		Input json.RawMessage `json:"input"`
@@ -59,17 +58,25 @@ func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams
 	if err := json.Unmarshal(raw.Input, &rawItems); err != nil {
 		return
 	}
-	items := req.Input.OfInputItemList
+	items := make([]oairesponses.ResponseInputItemUnionParam, 0, len(rawItems))
 	restored := 0
+	appendRaw := func(raw json.RawMessage) {
+		var item oairesponses.ResponseInputItemUnionParam
+		if err := json.Unmarshal(raw, &item); err == nil {
+			items = append(items, item)
+		}
+	}
 	for i := range rawItems {
 		var probe struct {
 			Type    string          `json:"type"`
 			Content json.RawMessage `json:"content"`
 		}
 		if err := json.Unmarshal(rawItems[i], &probe); err != nil {
+			appendRaw(rawItems[i])
 			continue
 		}
 		if probe.Type != "agent_message" {
+			appendRaw(rawItems[i])
 			continue
 		}
 		// agent_message content 是 []ContentItem，取 input_text 的 text 拼接
@@ -90,53 +97,26 @@ func restoreAgentMessageFromRaw(data []byte, req *oairesponses.ResponseNewParams
 			}
 		}
 		if sb.Len() == 0 {
+			appendRaw(rawItems[i])
 			continue
 		}
-		// 像工具结果一样处理：优先并入前一个 function_call_output（通常是
-		// wait_agent 的返回），避免独立成消息污染 turn 边界。没有前置工具
-		// 结果时回退为独立 user 消息，保证内容不丢。
-		if merged := mergeAgentMessageIntoPrevToolResult(items, sb.String()); merged {
-			restored++
-			continue
-		}
-		items = append(items, oairesponses.ResponseInputItemUnionParam{
+		msg := oairesponses.ResponseInputItemUnionParam{
 			OfMessage: &oairesponses.EasyInputMessageParam{
-				Role: oairesponses.EasyInputMessageRoleUser,
+				Role: oairesponses.EasyInputMessageRoleAssistant,
 				Type: oairesponses.EasyInputMessageTypeMessage,
 				Content: oairesponses.EasyInputMessageContentUnionParam{
 					OfString: oparam.NewOpt(sb.String()),
 				},
 			},
-		})
+		}
+		items = append(items, msg)
 		restored++
 	}
 	if restored > 0 {
 		req.Input.OfInputItemList = items
-		slog.Debug("agent_message 并入前置工具结果或回退 user 消息",
+		slog.Debug("从 raw 重建 agent_message 并按位置插入",
 			"model", string(req.Model), "restored", restored)
 	}
-}
-
-// mergeAgentMessageIntoPrevToolResult 把 agent_message 文本追加到 SDK items 中
-// 最后一个 function_call_output 的 output 上（用换行分隔）。它对应 raw 数组中
-// 位于该 agent_message 之前、且在 SDK 解码里最后出现的工具结果（如 wait_agent）。
-// 返回是否成功合并。
-func mergeAgentMessageIntoPrevToolResult(items []oairesponses.ResponseInputItemUnionParam, text string) bool {
-	for j := len(items) - 1; j >= 0; j-- {
-		fco := items[j].OfFunctionCallOutput
-		if fco == nil {
-			continue
-		}
-		out := fco.Output.OfString.Value
-		if out == "" {
-			out = text
-		} else {
-			out = out + "\n" + text
-		}
-		fco.Output.OfString = oparam.NewOpt(out)
-		return true
-	}
-	return false
 }
 
 func restoreToolChoiceFromRaw(data []byte, req *oairesponses.ResponseNewParams) {
