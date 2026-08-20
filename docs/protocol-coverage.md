@@ -143,6 +143,14 @@
 
 ## 变更记录
 
+### 2026-08-20
+
+- **剔除 c 路径正文思维标签解析**：`chatstreamconv` 不再识别/剥离 `delta.content`
+  内的思维标签，正文一律原样透传为 `output_text`；标签状态机、跨 chunk 缓冲与流末
+  收口逻辑整体删除（含 `think_test.go`）。`delta.reasoning_content` /
+  `delta.reasoning` / `delta.reasoning_text` 等独立推理字段映射保持不变。
+  历史思维标签规格（002/004）与设计文档保留为历史记录，不再维护。
+
 ### 2026-08-19
 
 

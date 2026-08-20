@@ -40,13 +40,6 @@ var (
 
 const refusalFallback = "I can't help with that."
 
-// 正文思维标签：LangChain 只识别标准 <think>/</think>；</think> 在非思维态下
-// 同样作为开标签是用户要求的双角色（toggle）扩展。
-const (
-	thinkOpenTag  = "<think>"
-	thinkCloseTag = "</think>"
-)
-
 // Converter 将 Chat chunk 流转为 Responses SSE。
 type Converter struct {
 	log         *slog.Logger
@@ -88,13 +81,6 @@ type Converter struct {
 	reasonItemID string
 	reasonIndex  int
 	reasonBuf    strings.Builder
-
-	// 正文思维标签状态机（对齐 langchainjs ChatDeepSeek._streamResponseChunks）：
-	// thinkBuf 跨 chunk 暂存尚未消费的正文；isThinking 表示当前是否处于思维块内；
-	// thinkLastTag 记录以完整标签收尾且无后续文本的上一个标签，用于跨 chunk 去重。
-	isThinking   bool
-	thinkBuf     string
-	thinkLastTag string
 
 	// tool_calls 按 index 累积
 	tools map[int]*toolAccum
@@ -411,13 +397,7 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 	}
 	if content := deltaContentText(ch.Delta.Content); content != "" || len(lps) > 0 {
 		// 部分上游可能拆成「先 content 后 logprobs」两包；有 logprobs 无 content 时仅累积概率。
-		if nativeReasoning != "" {
-			// 原生 reasoning 分片：content 原样透传，不做标签解析（LangChain 整 chunk pass-through）。
-			out = append(out, c.feedText(content, lps)...)
-		} else {
-			// 无原生 reasoning 时按 LangChain 状态机解析 <think>/</think>（含 </think> toggle）。
-			out = append(out, c.feedContentThink(content, lps)...)
-		}
+		out = append(out, c.feedText(content, lps)...)
 	}
 	for _, tc := range ch.Delta.ToolCalls {
 		out = append(out, c.feedToolCall(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments, tc.Custom.Name, tc.Custom.Input)...)
@@ -427,11 +407,9 @@ func (c *Converter) Feed(data []byte) ([]model.SSEEvent, error) {
 		c.streamEnded = true
 		if c.stopReason == "content_filter" {
 			// 与 Anthropic refusal 对齐：丢弃半截文本/工具，只保留 refusal item
-			c.resetThinkEnd()
 			out = append(out, c.prepareRefusalOutput()...)
 		} else {
-			// 先收口思维标签缓冲，再关闭已开 item
-			out = append(out, c.flushThinkEnd()...)
+			// 直接关闭已开 item
 			out = append(out, c.closeOpenItems()...)
 		}
 		// 同包已带 usage 时直接终态；否则等 usage 末包或 FeedDone
@@ -456,7 +434,6 @@ func (c *Converter) FeedDone() []model.SSEEvent {
 	}
 	var out []model.SSEEvent
 	if !c.streamEnded {
-		out = append(out, c.flushThinkEnd()...)
 		out = append(out, c.closeOpenItems()...)
 		c.streamEnded = true
 	}
@@ -561,156 +538,6 @@ func (c *Converter) feedText(delta string, logprobs []model.TokenLogprob) []mode
 	}
 	out = append(out, model.MarshalEvent(evOutputTextDelta, ev))
 	return out
-}
-
-// feedContentThink 按 langchainjs ChatDeepSeek._streamResponseChunks 状态机解析
-// delta.content：<think> 在非思维态作为开标签；</think> 在思维态作为闭标签、在
-// 非思维态同样作为开标签（用户要求的双角色扩展）。标签内文本路由到 reasoning，
-// 标签外文本路由到 output_text；残缺标签前缀跨 chunk 暂存，流末按当前态收口。
-func (c *Converter) feedContentThink(raw string, lps []model.TokenLogprob) []model.SSEEvent {
-	if raw == "" && len(lps) == 0 {
-		return nil
-	}
-	origEmpty := raw == ""
-	// 跨 chunk 连续同标签去重：上一 chunk 以完整标签收尾且无后续文本时，本 chunk 开头
-	// 的同标签并入同一分隔符，不改变思维状态。
-	if c.thinkLastTag != "" && strings.HasPrefix(raw, c.thinkLastTag) {
-		raw = strings.TrimPrefix(raw, c.thinkLastTag)
-		for strings.HasPrefix(raw, c.thinkLastTag) {
-			raw = raw[len(c.thinkLastTag):]
-		}
-	}
-	c.thinkLastTag = ""
-	var out []model.SSEEvent
-	lpSent := false
-	takeLP := func() []model.TokenLogprob {
-		if len(lps) > 0 && !lpSent {
-			lpSent = true
-			return lps
-		}
-		return nil
-	}
-	// 仅 logprobs 无 content 的分片（raw 为空）按 LangChain 语义原样透传概率，
-	// 不得触碰 thinkBuf：残缺标签前缀必须跨此类空分片保留，否则会被误判为安全文本下发。
-	if !origEmpty {
-		c.thinkBuf += raw
-		for len(c.thinkBuf) > 0 {
-			if !c.isThinking {
-				openIdx := strings.Index(c.thinkBuf, thinkOpenTag)
-				closeIdx := strings.Index(c.thinkBuf, thinkCloseTag)
-				delimIdx, delimLen := -1, 0
-				switch {
-				case openIdx >= 0 && (closeIdx < 0 || openIdx <= closeIdx):
-					delimIdx, delimLen = openIdx, len(thinkOpenTag)
-				case closeIdx >= 0:
-					delimIdx, delimLen = closeIdx, len(thinkCloseTag)
-				}
-				if delimIdx >= 0 {
-					if delimIdx > 0 {
-						out = append(out, c.feedText(c.thinkBuf[:delimIdx], takeLP())...)
-					}
-					tag := c.thinkBuf[delimIdx : delimIdx+delimLen]
-					c.thinkBuf = c.thinkBuf[delimIdx+delimLen:]
-					// 连续相同标签去重：紧邻的同标签整体视为单个分隔符。
-					for strings.HasPrefix(c.thinkBuf, tag) {
-						c.thinkBuf = c.thinkBuf[delimLen:]
-					}
-					c.isThinking = true
-					if c.thinkBuf == "" {
-						c.thinkLastTag = tag
-					}
-					continue // 同一 chunk 内继续扫描闭标签（LangChain 同一次迭代语义）
-				}
-				// 无完整标签：仅保留可能是 <think>/</think> 前缀的尾部，其余按正文下发。
-				keep := trailingTagPrefixLen(c.thinkBuf)
-				if keep < len(c.thinkBuf) {
-					out = append(out, c.feedText(c.thinkBuf[:len(c.thinkBuf)-keep], takeLP())...)
-				}
-				c.thinkBuf = c.thinkBuf[len(c.thinkBuf)-keep:]
-				break
-			}
-			// thinking：只认 </think> 闭标签；<think> 按 LangChain 语义作为思维文本保留。
-			if idx := strings.Index(c.thinkBuf, thinkCloseTag); idx >= 0 {
-				if idx > 0 {
-					out = append(out, c.feedReasoning(c.thinkBuf[:idx])...)
-				}
-				c.thinkBuf = c.thinkBuf[idx+len(thinkCloseTag):]
-				// 连续相同标签去重：紧邻的闭标签整体视为单个分隔符，避免 toggle 重新开启。
-				for strings.HasPrefix(c.thinkBuf, thinkCloseTag) {
-					c.thinkBuf = c.thinkBuf[len(thinkCloseTag):]
-				}
-				c.isThinking = false
-				// 闭标签后残余立即作为正文输出并清空缓冲，不再二次解析（LangChain 1:1）。
-				if c.thinkBuf != "" {
-					out = append(out, c.feedText(c.thinkBuf, takeLP())...)
-					c.thinkLastTag = ""
-				} else {
-					c.thinkLastTag = thinkCloseTag
-				}
-				c.thinkBuf = ""
-				break
-			}
-			// 无完整闭标签：仅保留可能是 </think> 前缀的尾部，其余按 reasoning 下发。
-			keep := tagPrefixLen(c.thinkBuf, thinkCloseTag)
-			if keep < len(c.thinkBuf) {
-				out = append(out, c.feedReasoning(c.thinkBuf[:len(c.thinkBuf)-keep])...)
-			}
-			c.thinkBuf = c.thinkBuf[len(c.thinkBuf)-keep:]
-			break
-		}
-	}
-	// 仅 logprobs 无 content 的分片按原语义累积概率，不发正文事件。
-	if origEmpty && !lpSent {
-		out = append(out, c.feedText("", lps)...)
-	}
-	return out
-}
-
-// flushThinkEnd 流末（finish_reason 或 FeedDone）收口思维标签状态：缓冲剩余内容
-// 按当前态输出（含残缺标签前缀），与 LangChain end-of-stream flush 一致。
-func (c *Converter) flushThinkEnd() []model.SSEEvent {
-	var out []model.SSEEvent
-	if c.thinkBuf != "" {
-		if c.isThinking {
-			out = append(out, c.feedReasoning(c.thinkBuf)...)
-		} else {
-			out = append(out, c.feedText(c.thinkBuf, nil)...)
-		}
-		c.thinkBuf = ""
-	}
-	c.isThinking = false
-	c.thinkLastTag = ""
-	return out
-}
-
-// resetThinkEnd 清空思维标签状态（content_filter 等丢弃正文路径）。
-func (c *Converter) resetThinkEnd() {
-	c.thinkBuf = ""
-	c.isThinking = false
-	c.thinkLastTag = ""
-}
-
-// tagPrefixLen 返回 s 尾部与 tag 前缀匹配的最大长度（跨 chunk 残缺标签暂存）。
-func tagPrefixLen(s, tag string) int {
-	limit := len(tag)
-	if len(s) < limit {
-		limit = len(s)
-	}
-	for l := limit; l >= 1; l-- {
-		if strings.HasSuffix(s, tag[:l]) {
-			return l
-		}
-	}
-	return 0
-}
-
-// trailingTagPrefixLen 返回 s 尾部作为 <think>/</think> 前缀的最大长度。
-func trailingTagPrefixLen(s string) int {
-	best := tagPrefixLen(s, thinkOpenTag)
-	if k := tagPrefixLen(s, thinkCloseTag); k > best {
-		best = k
-	}
-	return best
 }
 
 // feedReasoning 把 Chat delta.reasoning_content 映射为 Responses reasoning item + reasoning_text 事件。
@@ -1164,7 +991,6 @@ func (c *Converter) prepareRefusalOutput() []model.SSEEvent {
 	c.contentLogprobs = nil
 	c.reasonOpen = false
 	c.reasonBuf.Reset()
-	c.resetThinkEnd()
 	c.tools = map[int]*toolAccum{}
 	c.outputItems = nil
 
