@@ -36,8 +36,9 @@
 - 备份文件 `~/.codex/codex-api-gateway-backup.json`（0600）只存启用前的
   `model_provider` 原值。
 - 禁用只恢复 `model_provider`；我们的 provider 块保留，不增不删。
-- provider 块只写 `auth.command`，不写 `requires_openai_auth`，
-  避免与 codex 的 auth 冲突校验相撞。
+- provider 块不声明 `auth` / `env_key` / `requires_openai_auth`：网关
+  `/v1/*` 不校验入站 Authorization，codex `validate` 允许无 auth 的
+  provider；旧版写入的嵌套 `auth` 子表在重新启用整体覆盖时一并清除。
 - 不自动创建 `~/.codex` 或 `config.toml`；配置文件缺失时启用直接报错。
 
 ## API
@@ -64,9 +65,9 @@ base URL 由 main 注入：`adminURLFromListen(cfg.Server.Listen) + "/v1"`。
 1. `FindCodexHome()`；`CODEX_HOME` 缺失或非目录按 codex 语义返回错误。
 2. 读取 `config.toml`；不存在时返回明确错误，不自建文件、不写备份。
 3. 若备份文件尚不存在，写入当前 `model_provider` 原值（无则 `null`）。
-4. 整体覆盖 `[model_providers.codex-api-gateway]` 块（含嵌套 `auth` 表），
-   内容为当前 base URL、`wire_api = "responses"`、
-   `auth.command = "echo codex-local"`；不写 `requires_openai_auth`。
+4. 整体覆盖 `[model_providers.codex-api-gateway]` 块（旧版嵌套 `auth` 表
+   随覆盖清除），内容为 `name`、当前 base URL、`wire_api = "responses"`；
+   不声明 `auth` 与 `requires_openai_auth`。
 5. 设置顶层 `model_provider = "codex-api-gateway"`。
 6. 原子写回，保留原文件权限（新文件 0600）。
 
@@ -75,15 +76,14 @@ base URL 由 main 注入：`adminURLFromListen(cfg.Server.Listen) + "/v1"`。
 name = "Codex API Gateway"
 base_url = "http://127.0.0.1:9870/v1"
 wire_api = "responses"
-
-[model_providers.codex-api-gateway.auth]
-command = "echo codex-local"
 ```
 
 ## 禁用流程
 
-1. 读取备份文件；不存在时：当前为启用态 → 返回错误并保持现状；
-   未启用 → no-op。`config.toml` 同样缺失时 no-op，不创建文件。
+1. 读取备份文件；不存在时：当前为启用态 → 移除网关注入键
+   （`model_provider` / `model_catalog_json`）并记 WARN，`model_provider`
+   回落到 Codex 默认 provider；未启用 → no-op。`config.toml` 同样缺失时
+   no-op，不创建文件。
 2. 把顶层 `model_provider` 恢复为备份中的原值（原值为空则删除该行）。
 3. 原子写回；删除备份文件；`codex-api-gateway` 块保留。
 

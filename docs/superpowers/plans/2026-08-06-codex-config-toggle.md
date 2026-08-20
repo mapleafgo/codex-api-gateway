@@ -12,8 +12,8 @@
 
 - 零新依赖：只允许标准库完成 `internal/codexconfig`。
 - 不自动创建 `~/.codex` 或 `config.toml`：`Enable` 在文件缺失时返回错误；`Disable` 在文件/备份缺失且未启用时 no-op。
-- provider 标识固定 `codex-api-gateway`；每次启用整体覆盖该块（含嵌套 `auth` 表），`base_url` 取当前网关监听。
-- 写入的 provider 块只含 `auth.command`，不写 `requires_openai_auth`（codex `validate_model_providers` 拒绝 `auth` 与 `requires_openai_auth = true` 组合；省略字段保持默认 false 语义）。
+- provider 标识固定 `codex-api-gateway`；每次启用整体覆盖该块（旧版嵌套 `auth` 表随覆盖清除），`base_url` 取当前网关监听。
+- 写入的 provider 块不声明 `auth` / `env_key` / `requires_openai_auth`（网关 `/v1/*` 不校验入站 Authorization，codex `validate` 允许无 auth 的 provider）。
 - 备份文件 `~/.codex/codex-api-gateway-backup.json` 权限 0600；`config.toml` 原子写回（临时文件 + rename）并保留原权限，新文件 0600。
 - 代码注释、commit message 用中文；日志走 `log/slog`，禁止 `fmt.Print*`。
 - `README.md` 当前含用户未提交改动：不得暂存/提交用户改动；本次 README 变更留在工作区，最终向用户说明。
@@ -278,15 +278,17 @@ func TestUpsertTableBlockReplacesIncludingSubTable(t *testing.T) {
 	block := []string{
 		"[model_providers.codex-api-gateway]",
 		`name = "Codex API Gateway"`,
-		"",
-		"[model_providers.codex-api-gateway.auth]",
-		`command = "echo codex-local"`,
+		`base_url = "http://127.0.0.1:8383/v1"`,
+		`wire_api = "responses"`,
 	}
 	got := joinLines(t, upsertTableBlock(lines, "[model_providers.codex-api-gateway]", block))
 	if strings.Contains(got, "old =") {
 		t.Fatalf("旧块未整体替换:\n%s", got)
 	}
-	if !strings.Contains(got, `command = "echo codex-local"`) || !strings.Contains(got, "[projects.x]") {
+	if strings.Contains(got, "codex-api-gateway.auth") || strings.Contains(got, "echo codex-local") {
+		t.Fatalf("旧嵌套子表未随块替换清除:\n%s", got)
+	}
+	if !strings.Contains(got, `base_url = "http://127.0.0.1:8383/v1"`) || !strings.Contains(got, "[projects.x]") {
 		t.Fatalf("新块或后续表丢失:\n%s", got)
 	}
 }
@@ -306,7 +308,7 @@ func TestRemoveTableBlock(t *testing.T) {
 		"a = \"1\"\n"+
 			"[model_providers.codex-api-gateway]\n"+
 			"x = \"1\"\n"+
-			"[model_providers.codex-api-gateway.auth]\n"+
+			"[model_providers.codex-api-gateway.nested]\n"+
 			"y = \"2\"\n"+
 			"[projects.x]\n")
 	got := joinLines(t, removeTableBlock(lines, "[model_providers.codex-api-gateway]"))
@@ -600,8 +602,6 @@ func TestEnablePreservesExistingConfigAndBacksUp(t *testing.T) {
 		"[model_providers.custom]",
 		"[model_providers.codex-api-gateway]",
 		`base_url = "http://127.0.0.1:8383/v1"`,
-		"[model_providers.codex-api-gateway.auth]",
-		`command = "echo codex-local"`,
 		`[projects."/tmp/x"]`,
 	} {
 		if !strings.Contains(got, want) {
@@ -723,12 +723,15 @@ func TestDisableFailsWhenBackupMissingWhileEnabled(t *testing.T) {
 	if err := os.Remove(backupPath); err != nil {
 		t.Fatal(err)
 	}
-	before := readFile(t, path)
-	if err := m.Disable(); err == nil {
-		t.Fatal("备份缺失且启用态时应报错")
+	if err := m.Disable(); err != nil {
+		t.Fatalf("备份缺失时也应能关闭，实际 %v", err)
 	}
-	if after := readFile(t, path); after != before {
-		t.Fatalf("报错时不得改动文件:\n%s", after)
+	got := readFile(t, path)
+	if strings.Contains(got, "model_provider =") {
+		t.Fatalf("备份缺失关闭后应移除 model_provider 键:\n%s", got)
+	}
+	if !strings.Contains(got, "[model_providers.codex-api-gateway]") {
+		t.Fatalf("关闭后 provider 块应保留:\n%s", got)
 	}
 }
 
@@ -834,7 +837,6 @@ const (
 	providerID   = "codex-api-gateway"
 	providerName = "Codex API Gateway"
 	wireAPI      = "responses"
-	authCommand  = "echo codex-local"
 
 	backupFileName = "codex-api-gateway-backup.json"
 )
@@ -939,7 +941,14 @@ func (m *Manager) Disable() error {
 		if os.IsNotExist(err) {
 			lines := strings.Split(string(raw), "\n")
 			if value, ok := topLevelKey(lines, "model_provider"); ok && value == providerID {
-				return fmt.Errorf("codexconfig: 备份文件 %s 缺失，无法恢复，保持现状", backupPath)
+				// 备份缺失但仍指向网关：原值不可考，移除网关注入键并回落默认 provider。
+				lines = removeTopLevelKey(lines, "model_provider")
+				lines = removeTopLevelKey(lines, "model_catalog_json")
+				if err := writeConfig(path, lines); err != nil {
+					return err
+				}
+				slog.Warn("codexconfig: 备份缺失，已移除网关注入键，model_provider 回落 Codex 默认", "backup", backupPath)
+				return nil
 			}
 			return nil
 		}
@@ -994,16 +1003,14 @@ func isEnabled(raw []byte, base string) bool {
 	return ok && blockBase == base
 }
 
-// providerBlock 返回完整的 provider 表块（含嵌套 auth 表）。
+// providerBlock 返回 provider 表块。网关 /v1/* 不校验入站 Authorization，
+// 因此不声明 auth/env_key（codex validate 允许无 auth 的 provider）。
 func providerBlock(base string) []string {
 	return []string{
 		providerHeader,
 		`name = "` + providerName + `"`,
 		`base_url = "` + base + `"`,
 		`wire_api = "` + wireAPI + `"`,
-		"",
-		"[model_providers." + providerID + ".auth]",
-		`command = "` + authCommand + `"`,
 	}
 }
 

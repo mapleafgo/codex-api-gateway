@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,6 @@ const (
 	providerID   = "codex-api-gateway"
 	providerName = "Codex API Gateway"
 	wireAPI      = "responses"
-	authCommand  = "echo codex-local"
 
 	backupFileName = "codex-api-gateway-backup.json"
 	modelsFileName = "models.json"
@@ -147,7 +147,16 @@ func (m *Manager) Disable() error {
 		if os.IsNotExist(err) {
 			lines := strings.Split(string(raw), "\n")
 			if value, ok := topLevelKey(lines, "model_provider"); ok && value == providerID {
-				return fmt.Errorf("codexconfig: 备份文件 %s 缺失，无法恢复，保持现状", backupPath)
+				// 备份缺失但仍指向网关：原值不可考，退化为移除网关注入键并告警，
+				// model_provider 回落到 Codex 默认 provider，避免托盘勾选永远无法关闭。
+				lines = removeTopLevelKey(lines, "model_provider")
+				lines = removeTopLevelKey(lines, "model_catalog_json")
+				if err := writeConfig(path, lines); err != nil {
+					return err
+				}
+				slog.Warn("codexconfig: 备份缺失，已移除网关注入键，model_provider 回落 Codex 默认",
+					"backup", backupPath)
+				return nil
 			}
 			return nil
 		}
@@ -216,16 +225,14 @@ func isEnabled(raw []byte, base, catalogPath string) bool {
 	return ok && catalog == catalogPath
 }
 
-// providerBlock 返回完整的 provider 表块（含嵌套 auth 表）。
+// providerBlock 返回 provider 表块。网关 /v1/* 不校验入站 Authorization，
+// 因此不声明 auth/env_key（codex validate 允许无 auth 的 provider）。
 func providerBlock(base string) []string {
 	return []string{
 		providerHeader,
 		`name = "` + providerName + `"`,
 		`base_url = "` + base + `"`,
 		`wire_api = "` + wireAPI + `"`,
-		"",
-		"[model_providers." + providerID + ".auth]",
-		`command = "` + authCommand + `"`,
 	}
 }
 

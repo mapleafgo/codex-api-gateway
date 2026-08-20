@@ -114,13 +114,14 @@ func TestEnablePreservesExistingConfigAndBacksUp(t *testing.T) {
 		"[model_providers.custom]",
 		"[model_providers.codex-api-gateway]",
 		`base_url = "http://127.0.0.1:8383/v1"`,
-		"[model_providers.codex-api-gateway.auth]",
-		`command = "echo codex-local"`,
 		`[projects."/tmp/x"]`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("启用后缺少 %q，实际内容:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "codex-api-gateway.auth") || strings.Contains(got, "echo codex-local") {
+		t.Fatalf("启用后不应残留 auth 子表:\n%s", got)
 	}
 	data, err := os.ReadFile(backupPath(home))
 	if err != nil {
@@ -212,7 +213,7 @@ func TestDisableRestoresModelProviderAndKeepsBlock(t *testing.T) {
 	assertNotExist(t, backupPath(home))
 }
 
-func TestDisableFailsWhenBackupMissingWhileEnabled(t *testing.T) {
+func TestDisableRecoversWhenBackupMissingWhileEnabled(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
@@ -224,12 +225,46 @@ func TestDisableFailsWhenBackupMissingWhileEnabled(t *testing.T) {
 	if err := os.Remove(backupPath(home)); err != nil {
 		t.Fatal(err)
 	}
-	before := readFile(t, path)
-	if err := m.Disable(); err == nil {
-		t.Fatal("备份缺失且启用态时应报错")
+	if err := m.Disable(); err != nil {
+		t.Fatalf("备份缺失时也应能关闭，实际 %v", err)
 	}
-	if after := readFile(t, path); after != before {
-		t.Fatalf("报错时不得改动文件:\n%s", after)
+	got := readFile(t, path)
+	if strings.Contains(got, "model_provider =") {
+		t.Fatalf("备份缺失关闭后应移除 model_provider 键:\n%s", got)
+	}
+	if strings.Contains(got, "model_catalog_json =") {
+		t.Fatalf("备份缺失关闭后应移除 model_catalog_json 键:\n%s", got)
+	}
+	if !strings.Contains(got, "[model_providers.codex-api-gateway]") {
+		t.Fatalf("关闭后 provider 块应保留:\n%s", got)
+	}
+	assertNotExist(t, backupPath(home))
+}
+
+func TestEnableStripsLegacyAuthSubtable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	legacy := `model_provider = "codex-api-gateway"
+
+[model_providers.codex-api-gateway]
+name = "Codex API Gateway"
+base_url = "http://127.0.0.1:9870/v1"
+wire_api = "responses"
+
+[model_providers.codex-api-gateway.auth]
+command = "echo codex-local"
+
+[projects.x]
+`
+	path := seedConfigFile(t, home, legacy)
+	m := New(func() string { return "http://127.0.0.1:9870/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if strings.Contains(got, "codex-api-gateway.auth") || strings.Contains(got, "echo codex-local") {
+		t.Fatalf("重新启用后应清除旧版残留的 auth 子表:\n%s", got)
 	}
 }
 

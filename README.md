@@ -126,6 +126,7 @@ systemctl --user disable --now codex-api-gateway.service
 `model_provider` 与 `model_catalog_json` 原值。
 
 - 启用前的原值备份在 `~/.codex/codex-api-gateway-backup.json`，恢复后自动删除。
+- 备份文件异常缺失时，取消勾选会移除网关注入键并回落到 Codex 默认 provider（对应 WARN 日志）。
 - `config.toml` 不存在时不自动创建，请先运行一次 codex 生成配置。
 - 网关监听端口变更后，重新勾选一次即可刷新 provider 块的 `base_url`。
 - 管理页新增/删除/排序模型并保存后，网关会同步刷新 `$CODEX_HOME/models.json`，
@@ -145,10 +146,7 @@ model_provider = "codex-api-gateway"
 [model_providers.codex-api-gateway]
 name = "Codex API Gateway"
 base_url = "http://127.0.0.1:8383/v1"
-wire_api = "responses"
-
-[model_providers.codex-api-gateway.auth]
-command = "echo codex-local"   # 输出占位符即可，网关 /v1/* 不校验入站 Authorization
+wire_api = "responses"   # provider 不声明 auth/env_key，网关 /v1/* 不校验入站 Authorization
 ```
 
 `model` 填网关 `models` 段声明的别名（即 `model_map` 的键，例如 `gpt-5`），网关再映射成上游真实模型。
@@ -162,7 +160,6 @@ codex -c 'model_provider="codex-api-gateway"' \
       -c 'model_providers.codex-api-gateway.name="Codex API Gateway"' \
       -c 'model_providers.codex-api-gateway.base_url="http://127.0.0.1:8383/v1"' \
       -c 'model_providers.codex-api-gateway.wire_api="responses"' \
-      -c 'model_providers.codex-api-gateway.auth.command="echo codex-local"' \
       -m gpt-5
 ```
 

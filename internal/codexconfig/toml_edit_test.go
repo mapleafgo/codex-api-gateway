@@ -68,15 +68,17 @@ func TestUpsertTableBlockReplacesIncludingSubTable(t *testing.T) {
 	block := []string{
 		"[model_providers.codex-api-gateway]",
 		`name = "Codex API Gateway"`,
-		"",
-		"[model_providers.codex-api-gateway.auth]",
-		`command = "echo codex-local"`,
+		`base_url = "http://127.0.0.1:8383/v1"`,
+		`wire_api = "responses"`,
 	}
 	got := joinLines(t, upsertTableBlock(lines, "[model_providers.codex-api-gateway]", block))
 	if strings.Contains(got, "old =") {
 		t.Fatalf("旧块未整体替换:\n%s", got)
 	}
-	if !strings.Contains(got, `command = "echo codex-local"`) || !strings.Contains(got, "[projects.x]") {
+	if strings.Contains(got, "codex-api-gateway.auth") || strings.Contains(got, "echo codex-local") {
+		t.Fatalf("旧嵌套子表未随块替换清除:\n%s", got)
+	}
+	if !strings.Contains(got, `base_url = "http://127.0.0.1:8383/v1"`) || !strings.Contains(got, "[projects.x]") {
 		t.Fatalf("新块或后续表丢失:\n%s", got)
 	}
 }
@@ -96,7 +98,7 @@ func TestRemoveTableBlock(t *testing.T) {
 		"a = \"1\"\n"+
 			"[model_providers.codex-api-gateway]\n"+
 			"x = \"1\"\n"+
-			"[model_providers.codex-api-gateway.auth]\n"+
+			"[model_providers.codex-api-gateway.nested]\n"+
 			"y = \"2\"\n"+
 			"[projects.x]\n")
 	got := joinLines(t, removeTableBlock(lines, "[model_providers.codex-api-gateway]"))
