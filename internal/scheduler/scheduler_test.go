@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
@@ -67,6 +68,76 @@ func runGeneric(s *Scheduler, onEvent func(model.SSEEvent) error, onUp OnUpstrea
 		onEvent = func(model.SSEEvent) error { return nil }
 	}
 	return s.ExecuteGeneric(context.Background(), []byte(minimalResponsesBody), onEvent, onUp)
+}
+
+func hangingSSE(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("content-type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	w.(http.Flusher).Flush()
+	<-r.Context().Done()
+}
+
+// TestPerAttemptTimeoutFailover 验证单笔总时长到点：挂起源按失败计熔断并换源，
+// 且到点时间远早于首字节超时（证明总时长不被首个事件/等待语义抵消）。
+func TestPerAttemptTimeoutFailover(t *testing.T) {
+	hang := httptest.NewServer(http.HandlerFunc(hangingSSE))
+	defer hang.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			RequestTimeout:            config.Duration(300 * time.Millisecond),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+		},
+		Sources: []config.Source{makeSource("hang", hang.URL, 0), makeSource("good", good.URL, 1)},
+	}
+	s := New(cfg)
+	start := time.Now()
+	src, err := runGeneric(s, nil, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ExecuteGeneric err: %v", err)
+	}
+	if src != "good" {
+		t.Fatalf("final source = %q, want good", src)
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("per-attempt timeout not applied (elapsed %v, first-byte is 5s)", elapsed)
+	}
+	if got := s.breakerFor(&cfg.Sources[0]).DegradeCount(); got != 1 {
+		t.Fatalf("hang source should count a failure, degrade_count=%d", got)
+	}
+}
+
+// TestPerAttemptTimeoutWrappedError 验证单一挂起源时返回的 error 携带
+// ErrUpstreamTimeout 哨兵，供 server 层区分超时与客户端取消。
+func TestPerAttemptTimeoutWrappedError(t *testing.T) {
+	hang := httptest.NewServer(http.HandlerFunc(hangingSSE))
+	defer hang.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			RequestTimeout:            config.Duration(300 * time.Millisecond),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+		},
+		Sources: []config.Source{makeSource("hang", hang.URL, 0)},
+	}
+	s := New(cfg)
+	_, err := runGeneric(s, nil, nil)
+	if !errors.Is(err, backend.ErrUpstreamTimeout) {
+		t.Fatalf("err should wrap ErrUpstreamTimeout, got %v", err)
+	}
 }
 
 func countEventType(evs []model.SSEEvent, typ string) int {

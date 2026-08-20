@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
@@ -115,6 +117,67 @@ func TestIsClientErrorExcludesRateLimit(t *testing.T) {
 		if got := IsClientError(errors.New(tc.err)); got != tc.want {
 			t.Errorf("IsClientError(%q) = %v, want %v", tc.err, got, tc.want)
 		}
+	}
+}
+
+// TestIsServerTimeoutCause 验证 WithTimeoutCause 到点（cause=ErrUpstreamTimeout）
+// 才能归类为服务端超时；父 ctx 主动取消（首字节超时/客户端断开）不误判。
+func TestIsServerTimeoutCause(t *testing.T) {
+	timedOut, cancel := context.WithTimeoutCause(context.Background(), 5*time.Millisecond, ErrUpstreamTimeout)
+	defer cancel()
+	time.Sleep(20 * time.Millisecond)
+	if !IsServerTimeout(timedOut, context.DeadlineExceeded) {
+		t.Fatal("deadline-fired ctx should be server timeout")
+	}
+	if IsServerTimeout(context.Background(), context.DeadlineExceeded) {
+		t.Fatal("plain background ctx must not be server timeout")
+	}
+	if IsServerTimeout(timedOut, nil) {
+		t.Fatal("nil err must not be server timeout")
+	}
+	// 父链主动取消（对应首字节超时/客户端断开）：cause 未置位，不算服务端超时。
+	parent, cancelParent := context.WithCancel(context.Background())
+	child, cancelChild := context.WithTimeoutCause(parent, time.Hour, ErrUpstreamTimeout)
+	defer cancelChild()
+	cancelParent()
+	if IsServerTimeout(child, context.Canceled) {
+		t.Fatal("parent cancel must not be classified as server timeout")
+	}
+}
+
+// TestIsClientCanceledExcludesServerTimeout 验证服务端超时不被当作客户端取消。
+func TestIsClientCanceledExcludesServerTimeout(t *testing.T) {
+	timedOut, cancel := context.WithTimeoutCause(context.Background(), 5*time.Millisecond, ErrUpstreamTimeout)
+	defer cancel()
+	time.Sleep(20 * time.Millisecond)
+	if IsClientCanceled(timedOut, context.DeadlineExceeded) {
+		t.Fatal("server timeout must not be client-canceled")
+	}
+	// 普通取消仍按既有语义识别。
+	cancelled, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if !IsClientCanceled(cancelled, context.Canceled) {
+		t.Fatal("client cancel must still be detected")
+	}
+}
+
+// TestClassifyOutcomeServerTimeout 验证已锁定场景下服务端超时归类为 failed/504。
+func TestClassifyOutcomeServerTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 5*time.Millisecond, ErrUpstreamTimeout)
+	defer cancel()
+	time.Sleep(20 * time.Millisecond)
+	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
+		locked:  true,
+		scanErr: context.DeadlineExceeded,
+	})
+	if status != "failed" || code != 504 {
+		t.Fatalf("timeout outcome = %s/%d, want failed/504", status, code)
+	}
+	if !strings.Contains(errText, "upstream request timeout") {
+		t.Fatalf("timeout errText = %q", errText)
+	}
+	if !errors.Is(scanErr, context.DeadlineExceeded) {
+		t.Fatalf("scanErr should stay DeadlineExceeded: %v", scanErr)
 	}
 }
 

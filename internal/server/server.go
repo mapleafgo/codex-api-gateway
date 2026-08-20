@@ -414,6 +414,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	var evCount int
+	var sawTerminal bool
+	terminalTypes := map[string]bool{
+		string(oaconstant.ValueOf[oaconstant.ResponseCompleted]()):  true,
+		string(oaconstant.ValueOf[oaconstant.ResponseFailed]()):     true,
+		string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]()): true,
+	}
 	resolvedModel := string(req.Model)
 	backendType := config.BackendAnthropic
 	var lastUp scheduler.UpstreamEvent
@@ -421,6 +427,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	sourceName, execErr := s.sch.ExecuteGeneric(r.Context(), body,
 		func(e model.SSEEvent) error {
 			evCount++
+			if terminalTypes[e.Type] {
+				sawTerminal = true
+			}
 			log.Debug("写出响应 SSE 事件", "event_type", e.Type)
 			if err := writeSSE(w, e); err != nil {
 				log.Warn("写出响应 SSE 事件失败", "event_type", e.Type, "error", err)
@@ -444,6 +453,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// Backend 已在 SSE 流内写入真实 response id；此处 id 仅用于日志/metrics 关联。
 	respID := newResponseID()
 	clientCanceled := backend.IsClientCanceled(r.Context(), execErr)
+	serverTimeout := errors.Is(execErr, backend.ErrUpstreamTimeout)
 
 	status := model.ResponseStatusCompleted
 	if lastUp.Status == "incomplete" {
@@ -453,7 +463,40 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	errText := ""
 	// 上游已给出业务终态后，客户端断开或读尾噪声不得覆盖该终态。
 	upstreamSucceeded := lastUp.Status == "completed" || lastUp.Status == "incomplete"
-	if lastUp.Status == "failed" && evCount > 0 {
+	// 网关侧单笔总时长超时：failed + 504；流内尚未出现终态事件时补发 failed
+	// （a/c 后端通常已产出；r 透传不代补上游事件，由这里兜底收口）。
+	writeFailedTerminal := func() {
+		errResp := model.NewResponseObject(respID, model.ResponseStatusFailed, string(req.Model), time.Now().Unix(), echoFromRequest(req))
+		errResp.Output = []model.OutputItem{}
+		errResp.Error = &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
+		evType := string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
+		if err := writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
+			Type: evType, SequenceNumber: 1, Response: errResp,
+		})); err != nil {
+			log.Warn("写出失败终态 SSE 事件失败", "event_type", evType, "error", err)
+		}
+		flusher.Flush()
+	}
+	if serverTimeout {
+		status = model.ResponseStatusFailed
+		code = http.StatusGatewayTimeout
+		errText = lastUp.Error
+		if errText == "" {
+			errText = errSummary(execErr)
+		}
+		if !sawTerminal {
+			writeFailedTerminal()
+		}
+		log.Warn("单笔源请求超时终止",
+			"response_id", respID,
+			"status", status,
+			"source", sourceName,
+			"backend_type", backendType,
+			"upstream_events", evCount,
+			"elapsed", time.Since(reqStart).String(),
+			"reason", "timeout",
+			"error", errText)
+	} else if lastUp.Status == "failed" && evCount > 0 {
 		status = model.ResponseStatusFailed
 		code = lastUp.Code
 		errText = lastUp.Error
@@ -503,16 +546,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		log.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
 		// 若流尚未写出任何事件，补一条 failed（Backend 通常已写）
 		if evCount == 0 {
-			errResp := model.NewResponseObject(respID, model.ResponseStatusFailed, string(req.Model), time.Now().Unix(), echoFromRequest(req))
-			errResp.Output = []model.OutputItem{}
-			errResp.Error = &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
-			evType := string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
-			if err := writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
-				Type: evType, SequenceNumber: 1, Response: errResp,
-			})); err != nil {
-				log.Warn("写出失败终态 SSE 事件失败", "event_type", evType, "error", err)
-			}
-			flusher.Flush()
+			writeFailedTerminal()
 		}
 	}
 

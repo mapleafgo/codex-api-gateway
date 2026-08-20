@@ -429,6 +429,7 @@ type loggingView struct {
 }
 type breakerView struct {
 	FirstByteTimeout          string `json:"first_byte_timeout"`
+	RequestTimeout            string `json:"request_timeout"`
 	DegradeThreshold          int    `json:"degrade_threshold"`
 	DegradeInterval           string `json:"degrade_interval"`
 	DegradedRecoveryThreshold int    `json:"degraded_recovery_threshold"`
@@ -498,6 +499,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		},
 		Breaker: breakerView{
 			FirstByteTimeout:          time.Duration(cfg.Breaker.FirstByteTimeout).String(),
+			RequestTimeout:            time.Duration(cfg.Breaker.RequestTimeout).String(),
 			DegradeThreshold:          cfg.Breaker.DegradeThreshold,
 			DegradeInterval:           time.Duration(cfg.Breaker.DegradeInterval).String(),
 			DegradedRecoveryThreshold: cfg.Breaker.DegradedRecoveryThreshold,
@@ -526,6 +528,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		if src.Breaker != nil {
 			sv.Breaker = &breakerView{
 				FirstByteTimeout:          time.Duration(src.Breaker.FirstByteTimeout).String(),
+				RequestTimeout:            time.Duration(src.Breaker.RequestTimeout).String(),
 				DegradeThreshold:          src.Breaker.DegradeThreshold,
 				DegradeInterval:           time.Duration(src.Breaker.DegradeInterval).String(),
 				DegradedRecoveryThreshold: src.Breaker.DegradedRecoveryThreshold,

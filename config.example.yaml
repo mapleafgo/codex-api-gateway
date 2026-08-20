@@ -42,6 +42,9 @@ logging:
 #   circuitOpen ──(circuit_interval 结束)──> halfOpen(放行探测) ──(探测成功)──> 由 recovery 决定回到 normal/degraded
 breaker:
   first_byte_timeout: 12s   # 流式请求等待首个字节的最长时间，超时计为失败
+  request_timeout: 120s     # 单个源单笔上游调用的总时长上限（不被首个事件停止）
+                            # 0/缺省 = 120s，负值拒绝；未出内容时按失败换源，
+                            # 已出内容时以 failed 终态收口
   degrade_threshold: 3      # normal→degraded 需连续 N 次失败；degraded 机会窗口累计 N 次失败（中间无成功）→ circuitOpen
   degrade_interval: 1m      # degraded 源超过此间隔无新失败则恢复到原始优先级进入机会窗口
   degraded_recovery_threshold: 1      # degraded 恢复到 normal 所需的连续成功次数（降级恢复阈值）
@@ -106,6 +109,7 @@ sources:
     default_model: glm-5.2
     breaker:
       first_byte_timeout: 8s    # 该源更快判定首字节超时，其余字段继承全局
+      # request_timeout: 90s    # 可选覆盖单笔总时长；0/缺省继承全局
 
   # 备用源：演示 OpenAI Chat 兼容上游（取消注释使用）
   #- name: openai-compat

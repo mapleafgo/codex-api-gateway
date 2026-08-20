@@ -134,10 +134,15 @@ func TestConfigRoundTrip(t *testing.T) {
 	if view.Anthropic.DefaultMaxTokens != 16384 || !view.Anthropic.CacheEnabled {
 		t.Fatalf("anthropic = %+v", view.Anthropic)
 	}
+	if view.Breaker.RequestTimeout != "2m0s" {
+		t.Fatalf("default request_timeout view = %q, want 2m0s (120s)", view.Breaker.RequestTimeout)
+	}
 	view.Anthropic = anthropicView{
 		DefaultMaxTokens: 32768,
 		CacheEnabled:     false,
 	}
+	view.Breaker.RequestTimeout = "45s"
+	view.Sources[0].Breaker = &breakerView{RequestTimeout: "30s"}
 
 	// POST：加一个 source
 	view.Sources = append(view.Sources, sourceView{
@@ -175,6 +180,12 @@ func TestConfigRoundTrip(t *testing.T) {
 	if cur.Anthropic.DefaultMaxTokens != 32768 || cur.Anthropic.CacheEnabled == nil ||
 		*cur.Anthropic.CacheEnabled {
 		t.Errorf("anthropic config not preserved: %+v", cur.Anthropic)
+	}
+	if cur.Breaker.RequestTimeout != config.Duration(45*time.Second) {
+		t.Errorf("after save: global request_timeout = %v, want 45s", cur.Breaker.RequestTimeout)
+	}
+	if cur.Sources[0].Breaker == nil || cur.Sources[0].Breaker.RequestTimeout != config.Duration(30*time.Second) {
+		t.Errorf("after save: per-source request_timeout = %+v, want 30s", cur.Sources[0].Breaker)
 	}
 }
 

@@ -2,11 +2,15 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1152,4 +1156,291 @@ func writeGoodSSE(w http.ResponseWriter) {
 		io.WriteString(w, "data: "+line+"\n\n")
 		f.Flush()
 	}
+}
+
+// --- 单笔总时长（breaker.request_timeout）场景 ------------------------------
+
+func timeoutConfig(requestTimeout time.Duration) *config.Config {
+	return &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:          config.Duration(5 * time.Second),
+			RequestTimeout:            config.Duration(requestTimeout),
+			DegradeThreshold:          5,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Minute),
+			CircuitRecoveryThreshold:  1,
+		},
+	}
+}
+
+// lockedBuf 是线程安全的日志捕获缓冲：请求 handler 与断言协程并发读写 slog
+// handler，直接使用 bytes.Buffer 会触发现测试的 race 检测。
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (w *lockedBuf) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedBuf) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
+}
+
+// hangingAnthropic 只建立 SSE 连接并保持打开，不产出任何事件，直到请求 ctx 取消。
+func hangingAnthropic(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("content-type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	w.(http.Flusher).Flush()
+	<-r.Context().Done()
+}
+
+// TestIntegrationPerAttemptTimeoutFailover 验证未出流单笔超时：约 400ms 挂起源
+// 失败，请求 failover 到备用源并正常完成，整体远短于首字节超时（5s）。
+func TestIntegrationPerAttemptTimeoutFailover(t *testing.T) {
+	hang := httptest.NewServer(http.HandlerFunc(hangingAnthropic))
+	defer hang.Close()
+	good, _ := mockBackend([]mockResp{{lines: textStreamLines()}})
+	defer good.Close()
+
+	cfg := timeoutConfig(400 * time.Millisecond)
+	cfg.Sources = []config.Source{
+		{Name: "hang", BaseURL: hang.URL},
+		{Name: "good", BaseURL: good.URL},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	start := time.Now()
+	events := postResponses(t, ts, textStreamBody)
+	elapsed := time.Since(start)
+	if elapsed >= 3*time.Second {
+		t.Fatalf("failover should happen at ~400ms, took %v", elapsed)
+	}
+	requireEvent(t, events, "response.completed")
+	requireNotEvent(t, events, "response.failed")
+}
+
+// TestIntegrationMidStreamTimeoutFailedTerminal 验证已出流单笔超时：客户端保留
+// 已收内容，流以 response.failed 收尾，源保持锁定不换源。
+func TestIntegrationMidStreamTimeoutFailedTerminal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m_t\",\"model\":\"claude\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	good, goodCalls := mockBackend([]mockResp{{lines: textStreamLines()}})
+	defer good.Close()
+
+	cfg := timeoutConfig(300 * time.Millisecond)
+	cfg.Sources = []config.Source{
+		{Name: "up", BaseURL: upstream.URL},
+		{Name: "good", BaseURL: good.URL},
+	}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	events := postResponses(t, ts, textStreamBody)
+	requireEvent(t, events, "response.output_text.delta")
+	requireEvent(t, events, "response.failed")
+	requireNotEvent(t, events, "response.completed")
+	if got := goodCalls.Load(); got != 0 {
+		t.Fatalf("mid-stream timeout must lock the source and never reach the second source, good calls = %d", got)
+	}
+	if got := events[len(events)-1].eventType; got != "response.failed" {
+		t.Fatalf("stream must end with response.failed, got %v", eventTypes(events))
+	}
+	failed := findEvent(t, events, "response.failed")
+	respObj, ok := failed.data["response"].(map[string]any)
+	if !ok || respObj["status"] != "failed" {
+		t.Fatalf("timeout terminal status = %v, want failed", respObj["status"])
+	}
+}
+
+// TestIntegrationResponsesTimeoutTerminalAppend 验证 r 透传路径：网关主动中止时
+// 由 server 兜底补发 response.failed 终态（不代改上游事件本身）。
+func TestIntegrationResponsesTimeoutTerminalAppend(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"object\":\"response\"}}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	cfg := timeoutConfig(300 * time.Millisecond)
+	cfg.Sources = []config.Source{{Name: "up", BaseURL: upstream.URL, BackendType: config.BackendOpenAIResponses}}
+	srv := New(cfg)
+	defer srv.Close()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	events := postResponses(t, ts, textStreamBody)
+	requireEvent(t, events, "response.created")
+	requireEvent(t, events, "response.failed")
+	requireNotEvent(t, events, "response.completed")
+	if got := events[len(events)-1].eventType; got != "response.failed" {
+		t.Fatalf("r path must end with appended failed terminal, got %v", eventTypes(events))
+	}
+}
+
+// TestTimeoutVsClientCancelLogDistinction 验证超时与客户端取消在结构化日志中
+// 可区分：超时带 reason=timeout，取消走既有 canceled 语义且不出现 reason=timeout。
+func TestTimeoutVsClientCancelLogDistinction(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		logs := &lockedBuf{}
+		oldLogger := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(oldLogger)
+
+		hang := httptest.NewServer(http.HandlerFunc(hangingAnthropic))
+		defer hang.Close()
+		cfg := timeoutConfig(300 * time.Millisecond)
+		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
+		srv := New(cfg)
+		defer srv.Close()
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+
+		postResponses(t, ts, textStreamBody)
+		if !strings.Contains(logs.String(), `"reason":"timeout"`) {
+			t.Fatalf("timeout log missing reason=timeout, logs:\n%s", logs.String())
+		}
+		if strings.Contains(logs.String(), "响应请求被客户端取消") {
+			t.Fatalf("timeout must not be logged as client cancel, logs:\n%s", logs.String())
+		}
+	})
+
+	t.Run("client cancel", func(t *testing.T) {
+		logs := &lockedBuf{}
+		oldLogger := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		defer slog.SetDefault(oldLogger)
+
+		hang := httptest.NewServer(http.HandlerFunc(hangingAnthropic))
+		defer hang.Close()
+		cfg := timeoutConfig(10 * time.Second)
+		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
+		srv := New(cfg)
+		defer srv.Close()
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(textStreamBody))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		reqCtx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(reqCtx)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			cancel()
+		}()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		// 等待日志落盘（最迟 2s）。
+		deadline := time.Now().Add(2 * time.Second)
+		for !strings.Contains(logs.String(), "响应请求被客户端取消") && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !strings.Contains(logs.String(), "响应请求被客户端取消") {
+			t.Fatalf("client cancel log missing, logs:\n%s", logs.String())
+		}
+		if strings.Contains(logs.String(), `"reason":"timeout"`) {
+			t.Fatalf("client cancel must not be logged as timeout, logs:\n%s", logs.String())
+		}
+	})
+}
+
+// TestTimeoutVsClientCancelMetricsDistinction 验证超时与取消在指标中的区分：
+// 超时 client 记录 failed/504，取消 canceled/499。
+func TestTimeoutVsClientCancelMetricsDistinction(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		hang := httptest.NewServer(http.HandlerFunc(hangingAnthropic))
+		defer hang.Close()
+		cfg := timeoutConfig(300 * time.Millisecond)
+		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
+		srv := New(cfg)
+		defer srv.Close()
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+
+		postResponses(t, ts, textStreamBody)
+		status, code := waitClientMetric(t, srv)
+		if status != "failed" || code != http.StatusGatewayTimeout {
+			t.Fatalf("timeout client metric = %s/%d, want failed/504", status, code)
+		}
+	})
+
+	t.Run("client cancel", func(t *testing.T) {
+		hang := httptest.NewServer(http.HandlerFunc(hangingAnthropic))
+		defer hang.Close()
+		cfg := timeoutConfig(10 * time.Second)
+		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
+		srv := New(cfg)
+		defer srv.Close()
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/responses", strings.NewReader(textStreamBody))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		reqCtx, cancel := context.WithCancel(req.Context())
+		req = req.WithContext(reqCtx)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			cancel()
+		}()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		status, code := waitClientMetric(t, srv)
+		if status != "canceled" || code != 499 {
+			t.Fatalf("cancel client metric = %s/%d, want canceled/499", status, code)
+		}
+	})
+}
+
+// waitClientMetric 轮询等待一条 KindClient 指标记录，返回其 status 与 code。
+func waitClientMetric(t *testing.T, srv *Server) (string, int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, rec := range srv.Metrics().Snapshot().Recent {
+			if rec.Kind == "client" {
+				return rec.Status, rec.Code
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("client metrics record not found")
+	return "", 0
 }

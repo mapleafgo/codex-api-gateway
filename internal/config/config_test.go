@@ -162,6 +162,9 @@ sources:
 	if cfg.Breaker.FirstByteTimeout != Duration(12*time.Second) {
 		t.Fatalf("default first_byte_timeout: got %v, want 12s", cfg.Breaker.FirstByteTimeout)
 	}
+	if cfg.Breaker.RequestTimeout != Duration(120*time.Second) {
+		t.Fatalf("default request_timeout: got %v, want 120s", cfg.Breaker.RequestTimeout)
+	}
 	if cfg.Breaker.CircuitInterval != Duration(30*time.Minute) {
 		t.Fatalf("default circuit_interval: got %v, want 30m", cfg.Breaker.CircuitInterval)
 	}
@@ -240,6 +243,49 @@ sources:
 	}
 	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
 		t.Fatalf("env cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
+	}
+}
+
+func TestBreakerRequestTimeoutEnvironmentOverride(t *testing.T) {
+	t.Setenv("CODEX_API_GATEWAY_BREAKER__REQUEST_TIMEOUT", "90s")
+	t.Setenv("CODEX_API_GATEWAY_SOURCES__0__BREAKER__REQUEST_TIMEOUT", "45s")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	_ = os.WriteFile(path, []byte(`
+sources:
+  - name: s1
+    base_url: http://upstream
+`), 0644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Breaker.RequestTimeout != Duration(90*time.Second) {
+		t.Fatalf("env global request_timeout: got %v, want 90s", cfg.Breaker.RequestTimeout)
+	}
+	if cfg.Sources[0].Breaker == nil || cfg.Sources[0].Breaker.RequestTimeout != Duration(45*time.Second) {
+		t.Fatalf("env per-source request_timeout: got %+v, want 45s", cfg.Sources[0].Breaker)
+	}
+}
+
+func TestBreakerRequestTimeoutRejectsNegative(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "global negative", body: "\nbreaker:\n  request_timeout: -1s\n"},
+		{name: "per-source negative", body: "\nsources:\n  - name: s1\n    base_url: http://upstream\n    breaker:\n      request_timeout: -5s\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			_ = os.WriteFile(path, []byte(tt.body), 0644)
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected negative request_timeout to fail validation")
+			}
+		})
 	}
 }
 
@@ -431,6 +477,7 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	c := &Config{
 		Breaker: BreakerCfg{
 			FirstByteTimeout:          Duration(12 * time.Second),
+			RequestTimeout:            Duration(120 * time.Second),
 			CircuitInterval:           Duration(60 * time.Second),
 			DegradeInterval:           Duration(30 * time.Second),
 			DegradeThreshold:          3,
@@ -442,11 +489,15 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	}
 	src := &Source{
 		Breaker: &BreakerCfg{
+			RequestTimeout:   Duration(45 * time.Second),
 			CircuitInterval:  Duration(10 * time.Second),
 			DegradeThreshold: 5,
 		},
 	}
 	merged := c.BreakerFor(src)
+	if merged.RequestTimeout != Duration(45*time.Second) {
+		t.Fatalf("per-source request_timeout not merged: got %v", merged.RequestTimeout)
+	}
 	// Overridden by per-source
 	if merged.CircuitInterval != Duration(10*time.Second) {
 		t.Fatalf("per-source circuit_interval not merged: got %v", merged.CircuitInterval)
@@ -461,6 +512,9 @@ func TestBreakerForMergesPerSource(t *testing.T) {
 	// Inherited from global (per-source zero = inherit)
 	if merged.FirstByteTimeout != Duration(12*time.Second) {
 		t.Fatalf("global first_byte_timeout not inherited: got %v", merged.FirstByteTimeout)
+	}
+	if got := c.BreakerFor(&Source{Name: "no-override"}).RequestTimeout; got != Duration(120*time.Second) {
+		t.Fatalf("request_timeout should inherit global: got %v", got)
 	}
 	if merged.DegradedRecoveryThreshold != 1 {
 		t.Fatalf("global degraded_recovery_threshold not inherited: got %d", merged.DegradedRecoveryThreshold)

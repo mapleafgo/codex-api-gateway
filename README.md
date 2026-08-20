@@ -297,6 +297,7 @@ sources:
 ```yaml
 breaker:
   first_byte_timeout: 12s
+  request_timeout: 120s
   degrade_threshold: 3
   degrade_interval: 1m
   degraded_recovery_threshold: 1
@@ -311,6 +312,7 @@ breaker:
 | 参数 | 含义 |
 | --- | --- |
 | `first_byte_timeout` | 等待上游首个流式事件的最长时间，超时计为失败 |
+| `request_timeout` | 单个源单笔上游调用的总时长上限（默认 120s，0 或缺省走默认，负值拒绝）。与首字节超时不同：不被首个事件停止，到点即终止该笔调用并返回 failed 终态/504；未出内容时该源按失败计熔断并允许换源，已出内容时源锁定、流以 failed 收尾不换源 |
 | `degrade_threshold` | 连续失败达阈值后降级，再达阈值后熔断 |
 | `degrade_interval` | 降级源超过此间隔无新失败后恢复到原始优先级位置进入机会窗口（状态仍保持 `degraded`；机会内失败重新排到队尾，连续 N 次机会失败后熔断） |
 | `degraded_recovery_threshold` | `degraded` 恢复到 `normal` 所需的连续成功次数（降级恢复阈值） |
@@ -318,6 +320,8 @@ breaker:
 | `circuit_recovery_threshold` | `halfOpen` 恢复到 `normal`/`degraded` 所需的连续探测成功次数（熔断恢复阈值） |
 | `recovery` | 半开探测成功后恢复到 `normal` 或 `degraded` |
 | `max_retries` | 所有源全部失败后的整轮重试次数（0=不重试；仅全局，单源不覆盖） |
+
+`request_timeout` 支持单源覆盖，零值继承全局：
 
 单源可覆盖部分断路器参数，零值字段继承全局：
 
@@ -327,6 +331,7 @@ sources:
     base_url: https://open.bigmodel.cn/api/anthropic
     breaker:
       first_byte_timeout: 8s
+      request_timeout: 90s
       circuit_interval: 10s
 ```
 

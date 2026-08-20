@@ -139,6 +139,12 @@ func classifyOutcome(ctx context.Context, in outcomeInput) (status string, code 
 		}
 		status = "failed"
 		code = in.noEventsCode
+		if IsServerTimeout(ctx, scanErr) {
+			// 未锁定时的单笔超时：同样是网关侧终止，统一 504 归因。
+			code = 504
+			errText = fmt.Sprintf("upstream request timeout: %v", scanErr)
+			return
+		}
 		if sc := StatusCodeFromErr(scanErr); sc != 0 {
 			code = sc
 		}
@@ -146,6 +152,13 @@ func classifyOutcome(ctx context.Context, in outcomeInput) (status string, code 
 		return
 	}
 	if scanErr == nil {
+		return
+	}
+	if IsServerTimeout(ctx, scanErr) {
+		// 单笔总时长到点：网关侧终止，终态 failed + 504，与客户端取消分道。
+		status = "failed"
+		code = 504
+		errText = fmt.Sprintf("upstream request timeout: %v", scanErr)
 		return
 	}
 	if IsClientCanceled(ctx, scanErr) {
@@ -170,6 +183,10 @@ func IsClientCanceled(ctx context.Context, err error) bool {
 		return false
 	}
 	if ctx.Err() == nil {
+		return false
+	}
+	if errors.Is(context.Cause(ctx), ErrUpstreamTimeout) {
+		// 网关侧单笔总时长超时不是客户端断开，不得归类为 canceled。
 		return false
 	}
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ctx.Err())
@@ -225,6 +242,21 @@ func IsClientError(err error) bool {
 // ErrEmptyResponse 表示上游返回了数据（已过首字节）但未产出任何内容事件。
 // 网关不得向客户端发出合成终态，scheduler 可自然 failover 到下一个源。
 var ErrEmptyResponse = errors.New("upstream returned empty response (no content events)")
+
+// ErrUpstreamTimeout 表示网关侧单笔源请求总时长到点（breaker.request_timeout）。
+// 由 scheduler 通过 context.WithTimeoutCause 注入 cause，各层据此把该结束归因为
+// 网关侧超时而非客户端取消；scheduler 返回时会把该哨兵包进 error，供 server 区分。
+var ErrUpstreamTimeout = errors.New("upstream request timeout (per-attempt)")
+
+// IsServerTimeout 判断 err 是否由网关侧单笔总时长超时引起。
+// 仅当 attempt context 的 deadline 自身到点（cause 为 ErrUpstreamTimeout）时返回
+// true；首字节超时通过父 ctx 主动 cancel 触发，不会设置该 cause。
+func IsServerTimeout(ctx context.Context, err error) bool {
+	if ctx == nil || err == nil {
+		return false
+	}
+	return errors.Is(context.Cause(ctx), ErrUpstreamTimeout) || errors.Is(err, ErrUpstreamTimeout)
+}
 
 // maxBufferedEvents 限制首个内容事件前缓冲的非内容事件数量，防止异常上游无界增长。
 const maxBufferedEvents = 64

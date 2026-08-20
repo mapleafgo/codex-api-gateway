@@ -20,6 +20,20 @@ import (
 // ErrAllSourcesFailed is returned when no source could serve the request.
 var ErrAllSourcesFailed = errors.New("all upstream sources failed")
 
+// withLastError 保留「ErrAllSourcesFailed (last: X)」的既有文案，同时把 lastErr
+// 挂进 Unwrap 链：%v 会断开 errors.Is 链，网关侧超时哨兵（ErrUpstreamTimeout）
+// 就无法透传到 server 层做区分。
+type withLastError struct {
+	outer error
+	inner error
+}
+
+func (e withLastError) Error() string {
+	return fmt.Sprintf("%v (last: %v)", e.outer, e.inner)
+}
+
+func (e withLastError) Unwrap() []error { return []error{e.outer, e.inner} }
+
 // defaultBackoff is the fixed wait between whole-round retries after all
 // sources fail in a round. Not configurable; tests may override Scheduler.backoff.
 const defaultBackoff = 10 * time.Second
@@ -479,7 +493,7 @@ func (s *Scheduler) ExecuteGeneric(
 	}
 	if lastErr != nil {
 		log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_source", lastSource, "last_error", lastErr)
-		return lastSource, fmt.Errorf("%w (last: %v)", ErrAllSourcesFailed, lastErr)
+		return lastSource, withLastError{outer: ErrAllSourcesFailed, inner: lastErr}
 	}
 	log.Error("全部上游源均失败，无可用源", "elapsed", time.Since(start).String(), "last_source", lastSource)
 	return lastSource, ErrAllSourcesFailed
@@ -591,9 +605,21 @@ func (s *Scheduler) trySourceGeneric(
 	timer := time.AfterFunc(timeout, cancel)
 	defer timer.Stop()
 
+	// 单笔总时长（breaker.request_timeout）：与首字节超时不同，不被首个事件停止。
+	// 到点后 cause 置为 ErrUpstreamTimeout，各层据此归因为网关侧超时而非客户端取消。
+	requestTimeout := time.Duration(s.holder.Current().BreakerFor(src).RequestTimeout)
+	var attemptCtx context.Context
+	if requestTimeout > 0 {
+		var totalCancel context.CancelFunc
+		attemptCtx, totalCancel = context.WithTimeoutCause(fbCtx, requestTimeout, backend.ErrUpstreamTimeout)
+		defer totalCancel()
+	} else {
+		attemptCtx = fbCtx
+	}
+
 	bt, _ := config.NormalizeBackendType(src.BackendType)
 	log := logging.FromContext(ctx).With("source", src.Name, "backend_type", bt, "attempt", attemptNo)
-	log.Info("尝试上游源", "endpoint", src.BaseURL)
+	log.Info("尝试上游源", "endpoint", src.BaseURL, "request_timeout", requestTimeout.String())
 
 	locked := false
 	// a/c 后端统一由 EventGate 兜底空响应：缓冲状态/终态事件，仅首个内容事件锁定源。
@@ -627,7 +653,10 @@ func (s *Scheduler) trySourceGeneric(
 		return onEvent(ev)
 	}
 	// UpstreamEvent 是 backend.UpstreamEvent 的别名，回调直接透传（nil 时不上报）。
-	err := s.backendFor(src).Execute(fbCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
+	err := s.backendFor(src).Execute(attemptCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
+	if backend.IsServerTimeout(attemptCtx, err) && !errors.Is(err, backend.ErrUpstreamTimeout) {
+		err = fmt.Errorf("%w: %v", backend.ErrUpstreamTimeout, err)
+	}
 	if !locked {
 		if gate != nil && gate.SawTerminalFailure() {
 			// 已把错误/截断终态透传给客户端；无论 Backend 是否附带返回 error，
@@ -648,6 +677,9 @@ func (s *Scheduler) trySourceGeneric(
 		oldState, newState := bk.RecordFailure()
 		s.adjustOrder(src.Name, oldState, newState)
 		attrs := []any{"old_state", oldState, "new_state", newState, "error", err}
+		if backend.IsServerTimeout(attemptCtx, err) {
+			attrs = append(attrs, "reason", "timeout")
+		}
 		if backend.IsClientError(err) {
 			// 4xx 同样计为失败（降级/机会失败）；整轮不重试由
 			// ExecuteGeneric 的 firstClientErr 提前返回保证。

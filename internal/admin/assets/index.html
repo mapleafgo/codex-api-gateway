@@ -1115,6 +1115,11 @@ html[data-theme="dark"] .ui-select {
                     <input type="checkbox" x-model="src.supports_web_search">
                     <span class="ui-label" style="margin:0" x-text="t('supportsWebSearch')"></span>
                   </label>
+                  <label class="ui-field ui-span-2">
+                    <span class="ui-label" x-text="t('reqTimeout')"></span>
+                    <input class="ui-input ui-input-sm mono" x-model="src.breaker.request_timeout" autocomplete="off" spellcheck="false" :placeholder="t('reqTimeoutHint')">
+                    <span class="ui-hint" x-text="t('reqTimeoutHint')"></span>
+                  </label>
                 </div>
                 <fieldset class="ui-fieldset">
                   <legend x-text="t('modelMap')"></legend>
@@ -1352,6 +1357,11 @@ html[data-theme="dark"] .ui-select {
                 <span class="ui-label" x-text="t('fbt')"></span>
                 <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.first_byte_timeout" autocomplete="off" spellcheck="false">
                 <span class="ui-hint" x-text="t('fbtHint')"></span>
+              </label>
+              <label class="ui-field">
+                <span class="ui-label" x-text="t('reqTimeout')"></span>
+                <input class="ui-input ui-input-sm mono" x-model="cfg.breaker.request_timeout" autocomplete="off" spellcheck="false">
+                <span class="ui-hint" x-text="t('reqTimeoutHint')"></span>
               </label>
               <label class="ui-field">
                 <span class="ui-label" x-text="t('degradeThreshold')"></span>
@@ -1634,11 +1644,13 @@ function app() {
       healthHintHalfOpen: '冷却结束，正在放行探测请求',
       healthHintDisabled: '已人工停用，不参与调度',
       fbt: '首字节超时', circuitInterval: '熔断探测间隔', degradeInterval: '降级恢复间隔',
+      reqTimeout: '单笔请求超时',
       degradeThreshold: '降级阈值',
       degradedRecoveryThreshold: '降级恢复阈值', circuitRecoveryThreshold: '熔断恢复阈值',
       maxRetries: '全失败重试', recovery: '恢复策略',
       recoveryNormal: '正常（恢复全部能力）', recoveryDegraded: '降级（保持低流量）',
       fbtHint: '上游响应首字节超时时间', circuitIntervalHint: '熔断后转为半开探测的等待时间',
+      reqTimeoutHint: '单个源单笔上游调用的总时长上限，0 或缺省为 120s，负值拒绝',
       degradeIntervalHint: '降级后恢复原始优先级（状态仍降级）的等待时间',
       degradeThresholdHint: '连续失败触发降级；机会窗口内再失败升级为熔断', degradedRecoveryThresholdHint: '降级恢复到正常所需的连续成功次数',
       circuitRecoveryThresholdHint: '熔断恢复所需的连续探测成功次数', maxRetriesHint: '所有源全失败后的整轮重试次数（0=不重试）',
@@ -1704,12 +1716,14 @@ function app() {
       healthHintHalfOpen: 'Circuit interval elapsed; probe requests allowed',
       healthHintDisabled: 'Manually disabled; excluded from scheduling',
       fbt: 'First byte timeout', circuitInterval: 'Circuit probe interval',
+      reqTimeout: 'Request timeout',
       degradeInterval: 'Degrade recovery interval',
       degradeThreshold: 'Degrade threshold',
       degradedRecoveryThreshold: 'Degrade recover', circuitRecoveryThreshold: 'Circuit recover',
       maxRetries: 'All-fail retry', recovery: 'Recovery',
       recoveryNormal: 'Normal (full recovery)', recoveryDegraded: 'Degraded (low traffic)',
       fbtHint: 'Upstream first byte timeout', circuitIntervalHint: 'Wait before circuit→half-open probe',
+      reqTimeoutHint: 'Per-attempt upstream timeout; 0 or missing defaults to 120s, negative rejected',
       degradeIntervalHint: 'Wait before degraded source regains its priority slot (state stays degraded)',
       degradeThresholdHint: 'Consecutive failures degrade the source; further chance failures trip the circuit', degradedRecoveryThresholdHint: 'Consecutive successes for degraded to normal',
       circuitRecoveryThresholdHint: 'Consecutive probe successes for circuit recovery', maxRetriesHint: 'Whole-round retries after all sources fail (0=none)',
@@ -2020,6 +2034,7 @@ function app() {
         });
         (data.sources || []).forEach(s => {
           if (!s.backend_type) s.backend_type = 'a';
+          if (!s.breaker) s.breaker = {};
           // 未配置时按 backend_type 默认：仅 Chat(c) 默认不支持，a/r 均默认支持
           if (s.supports_web_search == null) s.supports_web_search = (s.backend_type || 'a') !== 'c';
           if (!s._id) s._id = 'src_' + Math.random().toString(36).slice(2, 10);

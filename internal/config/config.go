@@ -106,6 +106,10 @@ func (a AnthropicCfg) CacheEnabledValue() bool {
 // BreakerCfg configures upstream failover and circuit breaking.
 type BreakerCfg struct {
 	FirstByteTimeout Duration `koanf:"first_byte_timeout" yaml:"first_byte_timeout,omitempty"`
+	// RequestTimeout 是单个源单笔上游调用的总时长上限；0 表示使用全局默认
+	// （120s）。与 FirstByteTimeout 不同：总时长不被首个事件停止，到点即终止
+	// 该笔调用并按失败处理（未出内容时允许 failover）。
+	RequestTimeout   Duration `koanf:"request_timeout" yaml:"request_timeout,omitempty"`
 	DegradeThreshold int      `koanf:"degrade_threshold" yaml:"degrade_threshold,omitempty"`
 	DegradeInterval  Duration `koanf:"degrade_interval" yaml:"degrade_interval,omitempty"`
 	// DegradedRecoveryThreshold 是降级恢复阈值：degraded 恢复到 normal 所需的连续成功次数。
@@ -437,6 +441,7 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.max_backups", &cfg.Logging.MaxBackups},
 		{"anthropic.default_max_tokens", &cfg.Anthropic.DefaultMaxTokens},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
+		{"breaker.request_timeout", &cfg.Breaker.RequestTimeout},
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
 		{"breaker.degrade_interval", &cfg.Breaker.DegradeInterval},
 		{"breaker.degrade_threshold", &cfg.Breaker.DegradeThreshold},
@@ -482,7 +487,7 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 	}
 	breakerPrefix := prefix + ".breaker"
 	if !hasAnyEnv(k, breakerPrefix,
-		"first_byte_timeout", "circuit_interval", "degrade_interval",
+		"first_byte_timeout", "request_timeout", "circuit_interval", "degrade_interval",
 		"degrade_threshold", "degraded_recovery_threshold",
 		"circuit_recovery_threshold", "recovery") {
 		return nil
@@ -495,6 +500,7 @@ func applySourceEnvOverrides(src *Source, k *koanf.Koanf, prefix string) error {
 		target any
 	}{
 		{breakerPrefix + ".first_byte_timeout", &src.Breaker.FirstByteTimeout},
+		{breakerPrefix + ".request_timeout", &src.Breaker.RequestTimeout},
 		{breakerPrefix + ".circuit_interval", &src.Breaker.CircuitInterval},
 		{breakerPrefix + ".degrade_interval", &src.Breaker.DegradeInterval},
 		{breakerPrefix + ".degrade_threshold", &src.Breaker.DegradeThreshold},
@@ -574,6 +580,7 @@ func (c *Config) validate() error {
 	}
 	def := BreakerCfg{
 		FirstByteTimeout:          Duration(12 * time.Second),
+		RequestTimeout:            Duration(120 * time.Second),
 		DegradeThreshold:          3,
 		DegradeInterval:           Duration(1 * time.Minute),
 		DegradedRecoveryThreshold: 1,
@@ -637,6 +644,7 @@ func validateBreakerNonNegative(scope string, b *BreakerCfg) error {
 		v    int64
 	}{
 		{"first_byte_timeout", int64(b.FirstByteTimeout)},
+		{"request_timeout", int64(b.RequestTimeout)},
 		{"circuit_interval", int64(b.CircuitInterval)},
 		{"degrade_interval", int64(b.DegradeInterval)},
 		{"degrade_threshold", int64(b.DegradeThreshold)},
@@ -656,6 +664,9 @@ func validateBreakerNonNegative(scope string, b *BreakerCfg) error {
 func applyDefaults(b, def BreakerCfg) BreakerCfg {
 	if b.FirstByteTimeout == 0 {
 		b.FirstByteTimeout = def.FirstByteTimeout
+	}
+	if b.RequestTimeout == 0 {
+		b.RequestTimeout = def.RequestTimeout
 	}
 	if b.CircuitInterval == 0 {
 		b.CircuitInterval = def.CircuitInterval
@@ -703,6 +714,9 @@ func (c *Config) BreakerFor(s *Source) BreakerCfg {
 	m := *s.Breaker
 	if m.FirstByteTimeout != 0 {
 		merged.FirstByteTimeout = m.FirstByteTimeout
+	}
+	if m.RequestTimeout != 0 {
+		merged.RequestTimeout = m.RequestTimeout
 	}
 	if m.CircuitInterval != 0 {
 		merged.CircuitInterval = m.CircuitInterval

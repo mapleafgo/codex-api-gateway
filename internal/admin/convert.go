@@ -72,6 +72,7 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 func breakerViewToCfg(b breakerView) config.BreakerCfg {
 	return config.BreakerCfg{
 		FirstByteTimeout:          config.Duration(parseDur(b.FirstByteTimeout, 12*time.Second)),
+		RequestTimeout:            config.Duration(parseDur(b.RequestTimeout, 120*time.Second)),
 		DegradeThreshold:          b.DegradeThreshold,
 		DegradeInterval:           config.Duration(parseDur(b.DegradeInterval, 1*time.Minute)),
 		DegradedRecoveryThreshold: b.DegradedRecoveryThreshold,
