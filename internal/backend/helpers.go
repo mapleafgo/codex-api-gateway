@@ -226,6 +226,40 @@ func StatusCodeFromErr(err error) int {
 	return 0
 }
 
+// contextOverflowMarkers 是上下文超限的错误文本特征，覆盖 OpenAI 错误码、
+// Chat 兼容端点与 Anthropic（流内 stop_reason 或 HTTP 400 prompt is too long）
+// 的常见报错形态。文本统一小写后子串匹配。
+var contextOverflowMarkers = []string{
+	"context_length_exceeded",
+	"context length",
+	"context window exceeded",
+	"exceeds the context window",
+	"maximum context window",
+	"max context window",
+	"model_context_window_exceeded",
+	"longer than the model's context",
+	"input is longer than",
+	"prompt is too long",
+}
+
+// ContextLengthExceededCode 判定错误是否属于上下文超限，命中则返回 Codex 可识别
+// 的错误码（context_length_exceeded），否则返回空。超限可能以 400/422 或
+// 流内错误事件返回，因此不依赖 HTTP 状态码，只按错误文本特征判定（OpenAI
+// 错误码、Chat/Anthropic 常见报错形态）；Codex 客户端只认 response.failed 里的
+// 该错误码，命中后在下一轮采样前触发会话自动压缩。
+func ContextLengthExceededCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range contextOverflowMarkers {
+		if strings.Contains(text, marker) {
+			return model.ErrorCodeContextLengthExceeded
+		}
+	}
+	return ""
+}
+
 // IsClientError reports whether err represents an HTTP 4xx client error
 // that indicates the request itself is invalid (no point retrying elsewhere).
 // 429/408 被排除：它们是传输可用性信号（限流/超时），必须走正常降级与

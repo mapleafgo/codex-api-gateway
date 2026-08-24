@@ -1092,6 +1092,12 @@ func firstNonEmpty(vals ...string) string {
 
 // Fail 标记失败并产出 response.failed 事件（流中断时由 Backend 调用）。
 func (c *Converter) Fail(msg string) []model.SSEEvent {
+	return c.FailWithCode(msg, "")
+}
+
+// FailWithCode 与 Fail 等价；code 非空时写入 response.failed 的 error.code，
+// 供 Codex 识别上下文超限（context_length_exceeded）并在下一轮自动压缩。
+func (c *Converter) FailWithCode(msg, code string) []model.SSEEvent {
 	if c.completed {
 		return nil
 	}
@@ -1103,6 +1109,9 @@ func (c *Converter) Fail(msg string) []model.SSEEvent {
 	c.completed = true
 	resp := model.NewResponseObject(c.respID, model.ResponseStatusFailed, c.model, c.createdAt, c.echo)
 	resp.Error = &model.ResponseError{Message: msg}
+	if code != "" {
+		resp.Error.Code = code
+	}
 	return []model.SSEEvent{
 		model.MarshalEvent(evResponseFailed, model.TerminalResponseEvent{
 			Type: evResponseFailed, SequenceNumber: c.nextSeq(), Response: resp,

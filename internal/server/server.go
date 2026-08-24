@@ -468,7 +468,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	writeFailedTerminal := func() {
 		errResp := model.NewResponseObject(respID, model.ResponseStatusFailed, string(req.Model), time.Now().Unix(), echoFromRequest(req))
 		errResp.Output = []model.OutputItem{}
-		errResp.Error = &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
+		errResp.Error = failedResponseError(execErr)
 		evType := string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
 		if err := writeSSE(w, model.MarshalEvent(evType, model.TerminalResponseEvent{
 			Type: evType, SequenceNumber: 1, Response: errResp,
@@ -993,4 +993,14 @@ func clientFailCode(err error) int {
 		return sc
 	}
 	return 500
+}
+
+// failedResponseError 构造 failed 终态的错误对象：保留上游原始诊断信息，上下文
+// 超限时补上 Codex 可识别的 error.code，触发其下一轮会话自动压缩。
+func failedResponseError(execErr error) *model.ResponseError {
+	e := &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
+	if code := backend.ContextLengthExceededCode(execErr); code != "" {
+		e.Code = code
+	}
+	return e
 }

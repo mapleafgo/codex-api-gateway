@@ -121,7 +121,7 @@ func (b *ChatBackend) Execute(
 				}
 			}
 		} else if !conv.Done() {
-			for _, e := range conv.Fail(scanErr.Error()) {
+			for _, e := range conv.FailWithCode(scanErr.Error(), ContextLengthExceededCode(scanErr)) {
 				_ = onEvent(e)
 			}
 		}
