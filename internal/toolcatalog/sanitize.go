@@ -24,6 +24,16 @@ func SanitizeClientToolInput(toolName string, freeform bool, raw string) string 
 	return SanitizeJSONIntegerNumbers(raw)
 }
 
+// NormalizeToolArgs 强校验工具参数必须是合法 JSON：空串或非法 JSON 统一降级
+// 为空对象，合法 JSON 原样返回。放在数据定型处调用，保证进入客户端会话
+// 历史的参数合法，避免截断/畸形参数回灌时被严格上游直接 400。
+func NormalizeToolArgs(raw string) string {
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return "{}"
+	}
+	return raw
+}
+
 func sanitizeFreeformInput(toolName, raw string) string {
 	if toolName == "apply_patch" {
 		return sanitizeApplyPatchFreeform(raw)

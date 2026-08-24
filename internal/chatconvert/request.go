@@ -1312,12 +1312,11 @@ func freeformArgsJSON(input string) string {
 	return string(b)
 }
 
-// chatFunctionArguments 仅为空参数补充 Chat 所需的空对象；非空参数保持上游原始语义。
+// chatFunctionArguments 与产生侧（chatstreamconv.finalizedToolArgs）共用同一
+// 归一化出口：空串或非法 JSON 降级为空对象，合法 JSON 保持原样，回灌时严格
+// 上游（如微信 Chat 网关）不会再因 arguments 非法而 400。
 func chatFunctionArguments(s string) string {
-	if s == "" {
-		return "{}"
-	}
-	return s
+	return toolcatalog.NormalizeToolArgs(s)
 }
 
 // chatToolCall 构造一条 Chat function tool_call，arguments 保证是合法 JSON 字符串，

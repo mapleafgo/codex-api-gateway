@@ -95,3 +95,24 @@ func TestSanitizeMultiKeyObjectPreserved(t *testing.T) {
 		t.Fatalf("multi-key object must be preserved, got %q", got)
 	}
 }
+
+func TestNormalizeToolArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty", "", "{}"},
+		{"non JSON", "not-json", "{}"},
+		{"truncated json", `{"city":`, "{}"},
+		{"truncated exec_command", `{"cmd":"sed -n '1,380p' x.md","yield_time_ms":10000`, "{}"},
+		{"valid object", `{"city":"x"}`, `{"city":"x"}`},
+		{"whitespace padded valid", `  {"city":"x"}  `, `  {"city":"x"}  `},
+		{"null literal", "null", "null"},
+	}
+	for _, tc := range cases {
+		if got := NormalizeToolArgs(tc.raw); got != tc.want {
+			t.Fatalf("%s: NormalizeToolArgs(%q)=%q want %q", tc.name, tc.raw, got, tc.want)
+		}
+	}
+}

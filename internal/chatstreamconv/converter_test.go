@@ -187,6 +187,38 @@ func TestToolCallStream(t *testing.T) {
 	}
 }
 
+// TestToolCallTruncatedArgumentsNormalized 锁定产生侧强校验：上游流式返回的
+// 工具参数若不完整/非法 JSON，定型为客户端历史时必须降级为空对象，避免
+// 截断参数进入会话历史后回灌被严格上游（如 chatapi.weixin.qq.com）400。
+func TestToolCallTruncatedArgumentsNormalized(t *testing.T) {
+	c := New()
+	c.SetClientModel("m")
+	chunks := []string{
+		`{"id":"c1","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exec_command","arguments":""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":\"echo hi\""}}]}}]}`,
+		`{"id":"c1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, ch := range chunks {
+		if _, err := c.Feed([]byte(ch)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.FeedDone()
+	for _, it := range c.OutputItems() {
+		if it.Type != "function_call" {
+			continue
+		}
+		if it.Name != "exec_command" {
+			t.Fatalf("name=%q", it.Name)
+		}
+		if it.Arguments != `{}` {
+			t.Fatalf("truncated arguments must be normalized to empty object, got %q", it.Arguments)
+		}
+		return
+	}
+	t.Fatalf("no function_call item in %+v", c.OutputItems())
+}
+
 func TestShellCallItemStream(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")

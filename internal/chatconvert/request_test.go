@@ -1818,7 +1818,7 @@ func TestToChat_EmptyAssistantOutputSkipped(t *testing.T) {
 	}
 }
 
-func TestChatFunctionArgumentsNonJSONPassthrough(t *testing.T) {
+func TestChatFunctionArgumentsNonJSONFallsBackToEmptyObject(t *testing.T) {
 	out := mustChat(t, `{
 		"model":"gpt-5",
 		"input":[
@@ -1833,8 +1833,8 @@ func TestChatFunctionArgumentsNonJSONPassthrough(t *testing.T) {
 				continue
 			}
 			found = true
-			if tc.Function.Arguments != "not-json" {
-				t.Fatalf("want original arguments, got %q", tc.Function.Arguments)
+			if tc.Function.Arguments != "{}" {
+				t.Fatalf("want empty object for invalid JSON arguments, got %q", tc.Function.Arguments)
 			}
 		}
 	}
@@ -1850,10 +1850,20 @@ func TestChatFunctionArgumentsPreservesWhitespace(t *testing.T) {
 	}
 }
 
-func TestChatFunctionArgumentsTruncatedJSONPassthrough(t *testing.T) {
+func TestChatFunctionArgumentsTruncatedJSONFallsBackToEmptyObject(t *testing.T) {
 	const arguments = `{"city":`
-	if got := chatFunctionArguments(arguments); got != arguments {
-		t.Fatalf("arguments=%q want %q", got, arguments)
+	if got := chatFunctionArguments(arguments); got != `{}` {
+		t.Fatalf("arguments=%q want empty object for truncated JSON", got)
+	}
+}
+
+func TestChatFunctionArgumentsTruncatedExecCommandFallsBackToEmptyObject(t *testing.T) {
+	// 现场复现：会话历史里 exec_command 参数结尾丢了 `}`，导致严格上游
+	// （chatapi.weixin.qq.com）以 "Assistant tool call function.arguments must
+	// be valid JSON." 返回 400。
+	const arguments = `{"cmd":"sed -n '1,380p' docs/design/04-arch.md","max_output_tokens":40000,"workdir":"/home/user/project","yield_time_ms":10000`
+	if got := chatFunctionArguments(arguments); got != `{}` {
+		t.Fatalf("arguments=%q want empty object for truncated exec_command JSON", got)
 	}
 }
 

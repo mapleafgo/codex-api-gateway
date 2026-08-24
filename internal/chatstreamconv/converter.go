@@ -829,6 +829,21 @@ func (c *Converter) closeOpenItems() []model.SSEEvent {
 	return out
 }
 
+// finalizedToolArgs 定型返回客户端的工具参数：先做可逆的 number 修正，再强
+// 校验必须是合法 JSON；空串合法化为空对象（常规），非空非法 JSON 降级为空
+// 对象并 WARN，保证进入客户端会话历史的参数合法，避免回灌被严格上游 400。
+func (c *Converter) finalizedToolArgs(name, rawArgs string) string {
+	args := toolcatalog.SanitizeClientToolInput(name, false, rawArgs)
+	normalized := toolcatalog.NormalizeToolArgs(args)
+	if args != "" && normalized != args {
+		c.log.Warn("chatstreamconv: 工具参数非法 JSON，已降级为空对象",
+			"tool", name,
+			"response_id", c.respID,
+			"impact", "对应函数调用参数数据被丢弃")
+	}
+	return normalized
+}
+
 func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 	rawArgs := acc.args.String()
 	var out []model.SSEEvent
@@ -869,7 +884,7 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 			OutputIndex: acc.outIdx, Item: item,
 		}))
 	case kindToolSearch:
-		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
+		args := c.finalizedToolArgs(acc.name, rawArgs)
 		item := model.OutputItem{
 			Type:      model.ItemTypeToolSearchCall,
 			ID:        acc.itemID,
@@ -908,7 +923,7 @@ func (c *Converter) closeTool(acc *toolAccum) []model.SSEEvent {
 			}),
 		)
 	default:
-		args := toolcatalog.SanitizeClientToolInput(acc.name, false, rawArgs)
+		args := c.finalizedToolArgs(acc.name, rawArgs)
 		ns, name := c.resolveToolName(acc.name)
 		item := model.OutputItem{
 			Type:      model.ItemTypeFunctionCall,
