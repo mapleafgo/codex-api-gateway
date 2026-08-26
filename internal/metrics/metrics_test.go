@@ -93,7 +93,7 @@ func TestCollectorCacheHitRateUsesBackendTokenSemantics(t *testing.T) {
 		{
 			name: "anthropic_input_excludes_cache_tokens",
 			events: []RequestEvent{{
-				Kind: KindUpstream, BackendType: "a",
+				Kind: KindUpstream, Backend: "anthropic",
 				InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
 			}},
 			want: 1000.0 / 1250.0,
@@ -101,7 +101,7 @@ func TestCollectorCacheHitRateUsesBackendTokenSemantics(t *testing.T) {
 		{
 			name: "chat_input_includes_cache_tokens",
 			events: []RequestEvent{{
-				Kind: KindUpstream, BackendType: "c",
+				Kind: KindUpstream, Backend: "openai-chat",
 				InputTokens: 1000, CacheRead: 800,
 			}},
 			want: 800.0 / 1000.0,
@@ -109,7 +109,7 @@ func TestCollectorCacheHitRateUsesBackendTokenSemantics(t *testing.T) {
 		{
 			name: "responses_input_includes_cache_tokens",
 			events: []RequestEvent{{
-				Kind: KindUpstream, BackendType: "r",
+				Kind: KindUpstream, Backend: "openai-responses",
 				InputTokens: 1000, CacheRead: 800, CacheCreate: 200,
 			}},
 			want: 800.0 / 1000.0,
@@ -118,11 +118,11 @@ func TestCollectorCacheHitRateUsesBackendTokenSemantics(t *testing.T) {
 			name: "mixed_backends_use_normalized_denominator",
 			events: []RequestEvent{
 				{
-					Kind: KindUpstream, BackendType: "a",
+					Kind: KindUpstream, Backend: "anthropic",
 					InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
 				},
 				{
-					Kind: KindUpstream, BackendType: "c",
+					Kind: KindUpstream, Backend: "openai-chat",
 					InputTokens: 1000, CacheRead: 800,
 				},
 			},
@@ -160,9 +160,9 @@ func TestCollectorNormalizesInputTokens(t *testing.T) {
 		backendType string
 		want        int64
 	}{
-		{name: "anthropic", backendType: "a", want: 1250},
-		{name: "chat", backendType: "c", want: 1000},
-		{name: "responses", backendType: "r", want: 1000},
+		{name: "anthropic", backendType: "anthropic", want: 1250},
+		{name: "chat", backendType: "openai-chat", want: 1000},
+		{name: "responses", backendType: "openai-responses", want: 1000},
 	}
 
 	for _, tt := range tests {
@@ -170,7 +170,7 @@ func TestCollectorNormalizesInputTokens(t *testing.T) {
 			c := New()
 			defer c.Stop()
 			c.Record(RequestEvent{
-				Kind: KindUpstream, BackendType: tt.backendType,
+				Kind: KindUpstream, Backend: tt.backendType,
 				SourceName: "source", Model: "model",
 				InputTokens: 1000, CacheRead: 200, CacheCreate: 50,
 			})
@@ -201,7 +201,7 @@ func TestCollectorNormalizesClientHistoryInput(t *testing.T) {
 	c := New()
 	defer c.Stop()
 	c.Record(RequestEvent{
-		Kind: KindClient, BackendType: "a",
+		Kind: KindClient, Backend: "anthropic",
 		InputTokens: 50, CacheRead: 1000, CacheCreate: 200,
 	})
 

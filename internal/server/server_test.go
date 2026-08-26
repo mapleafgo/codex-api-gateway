@@ -1457,17 +1457,11 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 					if record["source"] != tt.sourceName {
 						t.Fatalf("message %q missing source: %s", message, line)
 					}
-					// scheduler 日志仍用 backend_type（单字符短码）；后端日志已迁移到
-					// backend（全字符串插件 ID）。按消息来源分别校验对应字段。
-					if message == "尝试上游源" {
-						if record["backend_type"] != tt.backendType {
-							t.Fatalf("message %q backend_type=%v want %q: %s", message, record["backend_type"], tt.backendType, line)
-						}
-					} else {
-						wantPluginID := pluginIDForBackend(tt.backendType)
-						if record["backend"] != wantPluginID {
-							t.Fatalf("message %q backend=%v want %q: %s", message, record["backend"], wantPluginID, line)
-						}
+					// 所有层级日志统一用稳定 backend 插件 ID（全字符串），
+					// 取代旧的 backend_type 单字符短码。
+					wantPluginID := pluginIDForBackend(tt.backendType)
+					if record["backend"] != wantPluginID {
+						t.Fatalf("message %q backend=%v want %q: %s", message, record["backend"], wantPluginID, line)
 					}
 				}
 				if tt.backendType == config.BackendAnthropic && message == tt.convertedLog {

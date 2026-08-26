@@ -6,6 +6,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	copilotpkg "github.com/mapleafgo/codex-api-gateway/internal/copilot"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
@@ -30,23 +31,30 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Summary:      "通过 GitHub Copilot API 按模型能力委托 Responses / Messages / Chat 协议",
 		Capabilities: []plugin.Capability{plugin.CapabilityResponsesPassthrough, plugin.CapabilityAnthropicMessages, plugin.CapabilityChatCompletions},
 		Streaming:    plugin.StreamingConverted,
+		Schema: []plugin.Field{
+			{
+				Name: "github_token", Label: "GitHub Token", Type: plugin.FieldTypePassword,
+				Required: true, Sensitive: true, Target: plugin.FieldTargetOption,
+				Description: "GitHub OAuth token used to authenticate against the Copilot API",
+			},
+		},
 	}
 }
 
 // ValidateSource 校验 Copilot 源配置：必须携带 github_token。
 func (p *Plugin) ValidateSource(src config.Source) error {
-	if src.GithubToken == "" {
+	if copilotToken(src) == "" {
 		return plugin.ErrMissingGithubToken
 	}
 	return nil
 }
 
 // Backend 返回协议适配后端。
-func (p *Plugin) Backend() plugin.Backend { return p.b }
+func (p *Plugin) Backend() plugin.Backend { return normalizeBackend{p.b} }
 
 // ListModels 拉取 Copilot 筛选后的模型目录。
 func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Model, error) {
-	ms, err := p.b.ListModels(ctx, src)
+	ms, err := p.b.ListModels(ctx, withCopilotToken(src))
 	if err != nil {
 		return nil, err
 	}
@@ -56,3 +64,40 @@ func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Mo
 	}
 	return out, nil
 }
+
+// copilotToken 返回配置中的 GitHub token：优先 options.github_token（Config v2），
+// 兜底旧的 github_token 顶层字段。
+func copilotToken(src config.Source) string {
+	if t, _ := src.Options["github_token"].(string); t != "" {
+		return t
+	}
+	return src.GithubToken
+}
+
+// withCopilotToken 把 options.github_token 归一化到 src.GithubToken，供内部委托。
+func withCopilotToken(src config.Source) config.Source {
+	if t, _ := src.Options["github_token"].(string); t != "" {
+		src.GithubToken = t
+	}
+	return src
+}
+
+// normalizeBackend 是归一化委托层：执行前把 options.github_token 填进 src，
+// 使被委托的 r/a/c 后端只认 src.GithubToken，插件边界内不影响共享核心。
+type normalizeBackend struct {
+	inner plugin.Backend
+}
+
+func (n normalizeBackend) Execute(
+	ctx context.Context,
+	rawBody []byte,
+	src config.Source,
+	cfg *config.Config,
+	onEvent func(model.SSEEvent) error,
+	onUpstream func(plugin.UpstreamEvent),
+	attempt int,
+) error {
+	return n.inner.Execute(ctx, rawBody, withCopilotToken(src), cfg, onEvent, onUpstream, attempt)
+}
+
+var _ plugin.Backend = normalizeBackend{}

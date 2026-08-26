@@ -389,17 +389,17 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// 首源为 Chat 时不做转换预检，避免纯 Chat 部署被误杀。
 	// body 已在上方 DecodeResponseNewParams 成功解析为 req，不再重复解码。
 	first := ordered[0]
-	bt, _ := config.NormalizeBackendType(first.BackendType)
+	bt := sourceBackendID(first)
 	switch bt {
-	case config.BackendAnthropic:
+	case plugin.BackendAnthropic:
 		if _, err := convert.ToAnthropic(req, cur); err != nil {
-			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			log.Warn("预转换响应请求失败", "source", first.Name, "backend", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-	case config.BackendOpenAIResponses:
+	case plugin.BackendOpenAIResponses:
 		if _, _, _, err := backend.PrepareUpstreamBody(body, &first, log); err != nil {
-			log.Warn("预转换响应请求失败", "source", first.Name, "backend_type", bt, "error", err)
+			log.Warn("预转换响应请求失败", "source", first.Name, "backend", bt, "error", err)
 			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -423,7 +423,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]()): true,
 	}
 	resolvedModel := string(req.Model)
-	backendType := config.BackendAnthropic
+	backendType := string(plugin.BackendAnthropic)
 	var lastUp scheduler.UpstreamEvent
 
 	sourceName, execErr := s.sch.ExecuteGeneric(r.Context(), body,
@@ -493,7 +493,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"response_id", respID,
 			"status", status,
 			"source", sourceName,
-			"backend_type", backendType,
+			"backend", backendType,
 			"upstream_events", evCount,
 			"elapsed", time.Since(reqStart).String(),
 			"reason", "timeout",
@@ -506,7 +506,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"response_id", respID,
 			"status", status,
 			"source", sourceName,
-			"backend_type", backendType,
+			"backend", backendType,
 			"upstream_events", evCount,
 			"elapsed", time.Since(reqStart).String(),
 			"error", errText)
@@ -523,7 +523,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"response_id", respID,
 			"status", status,
 			"source", sourceName,
-			"backend_type", backendType,
+			"backend", backendType,
 			"upstream_events", evCount,
 			"cache_read_tokens", lastUp.CacheRead,
 			"cache_creation_tokens", lastUp.CacheCreate,
@@ -532,7 +532,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		status = "canceled"
 		code = 499
 		errText = errSummary(execErr)
-		log.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend_type", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		log.Info("响应请求被客户端取消", "response_id", respID, "source", sourceName, "backend", backendType, "upstream_events", evCount, "elapsed", time.Since(reqStart).String(), "error", execErr)
 	} else {
 		status = model.ResponseStatusFailed
 		// 流已建立（有事件）时对齐旧语义：默认 200，能解析上游码再覆盖。
@@ -545,7 +545,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			code = clientFailCode(execErr)
 		}
 		errText = errSummary(execErr)
-		log.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend_type", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
+		log.Error("响应请求失败", "response_id", respID, "status", "failed", "source", sourceName, "backend", backendType, "elapsed", time.Since(reqStart).String(), "error", execErr)
 		// 若流尚未写出任何事件，补一条 failed（Backend 通常已写）
 		if evCount == 0 {
 			writeFailedTerminal()
@@ -566,7 +566,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		CacheRead:     lastUp.CacheRead,
 		CacheCreate:   lastUp.CacheCreate,
 		Error:         errText,
-		BackendType:   backendType,
+		Backend:       backendType,
 	})
 }
 
@@ -581,8 +581,7 @@ func hasEnabledResponsesBackend(sources []config.Source) bool {
 		if src.Disabled {
 			continue
 		}
-		bt, err := config.NormalizeBackendType(src.BackendType)
-		if err == nil && bt == config.BackendOpenAIResponses {
+		if sourceBackendID(src) == plugin.BackendOpenAIResponses {
 			return true
 		}
 	}
@@ -657,8 +656,7 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 		}
 		hasChat := false
 		for _, src := range sources {
-			bt, _ := config.NormalizeBackendType(src.BackendType)
-			if bt == config.BackendOpenAIChat {
+			if sourceBackendID(src) == plugin.BackendOpenAIChat {
 				hasChat = true
 				break
 			}
@@ -973,8 +971,20 @@ func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
 		CacheCreate:   ev.CacheCreate,
 		Error:         ev.Error,
 		Attempt:       ev.Attempt,
-		BackendType:   ev.Backend,
+		Backend:       ev.Backend,
 	})
+}
+
+// sourceBackendID 返回源配置的稳定 Backend ID。旧 backend_type 短码经
+// config.Load 过渡映射已填入 Backend；此处兜底处理手工构造的 Source。
+func sourceBackendID(src config.Source) string {
+	if src.Backend != "" {
+		return src.Backend
+	}
+	if id, ok := config.BackendTypeToID(src.BackendType); ok {
+		return id
+	}
+	return src.BackendType
 }
 
 // errSummary 返回上游错误全文，供观测台 tip 展示完整上游返回。

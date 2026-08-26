@@ -393,6 +393,24 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 	return config.Source{}, false
 }
 
+// backendID 返回源配置的稳定 Backend ID。旧配置（backend_type 短码）经由
+// config.Load 的过渡映射已填入 Backend；此处兜底处理手工构造的 Source。
+func (s *Scheduler) backendID(src *config.Source) string {
+	if src.Backend != "" {
+		return src.Backend
+	}
+	return string(plugin.LegacyBackendTypeToID(src.BackendType))
+}
+
+// streamingKind 按插件 Descriptor 返回源的流式形态；插件未注册时默认视为
+// converted（EventGate 兜底），与旧 a/c 行为一致。
+func (s *Scheduler) streamingKind(src *config.Source) plugin.StreamingKind {
+	if p, ok := s.registry.Get(s.backendID(src)); ok {
+		return p.Descriptor().Streaming
+	}
+	return plugin.StreamingConverted
+}
+
 // ListUpstreamModels 拉取指定源的上游模型列表，供管理页编辑模型映射时选用。
 // 通过插件 ModelCatalog 能力分发，调度器不感知具体源实现。
 // 返回统一 anthropicclient.ModelInfo 形状供管理页复用。
@@ -401,7 +419,7 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 	if !ok {
 		return nil, fmt.Errorf("source %q not found", sourceName)
 	}
-	id := string(plugin.LegacyBackendTypeToID(src.BackendType))
+	id := s.backendID(&src)
 	p, ok := s.registry.Get(id)
 	if !ok {
 		return nil, fmt.Errorf("source %q: unknown backend %q", sourceName, id)
@@ -537,13 +555,12 @@ func (s *Scheduler) tryRoundGeneric(
 			return src.Name, true, err
 		}
 		if err != nil {
-			bt, _ := config.NormalizeBackendType(src.BackendType)
 			if plugin.IsClientError(err) && firstClientErr != nil && firstClientErr.err == nil {
 				*firstClientErr = clientRejection{source: src.Name, err: err}
 			}
 			lastErr = err
 			lastSource = src.Name
-			log.Warn("上游源请求失败", "source", src.Name, "backend_type", bt, "attempt", *attemptNo, "error", err)
+			log.Warn("上游源请求失败", "source", src.Name, "backend", s.backendID(&src), "attempt", *attemptNo, "error", err)
 		}
 	}
 
@@ -551,7 +568,7 @@ func (s *Scheduler) tryRoundGeneric(
 }
 
 func (s *Scheduler) backendFor(src *config.Source) plugin.Backend {
-	id := string(plugin.LegacyBackendTypeToID(src.BackendType))
+	id := s.backendID(src)
 	if p, ok := s.registry.Get(id); ok {
 		return p.Backend()
 	}
@@ -604,15 +621,14 @@ func (s *Scheduler) trySourceGeneric(
 		attemptCtx = fbCtx
 	}
 
-	bt, _ := config.NormalizeBackendType(src.BackendType)
-	log := logging.FromContext(ctx).With("source", src.Name, "backend_type", bt, "attempt", attemptNo)
+	log := logging.FromContext(ctx).With("source", src.Name, "backend", s.backendID(src), "attempt", attemptNo)
 	log.Info("尝试上游源", "endpoint", src.BaseURL, "request_timeout", requestTimeout.String())
 
 	locked := false
 	// a/c 后端统一由 EventGate 兜底空响应：缓冲状态/终态事件，仅首个内容事件锁定源。
 	// r 透传后端不加 EventGate，保持上游事件原样透传语义。
 	var gate *plugin.EventGate
-	if bt != config.BackendOpenAIResponses {
+	if s.streamingKind(src) == plugin.StreamingConverted {
 		gate = plugin.NewEventGate(onEvent)
 	}
 	wrapEvent := func(ev model.SSEEvent) error {
