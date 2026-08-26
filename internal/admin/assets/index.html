@@ -1035,11 +1035,15 @@ html[data-theme="dark"] .ui-select {
                           x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
                     </span>
                   </template>
-                 <button class="ui-text-action" type="button"
-                         :disabled="testingSrc===src.name || !src.base_url"
+                <button class="ui-text-action" type="button"
+                         :disabled="testingSrc===src.name || ((src.backend_type || 'a') !== 'g' && !src.base_url)"
                          @click="testSource(src)"
                          :title="t('testReachHint')"
                          x-text="testingSrc===src.name ? t('testingSrc') : t('testSrc')"></button>
+                <button class="ui-text-action" type="button"
+                          x-show="(src.backend_type || 'a') === 'g'"
+                          @click="authorizeSource(src)"
+                          x-text="t('copilotAuth')"></button>
                 <button class="ui-text-action" type="button"
                           :disabled="!src.name || togglingDisabled===src.name"
                           @click="toggleSourceDisabled(idx)"
@@ -1057,8 +1061,8 @@ html[data-theme="dark"] .ui-select {
                     <span class="ui-label" x-text="t('backendType')"></span>
                     <div class="ui-sel"
                          x-data="uiSel()"
-                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')}]"
-                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')}]"
+                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')},{v:'g',l:t('backendCopilot')}]"
+                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')},{v:'g',l:t('backendCopilot')}]"
                          @sel-change="src.backend_type = $event.detail">
                       <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
                         <span x-text="label"></span>
@@ -1070,11 +1074,11 @@ html[data-theme="dark"] .ui-select {
                       </div>
                     </div>
                   </label>
-                  <label class="ui-field ui-span-2">
+                  <label class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">
                     <span class="ui-label" x-text="t('srcURL')"></span>
                     <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
                   </label>
-                  <div class="ui-field ui-span-2">
+                  <div class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">
                     <div class="ui-label-row">
                       <span class="ui-label" x-text="t('apiKey')"></span>
                       <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
@@ -1085,6 +1089,8 @@ html[data-theme="dark"] .ui-select {
                     <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
                            x-model="src.api_key" autocomplete="off" spellcheck="false">
                   </div>
+                  <p class="ui-hint ui-span-2" x-show="src.backend_type === 'g'"
+                     x-text="t('copilotAuthHint')"></p>
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
@@ -1467,7 +1473,7 @@ html[data-theme="dark"] .ui-select {
     <template x-if="modal.open && modal.kind === 'form'">
       <div class="ui-stack" style="margin-top:12px; gap:10px;">
         <template x-for="f in modal.fields" :key="f.key">
-          <div>
+          <div x-show="fieldVisible(f)">
             <template x-if="f.type === 'checkbox'">
               <label class="ui-field" style="flex-direction:row; align-items:center; gap:8px">
                 <input type="checkbox" x-model="f.value" @change="f._touched = true">
@@ -1523,10 +1529,11 @@ html[data-theme="dark"] .ui-select {
                     </div>
                   </div>
                 </template>
-                <template x-if="f.key !== 'default_model'">
+               <template x-if="f.key !== 'default_model'">
                   <input class="ui-input ui-input-sm mono"
                          :type="f.type === 'number' ? 'number' : 'text'"
                          :value="f.value"
+                         :disabled="formIsCopilot() && f.key === 'name'"
                          @input="f.value = $event.target.value"
                          @keydown.enter="confirmModal()"
                          autocomplete="off" spellcheck="false"
@@ -1537,13 +1544,14 @@ html[data-theme="dark"] .ui-select {
            </template>
           </div>
         </template>
+        <p class="ui-hint" x-show="formIsCopilot()" x-text="t('copilotAuthHint')"></p>
       </div>
     </template>
 
    <div class="ui-modal-actions">
       <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
               x-show="modal.kind === 'form' && modal.allowTest && formHasBaseURL()"
-              :disabled="!!testingSrc || !formBaseURL()"
+              :disabled="!!testingSrc || (formBackendType() === 'g' ? !formGithubToken() : !formBaseURL())"
               @click="testFormSource()"
               :title="t('testReachHint')"
              x-text="testingSrc === '__form__' ? t('testingSrc') : t('testSrc')"></button>
@@ -1561,6 +1569,46 @@ html[data-theme="dark"] .ui-select {
                 @click="confirmModal()"
                 x-text="modal.confirmText || t('confirm')"></button>
       </div>
+    </div>
+  </div>
+</dialog>
+
+<!-- Copilot Device Flow 授权面板 -->
+<dialog x-ref="authModal" class="ui-modal">
+  <div class="ui-modal-box">
+    <h3 x-text="t('copilotAuthTitle')"></h3>
+    <template x-if="copilotAuth && copilotAuth.state === 'awaiting_user'">
+      <div style="margin-top:12px">
+        <p style="margin:0" x-text="t('copilotAuthVisit')"></p>
+        <p class="mono" style="font-size:22px; font-weight:650; letter-spacing:2px; margin:10px 0 0"
+           x-text="copilotAuth.user_code"></p>
+        <p style="margin:8px 0 0">
+          <a :href="copilotAuth.verification_uri" target="_blank" rel="noopener"
+             style="color:var(--info); text-decoration:underline; word-break:break-all"
+             x-text="copilotAuth.verification_uri"></a>
+        </p>
+        <p style="margin:10px 0 0; color:var(--ink-soft)" x-text="t('copilotAuthWaiting')"></p>
+      </div>
+    </template>
+    <template x-if="copilotAuth && ['starting', 'saving'].includes(copilotAuth.state)">
+      <p style="margin-top:12px" x-text="t('copilotAuthSaving')"></p>
+    </template>
+    <template x-if="copilotAuth && copilotAuth.state === 'authorized'">
+      <p style="margin-top:12px" x-text="t('copilotAuthDone')"></p>
+    </template>
+    <template x-if="copilotAuth && copilotAuth.state === 'cancelled'">
+      <p style="margin-top:12px" x-text="t('copilotAuthCancelled')"></p>
+    </template>
+    <template x-if="copilotAuth && copilotAuth.state === 'error'">
+      <p style="margin-top:12px; color:var(--bad)" x-text="copilotAuth.error || t('copilotAuthFailed')"></p>
+    </template>
+    <div class="ui-modal-actions">
+      <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
+              x-show="copilotAuth && ['starting', 'awaiting_user'].includes(copilotAuth.state)"
+              @click="cancelCopilotAuth()"
+              x-text="t('copilotAuthCancel')"></button>
+      <button class="ui-btn ui-btn-sm" type="button" @click="closeCopilotAuth()"
+              x-text="t('copilotAuthClose')"></button>
     </div>
   </div>
 </dialog>
@@ -1599,12 +1647,18 @@ function app() {
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: '模型', global: '全局参数', guidance: '基线指令',
+      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', backendCopilot: 'GitHub Copilot', models: '模型', global: '全局参数', guidance: '基线指令',
      addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
     testSrc: '测试', testingSrc: '测试中…', testReachable: '可达', testUnreachable: '不可达', testReachHint: '验证 base_url 可达且 api_key 有效，不发真实大模型请求',
      srcName: '源名称', srcURL: '上游地址',
-      apiKey: 'API 密钥', show: '显示', hide: '隐藏',
-     defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
+     apiKey: 'API 密钥', githubToken: 'GitHub Token', show: '显示', hide: '隐藏',
+     copilotAuth: '重新授权', copilotAuthTitle: 'GitHub Copilot 授权',
+     copilotAuthVisit: '在浏览器打开以下地址并输入用户码完成授权',
+     copilotAuthWaiting: '等待授权确认…', copilotAuthSaving: '正在保存凭据…',
+     copilotAuthDone: '授权成功，源已保存', copilotAuthCancelled: '已取消授权',
+     copilotAuthFailed: '授权失败', copilotAuthCancel: '取消授权', copilotAuthClose: '关闭',
+     copilotAuthHint: '选择 GitHub Copilot 后将立即进入 GitHub 设备授权，无需手动填写 Token',
+      defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
      headers: '自定义请求头',
     headerName: '头名称', headerValue: '值', addHeader: '新增请求头',
@@ -1671,12 +1725,18 @@ function app() {
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', models: 'Models', global: 'Global', guidance: 'Base instructions',
+      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', backendCopilot: 'GitHub Copilot', models: 'Models', global: 'Global', guidance: 'Base instructions',
      addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
     testSrc: 'Test', testingSrc: 'Testing…', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Verifies base_url reachable and api_key valid; no real LLM request sent',
      srcName: 'Source name', srcURL: 'Upstream URL',
-      apiKey: 'API key', show: 'show', hide: 'hide',
-     defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
+      apiKey: 'API key', githubToken: 'GitHub Token', show: 'show', hide: 'hide',
+      copilotAuth: 'Reauthorize', copilotAuthTitle: 'GitHub Copilot Authorization',
+      copilotAuthVisit: 'Open this URL in your browser and enter the code to authorize',
+      copilotAuthWaiting: 'Waiting for authorization…', copilotAuthSaving: 'Saving credentials…',
+      copilotAuthDone: 'Authorized and saved', copilotAuthCancelled: 'Authorization cancelled',
+      copilotAuthFailed: 'Authorization failed', copilotAuthCancel: 'Cancel authorization', copilotAuthClose: 'Close',
+      copilotAuthHint: 'Selecting GitHub Copilot immediately starts GitHub device authorization; no manual token needed',
+      defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
      headers: 'Custom headers',
     headerName: 'Header name', headerValue: 'Value', addHeader: 'Add header',
@@ -1768,6 +1828,8 @@ function app() {
    togglingDisabled: '',
    testingSrc: '',
    testResults: {},
+   copilotAuth: null,
+   _copilotAuthTimer: null,
    cfgSnapshot: '',
     saving: false,
     guidance: { path: '', content: '', exists: false },
@@ -1790,6 +1852,7 @@ function app() {
       this.startSSE();
       this.loadConfig();
       this.fetchVersion();
+      this.restoreCopilotAuth();
       this.$nextTick(() => this.onListScroll());
       window.addEventListener('sel-change', (e) => {
         const field = e.target.closest('.ui-sel')?.dataset?.field;
@@ -1799,6 +1862,17 @@ function app() {
         for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
         if (obj) obj[parts[parts.length - 1]] = e.detail;
       });
+    },
+    async restoreCopilotAuth() {
+      try {
+        const r = await fetch('/admin/api/copilot/auth/status');
+        if (!r.ok) return;
+        const st = await r.json();
+        if (st && ['starting', 'awaiting_user', 'saving'].includes(st.state)) {
+          this.copilotAuth = st;
+          this.openCopilotAuthPanel();
+        }
+      } catch (e) {}
     },
 
     t(key) { return (I18N[this.locale] || I18N.zh)[key] || key; },
@@ -1894,8 +1968,9 @@ function app() {
 
     backendTypeLabel(v) {
       const x = String(v || '').trim();
-      // 请求列表用大写 A/C/R 区分：a=Anthropic，c=OpenAI Chat，r=OpenAI Responses
+      // 请求列表用大写 A/C/G/R 区分：a=Anthropic，c=OpenAI Chat，g=GitHub Copilot，r=OpenAI Responses
       if (x === 'c') return 'C';
+      if (x === 'g') return 'G';
       if (x === 'r') return 'R';
       // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
       return 'A';
@@ -1904,6 +1979,7 @@ function app() {
       const x = String(v || '').trim() || 'a';
       let full = this.t('backendAnthropic');
       if (x === 'c') full = this.t('backendChat');
+      else if (x === 'g') full = this.t('backendCopilot');
       else if (x === 'r') full = this.t('backendResponses');
       return this.t('colBackendType') + ': ' + this.backendTypeLabel(x) + ' · ' + full;
     },
@@ -2063,6 +2139,7 @@ function app() {
         }).filter(m => m.slug);
        (payload.sources || []).forEach(s => {
          if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
+         if ((s.backend_type || 'a') === 'g' && !s.github_token) delete s.github_token;
          delete s._id;
          delete s.top;
        });
@@ -2126,18 +2203,24 @@ function app() {
             { v: 'a', l: this.t('backendAnthropic') },
             { v: 'c', l: this.t('backendChat') },
             { v: 'r', l: this.t('backendResponses') },
+            { v: 'g', l: this.t('backendCopilot') },
           ]},
           { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
           { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
+          { key: 'github_token', label: this.t('githubToken'), type: 'text', value: '', placeholder: 'gho_...' },
           { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
           { key: 'supports_web_search', label: this.t('supportsWebSearch'), type: 'checkbox', value: true, syncFrom: 'backend_type', syncDefault(v) { return v !== 'c'; } },
         ],
       }).then(async (v) => {
         if (!v) return;
         const name = (v.name || '').trim();
-        const base_url = (v.base_url || '').trim();
-        if (!name || !base_url) {
-          this.notify(this.locale === 'zh' ? '源名称和上游地址不能为空' : 'Name and URL are required', 'error');
+        const copilot = v.backend_type === 'g';
+        const base_url = v.backend_type === 'g' ? '' : (v.base_url || '').trim();
+        const github_token = (v.github_token || '').trim();
+        if (!name || (!copilot && !base_url)) {
+          this.notify(this.locale === 'zh'
+            ? '源名称和上游地址不能为空'
+            : 'Name and URL are required', 'error');
           return;
         }
         this.cfg.sources = this.cfg.sources || [];
@@ -2145,15 +2228,29 @@ function app() {
           this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
           return;
         }
+        if (copilot && !github_token) {
+          await this.startCopilotAuth({
+            name,
+            base_url,
+            backend_type: 'g',
+            api_key: (v.api_key || '').trim(),
+            github_token: '',
+            default_model: (v.default_model || '').trim(),
+            model_map: {},
+            supports_web_search: v.supports_web_search !== false,
+            disabled: false,
+          });
+          return;
+        }
         try {
           const r = await fetch('/admin/api/sources', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false }),
+            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), github_token, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), model_map: {}, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
+          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), github_token, model_map: {}, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
           this.cfg.sources.push(item);
           this.patchSnapshotAppend('sources', item);
           this.notify(this.t('addSrcOk') + ': ' + name, 'success');
@@ -2163,8 +2260,83 @@ function app() {
         }
       });
     },
+    async startCopilotAuth(source) {
+      try {
+        const r = await fetch('/admin/api/copilot/auth/start', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ source }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok && r.status !== 409) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+        this.copilotAuth = j;
+        if (r.status === 409) {
+          this.notify(this.locale === 'zh' ? '已有进行中的授权会话' : 'An authorization flow is already active', 'info');
+        }
+        this.openCopilotAuthPanel();
+        return true;
+      } catch (e) {
+        this.notify(this.locale === 'zh' ? '发起 Copilot 授权失败：' + e.message : 'Start Copilot authorization failed: ' + e.message, 'error');
+        return false;
+      }
+    },
+    async authorizeSource(src) {
+      if (!src || (src.backend_type || 'a') !== 'g' || !(src.name || '').trim()) return;
+      await this.startCopilotAuth({
+        name: src.name,
+        base_url: (src.base_url || '').trim(),
+        backend_type: 'g',
+        api_key: src.api_key || '',
+        github_token: '',
+        default_model: (src.default_model || '').trim(),
+        model_map: src.model_map || {},
+        headers: src.headers || undefined,
+        supports_web_search: src.supports_web_search !== false,
+        disabled: !!src.disabled,
+      });
+    },
+    openCopilotAuthPanel() {
+      this.$nextTick(() => {
+        const d = this.$refs.authModal;
+        if (d && !d.open) d.showModal();
+      });
+      this.scheduleCopilotAuthPoll();
+    },
+    scheduleCopilotAuthPoll() {
+      clearTimeout(this._copilotAuthTimer);
+      const st = this.copilotAuth;
+      if (!st || ['authorized', 'cancelled', 'error'].includes(st.state)) return;
+      const iv = Math.max(1000, (st.interval_seconds || 5) * 1000);
+      this._copilotAuthTimer = setTimeout(async () => {
+        try {
+          const r = await fetch('/admin/api/copilot/auth/status');
+          if (r.ok) this.copilotAuth = await r.json();
+        } catch (e) {}
+        this.scheduleCopilotAuthPoll();
+      }, iv);
+    },
+    async cancelCopilotAuth() {
+      try {
+        const r = await fetch('/admin/api/copilot/auth/cancel', { method: 'POST' });
+        if (r.ok) this.copilotAuth = await r.json();
+      } catch (e) {}
+    },
+    closeCopilotAuth() {
+      clearTimeout(this._copilotAuthTimer);
+      const st = this.copilotAuth;
+      if (st && ['starting', 'awaiting_user'].includes(st.state)) {
+        void this.cancelCopilotAuth().then(() => this.closeCopilotAuth());
+        return;
+      }
+      this.$refs.authModal?.close();
+      this.copilotAuth = null;
+      if ((st || {}).state === 'authorized') {
+        if (this.modal.kind === 'form' && this.formBackendType() === 'g') this.cancelModal();
+        this.loadConfig();
+      }
+    },
     async testSource(src) {
-      if (!src || !(src.base_url || '').trim()) return;
+      if (!src || (!(src.base_url || '').trim() && (src.backend_type || 'a') !== 'g')) return;
       this.testingSrc = src.name || src.base_url;
       try {
         const r = await fetch('/admin/api/sources/test', {
@@ -2173,6 +2345,8 @@ function app() {
           body: JSON.stringify({
             base_url: (src.base_url || '').trim(),
             api_key: src.api_key || '',
+            github_token: src.github_token || '',
+            name: src.name || '',
             backend_type: src.backend_type || 'a',
           }),
         });
@@ -2212,16 +2386,22 @@ function app() {
       const f = (this.modal.fields || []).find(x => x.key === 'api_key');
       return f ? String(f.value || '').trim() : '';
     },
+    formGithubToken() {
+      const f = (this.modal.fields || []).find(x => x.key === 'github_token');
+      return f ? String(f.value || '').trim() : '';
+    },
     async testFormSource() {
       const base_url = this.formBaseURL();
-      if (!base_url) {
-        this.notify(this.locale === 'zh' ? '请先填写上游地址' : 'Enter upstream URL first', 'error');
+      const github_token = this.formGithubToken();
+      if (this.formBackendType() === 'g' ? !github_token : !base_url) {
+        this.notify(this.locale === 'zh' ? '请先填写必填连接信息' : 'Enter required connection details first', 'error');
         return;
       }
       await this.testSource({
         name: '__form__',
         base_url,
         api_key: this.formAPIKey(),
+        github_token,
         backend_type: this.formBackendType(),
       });
     },
@@ -2660,12 +2840,12 @@ function app() {
       window.dispatchEvent(new CustomEvent('notify', { detail: { msg, type } }));
     },
 
-    // 用表单 base_url/api_key/backend_type 试拉；允许未落盘源。
-    // cache key 含 url+类型，改地址后可重新拉取；同时按 name 索引供下拉 opts 使用。
+    // 用表单连接参数试拉；允许未落盘源。g 源可按 name 复用已保存 token。
+    // cache key 含连接参数，修改后可重新拉取；同时按 name 索引供下拉 opts 使用。
     async fetchUpstreamModels(src) {
-      if (!src || !(src.base_url || '').trim()) return;
+      if (!src || (!(src.base_url || '').trim() && (src.backend_type || 'a') !== 'g')) return;
       const name = src.name || '';
-      const cacheKey = name + '\0' + (src.base_url || '') + '\0' + (src.backend_type || 'a');
+      const cacheKey = name + '\0' + (src.base_url || '') + '\0' + (src.backend_type || 'a') + '\0' + (src.github_token || '');
       if (this.upstreamModels[cacheKey] || this.upstreamLoading[cacheKey]) return;
       this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
       try {
@@ -2675,6 +2855,8 @@ function app() {
           body: JSON.stringify({
             base_url: (src.base_url || '').trim(),
             api_key: src.api_key || '',
+            github_token: src.github_token || '',
+            name,
             backend_type: src.backend_type || 'a',
           }),
         });
@@ -2699,8 +2881,9 @@ function app() {
       const fields = this.modal.fields || [];
       const base_url = (fields.find(f => f.key === 'base_url') || {}).value || '';
       const api_key = (fields.find(f => f.key === 'api_key') || {}).value || '';
+      const github_token = (fields.find(f => f.key === 'github_token') || {}).value || '';
       const backend_type = (fields.find(f => f.key === 'backend_type') || {}).value || 'a';
-      if (!base_url.trim()) return;
+      if (!(backend_type === 'g' ? github_token.trim() : base_url.trim())) return;
       const cacheKey = '__form__';
       if (this.upstreamLoading[cacheKey]) return;
       this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
@@ -2708,7 +2891,7 @@ function app() {
         const r = await fetch('/admin/api/upstream-models', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ base_url: base_url.trim(), api_key: api_key || '', backend_type }),
+          body: JSON.stringify({ base_url: base_url.trim(), api_key: api_key || '', github_token: github_token.trim(), backend_type }),
         });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
@@ -2790,6 +2973,7 @@ function app() {
     // 表单内 select 变化：记录新值，并联动同表单里 syncFrom 指向本字段的
     // 复选框按其 syncDefault 重算默认（仅当用户未手动改过）。
     onFormSelectChange(f, value) {
+      const wasCopilot = f.key === 'backend_type' && this.formBackendType() === 'g';
       f.value = value;
       const fields = this.modal.fields || [];
       fields.forEach(cb => {
@@ -2797,6 +2981,55 @@ function app() {
           cb.value = cb.syncDefault(value);
         }
       });
+      if (f.key !== 'backend_type') return;
+      if (value === 'g' && !wasCopilot) { void this.beginFormCopilotAuth(); return; }
+      if (wasCopilot && value !== 'g') {
+        void this.cancelCopilotAuth().then(() => {
+          clearTimeout(this._copilotAuthTimer);
+          this.$refs.authModal?.close();
+          this.copilotAuth = null;
+        });
+      }
+    },
+    uniqueCopilotName() {
+      const names = new Set((this.cfg.sources || []).map(s => s.name || '').filter(Boolean));
+      if (!names.has('copilot')) return 'copilot';
+      for (let i = 2; ; i++) {
+        const name = 'copilot-' + i;
+        if (!names.has(name)) return name;
+      }
+    },
+    async beginFormCopilotAuth() {
+      const fields = this.modal.fields || [];
+      const fieldValue = key => fields.find(f => f.key === key)?.value;
+      const nameField = fields.find(f => f.key === 'name');
+      let name = String(nameField?.value || '').trim();
+      if (!name) {
+        name = this.uniqueCopilotName();
+        if (nameField) nameField.value = name;
+      }
+      // 先显示 starting 面板：GitHub 网络慢时用户也能立刻看到授权流程已启动。
+      this.copilotAuth = { state: 'starting', source_name: name };
+      this.openCopilotAuthPanel();
+      return this.startCopilotAuth({
+        name,
+        base_url: '',
+        backend_type: 'g',
+        api_key: String(fieldValue('api_key') || ''),
+        github_token: '',
+        default_model: String(fieldValue('default_model') || '').trim(),
+        model_map: {},
+        supports_web_search: fieldValue('supports_web_search') !== false,
+        disabled: false,
+      });
+    },
+    formIsCopilot() {
+      return this.modal.kind === 'form' && this.formBackendType() === 'g';
+    },
+    // Copilot 源的 endpoint 由发现逻辑解析，凭据由 Device Flow 提供。
+    fieldVisible(f) {
+      if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key' || f.key === 'github_token')) return false;
+      return true;
     },
     confirmModal() {
       const r = this.modal;

@@ -11,7 +11,7 @@ import (
 // buildConfigFromInput 把管理端 POST 的视图组装回 *config.Config。
 // 管理端做全量覆盖：input 不携带的字段会写回为零值/默认值。
 // 这是用户接受的语义（管理页即权威配置）。
-func buildConfigFromInput(in adminConfigInput) *config.Config {
+func buildConfigFromInput(in adminConfigInput, current *config.Config) *config.Config {
 	cacheEnabled := in.Anthropic.CacheEnabled
 	cfg := &config.Config{
 		Server: config.ServerCfg{
@@ -34,8 +34,22 @@ func buildConfigFromInput(in adminConfigInput) *config.Config {
 		if n, err := config.NormalizeBackendType(sv.BackendType); err == nil {
 			bt = n
 		}
+		baseURL := sv.BaseURL
+		if bt == config.BackendGitHubCopilot {
+			baseURL = ""
+		}
+		githubToken := strings.TrimSpace(sv.GithubToken)
+		if githubToken == "" && bt == config.BackendGitHubCopilot && current != nil {
+			for _, prev := range current.Sources {
+				if prev.Name == sv.Name && prev.BackendType == config.BackendGitHubCopilot {
+					githubToken = prev.GithubToken
+					break
+				}
+			}
+		}
 		src := config.Source{
-			Name: sv.Name, BaseURL: sv.BaseURL, APIKey: sv.APIKey,
+			Name: sv.Name, BaseURL: baseURL, APIKey: sv.APIKey,
+			GithubToken: githubToken,
 			BackendType: bt, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
 			Disabled:          sv.Disabled,
 			Headers:           sv.Headers,

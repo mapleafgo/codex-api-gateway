@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,10 +106,171 @@ func TestMetricsDashboardLabels(t *testing.T) {
 	for _, want := range []string{
 		"cardReq: '上游调用量'",
 		"cardReq: 'Upstream calls'",
+		"backendCopilot: 'GitHub Copilot'",
+		"github_token: src.github_token || ''",
+		"github_token: github_token.trim()",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
 		}
+	}
+}
+
+func TestCopilotSourceCardHidesTokenInput(t *testing.T) {
+	html := string(indexHTML)
+	if strings.Contains(html, `x-model="src.github_token"`) {
+		t.Fatal("index.html still renders github_token input on source card")
+	}
+	for _, want := range []string{
+		`x-text="t('copilotAuth')"`,
+		`@click="authorizeSource(src)"`,
+		"copilotAuth: '重新授权'",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestCopilotFormHidesUpstreamURL(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		`<label class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">`,
+		"if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key' || f.key === 'github_token')) return false;",
+		"const base_url = v.backend_type === 'g' ? '' : (v.base_url || '').trim();",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestCopilotSelectionStartsDeviceFlowImmediately(t *testing.T) {
+	html := string(indexHTML)
+	for _, want := range []string{
+		"if (value === 'g' && !wasCopilot) { void this.beginFormCopilotAuth(); return; }",
+		"async beginFormCopilotAuth() {",
+		":disabled=\"formIsCopilot() && f.key === 'name'\"",
+		"copilotAuthHint: '选择 GitHub Copilot 后将立即进入 GitHub 设备授权，无需手动填写 Token'",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestAddSourceSupportsCopilot(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(sourceView{
+		Name:        "copilot",
+		BackendType: config.BackendGitHubCopilot,
+		GithubToken: "github-token",
+	})
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post source: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	cur := deps.Holder.Current()
+	if len(cur.Sources) != 2 {
+		t.Fatalf("sources = %d, want 2", len(cur.Sources))
+	}
+	got := cur.Sources[1]
+	if got.BackendType != config.BackendGitHubCopilot || got.GithubToken != "github-token" {
+		t.Fatalf("copilot source = %+v", got)
+	}
+}
+
+func TestAddSourceCopilotIgnoresUpstreamURL(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	body, _ := json.Marshal(sourceView{
+		Name:        "copilot",
+		BaseURL:     "https://stale.example.com",
+		BackendType: config.BackendGitHubCopilot,
+		GithubToken: "github-token",
+	})
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post source: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	got := deps.Holder.Current().Sources[1]
+	if got.BaseURL != "" {
+		t.Fatalf("BaseURL = %q, want empty for endpoint discovery", got.BaseURL)
+	}
+}
+
+func TestAdminCopilotTokenHiddenAndBlankSavePreserved(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	addBody, _ := json.Marshal(sourceView{
+		Name:        "copilot",
+		BackendType: config.BackendGitHubCopilot,
+		GithubToken: "github-token",
+	})
+	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(addBody))
+	if err != nil {
+		t.Fatalf("post source: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(srv.URL + "/admin/api/config")
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), "github-token") {
+		t.Fatal("admin config response exposes github token")
+	}
+
+	var view adminConfigView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(view.Sources) != 2 {
+		t.Fatalf("sources = %d, want 2", len(view.Sources))
+	}
+	view.Sources[1].GithubToken = ""
+	saveBody, _ := json.Marshal(view)
+	resp, err = http.Post(srv.URL+"/admin/api/config", "application/json", bytes.NewReader(saveBody))
+	if err != nil {
+		t.Fatalf("post config: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save status = %d", resp.StatusCode)
+	}
+	if got := deps.Holder.Current().Sources[1].GithubToken; got != "github-token" {
+		t.Fatalf("GithubToken = %q, want preserved", got)
 	}
 }
 
@@ -186,6 +348,20 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if cur.Sources[0].Breaker == nil || cur.Sources[0].Breaker.RequestTimeout != config.Duration(30*time.Second) {
 		t.Errorf("after save: per-source request_timeout = %+v, want 30s", cur.Sources[0].Breaker)
+	}
+}
+
+func TestBuildConfigFromInputPreservesCopilotToken(t *testing.T) {
+	cfg := buildConfigFromInput(adminConfigInput{
+		Sources: []sourceView{{
+			Name:         "copilot",
+			BackendType:  config.BackendGitHubCopilot,
+			GithubToken:  "github-token",
+			DefaultModel: "gpt-5.3-codex",
+		}},
+	}, nil)
+	if cfg.Sources[0].GithubToken != "github-token" {
+		t.Fatalf("GithubToken = %q, want github-token", cfg.Sources[0].GithubToken)
 	}
 }
 
@@ -427,6 +603,55 @@ func TestUpstreamModelsAcceptsResponsesBackend(t *testing.T) {
 		"backend_type": "r",
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var out struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Models) != 1 || out.Models[0].ID != "gpt-5" {
+		t.Fatalf("models=%+v", out.Models)
+	}
+}
+
+func TestUpstreamModelsCopilotUsesSavedToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer github-token" {
+			t.Fatalf("Authorization=%s", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Editor-Version") == "" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Fatalf("missing Copilot headers: %+v", r.Header)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5","model_picker_enabled":true,"capabilities":{"type":"chat"}}]}`))
+	}))
+	defer upstream.Close()
+
+	deps, _ := newTestDeps(t)
+	cur := deps.Holder.Current()
+	cur.Sources = append(cur.Sources, config.Source{
+		Name: "copilot", BaseURL: upstream.URL,
+		BackendType: config.BackendGitHubCopilot, GithubToken: "github-token",
+	})
+	deps.Holder.Replace(cur)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json",
+		strings.NewReader(`{"name":"copilot","backend_type":"g"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,6 +922,50 @@ func TestSourceTest(t *testing.T) {
 	}
 	if body2["ok"] != false {
 		t.Fatalf("expected ok=false without api_key, got body=%v", body2)
+	}
+}
+
+func TestSourceTestCopilotUsesSavedTokenWithoutBaseURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer github-token" {
+			t.Fatalf("Authorization=%s", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Editor-Version") == "" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Fatalf("missing Copilot headers: %+v", r.Header)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5","model_picker_enabled":true,"capabilities":{"type":"chat"}}]}`))
+	}))
+	defer upstream.Close()
+
+	deps, _ := newTestDeps(t)
+	cur := deps.Holder.Current()
+	cur.Sources[0].BackendType = config.BackendGitHubCopilot
+	cur.Sources[0].BaseURL = upstream.URL
+	cur.Sources[0].GithubToken = "github-token"
+	deps.Holder.Replace(cur)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/admin/api/sources/test", "application/json",
+		strings.NewReader(`{"name":"s1","backend_type":"g"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true || body["status"] != "reachable" {
+		t.Fatalf("body=%v", body)
 	}
 }
 

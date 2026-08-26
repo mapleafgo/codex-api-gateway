@@ -1,8 +1,8 @@
 # Protocol Coverage Matrix
 
-日期: 2026-08-05（a Anthropic + c Chat + r Responses 透传；usage details 已支持，structured output 已移除）
+日期: 2026-08-25（a Anthropic + c Chat + g GitHub Copilot + r Responses 透传；usage details 已支持，structured output 已移除）
 
-本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `r` 见专节，**三路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
+本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `g` / `r` 见专节，**各路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
 ## 状态定义
 
@@ -17,7 +17,7 @@
 
 ## 关注面与产品边界
 
-本网关面向 **Codex CLI → 多上游**（`a` / `c` / `r`），不做 OpenAI 全量 Responses 平台，无 session 运行时：
+本网关面向 **Codex CLI → 多上游**（`a` / `c` / `g` / `r`），不做 OpenAI 全量 Responses 平台，无 session 运行时：
 
 - 客户端**自带完整 `input`** 回灌；网关不做 session store。
 - **a**：`previous_response_id` 非空时 WARN + 忽略；Responses ↔ Anthropic **直转**。
@@ -49,6 +49,18 @@
 - **DeepSeek 适配**：DeepSeek 的 Anthropic 兼容端点（`/anthropic/v1/messages`）对显式 `type:"custom"` 工具返回 400（`unknown variant 'custom'`）；a 路径 client tool 已统一省略 type（官方缺省 `name + description + input_schema` 形态），天然兼容，不再需要 `tools_type` 配置
 
 字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准；几乎全部请求/事件字段对网关为 passthrough，语义由上游决定。
+
+### GitHub Copilot 上游（`backend_type: g`）
+
+客户端仍只走 `/v1/responses`。`g` 是 Copilot 专用认证、模型目录与协议分发层；认证参照 Zed 当前实现：`source.github_token` 直接作为 Bearer token，不交换 Copilot session token。
+
+- **endpoint**：缺省 `base_url` 时向 `https://api.github.com/graphql` 查询 `viewer.copilotEndpoints.api` 并缓存于 per-source 状态；失败 WARN 后回退 `https://api.githubcopilot.com` 并缓存该结果。显式 `source.base_url` 优先，跳过发现。
+- **模型目录**：GET `<endpoint>/models`，按 Zed 条件筛选 `model_picker_enabled == true`、`capabilities.type == "chat"`、`policy == null || policy.state == "enabled"`；结果带 `supported_endpoints`，5 分钟 TTL + singleflight，单条坏数据 WARN 后跳过。`billing.restricted_to` 不参与本地筛选，套餐/权限错误由 Copilot 上游裁决。
+- **路由**：按解析后的 model 查目录，优先级 `/responses` → `r`、`/v1/messages` → `a`、`/chat/completions` → `c`。模型不在目录、目录失败或端点无交集时默认 `r`。实际协议行为复用被委托的 a/c/r 专节；`g` 不新增重复字段矩阵。
+- **wire header**：Bearer token、`Content-Type: application/json`、`Editor-Version: Zed/0.1.0`、`X-GitHub-Api-Version: 2025-10-01`；不注入 VSCode 伪装头。`a` 路径按 Copilot Messages 形态省略 `x-api-key` 与 `anthropic-version`。
+- **流式与扩展**：仅流式；请求已含顶层 `contextTier` 时 r 路径 map 透传保留，缺省不注入 `long_context`。a/c 无该顶层 wire 槽位，按各自转换矩阵处理，网关仍不代补 `long_context`。
+- **观测**：对客户端/指标呈现 `backend_type=g`；实际 route（r/a/c）与 endpoint 记录在结构化日志。token 禁止进入日志、metrics 或管理页响应。
+- **管理页授权**：`/admin/api/copilot/auth/start|status|cancel` 提供 Zed 式 GitHub Device Flow；同一实例仅一个活跃会话，授权成功后按 FR-006 新增或原地更新同名 `g` 源，凭据只落盘不回显。
 
 ## 架构基础（与 AGENTS.md 对齐）
 
@@ -142,6 +154,11 @@
   回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
+
+### 2026-08-25
+
+- **GitHub Copilot 原生后端（`backend_type: g`）**：新增 Zed 式 Bearer 认证、GraphQL endpoint 发现（显式 `base_url` 覆盖优先）、`/models` 模型目录筛选缓存（`restricted_to` 不参与筛选）与按模型 `supported_endpoints` 的 r > a > c 分发。`g` 仅流式；`contextTier` 在 r 透传路径已传保留、缺省不注入；字段级协议行为复用 a/c/r 专节。
+- **GitHub Copilot 管理页授权**：新增 `/admin/api/copilot/auth/*` 与 H5 授权面板；Device Flow 成功后通过既有写盘链路保存目标源，device code 与 access token 不进入响应、日志、指标或事件流。
 
 ### 2026-08-20
 

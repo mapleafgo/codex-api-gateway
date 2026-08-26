@@ -6,13 +6,14 @@
 
 Codex CLI 只能走 OpenAI Responses API。本网关在本地提供 Responses 兼容端点（`/v1/responses`、`/v1/models`），按源配置把请求转到不同上游，再以 Responses SSE 回给 Codex。Codex 全程无感。
 
-支持三类上游（可混排故障转移）：
+支持四类上游（可混排故障转移）：
 
 | `backend_type` | 上游 | 路径 |
 |---|---|---|
 | `a`（默认） | Anthropic Messages | Responses → Messages → Responses SSE |
 | `c` | OpenAI Chat Completions | Responses → Chat → Responses SSE |
 | `r` | OpenAI Responses 透传 | 最小改写透传 + 出站 model 别名回写 |
+| `g` | GitHub Copilot | Zed 式认证 + 模型目录路由 → r/a/c |
 
 ```text
 Codex CLI
@@ -21,7 +22,8 @@ Codex CLI
 codex-api-gateway  ── 协议适配 / 透传 + 多源路由 + 熔断
    ├─ a → Anthropic Messages (/v1/messages, SSE)
    ├─ c → OpenAI Chat Completions (/chat/completions, SSE)
-   └─ r → OpenAI Responses 透传 (/responses, SSE)
+   ├─ r → OpenAI Responses 透传 (/responses, SSE)
+   └─ g → GitHub Copilot (按模型路由 /responses、/v1/messages、/chat/completions)
 ```
 
 
@@ -57,10 +59,25 @@ sources:
     default_model: gpt-5
 ```
 
+### GitHub Copilot 上游（backend_type: g）
+
+当源是 GitHub Copilot 时，配置 `backend_type: g`。网关参照 Zed：直接使用 GitHub OAuth token 作为 Bearer，不交换或刷新 Copilot session token；缺省 `base_url` 时在首个请求通过 GitHub GraphQL 发现 Copilot endpoint，失败回退 `https://api.githubcopilot.com`。模型按 `/models` 目录的 `supported_endpoints` 以 `r > a > c` 路由，`billing.restricted_to` 不做本地筛选，权限由 Copilot 上游裁决。
+
+```yaml
+sources:
+  - name: copilot
+    backend_type: g
+    github_token: ${COPILOT_GITHUB_TOKEN}
+    default_model: gpt-5.3-codex
+    # base_url: https://api.githubcopilot.com  # 可选固定 endpoint，跳过 GraphQL 发现
+```
+
+管理页提供 Zed 式 GitHub Device Flow 授权：新增源选择 `GitHub Copilot` 后立即展示用户码和授权地址；已有供应商卡片可点击「重新授权」更新凭据。在浏览器完成用户码确认后，token 会写入对应 `g` 源并热生效；device code 与 access token 不会出现在响应、日志或事件流中。同一实例同一时间只有一个活跃授权会话。
+
 ## 功能
 
-- **多后端协议适配**：`a` Anthropic Messages 直转、`c` Chat Completions 转换、`r` Responses 透传；客户端始终只走 `/v1/responses` SSE。
-- **多源路由**：多源按配置顺序优先级，运行时重建；a/c/r 可混排。
+- **多后端协议适配**：`a` Anthropic Messages 直转、`c` Chat Completions 转换、`r` Responses 透传、`g` GitHub Copilot 模型路由；客户端始终只走 `/v1/responses` SSE。
+- **多源路由**：多源按配置顺序优先级，运行时重建；a/c/g/r 可混排。
 - **手动停用源**：管理页一键停用/启用单源，即时写盘并热重载；停用源不参与调度，仍保留在配置与观测中。
 - **首字节前故障转移**：上游未开始流式输出前可切换到下一个源；出流后仅收到状态事件（`response.created`/`in_progress`）、未产出任何内容事件（空响应）时仍可切换，一旦产出首个内容事件即锁定该源。
 - **断路器**：失败降级 → 熔断 → 冷却 → 半开探测 → 恢复，逐源可覆盖参数。
@@ -339,7 +356,7 @@ sources:
 
 ### `POST /v1/responses`
 
-核心转发入口。请求体为 OpenAI Responses API 格式；按命中源的 `backend_type` 走 a/c/r 适配或透传，响应始终为 OpenAI Responses SSE 流。
+核心转发入口。请求体为 OpenAI Responses API 格式；按命中源的 `backend_type` 走 a/c/g/r 适配或透传，响应始终为 OpenAI Responses SSE 流。
 
 ### `GET /v1/models`
 
@@ -352,16 +369,16 @@ sources:
 ```text
 L5 观测/管理  internal/admin  internal/metrics
 L4 编排      internal/server
-L3 运行时    internal/scheduler  internal/backend（a/c/r 适配器）
+L3 运行时    internal/scheduler  internal/backend（a/c/g/r 适配器）
 L2 转换      convert/streamconv（a）  chatconvert/chatstreamconv（c）  透传无 L2（r）
-L1 客户端    anthropic  chatclient  responsesclient
+L1 客户端    anthropic  chatclient  responsesclient  copilotclient
 L0 基础      config  logging  model  breaker  toolcatalog
 ```
 
 两条贯穿路径：
 
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml`（及同级 `base_instructions.md`）→ `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑都走写盘 → fsnotify → 这条链路。
-- **请求转发路径**：`/v1/responses` → `server` → `scheduler.ExecuteGeneric` → 按源选 `backend`（a/c/r）→ 上游 SSE → 回写 Responses SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
+- **请求转发路径**：`/v1/responses` → `server` → `scheduler.ExecuteGeneric` → 按源选 `backend`（a/c/g/r）→ 上游 SSE → 回写 Responses SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
 
 ## 开发
 
