@@ -186,8 +186,11 @@ func TestAddSourceSupportsCopilot(t *testing.T) {
 		t.Fatalf("sources = %d, want 2", len(cur.Sources))
 	}
 	got := cur.Sources[1]
-	if got.Backend != plugin.BackendGitHubCopilot || got.GithubToken != "github-token" {
+	if got.Backend != plugin.BackendGitHubCopilot {
 		t.Fatalf("copilot source = %+v", got)
+	}
+	if tok, _ := got.Options["github_token"].(string); tok != "github-token" {
+		t.Fatalf("copilot options github_token = %q, want github-token", tok)
 	}
 }
 
@@ -270,8 +273,8 @@ func TestAdminCopilotTokenHiddenAndBlankSavePreserved(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("save status = %d", resp.StatusCode)
 	}
-	if got := deps.Holder.Current().Sources[1].GithubToken; got != "github-token" {
-		t.Fatalf("GithubToken = %q, want preserved", got)
+	if got, _ := deps.Holder.Current().Sources[1].Options["github_token"].(string); got != "github-token" {
+		t.Fatalf("Options.github_token = %q, want preserved", got)
 	}
 }
 
@@ -667,7 +670,8 @@ func TestUpstreamModelsCopilotUsesSavedToken(t *testing.T) {
 	cur := deps.Holder.Current()
 	cur.Sources = append(cur.Sources, config.Source{
 		Name: "copilot", BaseURL: upstream.URL,
-		BackendType: config.BackendGitHubCopilot, GithubToken: "github-token",
+		Backend: "github-copilot",
+		Options: map[string]any{"github_token": "github-token"},
 	})
 	deps.Holder.Replace(cur)
 	mux := http.NewServeMux()

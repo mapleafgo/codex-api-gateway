@@ -360,8 +360,8 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	if bt == config.BackendGitHubCopilot {
 		src := config.Source{Name: "__form__", BaseURL: strings.TrimSpace(in.BaseURL), BackendType: bt, GithubToken: strings.TrimSpace(in.GithubToken)}
 		if src.GithubToken == "" {
-			if saved := h.currentSourceByName(strings.TrimSpace(in.Name)); saved != nil && saved.BackendType == config.BackendGitHubCopilot {
-				src.GithubToken = saved.GithubToken
+			if saved := h.currentSourceByName(strings.TrimSpace(in.Name)); saved != nil && saved.Backend == plugin.BackendGitHubCopilot {
+				src.GithubToken = copilotTokenFromSource(*saved)
 				if src.BaseURL == "" {
 					src.BaseURL = saved.BaseURL
 				}
@@ -784,7 +784,7 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if backend == plugin.BackendGitHubCopilot && githubToken == "" {
 		if src := h.currentSourceByName(strings.TrimSpace(in.Name)); src != nil {
-			githubToken = src.GithubToken
+			githubToken = copilotTokenFromSource(*src)
 			if baseURL == "" {
 				baseURL = src.BaseURL
 			}
@@ -870,6 +870,15 @@ func (h *handler) currentSourceByName(name string) *config.Source {
 		}
 	}
 	return nil
+}
+
+// copilotTokenFromSource 归一化 Copilot 凭据：Config v2 落盘后 token 在
+// options.github_token，过渡期内部构造仍可能放在 GithubToken。
+func copilotTokenFromSource(src config.Source) string {
+	if t, _ := src.Options["github_token"].(string); t != "" {
+		return t
+	}
+	return src.GithubToken
 }
 
 type sourceTestResult struct {
@@ -1015,13 +1024,25 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	next := *cur
 	next.Sources = make([]config.Source, len(cur.Sources)+1)
 	copy(next.Sources, cur.Sources)
+	options := in.Options
+	if backend == plugin.BackendGitHubCopilot {
+		token := strings.TrimSpace(in.GithubToken)
+		if t, _ := options["github_token"].(string); t != "" {
+			token = strings.TrimSpace(t)
+		}
+		if token != "" {
+			if options == nil {
+				options = map[string]any{}
+			}
+			options["github_token"] = token
+		}
+	}
 	next.Sources[len(cur.Sources)] = config.Source{
 		Name:              name,
 		BaseURL:           baseURL,
 		APIKey:            strings.TrimSpace(in.APIKey),
 		Backend:           backend,
-		Options:           in.Options,
-		GithubToken:       strings.TrimSpace(in.GithubToken),
+		Options:           options,
 		ModelMap:          map[string]string{},
 		DefaultModel:      strings.TrimSpace(in.DefaultModel),
 		Disabled:          in.Disabled,

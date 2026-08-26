@@ -115,7 +115,7 @@ func writeFile(t *testing.T, path string, data []byte) {
 }
 
 func minimalYAML(listen, srcName string) []byte {
-	return []byte("server:\n  listen: " + listen + "\nsources:\n  - name: " + srcName + "\n    base_url: https://example.com\n    api_key: k\n    default_model: m\n")
+	return []byte("server:\n  listen: " + listen + "\nsources:\n  - name: " + srcName + "\n    backend: anthropic\n    base_url: https://example.com\n    api_key: k\n    default_model: m\n")
 }
 
 // TestCloseIdempotent 验证多次调用 Close 不会 panic。
@@ -171,7 +171,7 @@ func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 
 	// 把日志等级改成 debug 并写回
-	writeFile(t, path, []byte("server:\n  listen: :9999\nlogging:\n  level: debug\nsources:\n  - name: src1\n    base_url: https://example.com\n    api_key: k\n    default_model: m\n"))
+	writeFile(t, path, []byte("server:\n  listen: :9999\nlogging:\n  level: debug\nsources:\n  - name: src1\n    backend: anthropic\n    base_url: https://example.com\n    api_key: k\n    default_model: m\n"))
 	w.Reload()
 
 	// reload 同步，稍等确保回调执行

@@ -158,3 +158,71 @@ sources:
 		t.Errorf("cache_enabled type = %T, want bool", opts["cache_enabled"])
 	}
 }
+
+// TestLoadRejectsLegacyBackendType 验证 Config v2 磁盘加载严格拒绝 source 级 backend_type。
+// 内部构造的 Source 仍可携带过渡字段（US 迁移期），但磁盘配置必须用稳定 backend。
+func TestLoadRejectsLegacyBackendType(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: copilot
+    backend_type: g
+    github_token: x
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for legacy backend_type, got nil")
+	}
+}
+
+// TestLoadRejectsTopLevelGithubToken 验证 Config v2 磁盘加载严格拒绝顶层 github_token。
+func TestLoadRejectsTopLevelGithubToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+github_token: gho_x
+sources:
+  - name: copilot
+    backend: github-copilot
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for top-level github_token, got nil")
+	}
+}
+
+// TestLoadRejectsSourceGithubToken 验证 Config v2 磁盘加载严格拒绝 source 级 github_token。
+func TestLoadRejectsSourceGithubToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: copilot
+    backend: github-copilot
+    github_token: gho_x
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for source github_token, got nil")
+	}
+}
+
+// TestLoadRejectsMissingBackend 验证 Config v2 磁盘加载拒绝缺少 backend 的 source。
+func TestLoadRejectsMissingBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: copilot
+    base_url: https://example.com
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for missing backend, got nil")
+	}
+}

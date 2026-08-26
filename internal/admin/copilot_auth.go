@@ -17,6 +17,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // Device Flow 会话状态。idle 表示当前没有活跃或保留的会话。
@@ -440,9 +441,12 @@ func (h *handler) saveCopilotSource(token string, draft config.Source) error {
 			break
 		}
 	}
-	draft.GithubToken = token
+	if draft.Options == nil {
+		draft.Options = map[string]any{}
+	}
+	draft.Options["github_token"] = token
 	if idx >= 0 {
-		if next.Sources[idx].BackendType != config.BackendGitHubCopilot {
+		if next.Sources[idx].Backend != plugin.BackendGitHubCopilot {
 			return fmt.Errorf("source %q is not a Copilot source", draft.Name)
 		}
 		next.Sources[idx] = draft

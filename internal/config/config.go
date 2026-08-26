@@ -160,8 +160,8 @@ type Source struct {
 	Options map[string]any `koanf:"options" yaml:"options,omitempty"`
 	// BackendType 保留用于过渡期的旧短码读取与断言；Config v2 正式落地后移除。
 	// 旧配置若只填 BackendType 不填 Backend，validate 会按短码映射到稳定 ID。
-	BackendType string `koanf:"backend_type" yaml:"backend_type,omitempty"`
-	GithubToken string `koanf:"github_token" yaml:"github_token,omitempty"`
+	BackendType string `koanf:"backend_type" yaml:"-"`
+	GithubToken string `koanf:"github_token" yaml:"-"`
 	// ModelMap 是平台级模型映射：客户端模型名 → 实际上游模型名。
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
@@ -191,6 +191,24 @@ func (s Source) SupportsWebSearchValue() bool {
 		}
 	}
 	return true
+}
+
+// MarshalYAML 把 Source 序列化为 Config v2 形状：顶层 github_token / backend_type
+// 不写盘，旧顶层凭据归一化进 options.github_token，保证 reload 不再命中旧格式拒绝。
+func (s Source) MarshalYAML() (any, error) {
+	type plain Source
+	out := plain(s)
+	if tok := s.GithubToken; tok != "" {
+		if out.Options == nil {
+			out.Options = map[string]any{}
+		}
+		if _, ok := out.Options["github_token"]; !ok {
+			out.Options["github_token"] = tok
+		}
+		out.GithubToken = ""
+	}
+	out.BackendType = ""
+	return out, nil
 }
 
 // NormalizeBackendType normalizes and validates the backend_type value.
@@ -368,6 +386,9 @@ func LoadWithValidator(path string, v SourceValidator) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	data = []byte(expandEnv(string(data)))
+	if err := rejectLegacyConfigShape(data); err != nil {
+		return nil, err
+	}
 	warnDeprecatedFields(data)
 	k := koanf.New(".")
 	if err := k.Load(rawbytes.Provider(data), yaml.Parser()); err != nil {
@@ -665,8 +686,9 @@ func (c *Config) validate(v SourceValidator) error {
 	for i := range c.Sources {
 		s := &c.Sources[i]
 		if s.Backend == "" && s.BackendType != "" {
-			// 过渡期：把旧 backend_type 短码映射到稳定 Backend ID。
-			// Config v2 正式落地后移除该分支（backend_type 拒绝）。
+			// 过渡期：结构层仍接受旧 backend_type 短码读取；磁盘加载路径
+			// 已被 rejectLegacyConfigShape 严格拒绝，内部构造（admin/tests）
+			// 在 US 迁移完成前继续可用。
 			id, ok := BackendTypeToID(s.BackendType)
 			if !ok {
 				return fmt.Errorf("config: source %d backend_type %q is no longer valid; set backend to a registered plugin id", i, s.BackendType)
@@ -842,6 +864,66 @@ func warnDeprecatedFields(data []byte) {
 		slog.Warn("忽略已废弃配置字段", "field", "cache", "replacement", "anthropic.cache_enabled")
 	}
 	scanDeprecated(raw)
+}
+
+// rejectLegacyConfigShape 在 Config v2 下显式拒绝旧格式：source 级 backend_type、
+// 顶层 github_token、source 级 github_token，以及缺少 backend 的 source。
+// 返回的迁移错误指明明明新配置形状（stable backend + options），不自动迁移猜测。
+func rejectLegacyConfigShape(data []byte) error {
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal(data, &doc); err != nil {
+		return nil // 语法错误由后续 koanf 解析报告
+	}
+	root := &doc
+	if doc.Kind == yamlv3.DocumentNode && len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+	if root.Kind != yamlv3.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i]
+		val := root.Content[i+1]
+		switch key.Value {
+		case "github_token":
+			return fmt.Errorf("config: top-level github_token is removed; move it into the corresponding source options.github_token")
+		case "backend_type":
+			return fmt.Errorf("config: backend_type is removed; set backend to one of the registered source plugins (anthropic, openai-chat, openai-responses, github-copilot)")
+		case "sources":
+			if val.Kind != yamlv3.SequenceNode {
+				continue
+			}
+			for _, item := range val.Content {
+				if err := rejectLegacySourceFields(item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// rejectLegacySourceFields 检查单个 source 节点的旧表达字段。
+func rejectLegacySourceFields(node *yamlv3.Node) error {
+	if node.Kind != yamlv3.MappingNode {
+		return nil
+	}
+	var hasBackend bool
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		switch key.Value {
+		case "backend_type":
+			return fmt.Errorf("config: source backend_type is removed; set backend to a registered source plugin (anthropic, openai-chat, openai-responses, github-copilot) and move backend-specific settings into options")
+		case "github_token":
+			return fmt.Errorf("config: source github_token is removed; move it into options.github_token")
+		case "backend":
+			hasBackend = true
+		}
+	}
+	if !hasBackend {
+		return fmt.Errorf("config: source is missing backend; set backend to a registered source plugin (anthropic, openai-chat, openai-responses, github-copilot)")
+	}
+	return nil
 }
 
 // scanDeprecated recursively walks a parsed YAML map for deprecated keys.

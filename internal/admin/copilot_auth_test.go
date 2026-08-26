@@ -11,6 +11,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // newTestAuthHandler 构造带注入 GitHub mock 的管理 handler，轮询间隔压到毫秒级。
@@ -222,11 +223,11 @@ func TestCopilotAuthSuccessSavesNewSource(t *testing.T) {
 		t.Fatalf("sources = %d, want 2", len(cfg.Sources))
 	}
 	got := cfg.Sources[1]
-	if got.Name != "copilot" || got.BackendType != config.BackendGitHubCopilot {
+	if got.Name != "copilot" || got.Backend != plugin.BackendGitHubCopilot {
 		t.Fatalf("saved source = %+v", got)
 	}
-	if got.GithubToken != "ghu_newtoken" {
-		t.Fatalf("saved token = %q", got.GithubToken)
+	if tok, _ := got.Options["github_token"].(string); tok != "ghu_newtoken" {
+		t.Fatalf("saved options github_token = %q, want ghu_newtoken", tok)
 	}
 }
 
@@ -272,8 +273,11 @@ func TestCopilotAuthSuccessUpdatesExistingSource(t *testing.T) {
 		t.Fatalf("sources = %d, want 2 (unchanged count)", len(cfg.Sources))
 	}
 	got := cfg.Sources[1]
-	if got.Name != "copilot" || got.DefaultModel != "gpt-5.3-codex" || got.GithubToken != "ghu_newtoken" {
+	if got.Name != "copilot" || got.DefaultModel != "gpt-5.3-codex" {
 		t.Fatalf("updated source = %+v", got)
+	}
+	if tok, _ := got.Options["github_token"].(string); tok != "ghu_newtoken" {
+		t.Fatalf("updated options github_token = %q, want ghu_newtoken", tok)
 	}
 }
 

@@ -104,20 +104,38 @@ func TestGithubTokenYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("validate failed: %v", err)
 	}
 
-	// YAML 序列化/反序列化往返
+	// 序列化必须产出 Config v2 磁盘形状；过渡期顶层字段不落盘。
 	data, err := yaml.Marshal(cfg.Sources[0])
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal doc: %v", err)
+	}
+	if _, ok := doc["github_token"]; ok {
+		t.Fatalf("top-level github_token must not be written:\n%s", data)
+	}
+	if _, ok := doc["backend_type"]; ok {
+		t.Fatalf("backend_type must not be written:\n%s", data)
+	}
+	opts, ok := doc["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("options missing from written YAML:\n%s", data)
+	}
+	if got := opts["github_token"]; got != "gho_test_token_123" {
+		t.Fatalf("options.github_token = %v (%T), want gho_test_token_123\n%s", got, got, data)
+	}
+
 	var src Source
 	if err := yaml.Unmarshal(data, &src); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if src.GithubToken != "gho_test_token_123" {
-		t.Errorf("GithubToken = %q, want gho_test_token_123", src.GithubToken)
+	if src.Backend != "github-copilot" {
+		t.Errorf("Backend = %q, want github-copilot", src.Backend)
 	}
-	if src.BackendType != "g" {
-		t.Errorf("BackendType = %q, want g", src.BackendType)
+	if got := src.Options["github_token"]; got != "gho_test_token_123" {
+		t.Errorf("Options[github_token] = %v (%T), want gho_test_token_123", got, got)
 	}
 }
 

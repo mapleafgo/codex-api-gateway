@@ -18,6 +18,7 @@ server: {listen: ":9090"}
 breaker: {first_byte_timeout: 8s, degrade_threshold: 3, degraded_recovery_threshold: 1, circuit_interval: 20s, circuit_recovery_threshold: 1, recovery: normal}
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: yaml-secret
     model_map: {gpt-5: claude-sonnet-4}
@@ -75,6 +76,7 @@ func TestLoadExpandsInlineEnvPlaceholders(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: ${TEST_ANTHROPIC_KEY}
 `), 0644)
@@ -108,6 +110,7 @@ func TestLoadSourceHeaders(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: k
     headers:
@@ -136,6 +139,7 @@ func TestSourceHeadersRejectsEmptyName(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: k
     headers:
@@ -152,6 +156,7 @@ func TestDefaultsApplied(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -209,6 +214,7 @@ anthropic:
   cache_enabled: false
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -232,6 +238,7 @@ func TestAnthropicConfigEnvironmentOverrides(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -255,6 +262,7 @@ func TestBreakerRequestTimeoutEnvironmentOverride(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -309,6 +317,7 @@ anthropic:
 			_ = os.WriteFile(path, []byte(tt.body+`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 			if _, err := Load(path); err == nil {
@@ -324,6 +333,7 @@ func TestLegacyCachePrefixIsIgnored(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 cache:
   ttl: 1h
@@ -346,6 +356,7 @@ logging:
   format: json
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -368,6 +379,7 @@ logging:
   level: verbose
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	if _, err := Load(path); err == nil {
@@ -386,6 +398,7 @@ logging:
   file: /tmp/gateway.log
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	lc := LoadLogging(path)
@@ -412,6 +425,7 @@ logging:
   format: text
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	lc := LoadLogging(path)
@@ -442,6 +456,7 @@ func TestLoadLoggingEmptyConfigDefaults(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	lc := LoadLogging(path)
@@ -564,6 +579,7 @@ breaker:
   recovery: normla
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	if _, err := Load(path); err == nil {
@@ -579,6 +595,7 @@ breaker:
   recovery: degraded
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
 `), 0644)
 	cfg, err := Load(path)
@@ -596,6 +613,7 @@ func TestValidateRejectsInvalidPerSourceRecovery(t *testing.T) {
 	_ = os.WriteFile(path, []byte(`
 sources:
   - name: s1
+    backend: anthropic
     base_url: http://upstream
     breaker:
       recovery: fatel
@@ -654,6 +672,7 @@ server:
   listen: ":1"
 sources:
   - name: s1
+    backend: anthropic
     base_url: https://example.com
 models:
   z-last:
@@ -695,6 +714,7 @@ func TestLoadModelOverridesParsesSupportsImageDetailOriginal(t *testing.T) {
 server: {listen: ":9090"}
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: yaml-secret
 models:
@@ -728,6 +748,7 @@ func TestLoadModelOverridesParsesAcceptsImage(t *testing.T) {
 server: {listen: ":9090"}
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: yaml-secret
 models:
@@ -761,6 +782,7 @@ func TestLoadBaseInstructionsSiblingFile(t *testing.T) {
 server: {listen: ":9090"}
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: k
 `), 0o644)
@@ -781,6 +803,7 @@ func TestLoadBaseInstructionsMissingSibling(t *testing.T) {
 server: {listen: ":9090"}
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: k
 `), 0o644)
@@ -802,6 +825,7 @@ breaker: {first_byte_timeout: 8s, circuit_interval: 20s, degrade_threshold: 3, d
 system_suffix: "legacy"
 sources:
   - name: official
+    backend: anthropic
     base_url: https://api.anthropic.com
     api_key: k
 `), 0644)
@@ -849,6 +873,7 @@ server:
   listen: ":9090"
 sources:
   - name: s1
+    backend: anthropic
     base_url: https://example.com
 `), 0o644)
 	cfg, err := Load(path)
@@ -885,6 +910,7 @@ logging:
   max_backups: 2
 sources:
   - name: s1
+    backend: anthropic
     base_url: https://example.com
 `), 0o644)
 	cfg, err := Load(path)
