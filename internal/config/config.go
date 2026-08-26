@@ -157,9 +157,12 @@ type Source struct {
 	// Backend 是已注册源插件的稳定 ID，取代旧的 backend_type 短码。
 	Backend string `koanf:"backend" yaml:"backend"`
 	// Options 是所选插件 schema 声明的源专属配置（敏感值支持 ${ENV_VAR} 插值）。
-	Options      map[string]any    `koanf:"options" yaml:"options,omitempty"`
-	BackendType  string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
-	GithubToken  string            `koanf:"github_token" yaml:"github_token,omitempty"`
+	Options map[string]any `koanf:"options" yaml:"options,omitempty"`
+	// BackendType 保留用于过渡期的旧短码读取与断言；Config v2 正式落地后移除。
+	// 旧配置若只填 BackendType 不填 Backend，validate 会按短码映射到稳定 ID。
+	BackendType string `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	GithubToken string `koanf:"github_token" yaml:"github_token,omitempty"`
+	// ModelMap 是平台级模型映射：客户端模型名 → 实际上游模型名。
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
 	Breaker      *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
@@ -205,6 +208,23 @@ func NormalizeBackendType(s string) (string, error) {
 		return BackendGitHubCopilot, nil
 	default:
 		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, g, r)", s)
+	}
+}
+
+// BackendTypeToID 把旧版单字符 backend_type 短码映射到稳定插件 ID。
+// 过渡期配置兼容用；Config v2 正式落地后移除。
+func BackendTypeToID(bt string) (string, bool) {
+	switch bt {
+	case BackendAnthropic:
+		return "anthropic", true
+	case BackendOpenAIChat:
+		return "openai-chat", true
+	case BackendOpenAIResponses:
+		return "openai-responses", true
+	case BackendGitHubCopilot:
+		return "github-copilot", true
+	default:
+		return "", false
 	}
 }
 
@@ -316,8 +336,16 @@ func expandEnv(s string) string {
 	})
 }
 
-// Load reads, parses, env-interpolates and validates config.
+// Load reads, parses, env-interpolates and validates config without a
+// plugin-level SourceValidator (nil validator). 装配入口应优先使用
+// LoadWithValidator，以便配置校验覆盖 Backend 已注册、options 合法等插件约束。
 func Load(path string) (*Config, error) {
+	return LoadWithValidator(path, nil)
+}
+
+// LoadWithValidator 与 Load 相同，但用注入的 SourceValidator 做插件级校验。
+// validator 可为 nil（等同于 Load）。校验错误返回时，调用方不得替换运行时状态。
+func LoadWithValidator(path string, v SourceValidator) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -340,7 +368,7 @@ func Load(path string) (*Config, error) {
 	if err := applyEnvOverrides(&cfg, envCfg); err != nil {
 		return nil, err
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(v); err != nil {
 		return nil, err
 	}
 	// 以下日志应在调用方完成 logging.Configure 后输出，否则会走 Go 默认
@@ -551,10 +579,16 @@ func unmarshalEnvPath(k *koanf.Koanf, path string, target any) error {
 
 // Validate 暴露给 admin 包做配置校验（与启动时的 validate 相同）。
 func (c *Config) Validate() error {
-	return c.validate()
+	return c.validate(nil)
 }
 
-func (c *Config) validate() error {
+// ValidateWithValidator 用注入的 SourceValidator 校验配置。nil 时跳过插件级校验，
+// 仅做内置字段校验（例如 admin 早期版本的调用方未注入 validator）。
+func (c *Config) ValidateWithValidator(v SourceValidator) error {
+	return c.validate(v)
+}
+
+func (c *Config) validate(v SourceValidator) error {
 	if len(c.Sources) == 0 {
 		slog.Warn("配置未配置任何上游源，转发请求将返回 503；请在管理页添加 source")
 	}
@@ -610,20 +644,26 @@ func (c *Config) validate() error {
 	if err := validateBreakerNonNegative("breaker", &c.Breaker); err != nil {
 		return err
 	}
+	seenSource := make(map[string]bool, len(c.Sources))
 	for i := range c.Sources {
 		s := &c.Sources[i]
-		norm, err := NormalizeBackendType(s.BackendType)
-		if err != nil {
-			return fmt.Errorf("config: source %d: %w", i, err)
+		if s.Backend == "" && s.BackendType != "" {
+			// 过渡期：把旧 backend_type 短码映射到稳定 Backend ID。
+			// Config v2 正式落地后移除该分支（backend_type 拒绝）。
+			id, ok := BackendTypeToID(s.BackendType)
+			if !ok {
+				return fmt.Errorf("config: source %d backend_type %q is no longer valid; set backend to a registered plugin id", i, s.BackendType)
+			}
+			s.Backend = id
 		}
-		s.BackendType = norm
-		// g 源的上游地址由 GraphQL 动态发现，base_url 可省略。
-		if s.Name == "" || (s.BaseURL == "" && norm != BackendGitHubCopilot) {
-			return fmt.Errorf("config: source %d missing name/base_url", i)
+		if s.Name != "" {
+			if seenSource[s.Name] {
+				return fmt.Errorf("config: duplicate source name %q", s.Name)
+			}
+			seenSource[s.Name] = true
 		}
-		// g 源必须提供 github_token（直接调用 Copilot API）。
-		if norm == BackendGitHubCopilot && s.GithubToken == "" {
-			return fmt.Errorf("config: source %d missing github_token (required for backend_type=g)", i)
+		if err := validateSourceIdentity(i, s, v); err != nil {
+			return err
 		}
 		if err := validateSourceHeaders(i, s.Headers); err != nil {
 			return err
@@ -637,6 +677,22 @@ func (c *Config) validate() error {
 			if err := validateBreakerNonNegative(fmt.Sprintf("source %d breaker", i), s.Breaker); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// validateSourceIdentity 校验单个 source 的身份与后端字段。
+// backend 必须非空；提供 validator 时，插件级必填与 options 校验交给注册表。
+// base_url 是否必填由插件 schema 声明，这里只做平台级最小约束（空串允许，
+// 插件可动态发现或配置在 options）。
+func validateSourceIdentity(i int, s *Source, v SourceValidator) error {
+	if s.Name == "" {
+		return fmt.Errorf("config: source %d missing name", i)
+	}
+	if v != nil {
+		if err := v.ValidateSource(*s); err != nil {
+			return fmt.Errorf("config: source %d: %w", i, err)
 		}
 	}
 	return nil

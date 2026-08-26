@@ -25,7 +25,7 @@ func TestWatcherReloadsOnFileChange(t *testing.T) {
 
 	var reloads atomic.Int32
 	var logCalls atomic.Int32
-	w, err := New(path, holder,
+	w, err := New(path, holder, nil,
 		func() error { reloads.Add(1); return nil },
 		func(config.LoggingCfg) error { logCalls.Add(1); return nil })
 	if err != nil {
@@ -65,7 +65,7 @@ func TestWatcherKeepsOldConfigOnBadYAML(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil, nil)
+	w, err := New(path, holder, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestWatcherManualReload(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, _ := New(path, holder, nil, nil)
+	w, _ := New(path, holder, nil, nil, nil)
 	t.Cleanup(func() { _ = w.Close() })
 
 	writeFile(t, path, minimalYAML(":7777", "src2"))
@@ -132,7 +132,7 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil, nil)
+	w, err := New(path, holder, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestWatcherLoggingCallbackGetsNewConfig(t *testing.T) {
 	holder := config.NewHolder(cfg)
 
 	var gotLevel atomic.Value
-	w, _ := New(path, holder, nil, func(lc config.LoggingCfg) error {
+	w, _ := New(path, holder, nil, nil, func(lc config.LoggingCfg) error {
 		gotLevel.Store(lc.Level)
 		return nil
 	})
@@ -188,7 +188,7 @@ func TestWatcherReloadReportsCallbackErrorAndKeepsNewConfig(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder,
+	w, err := New(path, holder, nil,
 		func() error { return errors.New("scheduler failed") },
 		func(config.LoggingCfg) error { return nil })
 	if err != nil {
@@ -214,7 +214,7 @@ func TestWatcherReloadConvertsCallbackPanicToError(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder,
+	w, err := New(path, holder, nil,
 		func() error { panic("scheduler panic") },
 		func(config.LoggingCfg) error { panic("logging panic") })
 	if err != nil {
@@ -237,7 +237,7 @@ func TestWatcherReloadReportsLoggingCallbackError(t *testing.T) {
 	cfg, _ := config.Load(path)
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil, func(config.LoggingCfg) error {
+	w, err := New(path, holder, nil, nil, func(config.LoggingCfg) error {
 		return errors.New("logging failed")
 	})
 	if err != nil {
@@ -260,7 +260,7 @@ func TestWatcherSuccessfulReloadClearsCallbackError(t *testing.T) {
 	holder := config.NewHolder(cfg)
 	fail := true
 
-	w, err := New(path, holder, func() error {
+	w, err := New(path, holder, nil, func() error {
 		if fail {
 			return errors.New("temporary failure")
 		}
@@ -298,7 +298,7 @@ func TestWatcherReloadsOnBaseInstructionsChange(t *testing.T) {
 	}
 	holder := config.NewHolder(cfg)
 
-	w, err := New(path, holder, nil, nil)
+	w, err := New(path, holder, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestWatcherIgnoresUnrelatedSiblingFile(t *testing.T) {
 	holder := config.NewHolder(cfg)
 
 	var reloads atomic.Int32
-	w, err := New(path, holder, func() error { reloads.Add(1); return nil }, nil)
+	w, err := New(path, holder, nil, func() error { reloads.Add(1); return nil }, nil)
 	if err != nil {
 		t.Fatalf("new watcher: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestWatcherDeduplicatesIdenticalReload(t *testing.T) {
 
 	var reloads atomic.Int32
 	var logCalls atomic.Int32
-	w, err := New(path, holder,
+	w, err := New(path, holder, nil,
 		func() error { reloads.Add(1); return nil },
 		func(config.LoggingCfg) error { logCalls.Add(1); return nil })
 	if err != nil {

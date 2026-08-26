@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -46,7 +47,7 @@ func TestValidateRejectsUnknownBackendType(t *testing.T) {
 			BackendType: "invalid",
 		}},
 	}
-	if err := cfg.validate(); err == nil {
+	if err := cfg.validate(nil); err == nil {
 		t.Fatalf("expected error for invalid backend_type, got nil")
 	}
 }
@@ -65,7 +66,7 @@ func TestValidateAcceptsBoth(t *testing.T) {
 		} else {
 			cfg.Sources[0].GithubToken = "test-token"
 		}
-		if err := cfg.validate(); err != nil {
+		if err := cfg.validate(nil); err != nil {
 			t.Fatalf("backend_type=%q: validate failed: %v", bt, err)
 		}
 	}
@@ -79,7 +80,7 @@ func TestGithubTokenYAMLRoundTrip(t *testing.T) {
 			GithubToken: "gho_test_token_123",
 		}},
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(nil); err != nil {
 		t.Fatalf("validate failed: %v", err)
 	}
 
@@ -108,7 +109,20 @@ func TestValidateRequiresGithubTokenForG(t *testing.T) {
 			// GithubToken intentionally omitted
 		}},
 	}
-	if err := cfg.validate(); err == nil {
-		t.Fatal("expected error for missing github_token")
+	// legacy g 短码应先映射到稳定 Backend ID。
+	if err := cfg.validate(nil); err != nil {
+		t.Fatalf("legacy g source should be accepted at platform level: %v", err)
+	}
+	if got := cfg.Sources[0].Backend; got != "github-copilot" {
+		t.Fatalf("Backend = %q, want github-copilot after legacy mapping", got)
+	}
+	// 缺 github_token 属于插件级必填，由注入的 SourceValidator 拒绝。
+	v := fakeValidator{err: errors.New("copilot: missing github_token")}
+	if err := cfg.validate(v); err == nil {
+		t.Fatal("expected error for missing github_token via validator")
 	}
 }
+
+type fakeValidator struct{ err error }
+
+func (f fakeValidator) ValidateSource(Source) error { return f.err }

@@ -24,6 +24,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/configwatch"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/server"
 	"github.com/mapleafgo/codex-api-gateway/internal/tray"
 )
@@ -135,9 +136,14 @@ func main() {
 	})
 	go t.Run()
 
-	// config.Load 失败会 os.Exit(1)，整个进程（含托盘 goroutine）一起退出，
-	// 不会留下后台运行的残留进程。
-	cfg, err := config.Load(absConfigPath)
+	// 先构建内置源插件注册表，再用其做配置校验（覆盖 Backend 已注册、
+	// options 合法等插件级约束）。config.Load 失败会 os.Exit(1)。
+	registry, err := assembly.NewBuiltins()
+	if err != nil {
+		slog.Error("构建内置源插件注册表失败", "error", err)
+		os.Exit(1)
+	}
+	cfg, err := config.LoadWithValidator(absConfigPath, registry)
 	if err != nil {
 		// 仅文件缺失时生成默认配置（打包为单文件后首次运行的场景）。
 		// 解析/校验失败必须保留原文件退出：坏文件里仍是用户的全部
@@ -151,17 +157,11 @@ func main() {
 			slog.Error("生成默认配置失败", "config_path", absConfigPath, "error", werr)
 			os.Exit(1)
 		}
-		cfg, err = config.Load(absConfigPath)
+		cfg, err = config.LoadWithValidator(absConfigPath, registry)
 		if err != nil {
 			slog.Error("默认配置加载仍失败", "config_path", absConfigPath, "error", err)
 			os.Exit(1)
 		}
-	}
-
-	registry, err := assembly.NewBuiltins()
-	if err != nil {
-		slog.Error("构建内置源插件注册表失败", "error", err)
-		os.Exit(1)
 	}
 	srv := server.New(cfg, registry)
 	defer srv.Close()
@@ -194,7 +194,7 @@ func main() {
 		}
 		return nil
 	}
-	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), onReload, applyLogging)
+	watcher, werr := configwatch.New(absConfigPath, srv.Holder(), registry, onReload, applyLogging)
 	if werr != nil {
 		slog.Warn("配置热重载不可用（fsnotify 初始化失败），管理页保存需重启生效", "error", werr)
 	} else {
@@ -203,7 +203,7 @@ func main() {
 	}
 
 	mux := srv.Mux()
-	adminMount(mux, srv, absConfigPath, watcher, applyLogging, syncModelCatalog)
+	adminMount(mux, srv, absConfigPath, registry, watcher, applyLogging, syncModelCatalog)
 
 	// HTTP server 用 *http.Server 以支持 Shutdown；由 tray/shutdown 协调关闭。
 	// appCtx 在退出时 cancel，通过 BaseContext 注入每个请求：管理页 SSE、
@@ -393,7 +393,7 @@ func shutdownHandler(httpSrv *http.Server, watcher *configwatch.Watcher, shutdow
 // adminMount 挂载管理页到 mux，reload 回调统一从磁盘重载。
 // watcher 为 nil 时退化为手动 Load+Replace+Reload+重配置日志。
 // applyLogging 在每次成功重载后把新的 logging 配置应用到运行中的日志系统。
-func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *configwatch.Watcher, applyLogging func(config.LoggingCfg) error, syncModelCatalog func() error) {
+func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, registry *plugin.Registry, w *configwatch.Watcher, applyLogging func(config.LoggingCfg) error, syncModelCatalog func() error) {
 	reload := func() {
 		if w != nil {
 			w.Reload()
@@ -406,7 +406,7 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, w *confi
 				slog.Error("管理页保存后重载 panic", "recover", rec)
 			}
 		}()
-		if newCfg, err := config.Load(cfgPath); err == nil {
+		if newCfg, err := config.LoadWithValidator(cfgPath, registry); err == nil {
 			srv.Holder().Replace(newCfg)
 			if err := srv.ReloadScheduler(); err != nil {
 				slog.Error("管理页保存后应用 scheduler 配置失败", "error", err)

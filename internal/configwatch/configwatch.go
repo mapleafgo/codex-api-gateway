@@ -28,8 +28,9 @@ type Watcher struct {
 	path       string // config.yaml 路径
 	configBase string // config 文件名，用于过滤目录事件
 	holder     *config.Holder
-	onReload   ReloadCallback  // 热重载成功后回调（scheduler.Reload）
-	onLog      LoggingCallback // 热重载成功后回调（重新配置日志系统，可空）
+	validator  config.SourceValidator // 插件级校验器；可为 nil
+	onReload   ReloadCallback         // 热重载成功后回调（scheduler.Reload）
+	onLog      LoggingCallback        // 热重载成功后回调（重新配置日志系统，可空）
 
 	fsw      *fsnotify.Watcher
 	stop     chan struct{}
@@ -55,7 +56,7 @@ type LoggingCallback func(config.LoggingCfg) error
 //
 // 监听范围：config.yaml、同级 base_instructions.md，以及配置所在目录
 // （覆盖编辑器原子保存 rename，以及 md 文件稍后才创建的情况）。
-func New(path string, holder *config.Holder, onReload ReloadCallback, onLog LoggingCallback) (*Watcher, error) {
+func New(path string, holder *config.Holder, validator config.SourceValidator, onReload ReloadCallback, onLog LoggingCallback) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -79,6 +80,7 @@ func New(path string, holder *config.Holder, onReload ReloadCallback, onLog Logg
 		path:       path,
 		configBase: filepath.Base(path),
 		holder:     holder,
+		validator:  validator,
 		onReload:   onReload,
 		onLog:      onLog,
 		fsw:        fsw,
@@ -176,7 +178,7 @@ func (w *Watcher) reload(dedupe bool) {
 	if dedupe && w.lastContentHash.Load() == h {
 		return
 	}
-	cfg, err := config.Load(w.path)
+	cfg, err := config.LoadWithValidator(w.path, w.validator)
 	if err != nil {
 		s := err.Error()
 		w.lastLoadErr.Store(&s)
