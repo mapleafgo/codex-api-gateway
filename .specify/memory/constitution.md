@@ -1,9 +1,12 @@
 <!--
 Sync Impact Report
-- Version change: 1.1.0 → 1.2.0
+- Version change: 1.2.0 → 1.3.0
 - Modified principles:
-  - 产品边界与协议透传：backend 类型清单纳入 GitHub Copilot `g`
-  - 协议事实源与官方 SDK：`g` 作为分发后端复用 a/c/r 字段矩阵
+  - 产品边界与协议透传：backend_type 短码清单改为已注册源插件身份模型
+  - 协议事实源与官方 SDK：分发型 Copilot 复用被委托协议路径矩阵
+  - 分层单向依赖：新增源插件契约、实现隔离与唯一组装约束
+  - 调度可用性：按转换/透传引擎表达 EventGate，而非固定短码路径
+  - 热路径隔离：观测身份统一为稳定 backend 标识
 - Added principles: 无
 - Added sections: 无
 - Removed sections: 无
@@ -17,9 +20,10 @@ Sync Impact Report
 ### I. 产品边界与协议透传
 
 本服务必须面向 Codex CLI 的 OpenAI Responses 契约，公开入口保持 `/v1/responses`
-与 `/v1/models`，并把源配置的 `backend_type` 限定为 `a`（Anthropic）、`c`
-（Chat Completions）、`g`（GitHub Copilot）、`r`（Responses 透传）。上游调用必须
-以流式 SSE 为结果形态。
+与 `/v1/models`。每个源必须通过稳定且操作者可读的 `backend` 标识引用一个已注册源
+插件；内置发布必须至少包含 Anthropic Messages、OpenAI Chat Completions、OpenAI
+Responses 与 GitHub Copilot。源专属参数必须位于该源的 options 区域，共享核心只承载
+跨源通用字段。上游调用必须以流式 SSE 为结果形态。
 
 网关必须只做 wire 对齐：入站 Responses JSON 转为上游可接受的请求形状，上游流式结果
 转回合法 Responses SSE。上游是否支持某模型、工具、会话能力，是否拒绝请求，是否返回
@@ -27,19 +31,19 @@ Sync Impact Report
 后端能力而 fail-fast、改写 failed、编造能力不足终态或伪造结果。
 
 网关禁止实现 session store，禁止代补 OpenAI 平台历史。`previous_response_id` 与
-Conversation/store 语义必须按 `docs/protocol-coverage.md` 分路径处理：`a` / `c`
-登记不支持并保持既定 WARN/忽略行为，`r` 透传上游且不代补历史。唯一允许网关拒绝的
-场景是客户端字段或 item 无法安全映射到目标协议，且继续转发必然破坏协议。
+Conversation/store 语义必须按 `docs/protocol-coverage.md` 分路径处理：Anthropic 与
+Chat 转换路径登记不支持并保持既定 WARN/忽略行为，Responses 透传路径交给上游且不代补
+历史。唯一允许网关拒绝的场景是客户端字段或 item 无法安全映射到目标协议，且继续转发必
+然破坏协议。
 
 请求失败必须以 error 或 SSE 错误事件返回，禁止 panic 逃逸到客户端或进程退出路径。
-任何新增后端类型必须先定义与 `a` / `c` / `g` / `r` 同级的请求、流式、错误和观测契约。
+任何新增源插件必须先定义与既有源同级的请求、流式、错误和观测契约。
 
 ### II. 协议事实源与官方 SDK
 
 `docs/protocol-coverage.md` 是协议覆盖矩阵的单一事实源。协议行为变更必须同步更新
-矩阵、实现和测试；`a` / `c` / `g` / `r` 各路径的字段状态禁止互相套用；`g` 必须
-作为认证、模型目录与协议分发层复用被委托 a/c/r 路径的字段矩阵，不得另建重复
-状态行。历史设计文档、
+矩阵、实现和测试；各注册源路径的字段状态禁止互相套用；GitHub Copilot 必须作为认证、
+模型目录与协议分发层复用被委托协议路径的字段矩阵，不得另建重复状态行。历史设计文档、
 项目总结和 SDK文档快照只能作为背景证据，禁止覆盖当前矩阵、官方 SDK 类型与测试事实。
 
 wire 层协议字面量（事件类型、item 类型、content block 类型、finish reason 等）必须
@@ -62,6 +66,11 @@ L4 服务编排层、L5 管理/观测旁路、L6 配置热重载的职责边界�
 daemon 与生命周期组装。`internal/server` 是唯一 `/v1/*` 编排入口；`internal/scheduler`
 负责源选择与 Backend 分发；Backend 只负责单源协议适配；转换层禁止路由、选源或修改
 运行时配置。
+
+具体源插件必须收拢在独立的插件实现包内。调度、服务编排、配置解析、管理框架和健康框架
+只能依赖源插件契约与 Registry，禁止 import 具体插件实现包或在热路径中判断某个源的专属
+ID、字段或文案。具体插件只允许在唯一组装入口互相组合；分发型插件必须通过宿主契约请求
+被委托 Backend，禁止直接依赖其他插件实现包。
 
 `internal/admin` 与 `internal/metrics` 是旁路能力，禁止进入 `/v1/*` 转发路径。管理页
 只能通过公开管理 API 和配置写盘链路影响运行时，禁止直接持有或修改 scheduler、Backend、
@@ -92,9 +101,9 @@ in-place 修改。
 机会选择源；源状态变化必须按既有规则调整顺序，恢复必须只在真实请求成功后转为 normal。
 客户端请求上下文取消必须保持源锁定语义并被记录为 canceled，禁止计入上游失败。
 
-`a` / `c` 路径必须由 EventGate 兜底：状态与终态事件先缓冲，首个可见内容事件到达后
-才向客户端 flush 并锁定源；仅状态/终态而无内容的流必须按空响应允许换源。`r` 路径
-禁止加 EventGate，必须保持上游事件原样透传，首个上游事件即锁定源。
+协议转换路径必须由 EventGate 兜底：状态与终态事件先缓冲，首个可见内容事件到达后才向
+客户端 flush 并锁定源；仅状态/终态而无内容的流必须按空响应允许换源。透传路径禁止加
+EventGate，必须保持上游事件原样透传，首个上游事件即锁定源。
 
 源一旦锁定，或已经向客户端透传 failed / incomplete 等终态，必须停止换源，即使 Backend
 随后返回 error；禁止客户端在同一终态后收到第二源事件。首字节超时只约束上游开始出流，
@@ -113,7 +122,7 @@ admin handler 必须被 recover 中间件包裹；指标聚合 panic 只能损�
 
 所有业务与诊断日志必须使用 `log/slog` 结构化键值，禁止 `fmt.Print*`、`log.Print*`
 或直接写 stderr。错误必须作为 error 返回，禁止把 error 文本当日志重复打印。请求与
-上游日志必须携带 request id、source、backend_type、attempt、状态或错误等可用上下文，
+上游日志必须携带 request id、source、backend、attempt、状态或错误等可用上下文，
 并截断超长上游 body。
 
 日志、metrics、管理 SSE 与异常观测禁止记录 Authorization、API key、`x-api-key`、
@@ -190,4 +199,4 @@ Sync Impact Report、版本号与 Last Amended 日期。合规审查必须在合
 新增治理章节或实质扩展；PATCH 用于措辞澄清、笔误和非语义修正。任何故意延迟的字段必须
 在正文中说明原因，并列入 Sync Impact Report 的待办清单。
 
-**Version**: 1.2.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-25
+**Version**: 1.3.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-26
