@@ -128,6 +128,7 @@ type BreakerCfg struct {
 // 'r' = OpenAI Responses (passthrough, only streaming)。
 const (
 	BackendAnthropic       = "a"
+	BackendGitHubCopilot   = "g"
 	BackendOpenAIChat      = "c"
 	BackendOpenAIResponses = "r"
 )
@@ -144,10 +145,14 @@ const DefaultLogMaxSizeMB = 50
 
 // Source configures one upstream (backend_type a | c | r).
 type Source struct {
-	Name         string            `koanf:"name" yaml:"name"`
-	BaseURL      string            `koanf:"base_url" yaml:"base_url"`
-	APIKey       string            `koanf:"api_key" yaml:"api_key,omitempty"`
-	BackendType  string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	Name        string `koanf:"name" yaml:"name"`
+	BaseURL     string `koanf:"base_url" yaml:"base_url"`
+	APIKey      string `koanf:"api_key" yaml:"api_key,omitempty"`
+	BackendType string `koanf:"backend_type" yaml:"backend_type,omitempty"`
+	// GithubToken 是 backend_type=g 源的 GitHub OAuth token，
+	// 用于直接作为 Bearer 调用 Copilot API（参照 Zed 实现，不换 session token）。
+	// 支持 ${ENV_VAR} 插值。仅在 backend_type=g 时有意义。
+	GithubToken  string            `koanf:"github_token" yaml:"github_token,omitempty"`
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
 	Breaker      *BreakerCfg       `koanf:"breaker" yaml:"breaker,omitempty"`
@@ -189,8 +194,10 @@ func NormalizeBackendType(s string) (string, error) {
 		return BackendOpenAIChat, nil
 	case BackendOpenAIResponses:
 		return BackendOpenAIResponses, nil
+	case BackendGitHubCopilot:
+		return BackendGitHubCopilot, nil
 	default:
-		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, r)", s)
+		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, g, r)", s)
 	}
 }
 
@@ -598,14 +605,19 @@ func (c *Config) validate() error {
 	}
 	for i := range c.Sources {
 		s := &c.Sources[i]
-		if s.Name == "" || s.BaseURL == "" {
-			return fmt.Errorf("config: source %d missing name/base_url", i)
-		}
 		norm, err := NormalizeBackendType(s.BackendType)
 		if err != nil {
 			return fmt.Errorf("config: source %d: %w", i, err)
 		}
 		s.BackendType = norm
+		// g 源的上游地址由 GraphQL 动态发现，base_url 可省略。
+		if s.Name == "" || (s.BaseURL == "" && norm != BackendGitHubCopilot) {
+			return fmt.Errorf("config: source %d missing name/base_url", i)
+		}
+		// g 源必须提供 github_token（直接调用 Copilot API）。
+		if norm == BackendGitHubCopilot && s.GithubToken == "" {
+			return fmt.Errorf("config: source %d missing github_token (required for backend_type=g)", i)
+		}
 		if err := validateSourceHeaders(i, s.Headers); err != nil {
 			return err
 		}

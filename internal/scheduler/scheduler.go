@@ -56,6 +56,7 @@ type Scheduler struct {
 	anthropicBackend *backend.AnthropicBackend
 	chatBackend      *backend.ChatBackend
 	responsesBackend *backend.ResponsesBackend
+	copilotBackend   *backend.CopilotBackend
 	breakers         map[string]*breaker.Breaker
 	order            []orderEntry // runtimeOrder: runtime priority sequence
 	bkMu             sync.Mutex
@@ -118,6 +119,7 @@ func New(cfg any) *Scheduler {
 		anthropicBackend: backend.NewAnthropic(),
 		chatBackend:      backend.NewChat(),
 		responsesBackend: backend.NewResponses(),
+		copilotBackend:   backend.NewCopilot(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
 		breakers:         map[string]*breaker.Breaker{},
 		order:            order,
 		backoff:          defaultBackoff,
@@ -394,7 +396,8 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 }
 
 // ListUpstreamModels 拉取指定源的上游模型列表，供管理页编辑模型映射时选用。
-// 按 backend_type 分发：a → anthropic ListModels；c/r → Bearer ListModels。
+// 按 backend_type 分发：a → anthropic ListModels；c/r → Bearer ListModels；
+// g → Copilot 筛选目录。
 // 返回统一 anthropicclient.ModelInfo 形状供管理页复用。
 func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) ([]anthropicclient.ModelInfo, error) {
 	src, ok := s.sourceByName(sourceName)
@@ -424,6 +427,16 @@ func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) (
 		out := make([]anthropicclient.ModelInfo, 0, len(ms))
 		for _, m := range ms {
 			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
+		}
+		return out, nil
+	case config.BackendGitHubCopilot:
+		ms, err := s.copilotBackend.ListModels(ctx, src)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]anthropicclient.ModelInfo, 0, len(ms))
+		for _, m := range ms {
+			out = append(out, anthropicclient.ModelInfo{ID: m.ID})
 		}
 		return out, nil
 	default:
@@ -570,6 +583,8 @@ func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
 		return s.chatBackend
 	case config.BackendOpenAIResponses:
 		return s.responsesBackend
+	case config.BackendGitHubCopilot:
+		return s.copilotBackend
 	default:
 		return s.anthropicBackend
 	}

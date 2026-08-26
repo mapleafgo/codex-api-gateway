@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
 
 func TestNormalizeBackendType(t *testing.T) {
 	cases := []struct {
@@ -11,9 +15,11 @@ func TestNormalizeBackendType(t *testing.T) {
 		{"a", "a", true},
 		{"c", "c", true},
 		{"r", "r", true},
+		{"g", "g", true},
 		{" a ", "a", true},
 		{" c ", "c", true},
 		{" r ", "r", true},
+		{" g ", "g", true},
 		{"anthropic", "", false},
 		{"openai_chat", "", false},
 		{"x", "", false},
@@ -46,17 +52,63 @@ func TestValidateRejectsUnknownBackendType(t *testing.T) {
 }
 
 func TestValidateAcceptsBoth(t *testing.T) {
-	cases := []string{"a", "c", "r", ""}
+	cases := []string{"a", "c", "r", "g", ""}
 	for _, bt := range cases {
 		cfg := Config{
 			Sources: []Source{{
 				Name:        "test",
-				BaseURL:     "https://example.com",
 				BackendType: bt,
 			}},
+		}
+		if bt != "g" {
+			cfg.Sources[0].BaseURL = "https://example.com"
+		} else {
+			cfg.Sources[0].GithubToken = "test-token"
 		}
 		if err := cfg.validate(); err != nil {
 			t.Fatalf("backend_type=%q: validate failed: %v", bt, err)
 		}
+	}
+}
+
+func TestGithubTokenYAMLRoundTrip(t *testing.T) {
+	cfg := Config{
+		Sources: []Source{{
+			Name:        "copilot",
+			BackendType: "g",
+			GithubToken: "gho_test_token_123",
+		}},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+
+	// YAML 序列化/反序列化往返
+	data, err := yaml.Marshal(cfg.Sources[0])
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var src Source
+	if err := yaml.Unmarshal(data, &src); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if src.GithubToken != "gho_test_token_123" {
+		t.Errorf("GithubToken = %q, want gho_test_token_123", src.GithubToken)
+	}
+	if src.BackendType != "g" {
+		t.Errorf("BackendType = %q, want g", src.BackendType)
+	}
+}
+
+func TestValidateRequiresGithubTokenForG(t *testing.T) {
+	cfg := Config{
+		Sources: []Source{{
+			Name:        "copilot",
+			BackendType: "g",
+			// GithubToken intentionally omitted
+		}},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error for missing github_token")
 	}
 }

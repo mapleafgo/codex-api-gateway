@@ -1,17 +1,11 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 → 1.1.0
+- Version change: 1.1.0 → 1.2.0
 - Modified principles:
-  - 协议转换只对齐 wire，不替上游裁决 → 产品边界与协议透传
-  - 分层单向依赖与配置单一真相源 → 拆分为分层单向依赖与唯一组装入口、配置单一真相源与原子生效
-  - 协议常量对齐官方 SDK，策略注册表优于特例 handler → 协议事实源与官方 SDK
-  - 性能隔离与可观测性 → 热路径隔离与结构化可观测
-  - 测试靠近实现，改动保持最小增量 → 测试、文档与最小增量
-- Added principles:
-  - 调度可用性与失败终态语义
-- Added sections:
-  - 安全、隐私与本地运行边界（扩展原架构、安全与配置约束）
-  - 开发、审查与发布工作流（扩展原开发工作流）
+  - 产品边界与协议透传：backend 类型清单纳入 GitHub Copilot `g`
+  - 协议事实源与官方 SDK：`g` 作为分发后端复用 a/c/r 字段矩阵
+- Added principles: 无
+- Added sections: 无
 - Removed sections: 无
 - Follow-up TODOs: 无
 -->
@@ -24,7 +18,8 @@ Sync Impact Report
 
 本服务必须面向 Codex CLI 的 OpenAI Responses 契约，公开入口保持 `/v1/responses`
 与 `/v1/models`，并把源配置的 `backend_type` 限定为 `a`（Anthropic）、`c`
-（Chat Completions）、`r`（Responses 透传）。上游调用必须以流式 SSE 为结果形态。
+（Chat Completions）、`g`（GitHub Copilot）、`r`（Responses 透传）。上游调用必须
+以流式 SSE 为结果形态。
 
 网关必须只做 wire 对齐：入站 Responses JSON 转为上游可接受的请求形状，上游流式结果
 转回合法 Responses SSE。上游是否支持某模型、工具、会话能力，是否拒绝请求，是否返回
@@ -37,12 +32,14 @@ Conversation/store 语义必须按 `docs/protocol-coverage.md` 分路径处理�
 场景是客户端字段或 item 无法安全映射到目标协议，且继续转发必然破坏协议。
 
 请求失败必须以 error 或 SSE 错误事件返回，禁止 panic 逃逸到客户端或进程退出路径。
-任何新增后端类型必须先定义与 `a` / `c` / `r` 同级的请求、流式、错误和观测契约。
+任何新增后端类型必须先定义与 `a` / `c` / `g` / `r` 同级的请求、流式、错误和观测契约。
 
 ### II. 协议事实源与官方 SDK
 
 `docs/protocol-coverage.md` 是协议覆盖矩阵的单一事实源。协议行为变更必须同步更新
-矩阵、实现和测试；`a` / `c` / `r` 三条路径的字段状态禁止互相套用。历史设计文档、
+矩阵、实现和测试；`a` / `c` / `g` / `r` 各路径的字段状态禁止互相套用；`g` 必须
+作为认证、模型目录与协议分发层复用被委托 a/c/r 路径的字段矩阵，不得另建重复
+状态行。历史设计文档、
 项目总结和 SDK文档快照只能作为背景证据，禁止覆盖当前矩阵、官方 SDK 类型与测试事实。
 
 wire 层协议字面量（事件类型、item 类型、content block 类型、finish reason 等）必须
@@ -193,4 +190,4 @@ Sync Impact Report、版本号与 Last Amended 日期。合规审查必须在合
 新增治理章节或实质扩展；PATCH 用于措辞澄清、笔误和非语义修正。任何故意延迟的字段必须
 在正文中说明原因，并列入 Sync Impact Report 的待办清单。
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-18
+**Version**: 1.2.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-25

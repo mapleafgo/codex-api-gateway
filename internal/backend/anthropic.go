@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -46,6 +47,34 @@ func (b *AnthropicBackend) Execute(
 	onUpstream func(UpstreamEvent),
 	attempt int,
 ) error {
+	return b.execute(ctx, rawBody, src, cfg, onEvent, onUpstream, attempt, false)
+}
+
+// ExecuteWithAuthorization 保持 Execute 的 Responses ↔ Anthropic 转换行为，
+// 但上游认证只发送 Authorization: Bearer，并省略 x-api-key/anthropic-version。
+// 用于 GitHub Copilot Messages 端点；并发安全性与 Execute 相同。
+func (b *AnthropicBackend) ExecuteWithAuthorization(
+	ctx context.Context,
+	rawBody []byte,
+	src config.Source,
+	cfg *config.Config,
+	onEvent func(model.SSEEvent) error,
+	onUpstream func(UpstreamEvent),
+	attempt int,
+) error {
+	return b.execute(ctx, rawBody, src, cfg, onEvent, onUpstream, attempt, true)
+}
+
+func (b *AnthropicBackend) execute(
+	ctx context.Context,
+	rawBody []byte,
+	src config.Source,
+	cfg *config.Config,
+	onEvent func(model.SSEEvent) error,
+	onUpstream func(UpstreamEvent),
+	attempt int,
+	bearerOnly bool,
+) error {
 	start := time.Now()
 	log := logging.FromContext(ctx).With(
 		"source", src.Name,
@@ -88,7 +117,13 @@ func (b *AnthropicBackend) Execute(
 		"endpoint", src.BaseURL,
 		"model", clientModel,
 		"resolved_model", resolved)
-	body, upstreamCode, err := b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, src.Headers)
+	var body io.ReadCloser
+	var upstreamCode int
+	if bearerOnly {
+		body, upstreamCode, err = b.Client.StreamWithAuthorization(ctx, src.BaseURL, src.APIKey, anthReq, src.Headers)
+	} else {
+		body, upstreamCode, err = b.Client.Stream(ctx, src.BaseURL, src.APIKey, anthReq, src.Headers)
+	}
 	if err != nil {
 		log.Warn("上游源建连失败", "elapsed", time.Since(start).String(), "error", err)
 		if onUpstream != nil {

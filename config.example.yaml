@@ -3,6 +3,7 @@
 # -----------------------------------------------------------------------------
 # 作用：把 Codex CLI 的 OpenAI Responses 请求，按源 backend_type 适配到：
 #       a = Anthropic Messages（默认）、c = OpenAI Chat Completions（仅流式）、
+#       g = GitHub Copilot（仅流式，自动路由 r/a/c）、
 #       r = OpenAI Responses 透传（仅流式）；多源主备故障转移 + 断路器。
 # 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
 # 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖部分配置，层级分隔符用双下划线。
@@ -126,3 +127,18 @@ sources:
   #  backend_type: r
   #  model_map: { gpt-5: gpt-5 }
   #  default_model: gpt-5
+
+  # 备用源：GitHub Copilot 原生接入（取消注释使用）
+  # 认证参照 Zed：直接用 GitHub OAuth token 作为 Bearer 调 Copilot API。
+  # 上游地址默认由 GraphQL 动态发现（失败回退 https://api.githubcopilot.com）。
+  # base_url 可省略；显式填写时作为固定 endpoint，跳过发现。按模型
+  # supported_endpoints 自动路由到 r > a > c 转换路径。
+  #- name: copilot
+  #  backend_type: g
+  #  github_token: ${COPILOT_GITHUB_TOKEN}
+  #  default_model: gpt-5.3-codex
+  #  # model_map: { gpt-5: gpt-5.3-codex }
+  #  # base_url: https://api.githubcopilot.com  # 可选固定 endpoint
+  #  # supports_web_search: true
+  #  # breaker:
+  #  #   first_byte_timeout: 12s

@@ -54,7 +54,7 @@ type RequestEvent struct {
 	// Attempt 表示该次上游尝试在客户端请求内的序号（从 1 开始）。
 	// 仅 KindUpstream 有意义；KindClient 为 0。
 	Attempt int
-	// BackendType 实际尝试/命中源的后端类型：a | c | r。
+	// BackendType 实际尝试/命中源的后端类型：a | c | g | r。
 	BackendType string
 }
 

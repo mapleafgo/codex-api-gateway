@@ -123,6 +123,16 @@ func truncForLog(b []byte, n int) string {
 // Stream 发送请求并返回流式响应体及其 HTTP 状态码。
 // 传输失败返回状态码 0；HTTP/SSE 失败保留上游状态码，供观测和故障转移使用。
 func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, headers map[string]string) (io.ReadCloser, int, error) {
+	return c.stream(ctx, endpoint, apiKey, req, headers, false)
+}
+
+// StreamWithAuthorization 只用 Authorization: Bearer 认证发送流式请求，
+// 并省略 x-api-key/anthropic-version。Copilot Messages 端点按该 wire 形态认证。
+func (c *Client) StreamWithAuthorization(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, headers map[string]string) (io.ReadCloser, int, error) {
+	return c.stream(ctx, endpoint, apiKey, req, headers, true)
+}
+
+func (c *Client) stream(ctx context.Context, endpoint, apiKey string, req *anthropic.MessageNewParams, headers map[string]string, bearerOnly bool) (io.ReadCloser, int, error) {
 	log := logging.FromContext(ctx)
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -146,14 +156,18 @@ func (c *Client) Stream(ctx context.Context, endpoint, apiKey string, req *anthr
 		return nil, 0, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	// Auth: send both credential headers. The official Anthropic API reads
-	// "x-api-key"; many Anthropic-compatible gateways (智谱/Kimi/方舟) instead
-	// read "Authorization: Bearer" and ignore x-api-key. Sending both lets any
-	// compatible backend authenticate the request — each endpoint only honors
-	// the one it knows and ignores the other.
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if bearerOnly {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		httpReq.Header.Set("anthropic-version", "2023-06-01")
+		// Auth: send both credential headers. The official Anthropic API reads
+		// "x-api-key"; many Anthropic-compatible gateways (智谱/Kimi/方舟) instead
+		// read "Authorization: Bearer" and ignore x-api-key. Sending both lets any
+		// compatible backend authenticate the request — each endpoint only honors
+		// the one it knows and ignores the other.
+		httpReq.Header.Set("x-api-key", apiKey)
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	// anthropic-beta：thinking 等 beta 值逗号共存，appendBeta 去重。
 	beta := ""
 	if thinkingEnabled(req) {

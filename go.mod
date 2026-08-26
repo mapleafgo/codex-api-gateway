@@ -12,6 +12,7 @@ require (
 	github.com/knadh/koanf/v2 v2.3.6
 	github.com/mapleafgo/logrotate v0.1.0
 	github.com/openai/openai-go/v3 v3.50.0
+	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -36,6 +37,5 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )

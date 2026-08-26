@@ -25,7 +25,7 @@ type UpstreamEvent struct {
 	CacheCreate   int
 	Error         string
 	Attempt       int
-	BackendType   string // a | c | r
+	BackendType   string // a | c | g | r
 }
 
 // Backend 对单个 source 执行一次上游流式请求。

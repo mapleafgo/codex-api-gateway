@@ -29,6 +29,13 @@ func makeChatSource(name, baseURL string, idx int) config.Source {
 	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, BackendType: config.BackendOpenAIChat}
 }
 
+func makeCopilotSource(name, baseURL string, idx int) config.Source {
+	return config.Source{
+		Name: name, BaseURL: baseURL, OriginalIndex: idx,
+		BackendType: config.BackendGitHubCopilot, GithubToken: "copilot-token",
+	}
+}
+
 // goodAnthropicSSE writes minimal Anthropic SSE that streamconv can complete.
 func goodAnthropicSSE(w http.ResponseWriter) {
 	w.Header().Set("content-type", "text/event-stream")
@@ -1561,6 +1568,86 @@ func TestListUpstreamModels_Responses(t *testing.T) {
 	}
 	if len(ms) != 1 || ms[0].ID != "gpt-5" {
 		t.Fatalf("models=%+v", ms)
+	}
+}
+
+func TestListUpstreamModels_CopilotUsesFilteredCatalog(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("path=%s, want /models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer copilot-token" {
+			t.Errorf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Editor-Version") == "" || r.Header.Get("X-GitHub-Api-Version") == "" {
+			t.Errorf("missing Copilot headers: %+v", r.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"visible","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+			{"id":"hidden","model_picker_enabled":false,"capabilities":{"type":"chat"}},
+			{"id":"embedding","model_picker_enabled":true,"capabilities":{"type":"embedding"}},
+			{"id":"pending","model_picker_enabled":true,"capabilities":{"type":"chat"},"policy":{"state":"pending"}},
+			{"id":"premium","model_picker_enabled":true,"capabilities":{"type":"chat"},"billing":{"restricted_to":["pro_plus"]}}
+		]}`))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{Sources: []config.Source{makeCopilotSource("g1", ts.URL, 0)}}
+	s := New(cfg)
+	models, err := s.ListUpstreamModels(context.Background(), "g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(models))
+	for _, m := range models {
+		got[m.ID] = true
+	}
+	for _, id := range []string{"visible", "premium"} {
+		if !got[id] {
+			t.Errorf("model %q missing from %+v", id, models)
+		}
+	}
+	for _, id := range []string{"hidden", "embedding", "pending"} {
+		if got[id] {
+			t.Errorf("filtered model %q returned in %+v", id, models)
+		}
+	}
+}
+
+func TestCopilotSourceParticipatesInFailover(t *testing.T) {
+	badCopilot := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"x","model_picker_enabled":true,"supported_endpoints":["/responses"],"capabilities":{"type":"chat"}}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer badCopilot.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
+		},
+		Sources: []config.Source{
+			makeCopilotSource("copilot", badCopilot.URL, 0),
+			makeSource("good", good.URL, 1),
+		},
+	}
+	s := New(cfg)
+	name, err := runGeneric(s, nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteGeneric: %v", err)
+	}
+	if name != "good" {
+		t.Fatalf("source=%q, want good", name)
 	}
 }
 
