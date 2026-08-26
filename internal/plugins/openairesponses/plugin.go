@@ -35,7 +35,18 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 func (p *Plugin) ValidateSource(config.Source) error { return nil }
 
 // Backend 返回协议适配后端。
-func (p *Plugin) Backend() plugin.Backend { return p.b }
+func (p *Plugin) Backend() plugin.Backend { return responsesPluginBackend{p.b} }
+
+// responsesPluginBackend 在透传后端上承载 RequestPreparer：预检 dry-run
+// PrepareUpstreamBody，不发起上游请求。
+type responsesPluginBackend struct {
+	*backend.ResponsesBackend
+}
+
+func (responsesPluginBackend) PrepareRequest(_ context.Context, req *plugin.PrepareRequestInput) error {
+	_, _, _, err := backend.PrepareUpstreamBody(req.RawBody, &req.Source, nil)
+	return err
+}
 
 // ListModels 拉取 Responses 兼容 /v1/models 目录。
 func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Model, error) {

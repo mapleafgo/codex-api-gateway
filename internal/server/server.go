@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
@@ -31,6 +30,7 @@ type Server struct {
 	holder    *config.Holder
 	sch       *scheduler.Scheduler
 	metrics   *metrics.Collector
+	reg       *plugin.Registry
 	handlerWg sync.WaitGroup // 追踪 handleResponses goroutine 生命周期，供测试同步
 }
 
@@ -43,6 +43,7 @@ func New(cfg *config.Config, reg *plugin.Registry) *Server {
 		holder:  holder,
 		sch:     scheduler.New(holder, reg),
 		metrics: metrics.New(),
+		reg:     reg,
 	}
 }
 
@@ -383,25 +384,22 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no upstream source configured; add one via admin page", http.StatusServiceUnavailable)
 		return
 	}
-	warnDroppedOrIgnoredParams(log, req, ordered)
+	s.warnDroppedOrIgnoredParams(log, req, ordered)
 
-	// 预检：首源为 Anthropic 时 dry-run ToAnthropic；首源为 r 时 PrepareUpstreamBody dry-run。
-	// 首源为 Chat 时不做转换预检，避免纯 Chat 部署被误杀。
-	// body 已在上方 DecodeResponseNewParams 成功解析为 req，不再重复解码。
+	// 预检：只调用首源插件可选实现的 RequestPreparer。插件不实现时保持
+	// 旧行为（Chat 不预检，避免纯 Chat 部署被误杀）；错误直接 400，不建 SSE。
 	first := ordered[0]
-	bt := sourceBackendID(first)
-	switch bt {
-	case plugin.BackendAnthropic:
-		if _, err := convert.ToAnthropic(req, cur); err != nil {
-			log.Warn("预转换响应请求失败", "source", first.Name, "backend", bt, "error", err)
-			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	case plugin.BackendOpenAIResponses:
-		if _, _, _, err := backend.PrepareUpstreamBody(body, &first, log); err != nil {
-			log.Warn("预转换响应请求失败", "source", first.Name, "backend", bt, "error", err)
-			http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
-			return
+	if p, ok := s.reg.Get(s.backendIDFor(first)); ok {
+		if prep, ok := p.Backend().(plugin.RequestPreparer); ok {
+			if err := prep.PrepareRequest(r.Context(), &plugin.PrepareRequestInput{
+				RawBody: body,
+				Source:  first,
+				Config:  cur,
+			}); err != nil {
+				log.Warn("预检响应请求失败", "source", first.Name, "backend", s.backendIDFor(first), "error", err)
+				http.Error(w, "convert: "+err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 	}
 
@@ -575,25 +573,12 @@ func writeSSE(w io.Writer, e model.SSEEvent) error {
 	return err
 }
 
-// hasEnabledResponsesBackend 判断当前配置是否含启用中的 Responses 透传源。
-func hasEnabledResponsesBackend(sources []config.Source) bool {
-	for _, src := range sources {
-		if src.Disabled {
-			continue
-		}
-		if sourceBackendID(src) == plugin.BackendOpenAIResponses {
-			return true
-		}
-	}
-	return false
-}
-
 // warnDroppedOrIgnoredParams 对当前不语义映射、后端无等价能力、
 // 或 deprecated 的请求字段统一输出 WARN 级别结构化日志，避免静默丢弃。
 // 约定见 AGENTS.md「静默跳过与降级处理约定」。
-func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewParams, sources []config.Source) {
+func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewParams, sources []config.Source) {
 	// r 源可形状透传：跳过 a/c 路径「WARN + 丢弃」叙事，避免误报。
-	if hasEnabledResponsesBackend(sources) {
+	if s.hasEnabledResponsesBackend(sources) {
 		if req.PreviousResponseID.Valid() && req.PreviousResponseID.Value != "" {
 			log.Info("previous_response_id 将透传上游；网关不代补会话历史",
 				"field", "previous_response_id",
@@ -656,7 +641,7 @@ func warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.ResponseNewP
 		}
 		hasChat := false
 		for _, src := range sources {
-			if sourceBackendID(src) == plugin.BackendOpenAIChat {
+			if s.sourceHasCapability(src, plugin.CapabilityChatCompletions) {
 				hasChat = true
 				break
 			}
@@ -975,16 +960,48 @@ func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
 	})
 }
 
-// sourceBackendID 返回源配置的稳定 Backend ID。旧 backend_type 短码经
-// config.Load 过渡映射已填入 Backend；此处兜底处理手工构造的 Source。
-func sourceBackendID(src config.Source) string {
+// backendIDFor 返回源配置的稳定 Backend ID，与 scheduler.backendID 同一规则：
+// 过渡期手工构造的 Source 仍可按旧短码解析。
+func (s *Server) backendIDFor(src config.Source) string {
 	if src.Backend != "" {
 		return src.Backend
 	}
-	if id, ok := config.BackendTypeToID(src.BackendType); ok {
-		return id
+	return string(plugin.LegacyBackendTypeToID(src.BackendType))
+}
+
+// sourceHasCapability 按插件描述符能力判断单个源，不再比较源身份短码。
+func (s *Server) sourceHasCapability(src config.Source, want plugin.Capability) bool {
+	if s.reg == nil {
+		return false
 	}
-	return src.BackendType
+	p, ok := s.reg.Get(s.backendIDFor(src))
+	if !ok {
+		return false
+	}
+	for _, c := range p.Descriptor().Capabilities {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEnabledCapability 判断当前配置是否含启用中的、承载指定能力的源。
+func (s *Server) hasEnabledCapability(sources []config.Source, want plugin.Capability) bool {
+	for _, src := range sources {
+		if src.Disabled {
+			continue
+		}
+		if s.sourceHasCapability(src, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEnabledResponsesBackend 判断当前配置是否含启用中的 Responses 透传源。
+func (s *Server) hasEnabledResponsesBackend(sources []config.Source) bool {
+	return s.hasEnabledCapability(sources, plugin.CapabilityResponsesPassthrough)
 }
 
 // errSummary 返回上游错误全文，供观测台 tip 展示完整上游返回。

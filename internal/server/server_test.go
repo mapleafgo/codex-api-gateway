@@ -1180,16 +1180,17 @@ func TestResponsesPassthroughBackend(t *testing.T) {
 }
 
 func TestHasEnabledResponsesBackend(t *testing.T) {
-	if hasEnabledResponsesBackend(nil) {
+	srv := newSrv(&config.Config{})
+	if srv.hasEnabledResponsesBackend(nil) {
 		t.Fatal("nil should be false")
 	}
-	if hasEnabledResponsesBackend([]config.Source{{BackendType: "c"}}) {
+	if srv.hasEnabledResponsesBackend([]config.Source{{Backend: "openai-chat"}}) {
 		t.Fatal("c should be false")
 	}
-	if !hasEnabledResponsesBackend([]config.Source{{BackendType: "r"}}) {
+	if !srv.hasEnabledResponsesBackend([]config.Source{{Backend: "openai-responses"}}) {
 		t.Fatal("r should be true")
 	}
-	if hasEnabledResponsesBackend([]config.Source{{BackendType: "r", Disabled: true}}) {
+	if srv.hasEnabledResponsesBackend([]config.Source{{Backend: "openai-responses", Disabled: true}}) {
 		t.Fatal("disabled r should be false")
 	}
 }

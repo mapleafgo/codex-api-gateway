@@ -6,6 +6,7 @@ import (
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
@@ -80,6 +81,25 @@ func (n anthropicOptionsBackend) Execute(
 	onUpstream func(plugin.UpstreamEvent),
 	attempt int,
 ) error {
+	cfg = cfgWithAnthropicOptions(cfg, src)
+	return n.inner.Execute(ctx, rawBody, src, cfg, onEvent, onUpstream, attempt)
+}
+
+// PrepareRequest 在首源预检阶段 dry-run Responses → Anthropic 转换，
+// 提前暴露无法映射的字段；不执行任何上游调用。
+func (n anthropicOptionsBackend) PrepareRequest(_ context.Context, req *plugin.PrepareRequestInput) error {
+	params, err := convert.DecodeResponseNewParams(req.RawBody)
+	if err != nil {
+		return err
+	}
+	_, err = convert.ToAnthropic(params, cfgWithAnthropicOptions(req.Config, req.Source))
+	return err
+}
+
+// cfgWithAnthropicOptions 把该源 options 归一化为 cfg.Anthropic，
+// 使共享转换层（convert.ToAnthropic）可读 per-source 的 default_max_tokens 与
+// cache_enabled，加载路径无需改动。
+func cfgWithAnthropicOptions(cfg *config.Config, src config.Source) *config.Config {
 	if cfg != nil && len(src.Options) > 0 {
 		merged := *cfg
 		if tok := intOption(src.Options["default_max_tokens"]); tok > 0 {
@@ -91,7 +111,7 @@ func (n anthropicOptionsBackend) Execute(
 		}
 		cfg = &merged
 	}
-	return n.inner.Execute(ctx, rawBody, src, cfg, onEvent, onUpstream, attempt)
+	return cfg
 }
 
 // intOption 兼容 koanf/yaml 解出的 int 或 float64 整数。
@@ -109,3 +129,4 @@ func intOption(v any) int {
 }
 
 var _ plugin.Backend = anthropicOptionsBackend{}
+var _ plugin.RequestPreparer = anthropicOptionsBackend{}
