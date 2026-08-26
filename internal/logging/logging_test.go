@@ -113,6 +113,27 @@ func TestConfigureWritesToFile(t *testing.T) {
 	}
 }
 
+func TestConfigureInitialStderrSink(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		currentFile = ""
+		currentSink = nil
+		currentAW = nil
+	})
+
+	currentFile = ""
+	currentSink = nil
+	currentAW = nil
+	if err := Configure(config.LoggingCfg{Level: "info", Format: "text"}); err != nil {
+		t.Fatalf("Configure stderr failed: %v", err)
+	}
+	if currentSink != os.Stderr {
+		t.Fatalf("currentSink = %T, want *os.File stderr", currentSink)
+	}
+	slog.Info("stderr-output-marker")
+}
+
 func TestConfigureFileOpenError(t *testing.T) {
 	// 路径指向已存在的目录，OpenFile 必失败；且不应改动默认 logger。
 	prev := slog.Default()

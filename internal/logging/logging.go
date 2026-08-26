@@ -37,7 +37,7 @@ func Configure(cfg config.LoggingCfg) error {
 	configureMu.Lock()
 	defer configureMu.Unlock()
 
-	if cfg.File != currentFile {
+	if cfg.File != currentFile || currentSink == nil {
 		// 文件路径变化（含首次配置、file↔stderr 切换）：创建新 sink。
 		// 旧 AsyncWriter 不关闭——其 Close 会拒绝新写入，而捕获了旧 handler 的
 		// 在途请求仍可能向其 Write；让旧 writer 自然排空队列后由 GC 回收 fd。
