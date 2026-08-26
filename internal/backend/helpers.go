@@ -28,15 +28,18 @@ var (
 	ErrUpstreamTimeout = plugin.ErrUpstreamTimeout
 )
 
-// 类型与函数别名。
-type (
-	EventGate    = plugin.EventGate
-	OutcomeInput = plugin.OutcomeInput
-	outcomeInput = plugin.OutcomeInput
-)
+// EventGate 是插件契约类型的别名，兼容历史调用方。
+type EventGate = plugin.EventGate
+
+// OutcomeInput 是插件契约类型的别名，兼容历史调用方。
+// outcomeInput 是未导出别名，供后端包内部使用。
+type OutcomeInput = plugin.OutcomeInput
+
+type outcomeInput = plugin.OutcomeInput
 
 const maxBufferedEvents = plugin.MaxBufferedEvents
 
+// 函数与错误别名，兼容历史调用方。
 var (
 	NewEventGate              = plugin.NewEventGate
 	ClassifyOutcome           = plugin.ClassifyOutcome
@@ -47,8 +50,6 @@ var (
 	IsClientError             = plugin.IsClientError
 	ContextLengthExceededCode = plugin.ContextLengthExceededCode
 	errSummary                = plugin.ErrSummary
-	isContentEvent            = plugin.IsContentEvent
-	isBufferableEvent         = plugin.IsBufferableEvent
 )
 
 // stripWebSearchToolsFromParams 从 Responses 请求的工具列表里剥掉 hosted web_search 声明。

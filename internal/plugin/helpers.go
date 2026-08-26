@@ -13,9 +13,6 @@ import (
 
 // 事件 wire 字符串，派生自 SDK shared/constant 以防止与规范值漂移。
 var (
-	evResponseCreated           = string(oaconstant.ValueOf[oaconstant.ResponseCreated]())
-	evResponseInProgress        = string(oaconstant.ValueOf[oaconstant.ResponseInProgress]())
-	evResponseCompleted         = string(oaconstant.ValueOf[oaconstant.ResponseCompleted]())
 	evResponseIncomplete        = string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]())
 	evResponseFailed            = string(oaconstant.ValueOf[oaconstant.ResponseFailed]())
 	evOutputTextDelta           = string(oaconstant.ValueOf[oaconstant.ResponseOutputTextDelta]())
@@ -34,7 +31,6 @@ var (
 	evWebSearchSearching        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallSearching]())
 	evWebSearchCompleted        = string(oaconstant.ValueOf[oaconstant.ResponseWebSearchCallCompleted]())
 	evOutputItemAdded           = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemAdded]())
-	evOutputItemDone            = string(oaconstant.ValueOf[oaconstant.ResponseOutputItemDone]())
 )
 
 // ErrEmptyResponse 表示上游返回了数据（已过首字节）但未产出任何内容事件。

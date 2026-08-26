@@ -14,6 +14,7 @@ type ID string
 // Capability 描述源插件可承载的协议能力，而不是具体厂商身份。
 type Capability string
 
+// Capability 值：源插件可承载的上游协议。
 const (
 	CapabilityAnthropicMessages    Capability = "anthropic-messages"
 	CapabilityChatCompletions      Capability = "chat-completions"
@@ -34,6 +35,7 @@ const (
 // FieldType 是管理页表单字段的声明式类型。
 type FieldType string
 
+// FieldType 值：管理页表单字段的声明式类型。
 const (
 	FieldTypeText      FieldType = "text"
 	FieldTypePassword  FieldType = "password"
@@ -46,6 +48,7 @@ const (
 // FieldTarget 声明字段落在源配置的哪一层，共享核心不解释具体字段名。
 type FieldTarget string
 
+// FieldTarget 值：字段落在源配置的哪一层。
 const (
 	FieldTargetCommon  FieldTarget = "common"
 	FieldTargetBaseURL FieldTarget = "base_url"

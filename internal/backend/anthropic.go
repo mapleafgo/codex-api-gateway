@@ -323,8 +323,8 @@ func applyCopilotThinkingBudget(out *anthropic.MessageNewParams, req *oairespons
 		return
 	}
 	budget := defaultCopilotThinkingBudget
-	if max := out.MaxTokens; max > 1024 {
-		candidate := max - 1024
+	if tok := out.MaxTokens; tok > 1024 {
+		candidate := tok - 1024
 		if candidate < budget {
 			budget = candidate
 		}
