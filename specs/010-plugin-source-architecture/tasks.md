@@ -56,7 +56,7 @@
 - [X] T020 Replace backend-type preconversion and warning branches with plugin capabilities and RequestPreparer in `internal/server/server.go`; remove direct imports of `internal/backend` and short-code comparisons
 - [X] T021 [P] Rename metrics identity from `BackendType` / `backend_type` to `Backend` / `backend`, remove short-code input normalization, and update tests in `internal/metrics/metrics.go` and `internal/metrics/metrics_test.go`
 - [X] T022 [P] Add generic health dispatch through optional `HealthProbe` in `internal/health/checker.go` and `internal/health/checker_test.go`; unsupported capability returns explicit not-supported result
-- [ ] T023 Extend runtime assembly seams so `cmd/server/main.go` can construct Registry, inject it into config loading/watching, scheduler, server, admin, and health without introducing global mutable registration
+- [X] T023 Extend runtime assembly seams so `cmd/server/main.go` can construct Registry, inject it into config loading/watching, scheduler, server, admin, and health without introducing global mutable registration
 
 **Checkpoint**: Contracts, registry, Config v2 parsing, validator injection, scheduler/server/health abstractions compile; existing tests may temporarily fail only where story migrations are explicitly pending.
 

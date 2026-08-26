@@ -440,6 +440,7 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, registry
 		},
 		PromoteSource:    srv.Scheduler().PromoteSource,
 		SyncModelCatalog: syncModelCatalog,
+		Registry:         registry,
 	})
 }
 

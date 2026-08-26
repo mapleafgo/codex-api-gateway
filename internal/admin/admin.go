@@ -61,6 +61,9 @@ type Deps struct {
 	// SyncModelCatalog 在配置写盘并热重载成功后同步 $CODEX_HOME/models.json。
 	// nil 时跳过；返回错误时接口报错但 config.yaml 已保存。
 	SyncModelCatalog func() error
+	// Registry 是已注册源插件注册表，供 health 探测按 backend 分发到插件 HealthProbe。
+	// nil 时 health 退回旧 HTTP /v1/models 探针。
+	Registry *plugin.Registry
 }
 
 type handler struct {
@@ -811,7 +814,7 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		h.testCopilotSource(w, r, src)
 		return
 	}
-	checker := health.New(health.DefaultConfig())
+	checker := health.NewWithRegistry(health.DefaultConfig(), h.deps.Registry)
 	result := checker.CheckSource(r.Context(), src)
 
 	// 转换为前端期望的格式
