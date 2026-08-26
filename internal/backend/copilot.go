@@ -11,6 +11,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // CopilotBackend 将 Responses 请求按模型能力路由到已有的 r/a/c 转换路径，
@@ -82,7 +83,7 @@ func (b *CopilotBackend) Execute(
 ) error {
 	log := logging.FromContext(ctx).With(
 		"source", src.Name,
-		"backend_type", config.BackendGitHubCopilot,
+		"backend", plugin.BackendGitHubCopilot,
 		"attempt", attempt)
 
 	if src.GithubToken == "" {
@@ -133,7 +134,7 @@ func (b *CopilotBackend) Execute(
 		if onUpstream == nil {
 			return
 		}
-		ev.BackendType = config.BackendGitHubCopilot
+		ev.Backend = plugin.BackendGitHubCopilot
 		onUpstream(ev)
 	}
 

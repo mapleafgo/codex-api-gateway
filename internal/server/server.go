@@ -20,6 +20,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/scheduler"
 	oairesponses "github.com/openai/openai-go/v3/responses"
 	oaconstant "github.com/openai/openai-go/v3/shared/constant"
@@ -443,8 +444,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			if ev.ResolvedModel != "" {
 				resolvedModel = ev.ResolvedModel
 			}
-			if ev.BackendType != "" {
-				backendType = ev.BackendType
+			if ev.Backend != "" {
+				backendType = ev.Backend
 			}
 			s.recordUpstream(ev)
 		},
@@ -452,8 +453,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 
 	// Backend 已在 SSE 流内写入真实 response id；此处 id 仅用于日志/metrics 关联。
 	respID := newResponseID()
-	clientCanceled := backend.IsClientCanceled(r.Context(), execErr)
-	serverTimeout := errors.Is(execErr, backend.ErrUpstreamTimeout)
+	clientCanceled := plugin.IsClientCanceled(r.Context(), execErr)
+	serverTimeout := errors.Is(execErr, plugin.ErrUpstreamTimeout)
 
 	status := model.ResponseStatusCompleted
 	if lastUp.Status == "incomplete" {
@@ -536,7 +537,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// 流已建立（有事件）时对齐旧语义：默认 200，能解析上游码再覆盖。
 		if evCount > 0 {
 			code = 200
-			if sc := backend.StatusCodeFromErr(execErr); sc != 0 {
+			if sc := plugin.StatusCodeFromErr(execErr); sc != 0 {
 				code = sc
 			}
 		} else {
@@ -971,7 +972,7 @@ func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
 		CacheCreate:   ev.CacheCreate,
 		Error:         ev.Error,
 		Attempt:       ev.Attempt,
-		BackendType:   ev.BackendType,
+		BackendType:   ev.Backend,
 	})
 }
 
@@ -986,10 +987,10 @@ func errSummary(err error) string {
 
 // clientFailCode 从 execErr 解析上游 HTTP 状态码；解析不到（网络错误/取消）回退 500。
 // 客户端失败记录展示最终失败原因对应的上游码，便于观测台对齐限流/鉴权等场景。
-// 解析统一走 backend.StatusCodeFromErr（支持 a/c/r 三类 client 的错误格式），
+// 解析统一走 plugin.StatusCodeFromErr（支持 a/c/r 三类 client 的错误格式），
 // 不在本包维护第二份前缀解析。
 func clientFailCode(err error) int {
-	if sc := backend.StatusCodeFromErr(err); sc != 0 {
+	if sc := plugin.StatusCodeFromErr(err); sc != 0 {
 		return sc
 	}
 	return 500
@@ -999,7 +1000,7 @@ func clientFailCode(err error) int {
 // 超限时补上 Codex 可识别的 error.code，触发其下一轮会话自动压缩。
 func failedResponseError(execErr error) *model.ResponseError {
 	e := &model.ResponseError{Message: fmt.Sprintf("upstream: %v", execErr)}
-	if code := backend.ContextLengthExceededCode(execErr); code != "" {
+	if code := plugin.ContextLengthExceededCode(execErr); code != "" {
 		e.Code = code
 	}
 	return e

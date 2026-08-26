@@ -1,45 +1,12 @@
-// Package backend 定义上游协议适配器：把 Responses 请求转到具体后端，再流式产出 Responses SSE。
+// Package backend 定义上游协议适配器；契约类型与 internal/plugin 保持一致。
 package backend
 
 import (
-	"context"
-	"time"
-
-	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	plugin "github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
-// UpstreamEvent 描述单次上游尝试的观测数据（对齐 scheduler 观测字段）。
-type UpstreamEvent struct {
-	SourceName    string
-	Model         string
-	ResolvedModel string
-	StartedAt     time.Time
-	Duration      time.Duration
-	TTFB          time.Duration
-	Status        string // completed | failed | canceled
-	Code          int
-	InputTokens   int
-	OutputTokens  int
-	CacheRead     int
-	CacheCreate   int
-	Error         string
-	Attempt       int
-	BackendType   string // a | c | g | r
-}
+// Backend 是 internal/backend 对插件契约 Backend 的别名，保持历史包名引用可用。
+type Backend = plugin.Backend
 
-// Backend 对单个 source 执行一次上游流式请求。
-type Backend interface {
-	// Execute 解析 rawBody（Responses JSON），请求 src 对应上游，经 onEvent 产出 Responses SSE。
-	// 返回 error 表示本源失败；若 onEvent 从未被调用，scheduler 可 failover。
-	// onUpstream 在单次尝试结束时回调（可 nil）。
-	Execute(
-		ctx context.Context,
-		rawBody []byte,
-		src config.Source,
-		cfg *config.Config,
-		onEvent func(model.SSEEvent) error,
-		onUpstream func(UpstreamEvent),
-		attempt int,
-	) error
-}
+// UpstreamEvent 是插件观测事件的别名。
+type UpstreamEvent = plugin.UpstreamEvent

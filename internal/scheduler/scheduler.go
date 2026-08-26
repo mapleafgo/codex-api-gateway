@@ -15,6 +15,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // ErrAllSourcesFailed is returned when no source could serve the request.
@@ -561,7 +562,7 @@ func (s *Scheduler) tryRoundGeneric(
 		}
 		if err != nil {
 			bt, _ := config.NormalizeBackendType(src.BackendType)
-			if backend.IsClientError(err) && firstClientErr != nil && firstClientErr.err == nil {
+			if plugin.IsClientError(err) && firstClientErr != nil && firstClientErr.err == nil {
 				*firstClientErr = clientRejection{source: src.Name, err: err}
 			}
 			lastErr = err
@@ -626,7 +627,7 @@ func (s *Scheduler) trySourceGeneric(
 	var attemptCtx context.Context
 	if requestTimeout > 0 {
 		var totalCancel context.CancelFunc
-		attemptCtx, totalCancel = context.WithTimeoutCause(fbCtx, requestTimeout, backend.ErrUpstreamTimeout)
+		attemptCtx, totalCancel = context.WithTimeoutCause(fbCtx, requestTimeout, plugin.ErrUpstreamTimeout)
 		defer totalCancel()
 	} else {
 		attemptCtx = fbCtx
@@ -639,9 +640,9 @@ func (s *Scheduler) trySourceGeneric(
 	locked := false
 	// a/c 后端统一由 EventGate 兜底空响应：缓冲状态/终态事件，仅首个内容事件锁定源。
 	// r 透传后端不加 EventGate，保持上游事件原样透传语义。
-	var gate *backend.EventGate
+	var gate *plugin.EventGate
 	if bt != config.BackendOpenAIResponses {
-		gate = backend.NewEventGate(onEvent)
+		gate = plugin.NewEventGate(onEvent)
 	}
 	wrapEvent := func(ev model.SSEEvent) error {
 		// 首字节超时只约束上游开始出流；状态事件虽仍会被 EventGate 缓冲，
@@ -669,8 +670,8 @@ func (s *Scheduler) trySourceGeneric(
 	}
 	// UpstreamEvent 是 backend.UpstreamEvent 的别名，回调直接透传（nil 时不上报）。
 	err := s.backendFor(src).Execute(attemptCtx, rawBody, *src, s.holder.Current(), wrapEvent, onUpstream, attemptNo)
-	if backend.IsServerTimeout(attemptCtx, err) && !errors.Is(err, backend.ErrUpstreamTimeout) {
-		err = fmt.Errorf("%w: %v", backend.ErrUpstreamTimeout, err)
+	if plugin.IsServerTimeout(attemptCtx, err) && !errors.Is(err, plugin.ErrUpstreamTimeout) {
+		err = fmt.Errorf("%w: %v", plugin.ErrUpstreamTimeout, err)
 	}
 	if !locked {
 		if gate != nil && gate.SawTerminalFailure() {
@@ -687,15 +688,15 @@ func (s *Scheduler) trySourceGeneric(
 			return true, err
 		}
 		if err == nil {
-			err = backend.ErrEmptyResponse
+			err = plugin.ErrEmptyResponse
 		}
 		oldState, newState := bk.RecordFailure()
 		s.adjustOrder(src.Name, oldState, newState)
 		attrs := []any{"old_state", oldState, "new_state", newState, "error", err}
-		if backend.IsServerTimeout(attemptCtx, err) {
+		if plugin.IsServerTimeout(attemptCtx, err) {
 			attrs = append(attrs, "reason", "timeout")
 		}
-		if backend.IsClientError(err) {
+		if plugin.IsClientError(err) {
 			// 4xx 同样计为失败（降级/机会失败）；整轮不重试由
 			// ExecuteGeneric 的 firstClientErr 提前返回保证。
 			attrs = append(attrs, "cause", "client_error")
@@ -706,7 +707,7 @@ func (s *Scheduler) trySourceGeneric(
 			s.moveToEnd(src.Name)
 			attrs = append(attrs, "chance_failed", true)
 		}
-		if err == backend.ErrEmptyResponse {
+		if err == plugin.ErrEmptyResponse {
 			attrs = append(attrs, "cause", "empty_response")
 		}
 		log.Warn("上游源失败（未锁定）", attrs...)

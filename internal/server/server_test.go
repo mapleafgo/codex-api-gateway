@@ -17,6 +17,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 func TestResponsesEndpointStreamsSSE(t *testing.T) {
@@ -1442,8 +1443,20 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 					if record["attempt"] != float64(1) {
 						t.Fatalf("message %q attempt=%v want 1", message, record["attempt"])
 					}
-					if record["source"] != tt.sourceName || record["backend_type"] != tt.backendType {
-						t.Fatalf("message %q missing source/backend: %s", message, line)
+					if record["source"] != tt.sourceName {
+						t.Fatalf("message %q missing source: %s", message, line)
+					}
+					// scheduler 日志仍用 backend_type（单字符短码）；后端日志已迁移到
+					// backend（全字符串插件 ID）。按消息来源分别校验对应字段。
+					if message == "尝试上游源" {
+						if record["backend_type"] != tt.backendType {
+							t.Fatalf("message %q backend_type=%v want %q: %s", message, record["backend_type"], tt.backendType, line)
+						}
+					} else {
+						wantPluginID := pluginIDForBackend(tt.backendType)
+						if record["backend"] != wantPluginID {
+							t.Fatalf("message %q backend=%v want %q: %s", message, record["backend"], wantPluginID, line)
+						}
 					}
 				}
 				if tt.backendType == config.BackendAnthropic && message == tt.convertedLog {
@@ -1461,6 +1474,23 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// pluginIDForBackend 把单字符 backend_type 短码映射到插件稳定 ID，
+// 用于校验后端日志中的 backend 字段（过渡期 scheduler 仍用短码，后端用全名）。
+func pluginIDForBackend(bt string) string {
+	switch bt {
+	case config.BackendAnthropic:
+		return plugin.BackendAnthropic
+	case config.BackendOpenAIChat:
+		return plugin.BackendOpenAIChat
+	case config.BackendOpenAIResponses:
+		return plugin.BackendOpenAIResponses
+	case config.BackendGitHubCopilot:
+		return plugin.BackendGitHubCopilot
+	default:
+		return bt
 	}
 }
 

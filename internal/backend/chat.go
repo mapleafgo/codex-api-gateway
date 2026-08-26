@@ -13,6 +13,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // ChatBackend 将 Responses 请求转到 OpenAI Chat Completions 兼容上游（仅流式）。
@@ -38,7 +39,7 @@ func (b *ChatBackend) Execute(
 	start := time.Now()
 	log := logging.FromContext(ctx).With(
 		"source", src.Name,
-		"backend_type", config.BackendOpenAIChat,
+		"backend", plugin.BackendOpenAIChat,
 		"attempt", attempt)
 	req, err := convert.DecodeResponseNewParams(rawBody)
 	if err != nil {
@@ -73,7 +74,7 @@ func (b *ChatBackend) Execute(
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
 				Status: "failed", Code: StatusCodeFromErr(err), Error: errSummary(err), Attempt: attempt,
-				BackendType: config.BackendOpenAIChat,
+				Backend: plugin.BackendOpenAIChat,
 			})
 		}
 		return err
@@ -128,13 +129,13 @@ func (b *ChatBackend) Execute(
 	}
 
 	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
-		locked:   locked,
-		scanErr:  scanErr,
-		terminal: conv.Done(),
-		status:   "completed",
-		code:     200,
+		Locked:   locked,
+		ScanErr:  scanErr,
+		Terminal: conv.Done(),
+		Status:   "completed",
+		Code:     200,
 		// 无事件且错误串解析不出状态码时 code 落 0（与历史行为一致）。
-		noEventsCode: 0,
+		NoEventsCode: 0,
 	})
 	var inTok, outTok, cacheRead, cacheCreate int
 	if u := conv.Usage(); u != nil {
@@ -164,7 +165,7 @@ func (b *ChatBackend) Execute(
 			InputTokens: inTok, OutputTokens: outTok,
 			CacheRead:   cacheRead,
 			CacheCreate: cacheCreate,
-			BackendType: config.BackendOpenAIChat,
+			Backend:     plugin.BackendOpenAIChat,
 		})
 	}
 	return scanErr

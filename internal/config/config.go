@@ -30,6 +30,12 @@ const (
 
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// SourceValidator 校验单个 Source 的插件级约束。由插件注册表实现并注入到
+// 配置加载/保存/热重载路径，config 包本身不 import 插件实现。
+type SourceValidator interface {
+	ValidateSource(Source) error
+}
+
 // Config is the top-level YAML configuration.
 type Config struct {
 	Server    ServerCfg    `koanf:"server" yaml:"server"`
@@ -145,13 +151,14 @@ const DefaultLogMaxSizeMB = 50
 
 // Source configures one upstream (backend_type a | c | r).
 type Source struct {
-	Name        string `koanf:"name" yaml:"name"`
-	BaseURL     string `koanf:"base_url" yaml:"base_url"`
-	APIKey      string `koanf:"api_key" yaml:"api_key,omitempty"`
-	BackendType string `koanf:"backend_type" yaml:"backend_type,omitempty"`
-	// GithubToken 是 backend_type=g 源的 GitHub OAuth token，
-	// 用于直接作为 Bearer 调用 Copilot API（参照 Zed 实现，不换 session token）。
-	// 支持 ${ENV_VAR} 插值。仅在 backend_type=g 时有意义。
+	Name    string `koanf:"name" yaml:"name"`
+	BaseURL string `koanf:"base_url" yaml:"base_url"`
+	APIKey  string `koanf:"api_key" yaml:"api_key,omitempty"`
+	// Backend 是已注册源插件的稳定 ID，取代旧的 backend_type 短码。
+	Backend string `koanf:"backend" yaml:"backend"`
+	// Options 是所选插件 schema 声明的源专属配置（敏感值支持 ${ENV_VAR} 插值）。
+	Options      map[string]any    `koanf:"options" yaml:"options,omitempty"`
+	BackendType  string            `koanf:"backend_type" yaml:"backend_type,omitempty"`
 	GithubToken  string            `koanf:"github_token" yaml:"github_token,omitempty"`
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`

@@ -11,6 +11,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 func TestPrepareUpstreamBody_ModelMapAndStream(t *testing.T) {
@@ -331,6 +332,86 @@ func TestPrepareUpstreamBody_ReasoningEmptySummaryUntouched(t *testing.T) {
 	}
 }
 
+// TestPrepareUpstreamBody_CopilotSkipsReasoningRewrite 验证 Copilot /responses
+// 不接受 reasoning item 携带 content 数组（报 array too long 400），源级归一化
+// 时必须跳过 summary 折算，保持 reasoning 原始形态交给上游。
+func TestPrepareUpstreamBody_CopilotSkipsReasoningRewrite(t *testing.T) {
+	src := config.Source{BackendType: config.BackendGitHubCopilot}
+	raw := []byte(`{
+		"model":"gpt-5",
+		"input":[
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"need tool"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	reasoning := m.Input[0]
+	if reasoning["type"] != "reasoning" {
+		t.Fatalf("first item type=%v", reasoning["type"])
+	}
+	if _, ok := reasoning["content"]; ok {
+		t.Fatalf("copilot 不应添加 content 数组: %v", reasoning["content"])
+	}
+	if _, ok := reasoning["summary"]; !ok {
+		t.Fatal("summary 应原样保留")
+	}
+}
+
+// TestPrepareUpstreamBody_CopilotNormalizesToolIDs 验证 Copilot /responses 对
+// function_call / custom_tool_call 的 id 要求 fc_ / ctc_ 前缀：历史消息里
+// OpenAI 风格 call_ 前缀会被上游 400 拒绝，源级改写为网关要求的命名空间前缀，
+// call_id 保持原样（上游按 call_id 关联 tool result）。
+func TestPrepareUpstreamBody_CopilotNormalizesToolIDs(t *testing.T) {
+	src := config.Source{BackendType: config.BackendGitHubCopilot}
+	raw := []byte(`{
+		"model":"m",
+		"input":[
+			{"type":"function_call","id":"call_bf0a12","call_id":"call_bf0a12","name":"get_logs","arguments":"{}"},
+			{"type":"function_call","id":"fc_already","call_id":"call_ok","name":"keep","arguments":"{}"},
+			{"type":"custom_tool_call","id":"ctc_already","call_id":"c_ok","name":"keep","arguments":"{}"},
+			{"type":"custom_tool_call","id":"foo_bar","call_id":"call_xyz","name":"web_search","arguments":"{}"}
+		]
+	}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		idx    int
+		id     string
+		callID string
+	}{
+		{0, "fc_call_bf0a12", "call_bf0a12"},
+		{1, "fc_already", "call_ok"},
+		{2, "ctc_already", "c_ok"},
+		{3, "ctc_foo_bar", "call_xyz"},
+	}
+	for _, tc := range want {
+		item := m.Input[tc.idx]
+		if got := item["id"]; got != tc.id {
+			t.Fatalf("input[%d].id = %v, want %q", tc.idx, got, tc.id)
+		}
+		if got := item["call_id"]; got != tc.callID {
+			t.Fatalf("input[%d].call_id = %v, want %q", tc.idx, got, tc.callID)
+		}
+	}
+}
+
 func TestRewriteClientModel_T2(t *testing.T) {
 	in := []byte(`{"type":"response.completed","response":{"id":"r1","model":"o3","usage":{"input_tokens":1,"output_tokens":2}}}`)
 	out := rewriteClientModel(in, "gpt-5")
@@ -437,8 +518,8 @@ func TestResponsesBackend_EmptyStreamNoSynthetic(t *testing.T) {
 		nil,
 		func(e model.SSEEvent) error { events++; return nil },
 		func(ev UpstreamEvent) {
-			if ev.BackendType != config.BackendOpenAIResponses {
-				t.Fatalf("bt=%s", ev.BackendType)
+			if ev.Backend != plugin.BackendOpenAIResponses {
+				t.Fatalf("backend=%s", ev.Backend)
 			}
 			if ev.Status != "failed" {
 				t.Fatalf("status=%s", ev.Status)
@@ -488,7 +569,7 @@ func TestResponsesBackend_PassthroughSSE(t *testing.T) {
 	if up.InputTokens != 3 || up.OutputTokens != 4 {
 		t.Fatalf("tokens in=%d out=%d", up.InputTokens, up.OutputTokens)
 	}
-	if up.Status != "completed" || up.BackendType != "r" {
+	if up.Status != "completed" || up.Backend != plugin.BackendOpenAIResponses {
 		t.Fatalf("up=%+v", up)
 	}
 }
@@ -669,7 +750,7 @@ func TestResponsesBackend_CancelAfterTerminalIsCompleted(t *testing.T) {
 	if up.Status != "completed" {
 		t.Fatalf("status=%s want completed (err=%v)", up.Status, err)
 	}
-	if up.BackendType != "r" {
-		t.Fatalf("backend_type=%s", up.BackendType)
+	if up.Backend != plugin.BackendOpenAIResponses {
+		t.Fatalf("backend=%s", up.Backend)
 	}
 }

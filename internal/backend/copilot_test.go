@@ -12,6 +12,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 func TestRouteByEndpoints(t *testing.T) {
@@ -334,10 +335,118 @@ func TestCopilotExecuteRoutesAndUpstreamContract(t *testing.T) {
 			if !containsString(eventTypes, tt.wantStreamType) {
 				t.Fatalf("event types = %v, want %q", eventTypes, tt.wantStreamType)
 			}
-			if upstreamEvent.BackendType != config.BackendGitHubCopilot {
-				t.Fatalf("upstream backend type = %q, want g", upstreamEvent.BackendType)
+			if upstreamEvent.Backend != plugin.BackendGitHubCopilot {
+				t.Fatalf("upstream backend = %q, want github-copilot", upstreamEvent.Backend)
 			}
 		})
+	}
+}
+
+// TestCopilotExecuteResponsesNormalizesInput 复现 Copilot /responses 的两类 400：
+// reasoning 带 content 数组（array too long）与 function_call.id 非 fc_ 前缀。
+// 源级归一化应保留 reasoning 原始形态并为工具调用补命名空间前缀。
+func TestCopilotExecuteResponsesNormalizesInput(t *testing.T) {
+	logs := &copilotRequestLog{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logs.record(t, r)
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"id":                   "m",
+					"model_picker_enabled": true,
+					"supported_endpoints":  []string{"/responses"},
+					"capabilities":         map[string]any{"type": "chat"},
+				}},
+			})
+			return
+		}
+		writeCopilotResponsesSSE(w)
+	}))
+	defer api.Close()
+
+	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	raw := `{
+		"model":"m",
+		"input":[
+			{"type":"reasoning","id":"r1","summary":[{"type":"summary_text","text":"reasoning text"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+			{"type":"function_call","id":"call_bf0a12","call_id":"call_bf0a12","name":"get_logs","arguments":"{}"}
+		],
+		"stream":true
+	}`
+	err := b.Execute(context.Background(), []byte(raw), src, &config.Config{},
+		func(model.SSEEvent) error { return nil }, nil, 1)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	upstream := logs.byPath("/responses")
+	input, ok := upstream.body["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("upstream input = %v", upstream.body["input"])
+	}
+	reasoning := input[0].(map[string]any)
+	if _, hasContent := reasoning["content"]; hasContent {
+		t.Fatalf("copilot reasoning 不应携带 content 数组: %v", reasoning["content"])
+	}
+	if _, hasSummary := reasoning["summary"]; !hasSummary {
+		t.Fatal("reasoning summary 应原样保留")
+	}
+	call := input[2].(map[string]any)
+	if got := call["id"]; got != "fc_call_bf0a12" {
+		t.Fatalf("function_call id = %v, want fc_call_bf0a12", got)
+	}
+	if got := call["call_id"]; got != "call_bf0a12" {
+		t.Fatalf("function_call call_id = %v, want call_bf0a12", got)
+	}
+}
+
+// TestCopilotExecuteAnthropicInjectsThinkingBudget 复现 Copilot /v1/messages 的
+// thinking.enabled.budget_tokens Field required 400：带上 reasoning effort 的
+// 请求在委派时注入合法 budget_tokens，普通 Anthropic 源行为不受影响。
+func TestCopilotExecuteAnthropicInjectsThinkingBudget(t *testing.T) {
+	logs := &copilotRequestLog{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logs.record(t, r)
+		if r.URL.Path == "/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"id":                   "m",
+					"model_picker_enabled": true,
+					"supported_endpoints":  []string{"/v1/messages"},
+					"capabilities":         map[string]any{"type": "chat"},
+				}},
+			})
+			return
+		}
+		writeCopilotAnthropicSSE(w)
+	}))
+	defer api.Close()
+
+	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	err := b.Execute(context.Background(), []byte(`{"model":"m","input":"hi","reasoning":{"effort":"high"},"stream":true}`), src, &config.Config{},
+		func(model.SSEEvent) error { return nil }, nil, 1)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	upstream := logs.byPath("/v1/messages")
+	thinking, ok := upstream.body["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("upstream thinking missing: %v", upstream.body["thinking"])
+	}
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking.type = %v, want enabled", thinking["type"])
+	}
+	budget, ok := thinking["budget_tokens"].(float64)
+	if !ok || budget <= 0 {
+		t.Fatalf("thinking.budget_tokens = %v, want > 0", thinking["budget_tokens"])
+	}
+	maxTokens, ok := upstream.body["max_tokens"].(float64)
+	if !ok || budget >= maxTokens {
+		t.Fatalf("budget_tokens %v 应小于 max_tokens %v", budget, upstream.body["max_tokens"])
 	}
 }
 

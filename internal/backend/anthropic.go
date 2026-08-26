@@ -14,7 +14,9 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/streamconv"
+	oairesponses "github.com/openai/openai-go/v3/responses"
 )
 
 var (
@@ -78,7 +80,7 @@ func (b *AnthropicBackend) execute(
 	start := time.Now()
 	log := logging.FromContext(ctx).With(
 		"source", src.Name,
-		"backend_type", config.BackendAnthropic,
+		"backend", plugin.BackendAnthropic,
 		"attempt", attempt)
 	req, err := convert.DecodeResponseNewParams(rawBody)
 	if err != nil {
@@ -94,6 +96,11 @@ func (b *AnthropicBackend) execute(
 	}
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
+	// Copilot 的 Anthropic 端点要求 enabled thinking 显式携带 budget_tokens，
+	// 共享转换层刻意省略它以兼容常规上游；仅在 Copilot 委派时补齐。
+	if bearerOnly && src.BackendType == config.BackendGitHubCopilot {
+		applyCopilotThinkingBudget(anthReq, req)
+	}
 
 	maxTokensSource := "anthropic_default"
 	if req.MaxOutputTokens.Valid() && req.MaxOutputTokens.Value > 0 {
@@ -134,7 +141,7 @@ func (b *AnthropicBackend) execute(
 				SourceName: src.Name, Model: clientModel, ResolvedModel: resolved,
 				StartedAt: start, Duration: time.Since(start),
 				Status: "failed", Code: upstreamCode, Error: errSummary(err), Attempt: attempt,
-				BackendType: config.BackendAnthropic,
+				Backend: plugin.BackendAnthropic,
 			})
 		}
 		return err
@@ -215,13 +222,13 @@ func (b *AnthropicBackend) execute(
 	}
 
 	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
-		locked:   locked,
-		scanErr:  scanErr,
-		terminal: sawStop || conv.Done(),
-		status:   conv.Status(),
-		code:     upstreamCode,
+		Locked:   locked,
+		ScanErr:  scanErr,
+		Terminal: sawStop || conv.Done(),
+		Status:   conv.Status(),
+		Code:     upstreamCode,
 		// 错误串解析不出状态码时保留建连返回的 upstreamCode。
-		noEventsCode: upstreamCode,
+		NoEventsCode: upstreamCode,
 	})
 	level := slog.LevelInfo
 	if status == "failed" {
@@ -265,7 +272,7 @@ func (b *AnthropicBackend) execute(
 			Status: status, Code: code, Error: errText, Attempt: attempt,
 			InputTokens: inTok, OutputTokens: outTok,
 			CacheRead: cacheRead, CacheCreate: cacheCreate,
-			BackendType: config.BackendAnthropic,
+			Backend: plugin.BackendAnthropic,
 		})
 	}
 	// 无论是否锁定都原样返回 scanErr：未锁定时供 scheduler 故障转移；
@@ -299,6 +306,37 @@ func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams
 		log.Warn("回灌的 thinking block 存在空 signature，可能违反 Anthropic thinking round-trip 规则",
 			"thinking_blocks", thinkingBlocks, "empty_signature", emptySig)
 	}
+}
+
+// defaultCopilotThinkingBudget 是 Copilot thinking budget 的内置默认值；
+// 合法区间为 ≥1024 且严格小于 max_tokens。
+const defaultCopilotThinkingBudget int64 = 8192
+
+// applyCopilotThinkingBudget 为 Copilot /v1/messages 补 thinking budget_tokens。
+// Copilot 的 Anthropic 端点对 enabled thinking 报 "budget_tokens: Field required"，
+// 而共享转换层 applyReasoning 刻意构造不带 budget 的 {"type":"enabled"}（SDK 零值
+// 会序列化为 0 被常规 Anthropic 拒绝）。此处整体替换为带合法 budget 的结构体，
+// 保留 summarized display，常规 Anthropic 源行为不受影响。
+func applyCopilotThinkingBudget(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
+	effort := string(req.Reasoning.Effort)
+	if effort == "" || effort == model.ReasoningEffortNone {
+		return
+	}
+	budget := defaultCopilotThinkingBudget
+	if max := out.MaxTokens; max > 1024 {
+		candidate := max - 1024
+		if candidate < budget {
+			budget = candidate
+		}
+		if budget < 1024 {
+			budget = 1024
+		}
+	}
+	enabled := anthropic.ThinkingConfigEnabledParam{BudgetTokens: budget}
+	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
+		enabled.Display = anthropic.ThinkingConfigEnabledDisplaySummarized
+	}
+	out.Thinking = anthropic.ThinkingConfigParamUnion{OfEnabled: &enabled}
 }
 
 func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks, emptySig, toolUse, toolResult, assistant, user int) {

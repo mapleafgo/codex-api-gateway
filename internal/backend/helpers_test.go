@@ -167,8 +167,8 @@ func TestClassifyOutcomeServerTimeout(t *testing.T) {
 	defer cancel()
 	time.Sleep(20 * time.Millisecond)
 	status, code, errText, scanErr := classifyOutcome(ctx, outcomeInput{
-		locked:  true,
-		scanErr: context.DeadlineExceeded,
+		Locked:  true,
+		ScanErr: context.DeadlineExceeded,
 	})
 	if status != "failed" || code != 504 {
 		t.Fatalf("timeout outcome = %s/%d, want failed/504", status, code)
