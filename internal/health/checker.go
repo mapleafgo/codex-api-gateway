@@ -62,8 +62,9 @@ func DefaultConfig() Config {
 
 // Checker 是健康检查器，可并发检查多个源。
 type Checker struct {
-	hc     *http.Client
-	config Config
+	hc       *http.Client
+	config   Config
+	registry *plugin.Registry
 }
 
 // New 返回使用默认 HTTP 客户端的检查器。
@@ -82,9 +83,60 @@ func NewWithClient(cfg Config, hc *http.Client) *Checker {
 	}
 }
 
-// CheckSource 检查单个源的连通性。
-// 策略：先 GET /v1/models（不消耗 token）；若 404 则降级发最小 POST 验证 key。
+// NewWithRegistry 返回可分发插件 HealthProbe 的检查器。registry 为 nil 时
+// 退化为旧 HTTP 探针；插件未声明 HealthProbe 时返回显式 not-supported 结果。
+func NewWithRegistry(cfg Config, reg *plugin.Registry) *Checker {
+	c := New(cfg)
+	c.registry = reg
+	return c
+}
+
+// CheckSource 检查单个源的连通性：注册表存在且插件实现 HealthProbe 时
+// 交给插件，否则退回旧的 HTTP /v1/models 探针。
 func (c *Checker) CheckSource(ctx context.Context, source config.Source) Result {
+	if c.registry != nil {
+		id := source.Backend
+		if id == "" {
+			id = string(plugin.LegacyBackendTypeToID(source.BackendType))
+		}
+		if p, ok := c.registry.Get(id); ok {
+			hp, supported := p.(plugin.HealthProbe)
+			if !supported {
+				return Result{
+					Status:    StatusFailed,
+					Success:   false,
+					Message:   fmt.Sprintf("source plugin %q does not implement health probe", id),
+					CheckedAt: time.Now(),
+				}
+			}
+			return probeResultFromPlugin(hp.Probe(ctx, source))
+		}
+	}
+	return c.checkSourceHTTP(ctx, source)
+}
+
+// probeResultFromPlugin 把插件 ProbeResult 映射为 health.CheckResult。
+func probeResultFromPlugin(pr plugin.ProbeResult) Result {
+	status := StatusFailed
+	switch pr.Status {
+	case plugin.ProbeOperational:
+		status = StatusOperational
+	case plugin.ProbeDegraded:
+		status = StatusDegraded
+	}
+	return Result{
+		Status:         status,
+		Success:        status != StatusFailed,
+		Message:        pr.Message,
+		ResponseTimeMs: pr.Latency.Milliseconds(),
+		HTTPStatus:     pr.Code,
+		CheckedAt:      pr.Time,
+	}
+}
+
+// checkSourceHTTP 检查单个源的连通性。
+// 策略：先 GET /v1/models（不消耗 token）；若 404 则降级发最小 POST 验证 key。
+func (c *Checker) checkSourceHTTP(ctx context.Context, source config.Source) Result {
 	checkedAt := time.Now()
 	modelsURL := upstreamhttp.ModelsURL(source.BaseURL)
 

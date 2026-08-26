@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // 返回一个返回固定状态码和响应体的 mock /v1/models 服务器。
@@ -183,6 +186,93 @@ func TestCheckSource_ResultJSON(t *testing.T) {
 	}
 	if decoded.Status != res.Status {
 		t.Fatalf("JSON 往返后 status 不一致: %s vs %s", decoded.Status, res.Status)
+	}
+}
+
+// probeStubBackend 是测试桩 Backend，健康探测不触发 Execute。
+type probeStubBackend struct{}
+
+func (probeStubBackend) Execute(
+	_ context.Context,
+	_ []byte,
+	_ config.Source,
+	_ *config.Config,
+	_ func(model.SSEEvent) error,
+	_ func(plugin.UpstreamEvent),
+	_ int,
+) error {
+	return nil
+}
+
+// probeStubPlugin 同时实现 SourcePlugin 与 HealthProbe。
+type probeStubPlugin struct{}
+
+func (probeStubPlugin) Descriptor() plugin.Descriptor {
+	return plugin.Descriptor{
+		ID: "probe-stub", Title: "Probe Stub", Summary: "health 分发测试桩",
+		Capabilities: []plugin.Capability{plugin.CapabilityAnthropicMessages},
+		Streaming:    plugin.StreamingConverted,
+	}
+}
+
+func (probeStubPlugin) ValidateSource(config.Source) error { return nil }
+func (probeStubPlugin) Backend() plugin.Backend            { return probeStubBackend{} }
+
+func (probeStubPlugin) Probe(_ context.Context, _ config.Source) plugin.ProbeResult {
+	return plugin.ProbeResult{
+		Status:  plugin.ProbeOperational,
+		Code:    http.StatusOK,
+		Latency: 5 * time.Millisecond,
+		Message: "probe-ok",
+		Time:    time.Now(),
+	}
+}
+
+// noProbeStubPlugin 只实现 SourcePlugin，验证不支持探测时返回显式结果。
+type noProbeStubPlugin struct{}
+
+func (noProbeStubPlugin) Descriptor() plugin.Descriptor {
+	return plugin.Descriptor{
+		ID: "no-probe-stub", Title: "No Probe Stub", Summary: "健康分发不支持测试桩",
+		Capabilities: []plugin.Capability{plugin.CapabilityAnthropicMessages},
+		Streaming:    plugin.StreamingConverted,
+	}
+}
+
+func (noProbeStubPlugin) ValidateSource(config.Source) error { return nil }
+func (noProbeStubPlugin) Backend() plugin.Backend            { return probeStubBackend{} }
+
+func TestCheckSourceDispatchesToPluginProbe(t *testing.T) {
+	reg, err := plugin.New(probeStubPlugin{})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewWithRegistry(DefaultConfig(), reg)
+	src := config.Source{Name: "stub", Backend: "probe-stub"}
+	res := c.CheckSource(context.Background(), src)
+
+	if res.Status != StatusOperational || !res.Success {
+		t.Fatalf("result = %+v, want operational", res)
+	}
+	if res.Message != "probe-ok" {
+		t.Fatalf("message = %q, want probe-ok", res.Message)
+	}
+}
+
+func TestCheckSourceUnsupportedProbeCapability(t *testing.T) {
+	reg, err := plugin.New(noProbeStubPlugin{})
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewWithRegistry(DefaultConfig(), reg)
+	src := config.Source{Name: "nosupport", Backend: "no-probe-stub"}
+	res := c.CheckSource(context.Background(), src)
+
+	if res.Status != StatusFailed || res.Success {
+		t.Fatalf("result = %+v, want failed", res)
+	}
+	if !strings.Contains(res.Message, "does not implement health probe") {
+		t.Fatalf("message = %q, want explicit not-supported hint", res.Message)
 	}
 }
 
