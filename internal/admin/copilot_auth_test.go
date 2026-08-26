@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 )
 
 // newTestAuthHandler 构造带注入 GitHub mock 的管理 handler，轮询间隔压到毫秒级。
@@ -19,8 +19,8 @@ func newTestAuthHandler(t *testing.T, gh http.HandlerFunc) (*handler, *Deps) {
 	deps, _ := newTestDeps(t)
 	srv := httptest.NewServer(gh)
 	t.Cleanup(srv.Close)
-	authClient := copilotclient.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token")
-	h := &handler{deps: *deps, copilot: copilotclient.New()}
+	authClient := copilot.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token")
+	h := &handler{deps: *deps, copilot: copilot.New()}
 	h.auth = newCopilotAuthManager(
 		authClient,
 		func() *config.Config { return deps.Holder.Current() },
@@ -246,7 +246,7 @@ func TestCopilotAuthSuccessUpdatesExistingSource(t *testing.T) {
 		t.Fatalf("seed yaml: %v", err)
 	}
 
-	h := &handler{deps: *deps, copilot: copilotclient.New()}
+	h := &handler{deps: *deps, copilot: copilot.New()}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login/device/code" {
 			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":1}`))
@@ -256,7 +256,7 @@ func TestCopilotAuthSuccessUpdatesExistingSource(t *testing.T) {
 	}))
 	defer srv.Close()
 	h.auth = newCopilotAuthManager(
-		copilotclient.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token"),
+		copilot.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token"),
 		func() *config.Config { return deps.Holder.Current() },
 		h.saveCopilotSource,
 	)
@@ -343,7 +343,7 @@ func TestCopilotAuthFailureKeepsExistingSource(t *testing.T) {
 	if err := writeInitialYAML(deps.CfgPath, &cur); err != nil {
 		t.Fatalf("seed yaml: %v", err)
 	}
-	h := &handler{deps: *deps, copilot: copilotclient.New()}
+	h := &handler{deps: *deps, copilot: copilot.New()}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login/device/code" {
 			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":1}`))
@@ -353,7 +353,7 @@ func TestCopilotAuthFailureKeepsExistingSource(t *testing.T) {
 	}))
 	defer srv.Close()
 	h.auth = newCopilotAuthManager(
-		copilotclient.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token"),
+		copilot.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token"),
 		func() *config.Config { return deps.Holder.Current() },
 		h.saveCopilotSource,
 	)

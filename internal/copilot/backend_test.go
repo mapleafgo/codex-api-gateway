@@ -1,4 +1,4 @@
-package backend
+package copilot
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
@@ -18,7 +18,7 @@ import (
 func TestRouteByEndpoints(t *testing.T) {
 	tests := []struct {
 		name string
-		info *copilotclient.ModelInfo
+		info *ModelInfo
 		want string
 	}{
 		{
@@ -28,37 +28,37 @@ func TestRouteByEndpoints(t *testing.T) {
 		},
 		{
 			name: "supports /responses returns r",
-			info: &copilotclient.ModelInfo{ID: "m1", SupportedEndpoints: []string{"/responses"}},
+			info: &ModelInfo{ID: "m1", SupportedEndpoints: []string{"/responses"}},
 			want: "r",
 		},
 		{
 			name: "supports /v1/messages only returns a",
-			info: &copilotclient.ModelInfo{ID: "m2", SupportedEndpoints: []string{"/v1/messages"}},
+			info: &ModelInfo{ID: "m2", SupportedEndpoints: []string{"/v1/messages"}},
 			want: "a",
 		},
 		{
 			name: "supports /chat/completions only returns c",
-			info: &copilotclient.ModelInfo{ID: "m3", SupportedEndpoints: []string{"/chat/completions"}},
+			info: &ModelInfo{ID: "m3", SupportedEndpoints: []string{"/chat/completions"}},
 			want: "c",
 		},
 		{
 			name: "supports both /responses and /v1/messages prefers r",
-			info: &copilotclient.ModelInfo{ID: "m4", SupportedEndpoints: []string{"/responses", "/v1/messages"}},
+			info: &ModelInfo{ID: "m4", SupportedEndpoints: []string{"/responses", "/v1/messages"}},
 			want: "r",
 		},
 		{
 			name: "supports /v1/messages and /chat/completions prefers a",
-			info: &copilotclient.ModelInfo{ID: "m5", SupportedEndpoints: []string{"/v1/messages", "/chat/completions"}},
+			info: &ModelInfo{ID: "m5", SupportedEndpoints: []string{"/v1/messages", "/chat/completions"}},
 			want: "a",
 		},
 		{
 			name: "empty SupportedEndpoints returns r",
-			info: &copilotclient.ModelInfo{ID: "m6", SupportedEndpoints: []string{}},
+			info: &ModelInfo{ID: "m6", SupportedEndpoints: []string{}},
 			want: "r",
 		},
 		{
 			name: "unknown endpoint only returns r",
-			info: &copilotclient.ModelInfo{ID: "m7", SupportedEndpoints: []string{"/v1/embeddings"}},
+			info: &ModelInfo{ID: "m7", SupportedEndpoints: []string{"/v1/embeddings"}},
 			want: "r",
 		},
 	}
@@ -288,7 +288,7 @@ func TestCopilotExecuteRoutesAndUpstreamContract(t *testing.T) {
 			}))
 			defer api.Close()
 
-			b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+			b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 			src := config.Source{
 				Name:        "copilot",
 				BaseURL:     api.URL,
@@ -297,12 +297,12 @@ func TestCopilotExecuteRoutesAndUpstreamContract(t *testing.T) {
 				ModelMap:    map[string]string{"alias": tt.resolvedModel},
 			}
 			var eventTypes []string
-			var upstreamEvent UpstreamEvent
+			var upstreamEvent plugin.UpstreamEvent
 			err := b.Execute(context.Background(), []byte(`{"model":"alias","input":"hi","stream":true}`), src, &config.Config{},
 				func(ev model.SSEEvent) error {
 					eventTypes = append(eventTypes, ev.Type)
 					return nil
-				}, func(ev UpstreamEvent) { upstreamEvent = ev }, 1)
+				}, func(ev plugin.UpstreamEvent) { upstreamEvent = ev }, 1)
 			if err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
@@ -365,7 +365,7 @@ func TestCopilotExecuteResponsesNormalizesInput(t *testing.T) {
 	}))
 	defer api.Close()
 
-	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
 	raw := `{
 		"model":"m",
@@ -425,7 +425,7 @@ func TestCopilotExecuteAnthropicInjectsThinkingBudget(t *testing.T) {
 	}))
 	defer api.Close()
 
-	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
 	err := b.Execute(context.Background(), []byte(`{"model":"m","input":"hi","reasoning":{"effort":"high"},"stream":true}`), src, &config.Config{},
 		func(model.SSEEvent) error { return nil }, nil, 1)
@@ -470,7 +470,7 @@ func TestCopilotExecuteDefaultModelRoutesResolvedModel(t *testing.T) {
 	}))
 	defer api.Close()
 
-	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 	src := config.Source{
 		Name:         "copilot",
 		BaseURL:      api.URL,
@@ -520,7 +520,7 @@ func TestCopilotExecuteContextTierPassthrough(t *testing.T) {
 			}))
 			defer api.Close()
 
-			b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+			b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 			src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
 			err := b.Execute(context.Background(), []byte(tt.raw), src, &config.Config{},
 				func(model.SSEEvent) error { return nil }, nil, 1)
@@ -541,7 +541,7 @@ func TestCopilotExplicitBaseURLBypassesDiscovery(t *testing.T) {
 	}))
 	defer api.Close()
 
-	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
 	if endpoint := b.ResolveEndpoint(context.Background(), &src); endpoint != api.URL {
 		t.Fatalf("endpoint = %q, want explicit base URL %q", endpoint, api.URL)
@@ -560,7 +560,7 @@ func TestCopilotExecuteFallsBackToResponsesWhenModelsFail(t *testing.T) {
 	}))
 	defer api.Close()
 
-	b := NewCopilot(NewResponses(), NewAnthropic(), NewChat())
+	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
 	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
 	err := b.Execute(context.Background(), []byte(`{"model":"m","input":"hi","stream":true}`), src, &config.Config{},
 		func(model.SSEEvent) error { return nil }, nil, 1)

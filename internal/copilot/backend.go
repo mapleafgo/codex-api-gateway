@@ -1,4 +1,4 @@
-package backend
+package copilot
 
 import (
 	"context"
@@ -8,37 +8,36 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
-// CopilotBackend 将 Responses 请求按模型能力路由到已有的 r/a/c 转换路径，
+// Backend 将 Responses 请求按模型能力路由到已有的 r/a/c 转换路径，
 // 上游是 GitHub Copilot API（仅流式）。认证参照 Zed：直接用 GitHub OAuth token
 // 作为 Bearer，通过 GraphQL 发现 API endpoint，不换 Copilot session token。
-type CopilotBackend struct {
-	Responses *ResponsesBackend
-	Anthropic *AnthropicBackend
-	Chat      *ChatBackend
-	Client    *copilotclient.Client
+type Backend struct {
+	responses plugin.Backend
+	anthropic plugin.Backend
+	chat      plugin.Backend
+	Client    *Client
 }
 
-// NewCopilot 构造 CopilotBackend，组合已有的三个 Backend 做委托。
+// NewBackend 构造 Copilot Backend，组合已有的三个 Backend 做委托。
 // 三个 Backend 参数均不可为 nil；返回值可并发执行。
-func NewCopilot(responses *ResponsesBackend, anthropic *AnthropicBackend, chat *ChatBackend) *CopilotBackend {
-	return &CopilotBackend{
-		Responses: responses,
-		Anthropic: anthropic,
-		Chat:      chat,
-		Client:    copilotclient.New(),
+func NewBackend(responses, anthropic, chat plugin.Backend) *Backend {
+	return &Backend{
+		responses: responses,
+		anthropic: anthropic,
+		chat:      chat,
+		Client:    New(),
 	}
 }
 
 // routeByEndpoints 按模型 supported_endpoints 以优先级 r > a > c 选择协议路径。
 // info 为 nil 或无匹配时返回 "r"（默认，让上游返回结果或错误）。
 // 映射："/responses" → r；"/v1/messages" → a；"/chat/completions" → c。
-func routeByEndpoints(info *copilotclient.ModelInfo) string {
+func routeByEndpoints(info *ModelInfo) string {
 	if info == nil {
 		return "r"
 	}
@@ -61,24 +60,24 @@ func routeByEndpoints(info *copilotclient.ModelInfo) string {
 
 // ResolveEndpoint 返回 source 的 Copilot API endpoint。显式 BaseURL 优先；
 // 缺省时执行 GraphQL 发现并缓存结果。失败时返回默认 endpoint。
-func (b *CopilotBackend) ResolveEndpoint(ctx context.Context, src *config.Source) string {
+func (b *Backend) ResolveEndpoint(ctx context.Context, src *config.Source) string {
 	return b.Client.ResolveEndpoint(ctx, *src)
 }
 
 // ListModels 返回按 Zed 条件筛选后的 Copilot 模型目录。结果来自 per-source
 // TTL 缓存，模型按 ID 排序以保证管理页输出稳定；目录拉取失败时返回错误。
-func (b *CopilotBackend) ListModels(ctx context.Context, src config.Source) ([]copilotclient.ModelInfo, error) {
+func (b *Backend) ListModels(ctx context.Context, src config.Source) ([]ModelInfo, error) {
 	return b.Client.ListModels(ctx, src)
 }
 
-// Execute 实现 Backend 接口：按模型能力路由并委托已有 r/a/c 后端。
-func (b *CopilotBackend) Execute(
+// Execute 实现 Backend 接口：按模型能力路由并委托已有的 r/a/c 后端。
+func (b *Backend) Execute(
 	ctx context.Context,
 	rawBody []byte,
 	src config.Source,
 	cfg *config.Config,
 	onEvent func(model.SSEEvent) error,
-	onUpstream func(UpstreamEvent),
+	onUpstream func(plugin.UpstreamEvent),
 	attempt int,
 ) error {
 	log := logging.FromContext(ctx).With(
@@ -90,7 +89,6 @@ func (b *CopilotBackend) Execute(
 		return fmt.Errorf("copilot: source %q missing github_token", src.Name)
 	}
 
-	// 解析 model 用于路由决策
 	clientModel, resolved, err := extractModel(rawBody, &src)
 	if err != nil {
 		return fmt.Errorf("copilot: decode model: %w", err)
@@ -101,8 +99,7 @@ func (b *CopilotBackend) Execute(
 	directoryElapsed := time.Since(directoryStart)
 	endpoint := directory.Endpoint
 
-	// 模型目录（拉取失败时回退默认 r 路由）
-	var info *copilotclient.ModelInfo
+	var info *ModelInfo
 	if merr != nil {
 		log.Warn("Copilot 模型目录拉取失败，回退默认路由 r",
 			"error", merr, "endpoint", endpoint, "elapsed", directoryElapsed.String())
@@ -116,11 +113,10 @@ func (b *CopilotBackend) Execute(
 	}
 	route := routeByEndpoints(info)
 
-	// 构造修改过的 source 副本：BaseURL = Copilot endpoint、APIKey = github token、Headers = Zed 风格
 	delegateSrc := src
 	delegateSrc.BaseURL = endpoint
 	delegateSrc.APIKey = src.GithubToken
-	delegateSrc.Headers = mergeHeaders(src.Headers, copilotclient.Headers())
+	delegateSrc.Headers = mergeHeaders(src.Headers, Headers())
 
 	log.Info("Copilot 请求路由决策",
 		"model", clientModel,
@@ -130,7 +126,7 @@ func (b *CopilotBackend) Execute(
 		"models_cached", len(directory.Models),
 		"directory_elapsed", directoryElapsed.String())
 
-	reportUpstream := func(ev UpstreamEvent) {
+	reportUpstream := func(ev plugin.UpstreamEvent) {
 		if onUpstream == nil {
 			return
 		}
@@ -140,13 +136,15 @@ func (b *CopilotBackend) Execute(
 
 	switch route {
 	case "r":
-		return b.Responses.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
+		return b.responses.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
 	case "a":
-		return b.Anthropic.ExecuteWithAuthorization(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
+		if bearer, ok := b.anthropic.(plugin.BearerOnlyBackend); ok {
+			return bearer.ExecuteWithAuthorization(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
+		}
+		return b.anthropic.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
 	case "c":
-		return b.Chat.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
+		return b.chat.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
 	default:
-		// routeByEndpoints 只返回 r/a/c，此处为防御分支
 		return fmt.Errorf("copilot: unexpected route %q", route)
 	}
 }
@@ -160,7 +158,7 @@ func extractModel(raw []byte, src *config.Source) (clientModel, resolved string,
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
 	clientModel = top.Model
-	resolved = resolveModel(src, clientModel)
+	resolved = plugin.ResolveModel(src, clientModel)
 	if clientModel == "" {
 		clientModel = resolved
 	}
@@ -169,12 +167,12 @@ func extractModel(raw []byte, src *config.Source) (clientModel, resolved string,
 
 // mergeHeaders 合并用户自定义 header 与 Copilot 必需 header。
 // Copilot 必需 header 优先（不可被 source.headers 覆盖）。
-func mergeHeaders(user, copilot map[string]string) map[string]string {
-	out := make(map[string]string, len(user)+len(copilot))
+func mergeHeaders(user, copilotHeaders map[string]string) map[string]string {
+	out := make(map[string]string, len(user)+len(copilotHeaders))
 	for k, v := range user {
 		out[k] = v
 	}
-	for k, v := range copilot {
+	for k, v := range copilotHeaders {
 		for existing := range out {
 			if strings.EqualFold(existing, k) {
 				delete(out, existing)

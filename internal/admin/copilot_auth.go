@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 )
 
 // Device Flow 会话状态。idle 表示当前没有活跃或保留的会话。
@@ -73,7 +73,7 @@ type authSession struct {
 	state      string
 	targetName string
 	draft      config.Source // 目标源草稿，GithubToken 始终为空
-	flow       *copilotclient.DeviceFlow
+	flow       *copilot.DeviceFlow
 	interval   time.Duration
 	publicErr  string
 	ctx        context.Context
@@ -84,7 +84,7 @@ type authSession struct {
 
 // copilotAuthManager 维护唯一活跃授权会话，并负责在授权成功后落盘。
 type copilotAuthManager struct {
-	client *copilotclient.AuthClient
+	client *copilot.AuthClient
 	// snapshot 返回最新配置快照，用于同名目标冲突检查（FR-007）。
 	snapshot func() *config.Config
 	// save 在授权成功后写入目标源并热重载；返回错误时进入 error 终态。
@@ -98,12 +98,12 @@ type copilotAuthManager struct {
 }
 
 func newCopilotAuthManager(
-	client *copilotclient.AuthClient,
+	client *copilot.AuthClient,
 	snapshot func() *config.Config,
 	save func(token string, draft config.Source) error,
 ) *copilotAuthManager {
 	if client == nil {
-		client = copilotclient.NewAuthClient(nil, "", "")
+		client = copilot.NewAuthClient(nil, "", "")
 	}
 	return &copilotAuthManager{
 		client:      client,

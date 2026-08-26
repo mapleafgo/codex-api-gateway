@@ -1,5 +1,7 @@
-// Package copilotclient 提供 GitHub Copilot 的 endpoint 发现与模型目录客户端。
-package copilotclient
+// Package copilot 收拢 GitHub Copilot 的全部能力：endpoint 发现、模型目录
+// 客户端、Device Flow 认证与基于模型能力的协议路由后端。所有涉及 Copilot
+// 的专属事实与实现都集中在此包内，共享核心只通过插件契约与稳定 ID 感知它。
+package copilot
 
 import (
 	"context"

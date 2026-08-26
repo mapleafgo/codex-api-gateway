@@ -22,7 +22,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilotclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
@@ -62,7 +62,7 @@ type Deps struct {
 type handler struct {
 	deps Deps
 	// copilot 只服务管理页旁路的目录/连通性探测，不进入 /v1/* 转发路径。
-	copilot *copilotclient.Client
+	copilot *copilot.Client
 	// auth 唯一活跃 Copilot Device Flow 会话（管理页旁路）。
 	auth *copilotAuthManager
 	// writeMu 序列化配置写回，避免并发保存互相覆盖。
@@ -74,10 +74,10 @@ type handler struct {
 func Mount(mux *http.ServeMux, deps Deps) {
 	h := &handler{
 		deps:    deps,
-		copilot: copilotclient.New(),
+		copilot: copilot.New(),
 	}
 	h.auth = newCopilotAuthManager(
-		copilotclient.NewAuthClient(nil, "", ""),
+		copilot.NewAuthClient(nil, "", ""),
 		func() *config.Config { return h.deps.Holder.Current() },
 		h.saveCopilotSource,
 	)

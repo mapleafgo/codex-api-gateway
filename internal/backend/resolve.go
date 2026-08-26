@@ -1,14 +1,11 @@
 package backend
 
-import "github.com/mapleafgo/codex-api-gateway/internal/config"
+import (
+	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+)
 
-// resolveModel 按源 ModelMap / DefaultModel 解析上游模型名。
+// resolveModel 委托共享 plugin.ResolveModel，保持历史包内引用不变。
 func resolveModel(src *config.Source, reqModel string) string {
-	if m, ok := src.ModelMap[reqModel]; ok {
-		return m
-	}
-	if src.DefaultModel != "" {
-		return src.DefaultModel
-	}
-	return reqModel
+	return plugin.ResolveModel(src, reqModel)
 }

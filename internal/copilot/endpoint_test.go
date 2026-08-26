@@ -1,4 +1,4 @@
-package copilotclient
+package copilot
 
 import (
 	"context"

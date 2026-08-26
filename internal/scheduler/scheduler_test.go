@@ -17,6 +17,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // --- helpers --------------------------------------------------------------
@@ -253,7 +254,7 @@ func TestMixAnthropicFailThenChatSuccess(t *testing.T) {
 	// last successful upstream should be c
 	var sawC bool
 	for _, u := range ups {
-		if u.SourceName == "c-good" && u.BackendType == "c" && u.Status == "completed" {
+		if u.SourceName == "c-good" && u.Backend == plugin.BackendOpenAIChat && u.Status == "completed" {
 			sawC = true
 		}
 	}
@@ -991,8 +992,8 @@ func TestOnUpstreamUsage(t *testing.T) {
 	if ev.Status != "completed" {
 		t.Fatalf("status: want completed, got %q", ev.Status)
 	}
-	if ev.BackendType != "a" {
-		t.Fatalf("backend_type=%q", ev.BackendType)
+	if ev.Backend != plugin.BackendAnthropic {
+		t.Fatalf("backend=%q", ev.Backend)
 	}
 	if ev.InputTokens != 123 || ev.OutputTokens != 89 ||
 		ev.CacheRead != 45 || ev.CacheCreate != 6 {

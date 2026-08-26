@@ -371,7 +371,8 @@ L5 观测/管理  internal/admin  internal/metrics
 L4 编排      internal/server
 L3 运行时    internal/scheduler  internal/backend（a/c/g/r 适配器）
 L2 转换      convert/streamconv（a）  chatconvert/chatstreamconv（c）  透传无 L2（r）
-L1 客户端    anthropic  chatclient  responsesclient  copilotclient
+L1 客户端    anthropic  chatclient  responsesclient
+L1.5 Copilot  internal/copilot（endpoint 发现 / 模型目录 / Device Flow / 协议路由，单一归属包）
 L0 基础      config  logging  model  breaker  toolcatalog
 ```
 

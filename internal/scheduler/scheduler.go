@@ -13,6 +13,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
@@ -57,7 +58,7 @@ type Scheduler struct {
 	anthropicBackend *backend.AnthropicBackend
 	chatBackend      *backend.ChatBackend
 	responsesBackend *backend.ResponsesBackend
-	copilotBackend   *backend.CopilotBackend
+	copilotBackend   *copilot.Backend
 	breakers         map[string]*breaker.Breaker
 	order            []orderEntry // runtimeOrder: runtime priority sequence
 	bkMu             sync.Mutex
@@ -120,7 +121,7 @@ func New(cfg any) *Scheduler {
 		anthropicBackend: backend.NewAnthropic(),
 		chatBackend:      backend.NewChat(),
 		responsesBackend: backend.NewResponses(),
-		copilotBackend:   backend.NewCopilot(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
+		copilotBackend:   copilot.NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
 		breakers:         map[string]*breaker.Breaker{},
 		order:            order,
 		backoff:          defaultBackoff,
