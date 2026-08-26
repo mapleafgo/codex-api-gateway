@@ -198,7 +198,7 @@ func TestIntegrationPlainTextStream(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -304,7 +304,7 @@ func TestIntegrationWebSearchRoundTrip(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -352,7 +352,7 @@ func TestIntegrationCacheControlReachesUpstream(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -382,7 +382,7 @@ func TestIntegrationCustomToolStream(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -424,7 +424,7 @@ func TestIntegrationFunctionArgsCoerceIntegerFloats(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -460,7 +460,7 @@ func TestIntegrationReasoningPlaintext(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -517,7 +517,7 @@ func TestIntegrationReasoningSummarized(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -561,7 +561,7 @@ func TestIntegrationRedactedThinkingSkipped(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -599,7 +599,7 @@ func TestIntegrationErrorToFailed(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -648,7 +648,7 @@ func TestIntegrationFirstErrorFailsOver(t *testing.T) {
 			{Name: "B", BaseURL: goodB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -675,7 +675,7 @@ func TestIntegrationNon200EmitsFailed(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -707,7 +707,7 @@ func TestIntegrationFailover(t *testing.T) {
 			{Name: "B", BaseURL: goodB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -753,7 +753,7 @@ func TestIntegrationFailoverUsesSuccessfulSourceID(t *testing.T) {
 			{Name: "B", BaseURL: goodB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -794,7 +794,7 @@ func TestIntegrationServerSideFailureAdvancesSequenceNumber(t *testing.T) {
 		},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -836,7 +836,7 @@ func TestIntegrationDegradeReorder(t *testing.T) {
 			{Name: "B", BaseURL: goodB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -890,7 +890,7 @@ func TestIntegrationRetry(t *testing.T) {
 		},
 		Sources: []config.Source{{Name: "bad", BaseURL: bad.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -922,7 +922,7 @@ func TestIntegrationRetryMaxZero(t *testing.T) {
 		},
 		Sources: []config.Source{{Name: "bad", BaseURL: bad.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -989,7 +989,7 @@ func TestIntegrationCircuitOpenRecovery(t *testing.T) {
 			{Name: "B", BaseURL: upstreamB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -1110,7 +1110,7 @@ func TestIntegrationCircuitOpenSourceSkipped(t *testing.T) {
 			{Name: "B", BaseURL: upstreamB.URL},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -1213,7 +1213,7 @@ func TestIntegrationPerAttemptTimeoutFailover(t *testing.T) {
 		{Name: "hang", BaseURL: hang.URL},
 		{Name: "good", BaseURL: good.URL},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1251,7 +1251,7 @@ func TestIntegrationMidStreamTimeoutFailedTerminal(t *testing.T) {
 		{Name: "up", BaseURL: upstream.URL},
 		{Name: "good", BaseURL: good.URL},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1288,7 +1288,7 @@ func TestIntegrationResponsesTimeoutTerminalAppend(t *testing.T) {
 
 	cfg := timeoutConfig(300 * time.Millisecond)
 	cfg.Sources = []config.Source{{Name: "up", BaseURL: upstream.URL, BackendType: config.BackendOpenAIResponses}}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1315,7 +1315,7 @@ func TestTimeoutVsClientCancelLogDistinction(t *testing.T) {
 		defer hang.Close()
 		cfg := timeoutConfig(300 * time.Millisecond)
 		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
-		srv := New(cfg)
+		srv := newSrv(cfg)
 		defer srv.Close()
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()
@@ -1339,7 +1339,7 @@ func TestTimeoutVsClientCancelLogDistinction(t *testing.T) {
 		defer hang.Close()
 		cfg := timeoutConfig(10 * time.Second)
 		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
-		srv := New(cfg)
+		srv := newSrv(cfg)
 		defer srv.Close()
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()
@@ -1383,7 +1383,7 @@ func TestTimeoutVsClientCancelMetricsDistinction(t *testing.T) {
 		defer hang.Close()
 		cfg := timeoutConfig(300 * time.Millisecond)
 		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
-		srv := New(cfg)
+		srv := newSrv(cfg)
 		defer srv.Close()
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()
@@ -1400,7 +1400,7 @@ func TestTimeoutVsClientCancelMetricsDistinction(t *testing.T) {
 		defer hang.Close()
 		cfg := timeoutConfig(10 * time.Second)
 		cfg.Sources = []config.Source{{Name: "hang", BaseURL: hang.URL}}
-		srv := New(cfg)
+		srv := newSrv(cfg)
 		defer srv.Close()
 		ts := httptest.NewServer(srv.Handler())
 		defer ts.Close()

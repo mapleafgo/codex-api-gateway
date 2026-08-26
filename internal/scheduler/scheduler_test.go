@@ -13,12 +13,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/assembly"
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
+
+// newTestRegistry 构造内置源插件注册表，供测试调度器按稳定 ID 分发。
+func newTestRegistry() *plugin.Registry {
+	reg, err := assembly.NewBuiltins()
+	if err != nil {
+		panic(err)
+	}
+	return reg
+}
 
 // --- helpers --------------------------------------------------------------
 
@@ -106,7 +116,7 @@ func TestPerAttemptTimeoutFailover(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("hang", hang.URL, 0), makeSource("good", good.URL, 1)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	start := time.Now()
 	src, err := runGeneric(s, nil, nil)
 	elapsed := time.Since(start)
@@ -141,7 +151,7 @@ func TestPerAttemptTimeoutWrappedError(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("hang", hang.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	_, err := runGeneric(s, nil, nil)
 	if !errors.Is(err, backend.ErrUpstreamTimeout) {
 		t.Fatalf("err should wrap ErrUpstreamTimeout, got %v", err)
@@ -176,7 +186,7 @@ func TestFailoverOnUpstreamError(t *testing.T) {
 			makeSource("good", good.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var sawCreated bool
 	name, err := runGeneric(s, func(ev model.SSEEvent) error {
 		if ev.Type == "response.created" {
@@ -203,7 +213,7 @@ func TestAllSourcesFail(t *testing.T) {
 			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("bad", bad.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	_, err := runGeneric(s, nil, nil)
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("want ErrAllSourcesFailed, got %v", err)
@@ -231,7 +241,7 @@ func TestMixAnthropicFailThenChatSuccess(t *testing.T) {
 			makeChatSource("c-good", goodC.URL+"/v1", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var events []model.SSEEvent
 	var ups []UpstreamEvent
 	name, err := runGeneric(s, func(ev model.SSEEvent) error {
@@ -292,7 +302,7 @@ func TestEmptyChatResponseSwitchesToNext(t *testing.T) {
 			makeChatSource("c-good", good.URL+"/v1", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var events []model.SSEEvent
 	name, err := runGeneric(s, func(ev model.SSEEvent) error {
 		events = append(events, ev)
@@ -343,7 +353,7 @@ func TestFailureTerminalBeforeContentNoFailover(t *testing.T) {
 			makeChatSource("c-good", good.URL+"/v1", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var events []model.SSEEvent
 	name, err := runGeneric(s, func(ev model.SSEEvent) error {
 		events = append(events, ev)
@@ -391,7 +401,7 @@ func TestStatusOnlySourceSwitchesToNext(t *testing.T) {
 			makeSource("good", good.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	_, _ = runGeneric(s, func(model.SSEEvent) error { return nil }, nil)
 	if !goodCalled.Load() {
 		t.Fatal("source with only status events must switch to next source")
@@ -415,7 +425,7 @@ func TestStatusEventStopsFirstByteWatchdog(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("slow-content", slowContent.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	name, err := runGeneric(s, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -447,7 +457,7 @@ func TestSlowFirstByteLongStream(t *testing.T) {
 			makeSource("fast", fast.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	name, err := runGeneric(s, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -481,7 +491,7 @@ func TestModelMapResolvedBeforeStream(t *testing.T) {
 			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{src},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	if _, err := runGeneric(s, nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +519,7 @@ func TestRetryOnAllFail(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	s.backoff = testBackoff
 	if _, err := runGeneric(s, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -534,7 +544,7 @@ func TestNoRetryWhenMaxRetriesZero(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	_, err := runGeneric(s, nil, nil)
 	if !errors.Is(err, ErrAllSourcesFailed) {
 		t.Fatalf("err=%v", err)
@@ -555,7 +565,7 @@ func TestRetryCtxCancel(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("s", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	s.backoff = time.Hour // long wait so cancel wins
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -590,7 +600,7 @@ func TestDegradeMovesSourceToEnd(t *testing.T) {
 			makeSource("B", good.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	for i := 0; i < 3; i++ {
 		if _, err := runGeneric(s, nil, nil); err != nil {
 			t.Fatalf("execute %d: %v", i, err)
@@ -635,7 +645,7 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 				Breaker: &config.BreakerCfg{DegradeThreshold: 100}},
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	for i := 0; i < 3; i++ {
 		_, _ = runGeneric(s, nil, nil)
 	}
@@ -677,7 +687,7 @@ func TestSourceHealthPrioritySkipsDisabledAndCircuitOpen(t *testing.T) {
 			makeSource("open", "https://open.example", 2),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	openSrc, ok := s.sourceByName("open")
 	if !ok {
 		t.Fatal("missing open")
@@ -720,7 +730,7 @@ func TestCircuitOpenRemovedFromRuntimeSeq(t *testing.T) {
 			makeSource("B", "https://b.example", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	aSrc, _ := s.sourceByName("A")
 	bk := s.breakerFor(&aSrc)
 	bk.RecordFailure() // -> degraded
@@ -751,7 +761,7 @@ func TestHalfOpenTransitionRestoresPriority(t *testing.T) {
 			makeSource("B", "https://b.example", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	s.moveToEnd("A")
 	s.adjustOrder("A", breaker.CircuitOpen, breaker.HalfOpen)
 	if s.order[0].name != "A" {
@@ -774,7 +784,7 @@ func TestRestoreOriginalUsesCurrentConfigOrder(t *testing.T) {
 			makeSource("B", "https://b.example", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	aSrc, _ := s.sourceByName("A")
 	bk := s.breakerFor(&aSrc)
 	bk.RecordFailure() // threshold=1 -> degraded
@@ -835,7 +845,7 @@ func TestCircuitOpenSourceSkipped(t *testing.T) {
 			makeSource("B", goodCounted.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	bkA := s.breakerFor(&cfg.Sources[0])
 	bkA.RecordFailure()
 	bkA.RecordFailure()
@@ -875,7 +885,7 @@ func TestAllCircuitOpenTriggersRetry(t *testing.T) {
 			makeSource("B", bad.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	s.backoff = 5 * time.Millisecond
 	bkA := s.breakerFor(&cfg.Sources[0])
 	bkB := s.breakerFor(&cfg.Sources[1])
@@ -921,7 +931,7 @@ func TestWatchdogFiresRecordsFailure(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("hang", "http://"+ln.Addr().String(), 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var ups []UpstreamEvent
 	_, err = runGeneric(s, nil, func(ev UpstreamEvent) { ups = append(ups, ev) })
 	if !errors.Is(err, ErrAllSourcesFailed) {
@@ -948,7 +958,7 @@ func TestConcurrentExecuteRuntimeOrderStable(t *testing.T) {
 			makeSource("b", srv.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -978,7 +988,7 @@ func TestOnUpstreamUsage(t *testing.T) {
 			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("good", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	var got []UpstreamEvent
 	_, err := runGeneric(s, nil, func(ev UpstreamEvent) { got = append(got, ev) })
@@ -1031,7 +1041,7 @@ func TestLockedStreamClientCancelNotRecordedAsFailed(t *testing.T) {
 		},
 		Sources: []config.Source{makeSource("up", upstream.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var got []UpstreamEvent
@@ -1076,7 +1086,7 @@ func TestOnUpstreamTTFB(t *testing.T) {
 			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("good", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var got UpstreamEvent
 	_, err := runGeneric(s, nil, func(ev UpstreamEvent) { got = ev })
 	if err != nil {
@@ -1096,7 +1106,7 @@ func TestOnUpstreamTTFBZeroOnConnectFail(t *testing.T) {
 			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{makeSource("bad", srv.URL, 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	var got UpstreamEvent
 	_, _ = runGeneric(s, nil, func(ev UpstreamEvent) { got = ev })
 	if got.TTFB != 0 {
@@ -1123,7 +1133,7 @@ func TestSourceHealthAndPromote(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	// 强制 a 进入 degraded
 	srcA, ok := s.sourceByName("a")
 	if !ok {
@@ -1198,7 +1208,7 @@ func TestDisabledSourceSkipped(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	hs := s.SourceHealth()
 	if len(hs) != 2 {
@@ -1255,7 +1265,7 @@ func TestAllSourcesDisabled(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	s.backoff = testBackoff
 
 	_, err := runGeneric(s, nil, nil)
@@ -1290,7 +1300,7 @@ func TestSchedulerAutoRecoverDegradedSource(t *testing.T) {
 			makeSource("s1", good.URL, 0),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	// Force s1 into degraded
 	src, _ := s.sourceByName("s1")
@@ -1337,7 +1347,7 @@ func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
 			makeSource("s1", good.URL, 0),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	src, _ := s.sourceByName("s1")
 	bk := s.breakerFor(&src)
@@ -1381,7 +1391,7 @@ func TestSchedulerDegradedSourceNotStarvedByHealthySource(t *testing.T) {
 			makeSource("A", goodA.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	// 强制 B 进入 degraded 并后移，同时让 degrade 间隔已过期。
 	srcB, _ := s.sourceByName("B")
@@ -1429,7 +1439,7 @@ func TestDegradedChanceFailuresMoveToEndAndCircuitOpen(t *testing.T) {
 			makeSource("B", goodB.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	aSrc, _ := s.sourceByName("A")
 	bkA := s.breakerFor(&aSrc)
 
@@ -1500,7 +1510,7 @@ func TestClientErrorDegradesAndChanceFailuresCircuitOpen(t *testing.T) {
 			makeSource("B", goodB.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	aSrc, _ := s.sourceByName("A")
 	bkA := s.breakerFor(&aSrc)
 
@@ -1562,7 +1572,7 @@ func TestListUpstreamModels_Responses(t *testing.T) {
 			BackendType: config.BackendOpenAIResponses, OriginalIndex: 0,
 		}},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	ms, err := s.ListUpstreamModels(context.Background(), "r1")
 	if err != nil {
 		t.Fatal(err)
@@ -1595,7 +1605,7 @@ func TestListUpstreamModels_CopilotUsesFilteredCatalog(t *testing.T) {
 	defer ts.Close()
 
 	cfg := &config.Config{Sources: []config.Source{makeCopilotSource("g1", ts.URL, 0)}}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	models, err := s.ListUpstreamModels(context.Background(), "g1")
 	if err != nil {
 		t.Fatal(err)
@@ -1642,7 +1652,7 @@ func TestCopilotSourceParticipatesInFailover(t *testing.T) {
 			makeSource("good", good.URL, 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	name, err := runGeneric(s, nil, nil)
 	if err != nil {
 		t.Fatalf("ExecuteGeneric: %v", err)
@@ -1668,7 +1678,7 @@ func TestRuntimeSeqSurvivesReplaceBeforeReload(t *testing.T) {
 			makeSource("c", "http://c", 2),
 		},
 	})
-	s := New(holder)
+	s := New(holder, newTestRegistry())
 
 	// 新配置：删掉 a/c，b 挪到 index 0，新增 d。Replace 后暂不 Reload。
 	holder.Replace(&config.Config{
@@ -1702,7 +1712,7 @@ func TestReloadRefreshesBreakerCfg(t *testing.T) {
 		}
 	}
 	holder := config.NewHolder(mk(5))
-	s := New(holder)
+	s := New(holder, newTestRegistry())
 	src := holder.Current().OrderedSources()[0]
 	bk := s.breakerFor(&src)
 
@@ -1732,7 +1742,7 @@ func TestBackgroundRecoveryRestoresPriority(t *testing.T) {
 			makeSource("B", "http://b", 1),
 		},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 	defer s.StopRecovery()
 
 	// 强制 A 降级并后移（模拟一次上游失败）。
@@ -1791,7 +1801,7 @@ func TestRecoveryStopIdempotentAndBeforeStart(t *testing.T) {
 	cfg := &config.Config{
 		Sources: []config.Source{makeSource("a", "http://a", 0)},
 	}
-	s := New(cfg)
+	s := New(cfg, newTestRegistry())
 
 	s.StopRecovery() // 先停：后续 Start 不得再启动无法停止的 goroutine
 	s.recoveryPeriod = 10 * time.Millisecond

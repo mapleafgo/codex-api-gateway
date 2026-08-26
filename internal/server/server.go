@@ -35,12 +35,13 @@ type Server struct {
 }
 
 // New builds a Server.
-func New(cfg *config.Config) *Server {
+// reg 是已注册源插件注册表，由唯一组装入口注入；调度器按稳定 ID 分发。
+func New(cfg *config.Config, reg *plugin.Registry) *Server {
 	holder := config.NewHolder(cfg)
 	slog.Info("初始化服务组件", "sources", len(cfg.Sources))
 	return &Server{
 		holder:  holder,
-		sch:     scheduler.New(holder),
+		sch:     scheduler.New(holder, reg),
 		metrics: metrics.New(),
 	}
 }

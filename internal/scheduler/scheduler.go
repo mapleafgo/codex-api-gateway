@@ -10,10 +10,8 @@ import (
 	"time"
 
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
-	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/breaker"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
@@ -53,22 +51,19 @@ type orderEntry struct {
 
 // Scheduler routes requests across prioritized sources with failover.
 type Scheduler struct {
-	holder           *config.Holder
-	client           *anthropicclient.Client
-	anthropicBackend *backend.AnthropicBackend
-	chatBackend      *backend.ChatBackend
-	responsesBackend *backend.ResponsesBackend
-	copilotBackend   *copilot.Backend
-	breakers         map[string]*breaker.Breaker
-	order            []orderEntry // runtimeOrder: runtime priority sequence
-	bkMu             sync.Mutex
-	ordMu            sync.RWMutex
-	backoff          time.Duration // injectable for tests; defaults to defaultBackoff
-	recoveryPeriod   time.Duration // injectable for tests; defaults to defaultRecoveryPeriod
-	stopMu           sync.Mutex
-	stopCh           chan struct{}
-	startOnce        sync.Once
-	stopped          bool
+	holder   *config.Holder
+	registry *plugin.Registry
+	breakers map[string]*breaker.Breaker
+	order    []orderEntry // runtimeOrder: runtime priority sequence
+	bkMu     sync.Mutex
+	ordMu    sync.RWMutex
+	backoff  time.Duration // injectable for tests; defaults to defaultBackoff
+
+	recoveryPeriod time.Duration // injectable for tests; defaults to defaultRecoveryPeriod
+	stopMu         sync.Mutex
+	stopCh         chan struct{}
+	startOnce      sync.Once
+	stopped        bool
 }
 
 // UpstreamEvent 描述一次单源上游尝试的观测数据，由 Scheduler 通过
@@ -76,9 +71,9 @@ type Scheduler struct {
 // 包，保持分层：L3 不反向引用 L5；由 server 层（L4 编排）映射到
 // metrics.RequestEvent。
 //
-// 直接别名 backend.UpstreamEvent（L3 依赖 L2.5 合法）：字段逐一手抄会在
-// 新增字段时静默丢数据，别名让两层永远一致。
-type UpstreamEvent = backend.UpstreamEvent
+// 直接别名 plugin.UpstreamEvent（契约层类型）：字段逐一手抄会在新增字段时
+// 静默丢数据，别名让两层永远一致。
+type UpstreamEvent = plugin.UpstreamEvent
 
 // OnUpstream 是单次上游尝试结束时的回调。nil 时不上报。
 // Scheduler 在 trySource 返回前调用：成功一条 completed，失败一条 failed。
@@ -96,7 +91,11 @@ type SourceHealth struct {
 // New builds a Scheduler.
 // cfg 可为 *config.Config 或 *config.Holder（后者用于热重载场景）。
 // 为兼容现有调用，若传入 *Config，内部包装为不可替换的 holder。
-func New(cfg any) *Scheduler {
+// reg 是已注册源插件注册表；调度器只按稳定 ID 分发，不感知具体插件实现。
+func New(cfg any, reg *plugin.Registry) *Scheduler {
+	if reg == nil {
+		panic("scheduler.New: registry is required")
+	}
 	var holder *config.Holder
 	switch c := cfg.(type) {
 	case *config.Holder:
@@ -116,16 +115,13 @@ func New(cfg any) *Scheduler {
 		"max_retries", cur.Breaker.MaxRetries,
 		"first_byte_timeout", time.Duration(cur.Breaker.FirstByteTimeout).String())
 	return &Scheduler{
-		holder:           holder,
-		client:           anthropicclient.New(),
-		anthropicBackend: backend.NewAnthropic(),
-		chatBackend:      backend.NewChat(),
-		responsesBackend: backend.NewResponses(),
-		copilotBackend:   copilot.NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
-		breakers:         map[string]*breaker.Breaker{},
-		order:            order,
-		backoff:          defaultBackoff,
-		recoveryPeriod:   defaultRecoveryPeriod,
+		holder:   holder,
+		registry: reg,
+		breakers: map[string]*breaker.Breaker{},
+		order:    order,
+		backoff:  defaultBackoff,
+
+		recoveryPeriod: defaultRecoveryPeriod,
 	}
 }
 
@@ -398,52 +394,31 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 }
 
 // ListUpstreamModels 拉取指定源的上游模型列表，供管理页编辑模型映射时选用。
-// 按 backend_type 分发：a → anthropic ListModels；c/r → Bearer ListModels；
-// g → Copilot 筛选目录。
+// 通过插件 ModelCatalog 能力分发，调度器不感知具体源实现。
 // 返回统一 anthropicclient.ModelInfo 形状供管理页复用。
 func (s *Scheduler) ListUpstreamModels(ctx context.Context, sourceName string) ([]anthropicclient.ModelInfo, error) {
 	src, ok := s.sourceByName(sourceName)
 	if !ok {
 		return nil, fmt.Errorf("source %q not found", sourceName)
 	}
-	bt, err := config.NormalizeBackendType(src.BackendType)
+	id := string(plugin.LegacyBackendTypeToID(src.BackendType))
+	p, ok := s.registry.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("source %q: unknown backend %q", sourceName, id)
+	}
+	mc, ok := p.(plugin.ModelCatalog)
+	if !ok {
+		return nil, fmt.Errorf("source plugin %q does not support model listing: %w", id, plugin.ErrCapabilityNotSupported)
+	}
+	ms, err := mc.ListModels(ctx, src)
 	if err != nil {
 		return nil, err
 	}
-	switch bt {
-	case config.BackendOpenAIChat:
-		ms, err := s.chatBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]anthropicclient.ModelInfo, 0, len(ms))
-		for _, m := range ms {
-			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
-		}
-		return out, nil
-	case config.BackendOpenAIResponses:
-		ms, err := s.responsesBackend.Client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]anthropicclient.ModelInfo, 0, len(ms))
-		for _, m := range ms {
-			out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
-		}
-		return out, nil
-	case config.BackendGitHubCopilot:
-		ms, err := s.copilotBackend.ListModels(ctx, src)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]anthropicclient.ModelInfo, 0, len(ms))
-		for _, m := range ms {
-			out = append(out, anthropicclient.ModelInfo{ID: m.ID})
-		}
-		return out, nil
-	default:
-		return s.client.ListModels(ctx, src.BaseURL, src.APIKey, src.Headers)
+	out := make([]anthropicclient.ModelInfo, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, anthropicclient.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
 	}
+	return out, nil
 }
 
 // waitBackoff sleeps a fixed backoff before the next whole-round retry,
@@ -575,21 +550,16 @@ func (s *Scheduler) tryRoundGeneric(
 	return lastSource, false, lastErr
 }
 
-func (s *Scheduler) backendFor(src *config.Source) backend.Backend {
-	bt, err := config.NormalizeBackendType(src.BackendType)
-	if err != nil {
-		return s.anthropicBackend
+func (s *Scheduler) backendFor(src *config.Source) plugin.Backend {
+	id := string(plugin.LegacyBackendTypeToID(src.BackendType))
+	if p, ok := s.registry.Get(id); ok {
+		return p.Backend()
 	}
-	switch bt {
-	case config.BackendOpenAIChat:
-		return s.chatBackend
-	case config.BackendOpenAIResponses:
-		return s.responsesBackend
-	case config.BackendGitHubCopilot:
-		return s.copilotBackend
-	default:
-		return s.anthropicBackend
+	slog.Warn("未知源类型，回退 Anthropic 插件", "source", src.Name, "backend", string(id))
+	if fb, ok := s.registry.Get(plugin.BackendAnthropic); ok {
+		return fb.Backend()
 	}
+	return nil
 }
 
 // autoRecoverDegraded 检查 src 是否已到 degrade 超时恢复时机。若到时机，只把

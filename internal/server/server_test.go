@@ -15,10 +15,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/assembly"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
+
+// newSrv 构造带内置源插件注册表的 Server，供本包测试复用。
+// registry 由唯一组装入口 assembly 构建，共享核心代码不感知具体插件。
+func newSrv(cfg *config.Config) *Server {
+	reg, err := assembly.NewBuiltins()
+	if err != nil {
+		panic(err)
+	}
+	return New(cfg, reg)
+}
 
 func TestResponsesEndpointStreamsSSE(t *testing.T) {
 	// fake upstream that emits one text delta
@@ -37,7 +48,7 @@ func TestResponsesEndpointStreamsSSE(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -77,7 +88,7 @@ func TestResponsesRequestLogIncludesInputDiagnostics(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -130,7 +141,7 @@ func TestIncludeSatisfiedNoWarn(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -166,7 +177,7 @@ func TestIncludeUnsupportedWarns(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -213,7 +224,7 @@ func TestIncludeLogprobsChatNoWarn(t *testing.T) {
 			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
 		}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -248,7 +259,7 @@ func TestServiceTierEmitsInfo(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -284,7 +295,7 @@ func TestPreviousResponseIDEmitsWarn(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -323,7 +334,7 @@ func TestPromptCacheFieldsEmitDebug(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -362,7 +373,7 @@ func TestPromptCacheFieldsNoWarn(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -399,7 +410,7 @@ func TestResponsesCompletedEmittedOnce(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -447,7 +458,7 @@ func TestModelsEndpointBaseInstructionsFromConfig(t *testing.T) {
 			"gpt-5": {ContextWindow: &ctxWindow},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -525,7 +536,7 @@ func TestResponsesErrorPathEmitsFailedNotCompleted(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -584,7 +595,7 @@ func TestResponsesMidStreamErrorNoDoubleFailed(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -619,7 +630,7 @@ func TestModelsEndpointReturnsOnlyConfigured(t *testing.T) {
 			"gpt-5.5": {ContextWindow: &ctxWindow},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -668,7 +679,7 @@ func TestModelsEndpointEmptyWhenNoConfigured(t *testing.T) {
 			{Name: "dead", BaseURL: "http://127.0.0.1:0", ModelMap: map[string]string{"gpt-5": "claude"}},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -696,7 +707,7 @@ func TestModelsEndpointRejectsPost(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "s1", BaseURL: "http://unused"}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -721,7 +732,7 @@ func TestModelsEndpointPriorityFollowsConfigOrder(t *testing.T) {
 			"alpha": {}, "beta": {}, "gamma": {},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/v1/models")
@@ -795,7 +806,7 @@ func TestModelsEndpointCodexModelInfoContract(t *testing.T) {
 			"gpt-5": {ContextWindow: &ctxWindow},
 		},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/v1/models")
@@ -958,7 +969,7 @@ func TestResponsesPostTerminalClientCancelTreatedAsCompleted(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1064,7 +1075,7 @@ func TestResponsesMidStreamClientCancelNoFailedEvent(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{Name: "up", BaseURL: upstream.URL}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1148,7 +1159,7 @@ func TestResponsesPassthroughBackend(t *testing.T) {
 	}
 	cfg.Sources[0].BackendType = bt
 
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -1211,7 +1222,7 @@ func TestPreviousResponseIDNoDiscardWarnWithResponsesSource(t *testing.T) {
 	}
 	cfg.Sources[0].BackendType = bt
 
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -1247,7 +1258,7 @@ func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
 			BackendType: config.BackendOpenAIResponses,
 		}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	t.Cleanup(func() { _ = srv.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1294,7 +1305,7 @@ func TestAnthropicIncompleteTerminalRecordsIncompleteClientStatus(t *testing.T) 
 			BackendType: config.BackendAnthropic,
 		}},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	t.Cleanup(func() { _ = srv.Close() })
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -1394,7 +1405,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 					BackendType: tt.backendType,
 				}},
 			}
-			srv := New(cfg)
+			srv := newSrv(cfg)
 			defer func() { _ = srv.Close() }()
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
@@ -1519,7 +1530,7 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	}
 	cfg.Sources[0].BackendType = bt
 
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -1556,7 +1567,7 @@ func TestModelsEndpointAcceptsImageOverride(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"no-image"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/v1/models")
@@ -1592,7 +1603,7 @@ func TestModelsEndpointCapabilityFieldsAlwaysExplicit(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"basic"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/v1/models")
@@ -1628,7 +1639,7 @@ func TestResponsesRejectsOversizedBody(t *testing.T) {
 	// Validate 会把 MaxBodyMB=1 保留；若写 0 会变 32。这里强制 1。
 	cfg.Server.MaxBodyMB = 1
 
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

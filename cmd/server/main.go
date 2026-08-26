@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/admin"
+	"github.com/mapleafgo/codex-api-gateway/internal/assembly"
 	"github.com/mapleafgo/codex-api-gateway/internal/autostart"
 	"github.com/mapleafgo/codex-api-gateway/internal/codexconfig"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -157,7 +158,12 @@ func main() {
 		}
 	}
 
-	srv := server.New(cfg)
+	registry, err := assembly.NewBuiltins()
+	if err != nil {
+		slog.Error("构建内置源插件注册表失败", "error", err)
+		os.Exit(1)
+	}
+	srv := server.New(cfg, registry)
 	defer srv.Close()
 	syncModelCatalog := func() error {
 		data, err := srv.ModelCatalogJSON()

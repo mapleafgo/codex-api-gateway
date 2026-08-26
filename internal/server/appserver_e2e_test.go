@@ -62,7 +62,7 @@ func TestAppServerSubAgentHistoryKeepsAgentMessage(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"mock-model"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	gateway := httptest.NewServer(srv.Handler())
 	defer gateway.Close()
@@ -173,7 +173,7 @@ func TestAppServerResponsesBackendDeliversAgentMessage(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"mock-model"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	gateway := httptest.NewServer(srv.Handler())
 	defer gateway.Close()
@@ -291,7 +291,7 @@ func TestAppServerAnthropicBackendPreservesFollowUpQuestion(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"mock-model"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	gateway := httptest.NewServer(srv.Handler())
 	defer gateway.Close()
@@ -392,7 +392,7 @@ func TestAppServerChatBackendPreservesFollowUpQuestion(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"mock-model"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 	gateway := httptest.NewServer(srv.Handler())
 	defer gateway.Close()

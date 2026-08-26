@@ -16,7 +16,7 @@ func TestServerModelCatalogJSON(t *testing.T) {
 		},
 		ModelSlugOrder: []string{"alpha", "beta"},
 	}
-	srv := New(cfg)
+	srv := newSrv(cfg)
 	defer srv.Close()
 
 	body, err := srv.ModelCatalogJSON()
