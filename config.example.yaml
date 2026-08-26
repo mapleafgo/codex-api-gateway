@@ -1,17 +1,13 @@
 # =============================================================================
-# CodexApiGateway 配置示例
+# CodexApiGateway 配置示例（Config v2）
 # -----------------------------------------------------------------------------
-# 作用：把 Codex CLI 的 OpenAI Responses 请求，按源 backend_type 适配到：
-#       a = Anthropic Messages（默认）、c = OpenAI Chat Completions（仅流式）、
-#       g = GitHub Copilot（仅流式，自动路由 r/a/c）、
-#       r = OpenAI Responses 透传（仅流式）；多源主备故障转移 + 断路器。
-# 约定：api_key 支持 ${ENV_VAR} 从环境变量展开，避免明文密钥入库。
-# 也可用 CODEX_API_GATEWAY_ 前缀环境变量覆盖部分配置，层级分隔符用双下划线。
-# 例如：CODEX_API_GATEWAY_SOURCES__0__API_KEY=sk-ant-...
-# 支持覆盖的字段是白名单制（见 internal/config applyEnvOverrides）：
-# logging.*、server.*、breaker.*（除 per-source max_retries）、anthropic.*、
-# sources.N 的 name/base_url/api_key/default_model；backend_type/disabled/
-# model_map 与 models.* 不支持环境变量覆盖。
+# 作用：把 Codex CLI 的 OpenAI Responses 请求，按源 stable backend 适配到：
+#       anthropic = Anthropic Messages、openai-chat = OpenAI Chat Completions、
+#       github-copilot = GitHub Copilot（按模型自动路由 r/a/c）、
+#       openai-responses = OpenAI Responses 透传；多源主备故障转移 + 断路器。
+# 约定：api_key 与 options 内敏感值支持 ${ENV_VAR} 从环境变量展开，
+#       避免明文密钥入库。
+# 旧 backend_type 短码（a/c/g/r）已废弃，统一用稳定 backend 标识。
 # =============================================================================
 
 # HTTP 服务
@@ -54,8 +50,8 @@ breaker:
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
   max_retries: 0            # 所有源全部失败后的整轮重试次数（0=不重试）；仅全局生效，不被单源 breaker 覆盖
 
-# Anthropic Messages 转换（仅 backend_type: a 生效）
-# default_max_tokens：客户端未传 max_output_tokens 时的上游输出额度。
+# 顶层 anthropic 段保留兼容（过渡期），但新配置推荐改为在 anthropic 源 options
+# 中声明（见下方 anthropic-official 示例的 options），二者取一即可。
 anthropic:
   default_max_tokens: 16384
   cache_enabled: true    # 自动注入 Anthropic prompt cache（TTL 固定 5m）
@@ -85,18 +81,22 @@ anthropic:
 
 # 后端源列表（顺序即优先级：第一个为主用，其余依次作为主备故障转移的备用源）
 # base_url 只写到网关根地址（不含 /v1/messages），代码内部统一补全该路径。
-# 各 Anthropic 兼容后端根地址不同：官方 https://api.anthropic.com，
-# 智谱 https://open.bigmodel.cn/api/anthropic，Messages 路径同为 /v1/messages。
+# backend 必须是已注册插件稳定 ID：anthropic / openai-chat / openai-responses /
+# github-copilot。options 只能含所选插件 schema 声明的键。
 # supports_web_search：该源是否支持 hosted web_search 工具。不支持时网关会在转发前
-# 剥掉 web_search 工具声明，避免上游不认识导致 400/断流。nil 时按 backend_type 默认：
-# Anthropic(a)/Responses(r) 默认支持（true），仅 Chat(c) 默认不支持（false）。
+# 剥掉 web_search 工具声明，避免上游不认识导致 400/断流。nil 时按 backend 默认：
+# anthropic/openai-responses 默认支持（true），仅 openai-chat 默认不支持（false）。
 sources:
   - name: anthropic-official                # 源标识，用于日志与故障转移定位
+    backend: anthropic                      # 稳定插件 ID
     base_url: https://api.anthropic.com     # 网关根地址，代码自动补 /v1/messages
     api_key: ${ANTHROPIC_KEY}               # 密钥，支持 ${ENV_VAR} 展开
+    options:
+      default_max_tokens: 16384             # 客户端未传 max_output_tokens 时的输出额度
+      cache_enabled: true                   # 自动注入 Anthropic prompt cache（TTL 固定 5m）
     model_map: { gpt-5: claude-sonnet-4-20250514 }  # 请求 model → 后端 model 映射
     default_model: claude-sonnet-4-20250514 # 未命中 model_map 时的兜底模型（如 Codex 的 gpt-5.5）
-    # supports_web_search: true             # 可选覆盖；默认按 backend_type（a/r=true/c=false）
+    # supports_web_search: true             # 可选覆盖；默认按 backend（anthropic/responses=true、chat=false）
     # disabled: true                        # 人工停用：true 时不参与调度；管理页可即时切换
     # headers:                              # 可选：追加到上游请求的自定义 header（如 X-Api-Key、anthropic-beta 覆盖）
     #   X-Custom: value                     # 保留头（content-type/authorization/accept/x-api-key/anthropic-version/anthropic-beta）不可被覆盖，会被跳过（Debug 记录）
@@ -104,6 +104,7 @@ sources:
   # 备用源：演示 per-source 断路器覆盖（整个 breaker 块可选，省略即用全局）
   # 单源 breaker 中为零值的字段会继承全局；max_retries 始终取全局、不被覆盖。
   - name: zhipu
+    backend: anthropic
     base_url: https://open.bigmodel.cn/api/anthropic
     api_key: ${ZHIPU_KEY}
     model_map: { gpt-5: glm-5.2 }
@@ -116,7 +117,7 @@ sources:
   #- name: openai-compat
   #  base_url: https://api.openai.com/v1
   #  api_key: ${OPENAI_API_KEY}
-  #  backend_type: c
+  #  backend: openai-chat
   #  model_map: { gpt-5: gpt-4o }
   #  default_model: gpt-4o
 
@@ -124,7 +125,7 @@ sources:
   #- name: openai-responses
   #  base_url: https://api.openai.com/v1
   #  api_key: ${OPENAI_API_KEY}
-  #  backend_type: r
+  #  backend: openai-responses
   #  model_map: { gpt-5: gpt-5 }
   #  default_model: gpt-5
 
@@ -134,8 +135,9 @@ sources:
   # base_url 可省略；显式填写时作为固定 endpoint，跳过发现。按模型
   # supported_endpoints 自动路由到 r > a > c 转换路径。
   #- name: copilot
-  #  backend_type: g
-  #  github_token: ${COPILOT_GITHUB_TOKEN}
+  #  backend: github-copilot
+  #  options:
+  #    github_token: ${COPILOT_GITHUB_TOKEN}
   #  default_model: gpt-5.3-codex
   #  # model_map: { gpt-5: gpt-5.3-codex }
   #  # base_url: https://api.githubcopilot.com  # 可选固定 endpoint

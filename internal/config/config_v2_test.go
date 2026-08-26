@@ -131,3 +131,30 @@ func TestUnknownBackendTypeRejected(t *testing.T) {
 		t.Fatal("expected error for unknown backend_type")
 	}
 }
+
+// TestOptionsValueTypes 验证 koanf 解析后 options 值的 Go 类型，供插件归一化使用。
+func TestOptionsValueTypes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: a
+    backend: anthropic
+    options:
+      default_max_tokens: 32768
+      cache_enabled: false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	opts := cfg.Sources[0].Options
+	if _, ok := opts["default_max_tokens"].(int); !ok {
+		t.Errorf("default_max_tokens type = %T, want int", opts["default_max_tokens"])
+	}
+	if _, ok := opts["cache_enabled"].(bool); !ok {
+		t.Errorf("cache_enabled type = %T, want bool", opts["cache_enabled"])
+	}
+}

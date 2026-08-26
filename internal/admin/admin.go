@@ -50,6 +50,9 @@ type Deps struct {
 	// ModelsFetcher 按源名拉取上游 /v1/models 列表，供管理页编辑模型映射时选用。
 	// 若未提供（nil），对应接口返回 501。
 	ModelsFetcher func(ctx context.Context, sourceName string) ([]anthropic.ModelInfo, error)
+	// ValidateConfig 在保存前做完整配置校验（含插件级 SourceValidator）。
+	// nil 时只做基础字段校验（cfg.Validate）。返回错误时保存中止，旧配置继续服务。
+	ValidateConfig func(*config.Config) error
 	// SourceHealth 返回各源运行时健康态。nil 时 snapshot 不附带 sources_health。
 	SourceHealth func() []SourceHealthView
 	// PromoteSource 手动将源提升回 normal。nil 时 promote 接口 501。
@@ -619,8 +622,14 @@ func (h *handler) postConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := buildConfigFromInput(in, h.deps.Holder.Current())
-	if err := cfg.Validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: err.Error()})
+	var validateErr error
+	if h.deps.ValidateConfig != nil {
+		validateErr = h.deps.ValidateConfig(cfg)
+	} else {
+		validateErr = cfg.Validate()
+	}
+	if validateErr != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "config invalid", Detail: validateErr.Error()})
 		return
 	}
 	if err := h.writeConfigYAML(cfg); err != nil {

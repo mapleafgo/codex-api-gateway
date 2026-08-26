@@ -422,7 +422,10 @@ func adminMount(mux *http.ServeMux, srv *server.Server, cfgPath string, registry
 		CfgPath:        cfgPath,
 		Version:        version,
 		ReloadFromDisk: reload,
-		ModelsFetcher:  srv.Scheduler().ListUpstreamModels,
+		ValidateConfig: func(c *config.Config) error {
+			return c.ValidateWithValidator(registry)
+		},
+		ModelsFetcher: srv.Scheduler().ListUpstreamModels,
 		SourceHealth: func() []admin.SourceHealthView {
 			hs := srv.Scheduler().SourceHealth()
 			out := make([]admin.SourceHealthView, 0, len(hs))

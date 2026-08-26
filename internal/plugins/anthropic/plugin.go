@@ -6,6 +6,7 @@ import (
 	anthropicclient "github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
@@ -29,14 +30,26 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Summary:      "将 Responses 请求转换为 Anthropic Messages 流式协议",
 		Capabilities: []plugin.Capability{plugin.CapabilityAnthropicMessages},
 		Streaming:    plugin.StreamingConverted,
+		Schema: []plugin.Field{
+			{
+				Name: "default_max_tokens", Label: "Default Max Tokens", Type: plugin.FieldTypeInteger,
+				Target:      plugin.FieldTargetOption,
+				Description: "Default max_output_tokens when the client does not set one",
+			},
+			{
+				Name: "cache_enabled", Label: "Prompt Cache Enabled", Type: plugin.FieldTypeBoolean,
+				Default: true, Target: plugin.FieldTargetOption,
+				Description: "Whether to inject Anthropic prompt cache breakpoints",
+			},
+		},
 	}
 }
 
 // ValidateSource 校验 Anthropic 源配置。专属选项在 US1 引入后实施。
 func (p *Plugin) ValidateSource(config.Source) error { return nil }
 
-// Backend 返回协议适配后端。
-func (p *Plugin) Backend() plugin.Backend { return p.b }
+// Backend 返回带 options 归一化的适配后端。
+func (p *Plugin) Backend() plugin.Backend { return anthropicOptionsBackend{p.b} }
 
 // ListModels 拉取 Anthropic 兼容 /v1/models 目录。
 func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Model, error) {
@@ -50,3 +63,49 @@ func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Mo
 	}
 	return out, nil
 }
+
+// anthropicOptionsBackend 在委托前把 source options 归一化为 cfg.Anthropic，
+// 使共享转换层（convert.ToAnthropic）可读 per-source 的 default_max_tokens 与
+// cache_enabled，加载路径无需改动。
+type anthropicOptionsBackend struct {
+	inner plugin.Backend
+}
+
+func (n anthropicOptionsBackend) Execute(
+	ctx context.Context,
+	rawBody []byte,
+	src config.Source,
+	cfg *config.Config,
+	onEvent func(model.SSEEvent) error,
+	onUpstream func(plugin.UpstreamEvent),
+	attempt int,
+) error {
+	if cfg != nil && len(src.Options) > 0 {
+		merged := *cfg
+		if tok := intOption(src.Options["default_max_tokens"]); tok > 0 {
+			merged.Anthropic.DefaultMaxTokens = tok
+		}
+		if v, ok := src.Options["cache_enabled"].(bool); ok {
+			enabled := v
+			merged.Anthropic.CacheEnabled = &enabled
+		}
+		cfg = &merged
+	}
+	return n.inner.Execute(ctx, rawBody, src, cfg, onEvent, onUpstream, attempt)
+}
+
+// intOption 兼容 koanf/yaml 解出的 int 或 float64 整数。
+func intOption(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+var _ plugin.Backend = anthropicOptionsBackend{}
