@@ -15,6 +15,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 func newTestDeps(t *testing.T) (*Deps, string) {
@@ -185,7 +186,7 @@ func TestAddSourceSupportsCopilot(t *testing.T) {
 		t.Fatalf("sources = %d, want 2", len(cur.Sources))
 	}
 	got := cur.Sources[1]
-	if got.BackendType != config.BackendGitHubCopilot || got.GithubToken != "github-token" {
+	if got.Backend != plugin.BackendGitHubCopilot || got.GithubToken != "github-token" {
 		t.Fatalf("copilot source = %+v", got)
 	}
 }
@@ -362,6 +363,30 @@ func TestBuildConfigFromInputPreservesCopilotToken(t *testing.T) {
 	}, nil)
 	if cfg.Sources[0].GithubToken != "github-token" {
 		t.Fatalf("GithubToken = %q, want github-token", cfg.Sources[0].GithubToken)
+	}
+	if got, _ := cfg.Sources[0].Options["github_token"].(string); got != "github-token" {
+		t.Fatalf("Options.github_token = %q, want github-token", got)
+	}
+}
+
+func TestBuildConfigFromInputRestoresCopilotOptionsToken(t *testing.T) {
+	current := &config.Config{Sources: []config.Source{{
+		Name:    "copilot",
+		Backend: plugin.BackendGitHubCopilot,
+		Options: map[string]any{"github_token": "gho_saved"},
+	}}}
+	cfg := buildConfigFromInput(adminConfigInput{
+		Sources: []sourceView{{
+			Name:    "copilot",
+			Backend: plugin.BackendGitHubCopilot,
+			// 管理页脱敏后回传：github_token 已被 redactOptions 移除。
+		}},
+	}, current)
+	if got, _ := cfg.Sources[0].Options["github_token"].(string); got != "gho_saved" {
+		t.Fatalf("Options.github_token = %q, want gho_saved", got)
+	}
+	if cfg.Sources[0].GithubToken != "gho_saved" {
+		t.Fatalf("GithubToken = %q, want gho_saved", cfg.Sources[0].GithubToken)
 	}
 }
 
@@ -1056,7 +1081,7 @@ func TestAddSource(t *testing.T) {
 		t.Fatalf("sources=%d", len(cur.Sources))
 	}
 	s2 := cur.Sources[1]
-	if s2.Name != "s2" || s2.BaseURL != "https://two.example.com" || s2.BackendType != "c" || s2.DefaultModel != "m2" {
+	if s2.Name != "s2" || s2.BaseURL != "https://two.example.com" || s2.Backend != plugin.BackendOpenAIChat || s2.DefaultModel != "m2" {
 		t.Fatalf("s2=%+v", s2)
 	}
 	if len(s2.ModelMap) != 0 {

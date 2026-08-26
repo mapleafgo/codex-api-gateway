@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -30,27 +31,47 @@ func buildConfigFromInput(in adminConfigInput, current *config.Config) *config.C
 		},
 	}
 	for _, sv := range in.Sources {
-		bt := sv.BackendType
-		if n, err := config.NormalizeBackendType(sv.BackendType); err == nil {
-			bt = n
+		backend := sv.Backend
+		if backend == "" {
+			// 兼容旧管理页请求：backend_type 短码。
+			if n, err := config.NormalizeBackendType(sv.BackendType); err == nil {
+				if id, ok := config.BackendTypeToID(n); ok {
+					backend = id
+				}
+			}
 		}
 		baseURL := sv.BaseURL
-		if bt == config.BackendGitHubCopilot {
+		if backend == plugin.BackendGitHubCopilot {
 			baseURL = ""
 		}
 		githubToken := strings.TrimSpace(sv.GithubToken)
-		if githubToken == "" && bt == config.BackendGitHubCopilot && current != nil {
+		if githubToken == "" && backend == plugin.BackendGitHubCopilot && current != nil {
 			for _, prev := range current.Sources {
-				if prev.Name == sv.Name && prev.BackendType == config.BackendGitHubCopilot {
+				if prev.Name == sv.Name {
 					githubToken = prev.GithubToken
+					if t, _ := prev.Options["github_token"].(string); t != "" {
+						githubToken = t
+					}
 					break
 				}
 			}
 		}
+		options := sv.Options
+		if backend == plugin.BackendGitHubCopilot && githubToken != "" {
+			// 存回 Options：Config v2 的 copilot 插件从 options.github_token 读取。
+			if options == nil {
+				options = map[string]any{}
+			}
+			if _, ok := options["github_token"]; !ok {
+				options["github_token"] = githubToken
+			}
+		}
 		src := config.Source{
 			Name: sv.Name, BaseURL: baseURL, APIKey: sv.APIKey,
+			Backend:     backend,
+			Options:     options,
 			GithubToken: githubToken,
-			BackendType: bt, ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
+			ModelMap:    sv.ModelMap, DefaultModel: sv.DefaultModel,
 			Disabled:          sv.Disabled,
 			Headers:           sv.Headers,
 			SupportsWebSearch: sv.SupportsWebSearch,

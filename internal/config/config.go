@@ -228,6 +228,23 @@ func BackendTypeToID(bt string) (string, bool) {
 	}
 }
 
+// BackendIDToType 把稳定插件 ID 反向映射回旧版单字符 backend_type 短码。
+// 过渡期管理页仍按短码渲染；Config v2 正式落地后移除。
+func BackendIDToType(id string) (string, bool) {
+	switch id {
+	case "anthropic":
+		return BackendAnthropic, true
+	case "openai-chat":
+		return BackendOpenAIChat, true
+	case "openai-responses":
+		return BackendOpenAIResponses, true
+	case "github-copilot":
+		return BackendGitHubCopilot, true
+	default:
+		return "", false
+	}
+}
+
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
 // 开放 per-model 差异：context_window / accepts_image / supports_image_detail_original。
 // 其余能力（parallel_tool_calls / reasoning_summaries /

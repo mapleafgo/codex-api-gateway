@@ -12,6 +12,7 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/logging"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
 
@@ -199,12 +200,18 @@ func (c *Checker) fallbackMinimalProbe(ctx context.Context, source config.Source
 	}
 }
 
-// probeEndpoint 根据 backend_type 返回最小探测的目标 URL。
+// probeEndpoint 根据 stable backend 返回最小探测的目标 URL。
 func probeEndpoint(source config.Source) string {
-	switch source.BackendType {
-	case config.BackendOpenAIChat:
+	backend := source.Backend
+	if backend == "" {
+		if id, ok := config.BackendTypeToID(source.BackendType); ok {
+			backend = id
+		}
+	}
+	switch backend {
+	case plugin.BackendOpenAIChat:
 		return upstreamhttp.EndpointURL(source.BaseURL, "/chat/completions")
-	case config.BackendOpenAIResponses:
+	case plugin.BackendOpenAIResponses:
 		return upstreamhttp.EndpointURL(source.BaseURL, "/responses")
 	default:
 		return upstreamhttp.EndpointURL(source.BaseURL, "/v1/messages")

@@ -39,6 +39,26 @@ func TestNormalizeBackendType(t *testing.T) {
 	}
 }
 
+func TestBackendIDToType(t *testing.T) {
+	cases := []struct {
+		id, want string
+		ok       bool
+	}{
+		{"anthropic", "a", true},
+		{"openai-chat", "c", true},
+		{"openai-responses", "r", true},
+		{"github-copilot", "g", true},
+		{"unknown", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := BackendIDToType(tc.id)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("id=%q got=%q ok=%v want=%q ok=%v", tc.id, got, ok, tc.want, ok)
+		}
+	}
+}
+
 func TestValidateRejectsUnknownBackendType(t *testing.T) {
 	cfg := Config{
 		Sources: []Source{{

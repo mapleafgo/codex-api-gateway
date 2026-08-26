@@ -25,6 +25,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
+	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
 
@@ -500,6 +501,8 @@ type sourceView struct {
 	Name              string            `json:"name"`
 	BaseURL           string            `json:"base_url"`
 	APIKey            string            `json:"api_key"`
+	Backend           string            `json:"backend"`
+	Options           map[string]any    `json:"options,omitempty"`
 	GithubToken       string            `json:"github_token,omitempty"`
 	BackendType       string            `json:"backend_type"`
 	ModelMap          map[string]string `json:"model_map"`
@@ -508,6 +511,34 @@ type sourceView struct {
 	Disabled          bool              `json:"disabled"`
 	Headers           map[string]string `json:"headers,omitempty"`
 	SupportsWebSearch *bool             `json:"supports_web_search,omitempty"`
+}
+
+// redactOptions 去掉 options 中的敏感键，避免管理页回显 token 类凭据。
+// 保存时 buildConfigFromInput / handleAddSource 会从当前快照恢复被脱敏的键。
+func redactOptions(opts map[string]any) map[string]any {
+	if len(opts) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(opts))
+	for k, v := range opts {
+		if isSensitiveOption(k) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isSensitiveOption 判定 option 键是否为凭据类，管理页保存时需保留占位但不回显值。
+func isSensitiveOption(key string) bool {
+	switch key {
+	case "github_token", "api_key", "token":
+		return true
+	}
+	return false
 }
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
@@ -571,10 +602,23 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 		Models:  make([]modelViewItem, 0, len(cfg.ModelOverrides)),
 	}
 	for _, src := range cfg.Sources {
-		bt, _ := config.NormalizeBackendType(src.BackendType)
+		backend := src.Backend
+		if backend == "" {
+			if bt, err := config.NormalizeBackendType(src.BackendType); err == nil {
+				if id, ok := config.BackendTypeToID(bt); ok {
+					backend = id
+				}
+			}
+		}
+		shortCode := ""
+		if bt, ok := config.BackendIDToType(backend); ok {
+			shortCode = bt
+		}
 		sv := sourceView{
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
-			BackendType: bt,
+			Backend:     backend,
+			BackendType: shortCode,
+			Options:     redactOptions(src.Options),
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
 			Disabled:          src.Disabled,
 			Headers:           src.Headers,
@@ -707,36 +751,50 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		BaseURL     string `json:"base_url"`
-		APIKey      string `json:"api_key"`
-		GithubToken string `json:"github_token"`
-		Name        string `json:"name"`
-		BackendType string `json:"backend_type"`
+		BaseURL     string         `json:"base_url"`
+		APIKey      string         `json:"api_key"`
+		GithubToken string         `json:"github_token"`
+		Name        string         `json:"name"`
+		Backend     string         `json:"backend"`
+		BackendType string         `json:"backend_type"`
+		Options     map[string]any `json:"options"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
 		return
 	}
-	bt, err := config.NormalizeBackendType(in.BackendType)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+	backend := strings.TrimSpace(in.Backend)
+	if in.Backend == "" {
+		// 兼容旧管理页请求：backend_type 短码。
+		if bt, err := config.NormalizeBackendType(in.BackendType); err == nil {
+			if id, ok := config.BackendTypeToID(bt); ok {
+				backend = id
+			}
+		}
+	}
+	if backend == "" {
+		// 既不是稳定 backend，也不是合法旧短码。
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid backend"})
 		return
 	}
 	baseURL := strings.TrimSpace(in.BaseURL)
 	githubToken := strings.TrimSpace(in.GithubToken)
-	if bt == config.BackendGitHubCopilot && githubToken == "" {
-		if src := h.currentSourceByName(strings.TrimSpace(in.Name)); src != nil && src.BackendType == config.BackendGitHubCopilot {
+	if t, _ := in.Options["github_token"].(string); t != "" {
+		githubToken = strings.TrimSpace(t)
+	}
+	if backend == plugin.BackendGitHubCopilot && githubToken == "" {
+		if src := h.currentSourceByName(strings.TrimSpace(in.Name)); src != nil {
 			githubToken = src.GithubToken
 			if baseURL == "" {
 				baseURL = src.BaseURL
 			}
 		}
 	}
-	if bt != config.BackendGitHubCopilot && baseURL == "" {
+	if backend != plugin.BackendGitHubCopilot && baseURL == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing base_url"})
 		return
 	}
-	if bt == config.BackendGitHubCopilot && githubToken == "" {
+	if backend == plugin.BackendGitHubCopilot && githubToken == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing github_token"})
 		return
 	}
@@ -745,10 +803,11 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		Name:        "__test__",
 		BaseURL:     baseURL,
 		APIKey:      in.APIKey,
+		Backend:     backend,
+		Options:     in.Options,
 		GithubToken: githubToken,
-		BackendType: bt,
 	}
-	if bt == config.BackendGitHubCopilot {
+	if backend == plugin.BackendGitHubCopilot {
 		h.testCopilotSource(w, r, src)
 		return
 	}
@@ -918,20 +977,27 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(in.Name)
 	baseURL := strings.TrimSpace(in.BaseURL)
-	bt := in.BackendType
-	if bt == "" {
-		bt = "a"
+	backend := strings.TrimSpace(in.Backend)
+	if backend == "" {
+		// 兼容旧管理页请求：backend_type 短码。
+		bt := in.BackendType
+		if bt == "" {
+			bt = "a"
+		}
+		norm, err := config.NormalizeBackendType(bt)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+			return
+		}
+		if id, ok := config.BackendTypeToID(norm); ok {
+			backend = id
+		}
 	}
-	norm, err := config.NormalizeBackendType(bt)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
-		return
-	}
-	if name == "" || (baseURL == "" && norm != config.BackendGitHubCopilot) {
+	if name == "" || (baseURL == "" && backend != plugin.BackendGitHubCopilot) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name or base_url"})
 		return
 	}
-	if norm == config.BackendGitHubCopilot {
+	if backend == plugin.BackendGitHubCopilot {
 		baseURL = ""
 	}
 	headers := sanitizeSourceHeaders(in.Headers)
@@ -953,8 +1019,9 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 		Name:              name,
 		BaseURL:           baseURL,
 		APIKey:            strings.TrimSpace(in.APIKey),
+		Backend:           backend,
+		Options:           in.Options,
 		GithubToken:       strings.TrimSpace(in.GithubToken),
-		BackendType:       norm,
 		ModelMap:          map[string]string{},
 		DefaultModel:      strings.TrimSpace(in.DefaultModel),
 		Disabled:          in.Disabled,
