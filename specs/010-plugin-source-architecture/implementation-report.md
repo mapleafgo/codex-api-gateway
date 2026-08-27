@@ -68,6 +68,25 @@
 | SC-003 | source_plugins 契约测试 + admin HTML 断言 |
 | SC-005 | config v2 校验测试 + 热重载失败保留旧配置（e2e） |
 | SC-001 | `task check` 全量回归 |
+
+## 收敛补记：顶层 anthropic 配置输入移除落地
+
+本次 converge 把「移除顶层 `AnthropicCfg` 配置输入」从契约落实到代码（T013/T014
+要求），同时保留 `Config.Anthropic` 作为运行时载体：
+
+- `internal/config/config.go`：`Config.Anthropic` 字段改为 `koanf:"-" yaml:"-"`
+  纯运行时载体，只由 `plugins/anthropic` 在请求时把 per-source options 归一化写入、
+  `convert.ToAnthropic` 读取；加载时 `validate` 补齐内置默认值。
+- `rejectLegacyConfigShape` 新增顶层 `anthropic:` 迁移错误，指明迁入
+  `backend: anthropic` 源的 `options`。
+- 删除 `applyEnvOverrides` 中 `anthropic.*` 环境变量覆盖、`MarshalYAML` 输出与
+  `defaultConfigYAML` 段。
+- `internal/admin`：删除 `anthropicView` 视图/输入结构与全局面板；管理页 source
+  卡片已用 Descriptor 通用渲染 `options.default_max_tokens` / `options.cache_enabled`。
+- `config.example.yaml` 顶层 anthropic 段改为注释，指向源 options。
+- 测试：`TestAnthropicConfigRejectsTopLevel` 断言迁移错误；删除环境覆盖与无效值
+  用例；admin 面板测试反转断言为"不存在全部局 anthropic 面板"。
+- `docs/protocol-coverage.md` 两处引用改为 per-source `options.*` 表述。
 | SC-006 | Device Flow/脱敏单测 + 全量无凭据泄漏 grep |
 | FR-010..FR-013, FR-015 | 对应任务 T036/T047/T012/T060..T066 已勾选并附测试 |
 
