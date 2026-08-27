@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -18,6 +19,9 @@ type Plugin struct {
 	b    *Backend
 	auth *authManager
 }
+
+// errMissingGithubToken 表示 Copilot 源缺少 github_token 必填凭据。
+var errMissingGithubToken = errors.New("copilot: missing github_token")
 
 // New 构造 Copilot 源插件，组合已有的三个 Backend 做委托。
 func New() *Plugin {
@@ -74,7 +78,7 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 // ValidateSource 校验 Copilot 源配置：必须携带 github_token。
 func (p *Plugin) ValidateSource(src config.Source) error {
 	if copilotToken(src) == "" {
-		return plugin.ErrMissingGithubToken
+		return errMissingGithubToken
 	}
 	return nil
 }

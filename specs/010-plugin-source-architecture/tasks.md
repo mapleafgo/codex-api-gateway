@@ -96,21 +96,21 @@
 
 ### Tests for User Story 2
 
-- [ ] T034 [P] [US2] Add failing Copilot routing tests in `internal/plugins/copilot/backend_test.go` for supported-endpoint r/a/c selection, missing-model fallback, catalog-fetch fallback to Responses, endpoint discovery failure diagnostics, token/header propagation, and no local entitlement rejection
+- [X] T034 [P] [US2] Add failing Copilot routing tests in `internal/plugins/copilot/backend_test.go` for supported-endpoint r/a/c selection, missing-model fallback, catalog-fetch fallback to Responses, endpoint discovery failure diagnostics, token/header propagation, and no local entitlement rejection
 - [ ] T035 [P] [US2] Add failing cache/concurrency tests in `internal/plugins/copilot/cache_test.go` for per-source state, five-minute TTL, singleflight refresh, token/endpoint change invalidation, and race-safe reads
-- [ ] T036 [P] [US2] Add failing Device Flow lifecycle/security tests in `internal/plugins/copilot/auth_test.go` for start/status/cancel, saving cannot cancel, concurrent-start conflict, stale-session protection, atomic write callback, redacted errors, and absence of device/access tokens from public state
+- [X] T036 [P] [US2] Add failing Device Flow lifecycle/security tests in `internal/plugins/copilot/auth_test.go` for start/status/cancel, saving cannot cancel, concurrent-start conflict, stale-session protection, atomic write callback, redacted errors, and absence of device/access tokens from public state
 - [ ] T037 [US2] Add failing architecture guard tests in `internal/plugin/architecture_test.go` asserting `scheduler`, `server`, `admin`, `health`, and `config` neither import nor textually contain concrete Copilot identifiers or legacy `github_token` handling
 
 ### Implementation for User Story 2
 
-- [ ] T038 [US2] Move and adapt GraphQL endpoint discovery, filtered model catalog, cache, defaults, and wire headers into `internal/plugins/copilot/endpoint.go`, `models.go`, `state.go`, and related tests; delete external use of `internal/copilotclient`
-- [ ] T039 [US2] Implement Copilot Backend routing and DelegateHost consumption in `internal/plugins/copilot/backend.go`; wrap delegated UpstreamEvent as `backend=github-copilot` while retaining route/endpoint only in safe structured logs or metadata
+- [X] T038 [US2] Move and adapt GraphQL endpoint discovery, filtered model catalog, cache, defaults, and wire headers into `internal/plugins/copilot/endpoint.go`, `models.go`, `state.go`, and related tests; delete external use of `internal/copilotclient`
+- [X] T039 [US2] Implement Copilot Backend routing and DelegateHost consumption in `internal/plugins/copilot/backend.go`; wrap delegated UpstreamEvent as `backend=github-copilot` while retaining route/endpoint only in safe structured logs or metadata
 - [ ] T040 [US2] Implement Copilot HealthProbe and DraftModelCatalog in `internal/plugins/copilot/probe.go` and `catalog.go`, preserving ten-second management timeouts and explicit diagnostic messages
-- [ ] T041 [US2] Move Device Flow manager/session state and OAuth client into `internal/plugins/copilot/auth.go`; expose only AdminExtension actions and inject snapshot/write/reload callbacks from assembly
-- [ ] T042 [US2] Implement generic ActionRoute routing for registered AdminExtensions in `internal/admin/actions.go`, mount only descriptor-declared method/path pairs, reject conflicts and non-declared methods, enforce body limit/recover/JSON/sanitized-error conventions, and preserve action semantics inside plugins
-- [ ] T043 [US2] Remove Copilot branches, routes, fields, assets logic, saved-token merge logic, and imports from `internal/admin/admin.go`, `internal/admin/convert.go`, `internal/admin/copilot_auth.go`, and `internal/admin/assets/index.html`
-- [ ] T044 [US2] Delete obsolete `internal/backend/copilot.go`, `internal/backend/copilot_test.go`, and `internal/copilotclient/` after all references move; keep only truly shared backend helpers scheduled for their own migration task
-- [ ] T045 [US2] Run `task test-race` focused on plugin/cache/auth/scheduler/admin packages and fix data races before US3
+- [X] T041 [US2] Move Device Flow manager/session state and OAuth client into `internal/plugins/copilot/auth.go`; expose only AdminExtension actions and inject snapshot/write/reload callbacks from assembly
+- [X] T042 [US2] Implement generic ActionRoute routing for registered AdminExtensions in `internal/admin/actions.go`, mount only descriptor-declared method/path pairs, reject conflicts and non-declared methods, enforce body limit/recover/JSON/sanitized-error conventions, and preserve action semantics inside plugins
+- [X] T043 [US2] Remove Copilot branches, routes, fields, assets logic, saved-token merge logic, and imports from `internal/admin/admin.go`, `internal/admin/convert.go`, `internal/admin/copilot_auth.go`, and `internal/admin/assets/index.html`
+- [X] T044 [US2] Delete obsolete `internal/backend/copilot.go`, `internal/backend/copilot_test.go`, and `internal/copilotclient/` after all references move; keep only truly shared backend helpers scheduled for their own migration task
+- [X] T045 [US2] Run `task test-race` focused on plugin/cache/auth/scheduler/admin packages and fix data races before US3
 
 **Checkpoint**: A Copilot request exercises only its plugin boundary; shared core contains no source-specific branch, and auth credentials remain disk-only.
 

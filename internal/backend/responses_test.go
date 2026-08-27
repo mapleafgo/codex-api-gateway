@@ -332,11 +332,13 @@ func TestPrepareUpstreamBody_ReasoningEmptySummaryUntouched(t *testing.T) {
 	}
 }
 
-// TestPrepareUpstreamBody_CopilotSkipsReasoningRewrite 验证 Copilot /responses
-// 不接受 reasoning item 携带 content 数组（报 array too long 400），源级归一化
-// 时必须跳过 summary 折算，保持 reasoning 原始形态交给上游。
-func TestPrepareUpstreamBody_CopilotSkipsReasoningRewrite(t *testing.T) {
-	src := config.Source{BackendType: config.BackendGitHubCopilot}
+// TestPrepareUpstreamBody_CompatFoldDisabledSkipsRewrite 验证 ResponsesCompatFold
+// 关闭时 r 路径跳过 reasoning summary→content 折算，保持原生 reasoning 形态交给
+// 原生 OpenAI Responses 兼容端点（折叠会触发 array too long 400）。工具调用 id
+// 归一化由分发型插件在委托前完成，不再由共享后端承担。
+func TestPrepareUpstreamBody_CompatFoldDisabledSkipsRewrite(t *testing.T) {
+	fold := false
+	src := config.Source{ResponsesCompatFold: &fold}
 	raw := []byte(`{
 		"model":"gpt-5",
 		"input":[
@@ -359,56 +361,10 @@ func TestPrepareUpstreamBody_CopilotSkipsReasoningRewrite(t *testing.T) {
 		t.Fatalf("first item type=%v", reasoning["type"])
 	}
 	if _, ok := reasoning["content"]; ok {
-		t.Fatalf("copilot 不应添加 content 数组: %v", reasoning["content"])
+		t.Fatalf("折叠关闭时不应添加 content 数组: %v", reasoning["content"])
 	}
 	if _, ok := reasoning["summary"]; !ok {
 		t.Fatal("summary 应原样保留")
-	}
-}
-
-// TestPrepareUpstreamBody_CopilotNormalizesToolIDs 验证 Copilot /responses 对
-// function_call / custom_tool_call 的 id 要求 fc_ / ctc_ 前缀：历史消息里
-// OpenAI 风格 call_ 前缀会被上游 400 拒绝，源级改写为网关要求的命名空间前缀，
-// call_id 保持原样（上游按 call_id 关联 tool result）。
-func TestPrepareUpstreamBody_CopilotNormalizesToolIDs(t *testing.T) {
-	src := config.Source{BackendType: config.BackendGitHubCopilot}
-	raw := []byte(`{
-		"model":"m",
-		"input":[
-			{"type":"function_call","id":"call_bf0a12","call_id":"call_bf0a12","name":"get_logs","arguments":"{}"},
-			{"type":"function_call","id":"fc_already","call_id":"call_ok","name":"keep","arguments":"{}"},
-			{"type":"custom_tool_call","id":"ctc_already","call_id":"c_ok","name":"keep","arguments":"{}"},
-			{"type":"custom_tool_call","id":"foo_bar","call_id":"call_xyz","name":"web_search","arguments":"{}"}
-		]
-	}`)
-	body, _, _, err := PrepareUpstreamBody(raw, &src, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m struct {
-		Input []map[string]any `json:"input"`
-	}
-	if err := json.Unmarshal(body, &m); err != nil {
-		t.Fatal(err)
-	}
-	want := []struct {
-		idx    int
-		id     string
-		callID string
-	}{
-		{0, "fc_call_bf0a12", "call_bf0a12"},
-		{1, "fc_already", "call_ok"},
-		{2, "ctc_already", "c_ok"},
-		{3, "ctc_foo_bar", "call_xyz"},
-	}
-	for _, tc := range want {
-		item := m.Input[tc.idx]
-		if got := item["id"]; got != tc.id {
-			t.Fatalf("input[%d].id = %v, want %q", tc.idx, got, tc.id)
-		}
-		if got := item["call_id"]; got != tc.callID {
-			t.Fatalf("input[%d].call_id = %v, want %q", tc.idx, got, tc.callID)
-		}
 	}
 }
 

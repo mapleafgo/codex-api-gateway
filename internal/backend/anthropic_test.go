@@ -116,6 +116,41 @@ func TestAnthropicBackend_ClientToolOmitsType(t *testing.T) {
 	}
 }
 
+// TestAnthropicBackend_BearerOnlyAddsThinkingBudget 验证 ExecuteWithAuthorization
+// （仅 Bearer 认证的 Anthropic 兼容端点）对 enabled thinking 补 budget_tokens；
+// 这类端点对缺省 budget 报 "budget_tokens: Field required"。该行为是通用 bearer
+// 路径语义，不依赖任何具体源身份。
+func TestAnthropicBackend_BearerOnlyAddsThinkingBudget(t *testing.T) {
+	var body []byte
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, `data: {"type":"message_start","message":{"id":"m1","model":"x"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"content_block_stop","index":0}`+"\n\n")
+		io.WriteString(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`+"\n\n")
+		io.WriteString(w, `data: {"type":"message_stop"}`+"\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewAnthropic()
+	_ = b.ExecuteWithAuthorization(context.Background(),
+		[]byte(`{"model":"m","input":"hi","reasoning":{"effort":"medium"},"max_output_tokens":4096,"stream":true}`),
+		config.Source{Name: "bearer", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		nil,
+		func(model.SSEEvent) error { return nil },
+		func(UpstreamEvent) {},
+		1,
+	)
+	if len(body) == 0 {
+		t.Fatal("上游未收到请求体")
+	}
+	if !bytes.Contains(body, []byte(`"budget_tokens":`)) {
+		t.Fatalf("bearer 路径应补 thinking budget_tokens: %s", body)
+	}
+}
+
 func TestAnthropicBackend_MaxTokensReportsIncomplete(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()

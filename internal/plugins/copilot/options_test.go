@@ -1,10 +1,8 @@
 package copilot
 
 import (
-	"testing"
-
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+	"testing"
 )
 
 func TestValidateSourceRejectsMissingToken(t *testing.T) {
@@ -51,7 +49,7 @@ func TestValidateSourceAcceptsTokenInLegacyField(t *testing.T) {
 func TestValidateSourceMissingTokenReturnsPluginError(t *testing.T) {
 	p := New()
 	err := p.ValidateSource(config.Source{Name: "copilot", Backend: "github-copilot"})
-	if err != plugin.ErrMissingGithubToken {
+	if err != errMissingGithubToken {
 		t.Fatalf("error = %v, want ErrMissingGithubToken", err)
 	}
 }

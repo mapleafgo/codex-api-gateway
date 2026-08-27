@@ -11,9 +11,6 @@ import (
 // ErrCapabilityNotSupported 表示源插件没有承载某个可选能力（目录/探测/动作）。
 var ErrCapabilityNotSupported = errors.New("capability not supported by source plugin")
 
-// ErrMissingGithubToken 表示 Copilot 源缺少 github_token 必填凭据。
-var ErrMissingGithubToken = errors.New("copilot: missing github_token")
-
 // Model 是统一模型目录项；Metadata 不得携带凭据。
 type Model struct {
 	ID          string

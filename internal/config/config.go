@@ -176,6 +176,12 @@ type Source struct {
 	// nil 时按 backend_type 给默认（见 SupportsWebSearchValue）。上游不支持时网关
 	// 会在发请求前剥掉 web_search 工具，避免上游 400/断流。
 	SupportsWebSearch *bool `koanf:"supports_web_search" yaml:"supports_web_search,omitempty"`
+	// ResponsesCompatFold 控制 r 路径是否对 reasoning summary / 明文 agent_message
+	// 做兼容折算。原生 OpenAI Responses 兼容端点（仅以 Bearer 认证、接受原生
+	// reasoning 形态）置 false 跳过折算；nil/默认 true 保持对 DeepSeek 等兼容上游
+	// 的折叠行为。这是跨源通用开关，由分发型插件在委托时按上游形态设置，
+	// 共享核心不据此判断具体源身份。
+	ResponsesCompatFold *bool `koanf:"responses_compat_fold" yaml:"responses_compat_fold,omitempty"`
 }
 
 // SupportsWebSearchValue 返回上游对 hosted web_search 的有效开关。
@@ -189,6 +195,15 @@ func (s Source) SupportsWebSearchValue() bool {
 		if n == BackendOpenAIChat {
 			return false
 		}
+	}
+	return true
+}
+
+// ResponsesCompatFoldValue 返回 r 路径是否需要做 reasoning / agent_message 兼容折算。
+// 显式配置优先；nil 时默认折算（兼容折叠是多数 Responses 兼容上游的安全默认）。
+func (s Source) ResponsesCompatFoldValue() bool {
+	if s.ResponsesCompatFold != nil {
+		return *s.ResponsesCompatFold
 	}
 	return true
 }

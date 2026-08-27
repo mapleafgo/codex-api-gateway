@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -579,4 +580,59 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestNormalizeInputIDs 验证委托给共享 Responses 后端前，function_call /
+// custom_tool_call 的 id 归一化为 Copilot 要求的 fc_ / ctc_ 前缀，call_id 不变。
+func TestNormalizeInputIDs(t *testing.T) {
+	raw := []byte(`{
+		"model":"m",
+		"input":[
+			{"type":"function_call","id":"call_bf0a12","call_id":"call_bf0a12","name":"get_logs","arguments":"{}"},
+			{"type":"function_call","id":"fc_already","call_id":"call_ok","name":"keep","arguments":"{}"},
+			{"type":"custom_tool_call","id":"ctc_already","call_id":"c_ok","name":"keep","arguments":"{}"},
+			{"type":"custom_tool_call","id":"foo_bar","call_id":"call_xyz","name":"web_search","arguments":"{}"}
+		]
+	}`)
+	out, err := normalizeInputIDs(raw, nil)
+	if err != nil {
+		t.Fatalf("normalizeInputIDs: %v", err)
+	}
+	var m struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		idx    int
+		id     string
+		callID string
+	}{
+		{0, "fc_call_bf0a12", "call_bf0a12"},
+		{1, "fc_already", "call_ok"},
+		{2, "ctc_already", "c_ok"},
+		{3, "ctc_foo_bar", "call_xyz"},
+	}
+	for _, tc := range want {
+		item := m.Input[tc.idx]
+		if got := item["id"]; got != tc.id {
+			t.Fatalf("input[%d].id = %v, want %q", tc.idx, got, tc.id)
+		}
+		if got := item["call_id"]; got != tc.callID {
+			t.Fatalf("input[%d].call_id = %v, want %q", tc.idx, got, tc.callID)
+		}
+	}
+}
+
+// TestNormalizeInputIDsPreservesLargeNumbers 验证 UseNumber 解码避免大整数精度丢失。
+func TestNormalizeInputIDsPreservesLargeNumbers(t *testing.T) {
+	raw := []byte(`{"model":"m","input":[{"type":"function_call","id":"call_1","call_id":"c1","name":"x","arguments":"{}","order":9007199254740993}]}`)
+	out, err := normalizeInputIDs(raw, nil)
+	if err != nil {
+		t.Fatalf("normalizeInputIDs: %v", err)
+	}
+	if !strings.Contains(string(out), "9007199254740993") {
+		t.Fatalf("大整数精度丢失: %s", out)
+	}
 }

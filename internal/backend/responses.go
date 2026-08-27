@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -57,13 +56,11 @@ func PrepareUpstreamBody(raw []byte, src *config.Source, log *slog.Logger) (body
 	if !src.SupportsWebSearchValue() {
 		stripWebSearchTools(m, log)
 	}
-	// Copilot /responses 为原生 OpenAI Responses 兼容端点，直接接受 reasoning
-	// 的 summary 形态与 agent_message；此处仅做工具调用 id 命名空间归一化，
-	// 跳过为 DeepSeek 等兼容上游准备的 summary→content 折算与明文 agent_message
-	// 改写，避免给 Copilot 塞入它不接受的 content 数组。
-	if src.BackendType == config.BackendGitHubCopilot {
-		rewriteCopilotInputIDs(m, log)
-	} else {
+	// 源级开关 ResponsesCompatFold 控制是否对 reasoning summary / 明文 agent_message
+	// 做兼容折算。原生 OpenAI Responses 兼容端点（如仅以 Bearer 认证的端点）置 false
+	// 跳过；默认 true 保持对 DeepSeek 等兼容上游的折叠行为。工具调用 id 命名空间归一化
+	// 由分发型插件在委托前自行完成，共享后端不感知具体源身份。
+	if src.ResponsesCompatFoldValue() {
 		rewriteReasoningSummaryToContent(m, log)
 		rewritePlaintextAgentMessages(m, log)
 	}
@@ -275,47 +272,6 @@ func rewritePlaintextAgentMessages(m map[string]any, log *slog.Logger) {
 	log.Debug("responses: 明文 agent_message 折为 assistant message",
 		"converted", converted,
 		"impact", "NEW_TASK/MESSAGE 文本保留，位置不变")
-}
-
-// rewriteCopilotInputIDs 为 Copilot /responses 归一化历史工具调用 id 前缀。
-// Copilot 的 OpenAI Responses 端点要求 function_call.id 以 fc_ 开头、
-// custom_tool_call.id 以 ctc_ 开头；回灌的历史消息若沿用 OpenAI 风格 call_
-// 前缀会被上游 400 拒绝。call_id 用于关联 tool result，保持原样不动。
-func rewriteCopilotInputIDs(m map[string]any, log *slog.Logger) {
-	if log == nil {
-		log = slog.Default()
-	}
-	input, ok := m["input"].([]any)
-	if !ok {
-		return
-	}
-	converted := 0
-	for _, raw := range input {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		typ, _ := item["type"].(string)
-		var prefix string
-		switch typ {
-		case model.ItemTypeFunctionCall:
-			prefix = "fc_"
-		case model.ItemTypeCustomToolCall:
-			prefix = "ctc_"
-		default:
-			continue
-		}
-		id, _ := item["id"].(string)
-		if id == "" || strings.HasPrefix(id, prefix) {
-			continue
-		}
-		item["id"] = prefix + id
-		converted++
-	}
-	if converted > 0 {
-		log.Debug("responses: copilot 归一化工具调用 id 前缀",
-			"converted", converted)
-	}
 }
 
 // decodeObject 用 UseNumber 解码 JSON 对象，避免 map 重编码时大整数经 float64 丢精度。

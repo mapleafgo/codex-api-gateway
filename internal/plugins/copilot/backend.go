@@ -1,9 +1,11 @@
 package copilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -117,6 +119,9 @@ func (b *Backend) Execute(
 	delegateSrc.BaseURL = endpoint
 	delegateSrc.APIKey = src.GithubToken
 	delegateSrc.Headers = mergeHeaders(src.Headers, Headers())
+	// Copilot /responses 为原生 OpenAI Responses 兼容端点，接受原生 reasoning
+	// 形态；委托时关闭共享 r 路径的兼容折算，工具调用 id 命名空间归一化在本包完成。
+	delegateSrc.ResponsesCompatFold = boolPtr(false)
 
 	log.Info("Copilot 请求路由决策",
 		"model", clientModel,
@@ -136,7 +141,11 @@ func (b *Backend) Execute(
 
 	switch route {
 	case "r":
-		return b.responses.Execute(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
+		body, err := normalizeInputIDs(rawBody, log)
+		if err != nil {
+			return fmt.Errorf("copilot: normalize input ids: %w", err)
+		}
+		return b.responses.Execute(ctx, body, delegateSrc, cfg, onEvent, reportUpstream, attempt)
 	case "a":
 		if bearer, ok := b.anthropic.(plugin.BearerOnlyBackend); ok {
 			return bearer.ExecuteWithAuthorization(ctx, rawBody, delegateSrc, cfg, onEvent, reportUpstream, attempt)
@@ -181,4 +190,54 @@ func mergeHeaders(user, copilotHeaders map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// boolPtr 返回指向 b 的指针，用于在委托时设置源级开关。
+func boolPtr(b bool) *bool { return &b }
+
+// normalizeInputIDs 把历史消息里 function_call / custom_tool_call 的 id 归一化为
+// Copilot /responses 端点要求的 fc_ / ctc_ 前缀；call_id 关联 tool result 保持原样。
+// 在委托给共享 Responses 后端前完成，使共享层不感知 Copilot 命名空间约定。
+func normalizeInputIDs(raw []byte, log *slog.Logger) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return raw, nil // 解析失败时原样透传，交由下游解码报错
+	}
+	input, ok := m["input"].([]any)
+	if !ok {
+		return raw, nil
+	}
+	converted := 0
+	for _, entry := range input {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := item["type"].(string)
+		var prefix string
+		switch typ {
+		case model.ItemTypeFunctionCall:
+			prefix = "fc_"
+		case model.ItemTypeCustomToolCall:
+			prefix = "ctc_"
+		default:
+			continue
+		}
+		id, _ := item["id"].(string)
+		if id == "" || strings.HasPrefix(id, prefix) {
+			continue
+		}
+		item["id"] = prefix + id
+		converted++
+	}
+	if converted > 0 && log != nil {
+		log.Debug("copilot: 归一化工具调用 id 前缀", "converted", converted)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw, nil
+	}
+	return out, nil
 }

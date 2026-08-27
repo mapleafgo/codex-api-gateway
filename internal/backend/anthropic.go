@@ -54,7 +54,8 @@ func (b *AnthropicBackend) Execute(
 
 // ExecuteWithAuthorization 保持 Execute 的 Responses ↔ Anthropic 转换行为，
 // 但上游认证只发送 Authorization: Bearer，并省略 x-api-key/anthropic-version。
-// 用于 GitHub Copilot Messages 端点；并发安全性与 Execute 相同。
+// 用于仅以 Authorization: Bearer 认证的 Anthropic 兼容端点（如经分发型插件委派）；
+// 并发安全性与 Execute 相同。
 func (b *AnthropicBackend) ExecuteWithAuthorization(
 	ctx context.Context,
 	rawBody []byte,
@@ -96,10 +97,11 @@ func (b *AnthropicBackend) execute(
 	}
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
-	// Copilot 的 Anthropic 端点要求 enabled thinking 显式携带 budget_tokens，
-	// 共享转换层刻意省略它以兼容常规上游；仅在 Copilot 委派时补齐。
-	if bearerOnly && src.BackendType == config.BackendGitHubCopilot {
-		applyCopilotThinkingBudget(anthReq, req)
+	// 仅以 Authorization: Bearer 认证的 Anthropic 兼容端点（经 BearerOnlyBackend
+	// 委派）要求 enabled thinking 显式携带 budget_tokens；共享转换层刻意省略它
+	// 以兼容常规 Anthropic 源，故在 bearer 路径统一补齐，不据此判断具体源身份。
+	if bearerOnly {
+		applyBearerThinkingBudget(anthReq, req)
 	}
 
 	maxTokensSource := "anthropic_default"
@@ -308,21 +310,21 @@ func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams
 	}
 }
 
-// defaultCopilotThinkingBudget 是 Copilot thinking budget 的内置默认值；
+// defaultBearerThinkingBudget 是 Bearer 认证 Anthropic 兼容端点 thinking budget
 // 合法区间为 ≥1024 且严格小于 max_tokens。
-const defaultCopilotThinkingBudget int64 = 8192
+const defaultBearerThinkingBudget int64 = 8192
 
-// applyCopilotThinkingBudget 为 Copilot /v1/messages 补 thinking budget_tokens。
-// Copilot 的 Anthropic 端点对 enabled thinking 报 "budget_tokens: Field required"，
+// applyBearerThinkingBudget 为仅以 Bearer 认证的 Anthropic 兼容端点补 thinking
+// budget_tokens。这类端点对 enabled thinking 报 "budget_tokens: Field required"，
 // 而共享转换层 applyReasoning 刻意构造不带 budget 的 {"type":"enabled"}（SDK 零值
 // 会序列化为 0 被常规 Anthropic 拒绝）。此处整体替换为带合法 budget 的结构体，
-// 保留 summarized display，常规 Anthropic 源行为不受影响。
-func applyCopilotThinkingBudget(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
+// 保留 summarized display，常规 Anthropic 源（走 Execute）行为不受影响。
+func applyBearerThinkingBudget(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" || effort == model.ReasoningEffortNone {
 		return
 	}
-	budget := defaultCopilotThinkingBudget
+	budget := defaultBearerThinkingBudget
 	if tok := out.MaxTokens; tok > 1024 {
 		candidate := tok - 1024
 		if candidate < budget {
