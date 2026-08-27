@@ -224,11 +224,11 @@ func (c *Collector) apply(ev RequestEvent) {
 		panic("metrics groups map is nil")
 	}
 
-	backendType := ev.Backend
-	if backendType == "" {
-		backendType = "anthropic" // 历史兼容：缺省视为 Anthropic
+	backendID := ev.Backend
+	if backendID == "" {
+		backendID = "unknown" // 合法缺省补位；绝不伪造真实插件身份
 	}
-	inputTokens := normalizedInputTokens(ev, backendType)
+	inputTokens := normalizedInputTokens(ev, backendID)
 
 	// 总量与 by_group 聚合只统计上游尝试：一次客户端请求可能触发多次上游
 	// 调用（主备切换、重试），按上游粒度统计才能反映真实流量与失败率。
@@ -290,7 +290,7 @@ func (c *Collector) apply(ev RequestEvent) {
 		TTFBMs:        ev.TTFB.Milliseconds(),
 		Status:        ev.Status,
 		Error:         ev.Error,
-		Backend:       backendType,
+		Backend:       backendID,
 	}
 	c.history[c.histIdx] = rec
 	c.histIdx = (c.histIdx + 1) % HistorySize

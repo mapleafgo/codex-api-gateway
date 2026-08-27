@@ -16,18 +16,21 @@ func TestCollectorAggregates(t *testing.T) {
 		Kind:      KindUpstream,
 		StartedAt: time.Now(), Duration: 100 * time.Millisecond,
 		SourceName: "zhipu", Model: "glm-latest", Status: "completed",
+		Backend:     "openai-chat",
 		InputTokens: 100, OutputTokens: 50, CacheRead: 80, CacheCreate: 20,
 	})
 	c.Record(RequestEvent{
 		Kind:      KindUpstream,
 		StartedAt: time.Now(), Duration: 200 * time.Millisecond,
 		SourceName: "zhipu", Model: "glm-latest", Status: "failed",
+		Backend:     "openai-chat",
 		InputTokens: 200, OutputTokens: 0, CacheRead: 0, CacheCreate: 200,
 	})
 	c.Record(RequestEvent{
 		Kind:      KindUpstream,
 		StartedAt: time.Now(), Duration: 300 * time.Millisecond,
 		SourceName: "volces", Model: "glm-latest", Status: "completed",
+		Backend:     "openai-chat",
 		InputTokens: 300, OutputTokens: 30, CacheRead: 300, CacheCreate: 0,
 	})
 
@@ -45,8 +48,8 @@ func TestCollectorAggregates(t *testing.T) {
 	if s.TotalRequests != 3 {
 		t.Fatalf("TotalRequests = %d, want 3", s.TotalRequests)
 	}
-	if s.TotalInput != 1200 {
-		t.Errorf("TotalInput = %d, want 1200", s.TotalInput)
+	if s.TotalInput != 600 {
+		t.Errorf("TotalInput = %d, want 600", s.TotalInput)
 	}
 	if s.TotalCacheRead != 380 {
 		t.Errorf("TotalCacheRead = %d, want 380", s.TotalCacheRead)
@@ -54,9 +57,9 @@ func TestCollectorAggregates(t *testing.T) {
 	if s.TotalCacheCreate != 220 {
 		t.Errorf("TotalCacheCreate = %d, want 220", s.TotalCacheCreate)
 	}
-	// Backend 缺省按 Anthropic 处理，总输入已归一化。
-	// 命中率 = 380 / 1200
-	want := 380.0 / 1200.0
+	// openai-chat 语义：input_tokens 已含缓存 Token，不做 cache 合并。
+	// 命中率 = 380 / 600
+	want := 380.0 / 600.0
 	if s.CacheHitRate == nil || absFloat(*s.CacheHitRate-want) > 1e-9 {
 		t.Errorf("CacheHitRate = %v, want %v", s.CacheHitRate, want)
 	}
@@ -163,6 +166,7 @@ func TestCollectorNormalizesInputTokens(t *testing.T) {
 		{name: "anthropic", backendType: "anthropic", want: 1250},
 		{name: "chat", backendType: "openai-chat", want: 1000},
 		{name: "responses", backendType: "openai-responses", want: 1000},
+		{name: "unknown", backendType: "", want: 1000},
 	}
 
 	for _, tt := range tests {

@@ -421,7 +421,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		string(oaconstant.ValueOf[oaconstant.ResponseIncomplete]()): true,
 	}
 	resolvedModel := string(req.Model)
-	backendType := string(plugin.BackendAnthropic)
+	// 观测兜底用合法占位 unknown，禁止伪造具体插件身份（observability 契约）。
+	backendType := "unknown"
 	var lastUp scheduler.UpstreamEvent
 
 	sourceName, execErr := s.sch.ExecuteGeneric(r.Context(), body,
