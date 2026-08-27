@@ -10,13 +10,19 @@ import (
 	openairesponsesplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/openairesponses"
 )
 
-// NewBuiltins 构造内置源插件注册表。插件在此互相组合（Copilot 委托 r/a/c），
-// 后续新增源也在此注册，共享调度与服务代码零改动。
-func NewBuiltins() (*plugin.Registry, error) {
-	return plugin.New(
+// Builtins 返回内置源插件列表。插件在此互相组合（Copilot 委托 r/a/c），
+// 后续新增源在此追加，共享调度与服务代码零改动。测试可叠加第三方插件后
+// 再交给 plugin.New 构造注册表。
+func Builtins() []plugin.SourcePlugin {
+	return []plugin.SourcePlugin{
 		anthropicplugin.New(),
 		openaichatplugin.New(),
 		openairesponsesplugin.New(),
 		copilotplugin.New(),
-	)
+	}
+}
+
+// NewBuiltins 构造内置源插件注册表，作为 cmd/server 的组装入口。
+func NewBuiltins() (*plugin.Registry, error) {
+	return plugin.New(Builtins()...)
 }
