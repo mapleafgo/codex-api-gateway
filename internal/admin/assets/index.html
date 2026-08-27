@@ -1043,7 +1043,7 @@ html[data-theme="dark"] .ui-select {
                <button class="ui-text-action" type="button"
                          x-show="isAuthSource(src.backend)"
                          @click="authorizeSource(src)"
-                         x-text="t('copilotAuth')"></button>
+                         x-text="t('authReauthorize')"></button>
                 <button class="ui-text-action" type="button"
                           :disabled="!src.name || togglingDisabled===src.name"
                           @click="toggleSourceDisabled(idx)"
@@ -1090,7 +1090,7 @@ html[data-theme="dark"] .ui-select {
                          x-model="src.api_key" autocomplete="off" spellcheck="false">
                 </div>
                 <p class="ui-hint ui-span-2" x-show="isAuthSource(src.backend)"
-                   x-text="t('copilotAuthHint')"></p>
+                   x-text="t('authHint')"></p>
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
@@ -1548,7 +1548,7 @@ html[data-theme="dark"] .ui-select {
                   <input class="ui-input ui-input-sm mono"
                          :type="f.type === 'number' ? 'number' : 'text'"
                          :value="f.value"
-                         :disabled="formIsCopilot() && f.key === 'name'"
+                         :disabled="formIsAuthSource() && f.key === 'name'"
                          @input="f.value = $event.target.value"
                          @keydown.enter="confirmModal()"
                          autocomplete="off" spellcheck="false"
@@ -1559,7 +1559,7 @@ html[data-theme="dark"] .ui-select {
            </template>
           </div>
         </template>
-        <p class="ui-hint" x-show="formIsCopilot()" x-text="t('copilotAuthHint')"></p>
+        <p class="ui-hint" x-show="formIsAuthSource()" x-text="t('authHint')"></p>
       </div>
     </template>
 
@@ -1588,42 +1588,44 @@ html[data-theme="dark"] .ui-select {
   </div>
 </dialog>
 
-<!-- Copilot Device Flow 授权面板 -->
+<!-- 设备授权面板（由插件声明式动作元数据驱动，不绑定具体源） -->
 <dialog x-ref="authModal" class="ui-modal">
   <div class="ui-modal-box">
-    <h3 x-text="t('copilotAuthTitle')"></h3>
-    <template x-if="copilotAuth && copilotAuth.state === 'awaiting_user'">
+    <h3 x-text="t('authTitle')"></h3>
+    <p class="ui-hint" style="margin:2px 0 0" x-show="authState && authState.backend"
+       x-text="authActionLabel(authState.backend)"></p>
+    <template x-if="authState && authState.state === 'awaiting_user'">
       <div style="margin-top:12px">
-        <p style="margin:0" x-text="t('copilotAuthVisit')"></p>
+        <p style="margin:0" x-text="t('authVisit')"></p>
         <p class="mono" style="font-size:22px; font-weight:650; letter-spacing:2px; margin:10px 0 0"
-           x-text="copilotAuth.user_code"></p>
+           x-text="authState.user_code"></p>
         <p style="margin:8px 0 0">
-          <a :href="copilotAuth.verification_uri" target="_blank" rel="noopener"
+          <a :href="authState.verification_uri" target="_blank" rel="noopener"
              style="color:var(--info); text-decoration:underline; word-break:break-all"
-             x-text="copilotAuth.verification_uri"></a>
+             x-text="authState.verification_uri"></a>
         </p>
-        <p style="margin:10px 0 0; color:var(--ink-soft)" x-text="t('copilotAuthWaiting')"></p>
+        <p style="margin:10px 0 0; color:var(--ink-soft)" x-text="t('authWaiting')"></p>
       </div>
     </template>
-    <template x-if="copilotAuth && ['starting', 'saving'].includes(copilotAuth.state)">
-      <p style="margin-top:12px" x-text="t('copilotAuthSaving')"></p>
+    <template x-if="authState && ['starting', 'saving'].includes(authState.state)">
+      <p style="margin-top:12px" x-text="t('authSaving')"></p>
     </template>
-    <template x-if="copilotAuth && copilotAuth.state === 'authorized'">
-      <p style="margin-top:12px" x-text="t('copilotAuthDone')"></p>
+    <template x-if="authState && authState.state === 'authorized'">
+      <p style="margin-top:12px" x-text="t('authDone')"></p>
     </template>
-    <template x-if="copilotAuth && copilotAuth.state === 'cancelled'">
-      <p style="margin-top:12px" x-text="t('copilotAuthCancelled')"></p>
+    <template x-if="authState && authState.state === 'cancelled'">
+      <p style="margin-top:12px" x-text="t('authCancelled')"></p>
     </template>
-    <template x-if="copilotAuth && copilotAuth.state === 'error'">
-      <p style="margin-top:12px; color:var(--bad)" x-text="copilotAuth.error || t('copilotAuthFailed')"></p>
+    <template x-if="authState && authState.state === 'error'">
+      <p style="margin-top:12px; color:var(--bad)" x-text="authState.error || t('authFailed')"></p>
     </template>
     <div class="ui-modal-actions">
       <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
-              x-show="copilotAuth && ['starting', 'awaiting_user'].includes(copilotAuth.state)"
-              @click="cancelCopilotAuth()"
-              x-text="t('copilotAuthCancel')"></button>
-      <button class="ui-btn ui-btn-sm" type="button" @click="closeCopilotAuth()"
-              x-text="t('copilotAuthClose')"></button>
+              x-show="authState && ['starting', 'awaiting_user'].includes(authState.state)"
+              @click="cancelAuthFlow()"
+              x-text="t('authCancel')"></button>
+      <button class="ui-btn ui-btn-sm" type="button" @click="closeAuthPanel()"
+              x-text="t('authClose')"></button>
     </div>
   </div>
 </dialog>
@@ -1662,17 +1664,18 @@ function app() {
       history: '请求历史', filterModel: '按模型过滤', filterSource: '按供应商过滤',
       allStatus: '全部状态', allKinds: '全部类型', kindUpstream: '上游调用', kindClient: '客户端请求',
       allModels: '全部模型', allSources: '全部供应商',
-      sources: '供应商', backendType: '接口类型', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', backendCopilot: 'GitHub Copilot', models: '模型', global: '全局参数', guidance: '基线指令',
+      sources: '供应商', backendType: '接口类型', models: '模型', global: '全局参数', guidance: '基线指令',
      addSrc: '新增供应商', srcOrderHint: '序号 = 优先级（越靠前越优先）', newSource: '新供应商',
     testSrc: '测试', testingSrc: '测试中…', testReachable: '可达', testUnreachable: '不可达', testReachHint: '验证 base_url 可达且 api_key 有效，不发真实大模型请求',
      srcName: '源名称', srcURL: '上游地址',
-     apiKey: 'API 密钥', githubToken: 'GitHub Token', show: '显示', hide: '隐藏',
-     copilotAuth: '重新授权', copilotAuthTitle: 'GitHub Copilot 授权',
-     copilotAuthVisit: '在浏览器打开以下地址并输入用户码完成授权',
-     copilotAuthWaiting: '等待授权确认…', copilotAuthSaving: '正在保存凭据…',
-     copilotAuthDone: '授权成功，源已保存', copilotAuthCancelled: '已取消授权',
-     copilotAuthFailed: '授权失败', copilotAuthCancel: '取消授权', copilotAuthClose: '关闭',
-     copilotAuthHint: '选择 GitHub Copilot 后将立即进入 GitHub 设备授权，无需手动填写 Token',
+     apiKey: 'API 密钥', show: '显示', hide: '隐藏',
+     authReauthorize: '重新授权', authTitle: '设备授权',
+     authVisit: '在浏览器打开以下地址并输入用户码完成授权',
+     authWaiting: '等待授权确认…', authSaving: '正在保存凭据…',
+     authDone: '授权成功，源已保存', authCancelled: '已取消授权',
+     authFailed: '授权失败', authCancel: '取消授权', authClose: '关闭',
+     authHint: '授权型源通过设备授权托管凭据，无需手动填写 Token',
+     unknownBackend: '未知',
       defaultModel: '默认模型', modelMap: '模型映射（别名 → 真实模型）',
      alias: '别名', realModel: '真实模型', addMap: '新增映射', removeMap: '移除该映射',
      headers: '自定义请求头',
@@ -1740,17 +1743,18 @@ function app() {
       history: 'Request History', filterModel: 'Filter by model', filterSource: 'Filter by source',
       allStatus: 'All status', allKinds: 'All kinds', kindUpstream: 'Upstream', kindClient: 'Client',
       allModels: 'All models', allSources: 'All sources',
-      sources: 'Sources', backendType: 'API Type', backendAnthropic: 'Anthropic', backendChat: 'OpenAI Chat', backendResponses: 'OpenAI Responses', backendCopilot: 'GitHub Copilot', models: 'Models', global: 'Global', guidance: 'Base instructions',
+      sources: 'Sources', backendType: 'API Type', models: 'Models', global: 'Global', guidance: 'Base instructions',
      addSrc: 'Add source', srcOrderHint: 'Order = priority (top first)', newSource: 'New source',
     testSrc: 'Test', testingSrc: 'Testing…', testReachable: 'Reachable', testUnreachable: 'Unreachable', testReachHint: 'Verifies base_url reachable and api_key valid; no real LLM request sent',
      srcName: 'Source name', srcURL: 'Upstream URL',
-      apiKey: 'API key', githubToken: 'GitHub Token', show: 'show', hide: 'hide',
-      copilotAuth: 'Reauthorize', copilotAuthTitle: 'GitHub Copilot Authorization',
-      copilotAuthVisit: 'Open this URL in your browser and enter the code to authorize',
-      copilotAuthWaiting: 'Waiting for authorization…', copilotAuthSaving: 'Saving credentials…',
-      copilotAuthDone: 'Authorized and saved', copilotAuthCancelled: 'Authorization cancelled',
-      copilotAuthFailed: 'Authorization failed', copilotAuthCancel: 'Cancel authorization', copilotAuthClose: 'Close',
-      copilotAuthHint: 'Selecting GitHub Copilot immediately starts GitHub device authorization; no manual token needed',
+      apiKey: 'API key', show: 'show', hide: 'hide',
+      authReauthorize: 'Reauthorize', authTitle: 'Device Authorization',
+      authVisit: 'Open this URL in your browser and enter the code to authorize',
+      authWaiting: 'Waiting for authorization…', authSaving: 'Saving credentials…',
+      authDone: 'Authorized and saved', authCancelled: 'Authorization cancelled',
+      authFailed: 'Authorization failed', authCancel: 'Cancel authorization', authClose: 'Close',
+      authHint: 'Auth-flow sources use device authorization; no manual token is needed',
+      unknownBackend: 'Unknown',
       defaultModel: 'Default model', modelMap: 'Model map (alias → real)',
      alias: 'alias', realModel: 'real model', addMap: 'Add mapping', removeMap: 'Remove mapping',
      headers: 'Custom headers',
@@ -1844,8 +1848,8 @@ function app() {
    togglingDisabled: '',
    testingSrc: '',
    testResults: {},
-   copilotAuth: null,
-   _copilotAuthTimer: null,
+   authState: null,
+   _authTimer: null,
    cfgSnapshot: '',
     saving: false,
     guidance: { path: '', content: '', exists: false },
@@ -1867,9 +1871,8 @@ function app() {
       this.applyLocale();
       this.startSSE();
       this.loadConfig();
-      this.loadSourcePlugins();
+      this.initAuthRestore();
       this.fetchVersion();
-      this.restoreCopilotAuth();
       this.$nextTick(() => this.onListScroll());
       window.addEventListener('sel-change', (e) => {
         const field = e.target.closest('.ui-sel')?.dataset?.field;
@@ -1880,16 +1883,26 @@ function app() {
         if (obj) obj[parts[parts.length - 1]] = e.detail;
       });
     },
-    async restoreCopilotAuth() {
-      try {
-        const r = await fetch('/admin/api/copilot/auth/status');
-        if (!r.ok) return;
-        const st = await r.json();
-        if (st && ['starting', 'awaiting_user', 'saving'].includes(st.state)) {
-          this.copilotAuth = st;
-          this.openCopilotAuthPanel();
-        }
-      } catch (e) {}
+    // 先拉取插件描述符，再尝试恢复进行中的设备授权会话（路由从声明元数据读取）。
+    async initAuthRestore() {
+      await this.loadSourcePlugins();
+      await this.restoreAuthFlow();
+    },
+    async restoreAuthFlow() {
+      for (const p of this.sourcePlugins || []) {
+        const status = this.deviceFlowRoutes(p.id).status;
+        if (!status) continue;
+        try {
+          const r = await fetch(status.path);
+          if (!r.ok) continue;
+          const st = await r.json();
+          if (st && ['starting', 'awaiting_user', 'saving'].includes(st.state)) {
+            this.authState = Object.assign({ backend: p.id }, st);
+            this.openAuthPanel();
+            return;
+          }
+        } catch (e) {}
+      }
     },
 
     t(key) { return (I18N[this.locale] || I18N.zh)[key] || key; },
@@ -1999,6 +2012,25 @@ function app() {
      if (!p || !p.actions) return false;
      return p.actions.some(a => a.id === actionId);
    },
+   // 从插件描述符的声明式动作元数据提取路由（按动作 ID + 路由 ID），
+   // 前端不硬编码任何源专属路径。
+   routesForAction(backendId, actionId) {
+     const p = this.pluginDescriptor(backendId);
+     if (!p || !p.actions) return {};
+     const act = p.actions.find(a => a.id === actionId);
+     const out = {};
+     (act?.routes || []).forEach(rt => { out[rt.id] = { method: rt.method, path: rt.path }; });
+     return out;
+   },
+   deviceFlowRoutes(backendId) {
+     return this.routesForAction(backendId, 'device-flow');
+   },
+   // 授权面板副标题：展示插件声明的动作标签。
+   authActionLabel(backendId) {
+     const p = this.pluginDescriptor(backendId);
+     const act = (p?.actions || []).find(a => a.id === 'device-flow');
+     return act?.label || p?.title || '';
+   },
    // 授权型源（有 device-flow action），不需要手填 base_url/api_key。
    isAuthSource(backendId) {
      return this.hasAction(backendId, 'device-flow');
@@ -2027,26 +2059,13 @@ function app() {
      } catch (e) {}
    },
    backendTypeLabel(v) {
-     const p = this.pluginDescriptor(v);
-     if (p) return p.title;
-     const x = String(v || '').trim();
-     // 请求列表用大写 A/C/G/R 区分：a=Anthropic，c=OpenAI Chat，g=GitHub Copilot，r=OpenAI Responses
-     if (x === 'c') return 'C';
-     if (x === 'g') return 'G';
-     if (x === 'r') return 'R';
-     // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
-     return 'A';
+     const p = v ? this.pluginDescriptor(v) : null;
+     return p ? p.title : (v || this.t('unknownBackend'));
    },
    backendTypeTitle(v) {
-     const p = this.pluginDescriptor(v);
-     if (p) return this.t('colBackendType') + ': ' + p.title;
-     const x = String(v || '').trim() || 'a';
-     let full = this.t('backendAnthropic');
-     if (x === 'c') full = this.t('backendChat');
-      else if (x === 'g') full = this.t('backendCopilot');
-      else if (x === 'r') full = this.t('backendResponses');
-      return this.t('colBackendType') + ': ' + this.backendTypeLabel(x) + ' · ' + full;
-    },
+     // 仅按已注册插件描述符展示；未知/历史值原样显示，不再映射短码。
+     return this.t('colBackendType') + ': ' + this.backendTypeLabel(v);
+   },
     isOk(row) {
       if (!row) return false;
       // 业务结果以 status 为准：completed/incomplete 为成功；failed 为失败。
@@ -2202,7 +2221,6 @@ function app() {
         }).filter(m => m.slug);
        (payload.sources || []).forEach(s => {
          if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
-         delete s.github_token;
          delete s._id;
          delete s.top;
        });
@@ -2256,7 +2274,7 @@ function app() {
     },
 
    addSource() {
-     const defaultBackend = (this.sourcePlugins[0] || {}).id || 'anthropic';
+     const defaultBackend = (this.sourcePlugins[0] || {}).id || '';
      // 从所有已注册插件的 Descriptor Schema 收集非敏感 option 字段。
      // 提交时按当前选中的 backend 决定哪些字段进入 options。
      const optionFields = [];
@@ -2316,7 +2334,7 @@ function app() {
          return;
        }
        if (authSource) {
-         await this.startCopilotAuth({
+         await this.startAuthFlow({
            name,
            base_url,
            backend: v.backend,
@@ -2347,29 +2365,34 @@ function app() {
         }
       });
     },
-    async startCopilotAuth(source) {
+    async startAuthFlow(source) {
+      const start = this.deviceFlowRoutes(source.backend).start;
+      if (!start) {
+        this.notify(this.locale === 'zh' ? '该源未声明设备授权动作' : 'No device-flow action declared', 'error');
+        return false;
+      }
       try {
-        const r = await fetch('/admin/api/copilot/auth/start', {
-          method: 'POST',
+        const r = await fetch(start.path, {
+          method: start.method || 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ source }),
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok && r.status !== 409) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-        this.copilotAuth = j;
+        this.authState = Object.assign({ backend: source.backend }, j);
         if (r.status === 409) {
           this.notify(this.locale === 'zh' ? '已有进行中的授权会话' : 'An authorization flow is already active', 'info');
         }
-        this.openCopilotAuthPanel();
+        this.openAuthPanel();
         return true;
       } catch (e) {
-        this.notify(this.locale === 'zh' ? '发起 Copilot 授权失败：' + e.message : 'Start Copilot authorization failed: ' + e.message, 'error');
+        this.notify(this.locale === 'zh' ? '发起设备授权失败：' + e.message : 'Start device authorization failed: ' + e.message, 'error');
         return false;
       }
     },
    async authorizeSource(src) {
      if (!src || !this.isAuthSource(src.backend) || !(src.name || '').trim()) return;
-     await this.startCopilotAuth({
+     await this.startAuthFlow({
        name: src.name,
        base_url: (src.base_url || '').trim(),
        backend: src.backend,
@@ -2382,41 +2405,45 @@ function app() {
         disabled: !!src.disabled,
       });
     },
-    openCopilotAuthPanel() {
+    openAuthPanel() {
       this.$nextTick(() => {
         const d = this.$refs.authModal;
         if (d && !d.open) d.showModal();
       });
-      this.scheduleCopilotAuthPoll();
+      this.scheduleAuthPoll();
     },
-    scheduleCopilotAuthPoll() {
-      clearTimeout(this._copilotAuthTimer);
-      const st = this.copilotAuth;
+    scheduleAuthPoll() {
+      clearTimeout(this._authTimer);
+      const st = this.authState;
       if (!st || ['authorized', 'cancelled', 'error'].includes(st.state)) return;
+      const status = this.deviceFlowRoutes(st.backend).status;
+      if (!status) return;
       const iv = Math.max(1000, (st.interval_seconds || 5) * 1000);
-      this._copilotAuthTimer = setTimeout(async () => {
+      this._authTimer = setTimeout(async () => {
         try {
-          const r = await fetch('/admin/api/copilot/auth/status');
-          if (r.ok) this.copilotAuth = await r.json();
+          const r = await fetch(status.path);
+          if (r.ok) this.authState = Object.assign({ backend: st.backend }, await r.json());
         } catch (e) {}
-        this.scheduleCopilotAuthPoll();
+        this.scheduleAuthPoll();
       }, iv);
     },
-    async cancelCopilotAuth() {
+    async cancelAuthFlow() {
+      const cancel = this.deviceFlowRoutes(this.authState?.backend).cancel;
+      if (!cancel) return;
       try {
-        const r = await fetch('/admin/api/copilot/auth/cancel', { method: 'POST' });
-        if (r.ok) this.copilotAuth = await r.json();
+        const r = await fetch(cancel.path, { method: cancel.method || 'POST' });
+        if (r.ok) this.authState = Object.assign({ backend: this.authState.backend }, await r.json());
       } catch (e) {}
     },
-    closeCopilotAuth() {
-      clearTimeout(this._copilotAuthTimer);
-      const st = this.copilotAuth;
+    closeAuthPanel() {
+      clearTimeout(this._authTimer);
+      const st = this.authState;
       if (st && ['starting', 'awaiting_user'].includes(st.state)) {
-        void this.cancelCopilotAuth().then(() => this.closeCopilotAuth());
+        void this.cancelAuthFlow().then(() => this.closeAuthPanel());
         return;
       }
       this.$refs.authModal?.close();
-      this.copilotAuth = null;
+      this.authState = null;
       if ((st || {}).state === 'authorized') {
         if (this.modal.kind === 'form' && this.isAuthSource(this.formBackend())) this.cancelModal();
         this.loadConfig();
@@ -2467,7 +2494,7 @@ function app() {
     },
     formBackend() {
       const f = (this.modal.fields || []).find(x => x.key === 'backend');
-      return f ? (f.value || 'anthropic') : 'anthropic';
+      return f ? (f.value || (this.backendOpts()[0] || {}).v || '') : (this.backendOpts()[0] || {}).v || '';
     },
     formAPIKey() {
       const f = (this.modal.fields || []).find(x => x.key === 'api_key');
@@ -3054,7 +3081,7 @@ function app() {
     // 表单内 select 变化：记录新值，并联动同表单里 syncFrom 指向本字段的
     // 复选框按其 syncDefault 重算默认（仅当用户未手动改过）。
    onFormSelectChange(f, value) {
-     const wasCopilot = f.key === 'backend' && this.isAuthSource(this.formBackend());
+     const wasAuth = f.key === 'backend' && this.isAuthSource(this.formBackend());
      f.value = value;
      const fields = this.modal.fields || [];
      fields.forEach(cb => {
@@ -3063,36 +3090,39 @@ function app() {
        }
      });
      if (f.key !== 'backend') return;
-     if (this.isAuthSource(value) && !wasCopilot) { void this.beginFormCopilotAuth(); return; }
-     if (wasCopilot && !this.isAuthSource(value)) {
-       void this.cancelCopilotAuth().then(() => {
-          clearTimeout(this._copilotAuthTimer);
+     if (this.isAuthSource(value) && !wasAuth) { void this.beginFormAuthFlow(); return; }
+     if (wasAuth && !this.isAuthSource(value)) {
+       void this.cancelAuthFlow().then(() => {
+          clearTimeout(this._authTimer);
           this.$refs.authModal?.close();
-          this.copilotAuth = null;
+          this.authState = null;
         });
       }
     },
-    uniqueCopilotName() {
+    // 未填写名称时为授权型源生成一个基于描述符标题的默认名。
+    defaultSourceName(backendId) {
+      const base = (this.pluginDescriptor(backendId)?.title || backendId)
+        .toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'source';
       const names = new Set((this.cfg.sources || []).map(s => s.name || '').filter(Boolean));
-      if (!names.has('copilot')) return 'copilot';
+      if (!names.has(base)) return base;
       for (let i = 2; ; i++) {
-        const name = 'copilot-' + i;
+        const name = base + '-' + i;
         if (!names.has(name)) return name;
       }
     },
-    async beginFormCopilotAuth() {
+    async beginFormAuthFlow() {
       const fields = this.modal.fields || [];
       const fieldValue = key => fields.find(f => f.key === key)?.value;
       const nameField = fields.find(f => f.key === 'name');
       let name = String(nameField?.value || '').trim();
       if (!name) {
-        name = this.uniqueCopilotName();
+        name = this.defaultSourceName(this.formBackend());
         if (nameField) nameField.value = name;
       }
-      // 先显示 starting 面板：GitHub 网络慢时用户也能立刻看到授权流程已启动。
-      this.copilotAuth = { state: 'starting', source_name: name };
-      this.openCopilotAuthPanel();
-     return this.startCopilotAuth({
+      // 先显示 starting 面板：上游网络慢时用户也能立刻看到授权流程已启动。
+      this.authState = { state: 'starting', source_name: name, backend: this.formBackend() };
+      this.openAuthPanel();
+     return this.startAuthFlow({
        name,
        base_url: '',
        backend: this.formBackend(),
@@ -3104,13 +3134,13 @@ function app() {
         disabled: false,
       });
     },
-   formIsCopilot() {
+   formIsAuthSource() {
      return this.modal.kind === 'form' && this.isAuthSource(this.formBackend());
    },
-   // Copilot 源的 endpoint 由发现逻辑解析，凭据由 Device Flow 提供。
+   // 授权型源的 endpoint 由插件负责解析，凭据由设备授权动作提供。
    fieldVisible(f) {
      if (f._backend && f._backend !== this.formBackend()) return false;
-     if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key')) return false;
+     if (this.formIsAuthSource() && (f.key === 'base_url' || f.key === 'api_key')) return false;
      return true;
    },
     confirmModal() {

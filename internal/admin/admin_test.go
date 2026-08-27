@@ -129,7 +129,7 @@ func TestMetricsDashboardLabels(t *testing.T) {
 	for _, want := range []string{
 		"cardReq: '上游调用量'",
 		"cardReq: 'Upstream calls'",
-		"backendCopilot: 'GitHub Copilot'",
+		"authReauthorize: '重新授权'",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
@@ -137,15 +137,15 @@ func TestMetricsDashboardLabels(t *testing.T) {
 	}
 }
 
-func TestCopilotSourceCardHidesTokenInput(t *testing.T) {
+func TestAuthSourceCardHidesTokenInput(t *testing.T) {
 	html := string(indexHTML)
 	if strings.Contains(html, `x-model="src.github_token"`) {
 		t.Fatal("index.html still renders github_token input on source card")
 	}
 	for _, want := range []string{
-		`x-text="t('copilotAuth')"`,
+		`x-text="t('authReauthorize')"`,
 		`@click="authorizeSource(src)"`,
-		"copilotAuth: '重新授权'",
+		"authReauthorize: '重新授权'",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
@@ -153,11 +153,11 @@ func TestCopilotSourceCardHidesTokenInput(t *testing.T) {
 	}
 }
 
-func TestCopilotFormHidesUpstreamURL(t *testing.T) {
+func TestAuthSourceFormHidesUpstreamURL(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
 		`x-show="!isAuthSource(src.backend)"`,
-		"if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key')) return false;",
+		"if (this.formIsAuthSource() && (f.key === 'base_url' || f.key === 'api_key')) return false;",
 		"const base_url = authSource ? '' : (v.base_url || '').trim();",
 	} {
 		if !strings.Contains(html, want) {
@@ -166,13 +166,13 @@ func TestCopilotFormHidesUpstreamURL(t *testing.T) {
 	}
 }
 
-func TestCopilotSelectionStartsDeviceFlowImmediately(t *testing.T) {
+func TestAuthSourceSelectionStartsDeviceFlowImmediately(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
-		"if (this.isAuthSource(value) && !wasCopilot) { void this.beginFormCopilotAuth(); return; }",
-		"async beginFormCopilotAuth() {",
-		":disabled=\"formIsCopilot() && f.key === 'name'\"",
-		"copilotAuthHint: '选择 GitHub Copilot 后将立即进入 GitHub 设备授权，无需手动填写 Token'",
+		"if (this.isAuthSource(value) && !wasAuth) { void this.beginFormAuthFlow(); return; }",
+		"async beginFormAuthFlow() {",
+		":disabled=\"formIsAuthSource() && f.key === 'name'\"",
+		"authHint: '授权型源通过设备授权托管凭据，无需手动填写 Token'",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
