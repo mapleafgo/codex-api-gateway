@@ -157,7 +157,7 @@
 ### Implementation for User Story 4
 
 - [ ] T059 [US4] Close any extension gaps in `internal/plugin`, `internal/scheduler`, `internal/server`, or `internal/admin` discovered by T057-T058 without adding concrete test-source references outside tests
-- [ ] T060 [US4] Add a concise new-source checklist to `README.md` and link it from `docs/architecture.md` or the closest existing architecture section; include only plugin package + `cmd/server` registration steps
+- [X] T060 [US4] Add a concise new-source checklist to `README.md` and link it from `docs/architecture.md` or the closest existing architecture section; include only plugin package + `cmd/server` registration steps
 - [ ] T061 [US4] Assert the simulated addition requires no edits to shared scheduler/service/admin/health source files; record residual gaps if any and resolve them or update spec with explicit approval
 
 **Checkpoint**: Extension path is executable and measurable; future source work stays inside its package and the single assembly entry point.

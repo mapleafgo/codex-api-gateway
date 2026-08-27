@@ -364,22 +364,35 @@ sources:
 
 ## 架构
 
-分层、单向依赖的 Go 服务，禁止反向引用：
+分层、单向依赖的 Go 服务，禁止反向引用。共享核心只依赖插件契约，不感知具体源：
 
 ```text
 L5 观测/管理  internal/admin  internal/metrics
 L4 编排      internal/server
-L3 运行时    internal/scheduler  internal/backend（a/c/g/r 适配器）
+L3 运行时    internal/scheduler  internal/backend（共享 a/c/r 协议引擎）
+L2 契约/插件 internal/plugin（源插件契约 + 不可变注册表）  internal/plugins/{anthropic,openaichat,openairesponses,copilot}
 L2 转换      convert/streamconv（a）  chatconvert/chatstreamconv（c）  透传无 L2（r）
 L1 客户端    anthropic  chatclient  responsesclient
-L1.5 Copilot  internal/copilot（endpoint 发现 / 模型目录 / Device Flow / 协议路由，单一归属包）
 L0 基础      config  logging  model  breaker  toolcatalog
 ```
+
+四类内置上游（Anthropic Messages、OpenAI Chat、OpenAI Responses、GitHub Copilot）都是 `internal/plugins/<id>` 下的独立源插件，实现 `internal/plugin` 的 `SourcePlugin` 契约，并在 `cmd/server` 唯一组装入口注册。GitHub Copilot 的 endpoint 发现、模型目录筛选、协议路由、Device Flow、必需请求头与连通性探测全部归属 `internal/plugins/copilot` 单一包；共享调度、服务、配置、管理、健康框架只依赖插件契约与注册表，不感知任何具体源身份。
 
 两条贯穿路径：
 
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml`（及同级 `base_instructions.md`）→ `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑都走写盘 → fsnotify → 这条链路。
-- **请求转发路径**：`/v1/responses` → `server` → `scheduler.ExecuteGeneric` → 按源选 `backend`（a/c/g/r）→ 上游 SSE → 回写 Responses SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
+- **请求转发路径**：`/v1/responses` → `server` → `scheduler.ExecuteGeneric` → 按源 `backend` 从注册表取插件 Backend → 上游 SSE → 回写 Responses SSE。任何失败以 error / SSE 错误事件返回，不 panic 逃逸。
+
+### 新增一个上游源
+
+新增源只需写自己的插件包并在组装入口注册，不改动共享调度/服务/管理/健康代码：
+
+1. 新建 `internal/plugins/<your-id>/`，实现 `plugin.SourcePlugin` 契约：`Descriptor()`（稳定 ID、标题、协议能力、流式形态、配置 schema、可选管理动作）、`ValidateSource(config.Source)`、`Backend() plugin.Backend`。
+2. 如需模型目录 / 健康探测 / 管理扩展动作，额外实现 `plugin.ModelCatalog` / `plugin.HealthProbe` / `plugin.AdminExtension`（全部可选）。
+3. 在 `cmd/server` 组装入口的 `plugin.New(...)` 注册表里加入你的插件实例。
+4. 在 `config.yaml` 用 `backend: <your-id>` 声明源，专属参数放进 `options`。
+
+校验链路由注册表统一驱动：未注册 ID、schema 外 options、缺必填项都会在配置加载或保存时被拒绝。可参照 `internal/plugin/testsource_test.go` 的自包含示例。
 
 ## 开发
 
