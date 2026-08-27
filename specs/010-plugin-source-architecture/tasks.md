@@ -125,7 +125,7 @@
 ### Tests for User Story 3
 
 - [ ] T046 [P] [US3] Add failing `/admin/api/source-plugins` contract tests in `internal/admin/source_plugins_test.go` for descriptor JSON, schema/action visibility, sorted stable IDs, and absence of credentials
-- [ ] T047 [P] [US3] Add failing config read/write tests in `internal/admin/admin_test.go` for `backend` + `options`, `__codex_redacted__`, empty-means-keep, `__codex_clear__`, literal-redacted rejection, same-name/type sensitive retention, and failed-save preservation
+- [X] T047 [P] [US3] Add failing config read/write tests in `internal/admin/admin_test.go` for `backend` + `options`, `__codex_redacted__`, empty-means-keep, `__codex_clear__`, literal-redacted rejection, same-name/type sensitive retention, and failed-save preservation
 - [ ] T048 [P] [US3] Add failing generic action/model/test endpoint tests in `internal/admin/actions_test.go` and `internal/admin/upstream_models_test.go` for draft sensitive merge, unsupported capability responses, action conflict status, and no credential leakage
 - [ ] T049 [US3] Add a browser/equivalent end-to-end test for source form switching, dynamic required fields, Device Flow panel states, save-refresh masking, and disabled/reorder controls; place implementation-specific harness under `internal/admin/` if automated
 

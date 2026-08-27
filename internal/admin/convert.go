@@ -8,6 +8,15 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
+// sensitiveRedact / sensitiveClear 是管理页敏感 option 的哨兵值：
+// - __codex_redacted__：管理页脱敏回传的占位，保存时恢复已保存的旧值；
+// - __codex_clear__：显式清空，保存后该敏感键不存在，旧值不恢复。
+// 其它字面值（包括把哨兵字符串当真实凭据提交）都不会被写入配置。
+const (
+	sensitiveRedact = "__codex_redacted__"
+	sensitiveClear  = "__codex_clear__"
+)
+
 // buildConfigFromInput 把管理端 POST 的视图组装回 *config.Config。
 // 管理端做全量覆盖：input 不携带的字段会写回为零值/默认值。
 // 这是用户接受的语义（管理页即权威配置）。
@@ -50,10 +59,24 @@ func buildConfigFromInput(in adminConfigInput, current *config.Config, sensitive
 			if len(sensitive) > 0 {
 				for _, prev := range current.Sources {
 					if prev.Name == sv.Name {
-						for k, v := range prev.Options {
-							if sensitive[k] {
-								if _, exists := options[k]; !exists {
+						for k := range sensitive {
+							sent, exists := options[k].(string)
+							switch {
+							case exists && sent == sensitiveRedact:
+								// 脱敏占位：保留旧值（旧值缺失就清空）。
+								if v, has := prev.Options[k]; has {
 									options[k] = v
+								}
+							case exists && sent == sensitiveClear:
+								// 显式清空：删除键，禁止旧值恢复。
+								delete(options, k)
+							default:
+								// empty-means-keep：键缺失或显式空串时恢复旧值；
+								// 其它字面值（含误填哨兵）作为真实新值保存。
+								if !exists || strings.TrimSpace(sent) == "" {
+									if v, has := prev.Options[k]; has {
+										options[k] = v
+									}
 								}
 							}
 						}

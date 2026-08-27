@@ -88,6 +88,7 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/events", wrap("events", h.handleEvents))
 	mux.HandleFunc("/admin/api/models", wrap("models", h.handleModels))
 	mux.HandleFunc("/admin/api/upstream-models", wrap("upstream-models", h.handleUpstreamModels))
+	mux.HandleFunc("/admin/api/source-plugins", wrap("source-plugins", h.handleSourcePlugins))
 	mux.HandleFunc("/admin/api/sources/promote", wrap("promote-source", h.handlePromoteSource))
 	mux.HandleFunc("/admin/api/sources/disabled", wrap("source-disabled", h.handleSetSourceDisabled))
 	mux.HandleFunc("/admin/api/sources/test", wrap("source-test", h.handleSourceTest))

@@ -727,6 +727,77 @@ func TestUpstreamModelsRejectsInvalidBackendType(t *testing.T) {
 	}
 }
 
+// TestBuildConfigFromInputSensitiveSentinels 验证敏感 option 哨兵语义：
+// __codex_redacted__ 保留旧值、__codex_clear__ 显式清空、空值保持旧值、
+// 字面哨兵不会作为真实凭据写入配置。
+func TestBuildConfigFromInputSensitiveSentinels(t *testing.T) {
+	sensitive := func(string) map[string]bool { return map[string]bool{"github_token": true} }
+	current := &config.Config{Sources: []config.Source{{
+		Name:    "copilot",
+		Backend: plugin.BackendGitHubCopilot,
+		Options: map[string]any{"github_token": "gho_saved"},
+	}}}
+
+	tests := []struct {
+		name   string
+		posted map[string]any
+		want   map[string]any // 期望保留到 options 的值（key->value or ABSENT for cleared）
+	}{
+		{"redacted keeps old", map[string]any{"github_token": sensitiveRedact}, map[string]any{"github_token": "gho_saved"}},
+		{"empty keeps old", map[string]any{"github_token": ""}, map[string]any{"github_token": "gho_saved"}},
+		{"clear removes key", map[string]any{"github_token": sensitiveClear}, nil},
+		{"literal redacted treated as keep sentinel", map[string]any{"github_token": "__codex_redacted__"}, map[string]any{"github_token": "gho_saved"}},
+		{"real new value is preserved", map[string]any{"github_token": "newreal"}, map[string]any{"github_token": "newreal"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildConfigFromInput(adminConfigInput{
+				Sources: []sourceView{{
+					Name:    "copilot",
+					Backend: plugin.BackendGitHubCopilot,
+					Options: tc.posted,
+				}},
+			}, current, sensitive)
+			got := cfg.Sources[0].Options
+			if tc.want == nil {
+				if _, exists := got["github_token"]; exists {
+					t.Fatalf("github_token 应被清空: %+v", got)
+				}
+				return
+			}
+			if v, _ := got["github_token"].(string); v != tc.want["github_token"] {
+				t.Fatalf("github_token = %q, want %q (options=%+v)", v, tc.want["github_token"], got)
+			}
+		})
+	}
+}
+
+// TestConfigSaveFailurePreservesOldState 验证校验失败的保存不替换 holder 旧状态。
+func TestConfigSaveFailurePreservesOldState(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	deps.ValidateConfig = func(*config.Config) error { return fmt.Errorf("boom: invalid") }
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := newServer(mux)
+	defer srv.Close()
+
+	old := deps.Holder.Current().Sources[0].Name
+	var in adminConfigInput
+	in.Sources = []sourceView{{Name: "broken", BaseURL: "http://x", Backend: "anthropic"}}
+	body, _ := json.Marshal(in)
+	resp, err := http.Post(srv.URL+"/admin/api/config", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if got := deps.Holder.Current().Sources[0].Name; got != old {
+		t.Fatalf("holder source = %q, want %q（失败保存不得替换运行态）", got, old)
+	}
+}
+
 func TestSourcesHealthInMetrics(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	deps.SourceHealth = func() []SourceHealthView {
