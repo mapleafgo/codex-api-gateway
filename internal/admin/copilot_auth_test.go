@@ -21,7 +21,7 @@ func newTestAuthHandler(t *testing.T, gh http.HandlerFunc) (*handler, *Deps) {
 	srv := httptest.NewServer(gh)
 	t.Cleanup(srv.Close)
 	authClient := copilot.NewAuthClient(srv.Client(), srv.URL+"/login/device/code", srv.URL+"/token")
-	h := &handler{deps: *deps, copilot: copilot.New()}
+	h := &handler{deps: *deps}
 	h.auth = newCopilotAuthManager(
 		authClient,
 		func() *config.Config { return deps.Holder.Current() },
@@ -247,7 +247,7 @@ func TestCopilotAuthSuccessUpdatesExistingSource(t *testing.T) {
 		t.Fatalf("seed yaml: %v", err)
 	}
 
-	h := &handler{deps: *deps, copilot: copilot.New()}
+	h := &handler{deps: *deps}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login/device/code" {
 			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":1}`))
@@ -347,7 +347,7 @@ func TestCopilotAuthFailureKeepsExistingSource(t *testing.T) {
 	if err := writeInitialYAML(deps.CfgPath, &cur); err != nil {
 		t.Fatalf("seed yaml: %v", err)
 	}
-	h := &handler{deps: *deps, copilot: copilot.New()}
+	h := &handler{deps: *deps}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login/device/code" {
 			_, _ = w.Write([]byte(`{"device_code":"dc-1","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","interval":1}`))

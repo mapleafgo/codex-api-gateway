@@ -20,13 +20,11 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
-	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
-	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
 )
 
 // SourceHealthView 是管理页展示的单源运行时回退等级。
@@ -69,7 +67,6 @@ type Deps struct {
 type handler struct {
 	deps Deps
 	// copilot 只服务管理页旁路的目录/连通性探测，不进入 /v1/* 转发路径。
-	copilot *copilot.Client
 	// auth 唯一活跃 Copilot Device Flow 会话（管理页旁路）。
 	auth *copilotAuthManager
 	// writeMu 序列化配置写回，避免并发保存互相覆盖。
@@ -80,8 +77,7 @@ type handler struct {
 // 已存在的 /v1/* 路由不受影响（由调用方先注册）。
 func Mount(mux *http.ServeMux, deps Deps) {
 	h := &handler{
-		deps:    deps,
-		copilot: copilot.New(),
+		deps: deps,
 	}
 	h.auth = newCopilotAuthManager(
 		copilot.NewAuthClient(nil, "", ""),
@@ -338,94 +334,79 @@ func (h *handler) handleReload(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpstreamModels 按连接参数试拉上游 /v1/models（允许未落盘配置）。
-// POST body: {base_url, api_key, github_token, backend_type}；g 源可按 name 复用已保存 token。
+// 统一经 Registry 分发到对应插件的 ModelCatalog，不再为任何具体源写分支。
 func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
 		return
 	}
 	var in struct {
-		BaseURL     string `json:"base_url"`
-		APIKey      string `json:"api_key"`
-		GithubToken string `json:"github_token"`
-		Name        string `json:"name"`
-		BackendType string `json:"backend_type"`
+		BaseURL     string         `json:"base_url"`
+		APIKey      string         `json:"api_key"`
+		Options     map[string]any `json:"options"`
+		Name        string         `json:"name"`
+		Backend     string         `json:"backend"`
+		BackendType string         `json:"backend_type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
 		return
 	}
-	bt, err := config.NormalizeBackendType(in.BackendType)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
+	backend := in.Backend
+	if backend == "" && in.BackendType != "" {
+		if id, ok := config.BackendTypeToID(in.BackendType); ok {
+			backend = id
+		}
+	}
+	if backend == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing backend"})
 		return
 	}
-	if bt == config.BackendGitHubCopilot {
-		src := config.Source{Name: "__form__", BaseURL: strings.TrimSpace(in.BaseURL), BackendType: bt, GithubToken: strings.TrimSpace(in.GithubToken)}
-		if src.GithubToken == "" {
-			if saved := h.currentSourceByName(strings.TrimSpace(in.Name)); saved != nil && saved.Backend == plugin.BackendGitHubCopilot {
-				src.GithubToken = copilotTokenFromSource(*saved)
-				if src.BaseURL == "" {
-					src.BaseURL = saved.BaseURL
-				}
+	if h.deps.Registry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{Error: "plugin registry not available"})
+		return
+	}
+	p, ok := h.deps.Registry.Get(backend)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "unknown backend", Detail: backend})
+		return
+	}
+	catalog, ok := p.(plugin.ModelCatalog)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errorBody{Error: "backend does not support model listing"})
+		return
+	}
+	src := config.Source{
+		Name:    strings.TrimSpace(in.Name),
+		Backend: backend,
+		BaseURL: strings.TrimSpace(in.BaseURL),
+		APIKey:  strings.TrimSpace(in.APIKey),
+		Options: in.Options,
+	}
+	if src.Options == nil {
+		src.Options = map[string]any{}
+	}
+	// 敏感 options 复用：草稿为空时从同名已保存源继承保留值。
+	if saved := h.currentSourceByName(src.Name); saved != nil {
+		if src.BaseURL == "" {
+			src.BaseURL = saved.BaseURL
+		}
+		for k, v := range saved.Options {
+			if _, exists := src.Options[k]; !exists {
+				src.Options[k] = v
 			}
 		}
-		if src.GithubToken == "" {
-			writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing github_token"})
-			return
-		}
-		h.writeCopilotUpstreamModels(w, r, src)
-		return
-	}
-	if in.BaseURL == "" {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing base_url"})
-		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	var models []anthropic.ModelInfo
-	switch bt {
-	case config.BackendOpenAIChat:
-		ms, err := chatclient.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
-			return
-		}
-		for _, m := range ms {
-			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
-		}
-	case config.BackendOpenAIResponses:
-		ms, err := responsesclient.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
-			return
-		}
-		for _, m := range ms {
-			models = append(models, anthropic.ModelInfo{ID: m.ID, DisplayName: m.DisplayName})
-		}
-	default:
-		ms, err := anthropic.New().ListModels(ctx, in.BaseURL, in.APIKey, nil)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
-			return
-		}
-		models = ms
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
-}
-
-func (h *handler) writeCopilotUpstreamModels(w http.ResponseWriter, r *http.Request, src config.Source) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	models, err := h.copilot.ListModels(ctx, src)
+	models, err := catalog.ListModels(ctx, src)
 	if err != nil {
-		slog.Warn("管理页拉取 Copilot 模型失败", "source", src.Name, "error", err)
 		writeJSON(w, http.StatusBadGateway, errorBody{Error: "fetch upstream models", Detail: err.Error()})
 		return
 	}
-	out := make([]anthropic.ModelInfo, 0, len(models))
+	out := make([]map[string]string, 0, len(models))
 	for _, m := range models {
-		out = append(out, anthropic.ModelInfo{ID: m.ID})
+		out = append(out, map[string]string{"id": m.ID, "display_name": m.DisplayName})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
@@ -745,9 +726,8 @@ func (h *handler) handleSetSourceDisabled(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// handleSourceTest POST {base_url, api_key, github_token, backend_type}：对上游做连通性探测。
-// 通过 GET /v1/models 验证地址可达 + 凭据有效；g 源可按 name 复用已保存 token。
-// 不发真实大模型请求，不消耗 token。
+// handleSourceTest POST {base_url, api_key, options, backend}：对上游做连通性探测。
+// 统一经 Registry 分发到对应插件的 HealthProbe，不为任何具体源写分支。
 func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorBody{Error: "method not allowed"})
@@ -756,7 +736,6 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		BaseURL     string         `json:"base_url"`
 		APIKey      string         `json:"api_key"`
-		GithubToken string         `json:"github_token"`
 		Name        string         `json:"name"`
 		Backend     string         `json:"backend"`
 		BackendType string         `json:"backend_type"`
@@ -767,52 +746,36 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	backend := strings.TrimSpace(in.Backend)
-	if in.Backend == "" {
-		// 兼容旧管理页请求：backend_type 短码。
-		if bt, err := config.NormalizeBackendType(in.BackendType); err == nil {
-			if id, ok := config.BackendTypeToID(bt); ok {
-				backend = id
-			}
+	if backend == "" && in.BackendType != "" {
+		if id, ok := config.BackendTypeToID(in.BackendType); ok {
+			backend = id
 		}
 	}
 	if backend == "" {
-		// 既不是稳定 backend，也不是合法旧短码。
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid backend"})
 		return
 	}
-	baseURL := strings.TrimSpace(in.BaseURL)
-	githubToken := strings.TrimSpace(in.GithubToken)
-	if t, _ := in.Options["github_token"].(string); t != "" {
-		githubToken = strings.TrimSpace(t)
+	opts := in.Options
+	if opts == nil {
+		opts = map[string]any{}
 	}
-	if backend == plugin.BackendGitHubCopilot && githubToken == "" {
-		if src := h.currentSourceByName(strings.TrimSpace(in.Name)); src != nil {
-			githubToken = copilotTokenFromSource(*src)
-			if baseURL == "" {
-				baseURL = src.BaseURL
+	src := config.Source{
+		Name:    "__test__",
+		BaseURL: strings.TrimSpace(in.BaseURL),
+		APIKey:  in.APIKey,
+		Backend: backend,
+		Options: opts,
+	}
+	// 草稿敏感 options 复用：从同名已保存源继承保留值。
+	if saved := h.currentSourceByName(strings.TrimSpace(in.Name)); saved != nil {
+		if src.BaseURL == "" {
+			src.BaseURL = saved.BaseURL
+		}
+		for k, v := range saved.Options {
+			if _, exists := src.Options[k]; !exists {
+				src.Options[k] = v
 			}
 		}
-	}
-	if backend != plugin.BackendGitHubCopilot && baseURL == "" {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing base_url"})
-		return
-	}
-	if backend == plugin.BackendGitHubCopilot && githubToken == "" {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing github_token"})
-		return
-	}
-
-	src := config.Source{
-		Name:        "__test__",
-		BaseURL:     baseURL,
-		APIKey:      in.APIKey,
-		Backend:     backend,
-		Options:     in.Options,
-		GithubToken: githubToken,
-	}
-	if backend == plugin.BackendGitHubCopilot {
-		h.testCopilotSource(w, r, src)
-		return
 	}
 	checker := health.NewWithRegistry(health.DefaultConfig(), h.deps.Registry)
 	result := checker.CheckSource(r.Context(), src)
@@ -840,28 +803,6 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *handler) testCopilotSource(w http.ResponseWriter, r *http.Request, src config.Source) {
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	if _, err := h.copilot.ListModels(ctx, src); err != nil {
-		slog.Warn("管理页测试 Copilot 源失败", "source", src.Name, "error", err)
-		writeJSON(w, http.StatusOK, sourceTestResult{
-			OK:           false,
-			Status:       "unreachable",
-			Message:      err.Error(),
-			ResponseTime: time.Since(start).Milliseconds(),
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, sourceTestResult{
-		OK:           true,
-		Status:       "reachable",
-		Message:      "正常",
-		ResponseTime: time.Since(start).Milliseconds(),
-	})
-}
-
 func (h *handler) currentSourceByName(name string) *config.Source {
 	if name == "" {
 		return nil
@@ -873,15 +814,6 @@ func (h *handler) currentSourceByName(name string) *config.Source {
 		}
 	}
 	return nil
-}
-
-// copilotTokenFromSource 归一化 Copilot 凭据：Config v2 落盘后 token 在
-// options.github_token，过渡期内部构造仍可能放在 GithubToken。
-func copilotTokenFromSource(src config.Source) string {
-	if t, _ := src.Options["github_token"].(string); t != "" {
-		return t
-	}
-	return src.GithubToken
 }
 
 type sourceTestResult struct {
@@ -990,13 +922,9 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(in.Name)
 	baseURL := strings.TrimSpace(in.BaseURL)
 	backend := strings.TrimSpace(in.Backend)
-	if backend == "" {
+	if backend == "" && strings.TrimSpace(in.BackendType) != "" {
 		// 兼容旧管理页请求：backend_type 短码。
-		bt := in.BackendType
-		if bt == "" {
-			bt = "a"
-		}
-		norm, err := config.NormalizeBackendType(bt)
+		norm, err := config.NormalizeBackendType(in.BackendType)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
 			return
@@ -1005,12 +933,13 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 			backend = id
 		}
 	}
-	if name == "" || (baseURL == "" && backend != plugin.BackendGitHubCopilot) {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name or base_url"})
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name"})
 		return
 	}
-	if backend == plugin.BackendGitHubCopilot {
-		baseURL = ""
+	if backend == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing backend"})
+		return
 	}
 	headers := sanitizeSourceHeaders(in.Headers)
 
@@ -1028,16 +957,13 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	next.Sources = make([]config.Source, len(cur.Sources)+1)
 	copy(next.Sources, cur.Sources)
 	options := in.Options
-	if backend == plugin.BackendGitHubCopilot {
-		token := strings.TrimSpace(in.GithubToken)
-		if t, _ := options["github_token"].(string); t != "" {
-			token = strings.TrimSpace(t)
+	// 兼容旧管理页：GithubToken 表单字段归入 options。
+	if gt := strings.TrimSpace(in.GithubToken); gt != "" {
+		if options == nil {
+			options = map[string]any{}
 		}
-		if token != "" {
-			if options == nil {
-				options = map[string]any{}
-			}
-			options["github_token"] = token
+		if _, ok := options["github_token"]; !ok {
+			options["github_token"] = gt
 		}
 	}
 	next.Sources[len(cur.Sources)] = config.Source{

@@ -16,6 +16,10 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+	anthropicplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/anthropic"
+	copilotplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/copilot"
+	openaichatplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/openaichat"
+	openairesponsesplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/openairesponses"
 )
 
 func newTestDeps(t *testing.T) (*Deps, string) {
@@ -52,8 +56,26 @@ func newTestDeps(t *testing.T) (*Deps, string) {
 				holder.Replace(newCfg)
 			}
 		},
+		Registry:         newTestRegistry(t),
+		PromoteSource:    func(name string) error { return nil },
+		SyncModelCatalog: func() error { return nil },
 	}
 	return deps, cfgPath
+}
+
+// newTestRegistry 构造带四个内置插件的注册表，供通用分发测试使用。
+func newTestRegistry(t *testing.T) *plugin.Registry {
+	t.Helper()
+	reg, err := plugin.New(
+		anthropicplugin.New(),
+		openaichatplugin.New(),
+		openairesponsesplugin.New(),
+		copilotplugin.New(),
+	)
+	if err != nil {
+		t.Fatalf("newTestRegistry: %v", err)
+	}
+	return reg
 }
 
 func writeInitialYAML(path string, cfg *config.Config) error {
@@ -217,8 +239,8 @@ func TestAddSourceCopilotIgnoresUpstreamURL(t *testing.T) {
 	}
 
 	got := deps.Holder.Current().Sources[1]
-	if got.BaseURL != "" {
-		t.Fatalf("BaseURL = %q, want empty for endpoint discovery", got.BaseURL)
+	if tok, _ := got.Options["github_token"].(string); tok != "github-token" {
+		t.Fatalf("Options[github_token] = %q, want 'github-token'", tok)
 	}
 }
 
@@ -971,9 +993,10 @@ func TestSourceTestCopilotUsesSavedTokenWithoutBaseURL(t *testing.T) {
 
 	deps, _ := newTestDeps(t)
 	cur := deps.Holder.Current()
+	cur.Sources[0].Backend = "github-copilot"
 	cur.Sources[0].BackendType = config.BackendGitHubCopilot
 	cur.Sources[0].BaseURL = upstream.URL
-	cur.Sources[0].GithubToken = "github-token"
+	cur.Sources[0].Options = map[string]any{"github_token": "github-token"}
 	deps.Holder.Replace(cur)
 	mux := http.NewServeMux()
 	Mount(mux, *deps)
@@ -1006,7 +1029,7 @@ func TestSourceHeadersRoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json",
-		strings.NewReader(`{"name":"h1","base_url":"https://h.example.com","api_key":"k","headers":{"X-Custom":"v1","X-Proxy-Auth":"v2"}}`))
+		strings.NewReader(`{"name":"h1","base_url":"https://h.example.com","api_key":"k","backend":"anthropic","headers":{"X-Custom":"v1","X-Proxy-Auth":"v2"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1032,7 +1055,7 @@ func TestSourceHeadersReservedSkipped(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json",
-		strings.NewReader(`{"name":"h2","base_url":"https://h.example.com","api_key":"k","headers":{"Authorization":"Hijack","X-Foo":"bar"}}`))
+		strings.NewReader(`{"name":"h2","base_url":"https://h.example.com","api_key":"k","backend":"anthropic","headers":{"Authorization":"Hijack","X-Foo":"bar"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
