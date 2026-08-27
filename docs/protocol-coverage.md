@@ -158,6 +158,7 @@
 ### 2026-08-27
 
 - **后端标识统一为稳定插件 ID（破坏性配置变更）**：source 弃用 `backend_type` 单字符短码（a/c/g/r）与 source 级 `github_token`，统一为 `backend: anthropic|openai-chat|openai-responses|github-copilot`；Copilot 凭据落入 `source.options.github_token`。旧形状配置在加载时严格报错（`rejectLegacyConfigShape`），删除旧短码归一化归属；本文现状描述全部改用稳定 backend，历史变更记录保留原短码表述。
+- **观测身份统一为稳定插件 ID**：日志/指标的 `backend` 键只携带已注册插件 ID（缺省补位为 `unknown`，绝不伪造插件身份）；在管理观测按 ID 展示，未知/历史值原样显示不再做 A/C/G/R 短码映射。UpstreamEvent 与观测契约见 `specs/010-plugin-source-architecture/contracts/observability.md`。
 
 ### 2026-08-25
 

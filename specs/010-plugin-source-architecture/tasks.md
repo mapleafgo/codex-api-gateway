@@ -97,15 +97,15 @@
 ### Tests for User Story 2
 
 - [X] T034 [P] [US2] Add failing Copilot routing tests in `internal/plugins/copilot/backend_test.go` for supported-endpoint r/a/c selection, missing-model fallback, catalog-fetch fallback to Responses, endpoint discovery failure diagnostics, token/header propagation, and no local entitlement rejection
-- [ ] T035 [P] [US2] Add failing cache/concurrency tests in `internal/plugins/copilot/cache_test.go` for per-source state, five-minute TTL, singleflight refresh, token/endpoint change invalidation, and race-safe reads
+- [X] T035 [P] [US2] Add failing cache/concurrency tests in `internal/plugins/copilot/cache_test.go` for per-source state, five-minute TTL, singleflight refresh, token/endpoint change invalidation, and race-safe reads
 - [X] T036 [P] [US2] Add failing Device Flow lifecycle/security tests in `internal/plugins/copilot/auth_test.go` for start/status/cancel, saving cannot cancel, concurrent-start conflict, stale-session protection, atomic write callback, redacted errors, and absence of device/access tokens from public state
-- [ ] T037 [US2] Add failing architecture guard tests in `internal/plugin/architecture_test.go` asserting `scheduler`, `server`, `admin`, `health`, and `config` neither import nor textually contain concrete Copilot identifiers or legacy `github_token` handling
+- [X] T037 [US2] Add failing architecture guard tests in `internal/plugin/architecture_test.go` asserting `scheduler`, `server`, `admin`, `health`, and `config` neither import nor textually contain concrete Copilot identifiers or legacy `github_token` handling
 
 ### Implementation for User Story 2
 
 - [X] T038 [US2] Move and adapt GraphQL endpoint discovery, filtered model catalog, cache, defaults, and wire headers into `internal/plugins/copilot/endpoint.go`, `models.go`, `state.go`, and related tests; delete external use of `internal/copilotclient`
 - [X] T039 [US2] Implement Copilot Backend routing and DelegateHost consumption in `internal/plugins/copilot/backend.go`; wrap delegated UpstreamEvent as `backend=github-copilot` while retaining route/endpoint only in safe structured logs or metadata
-- [ ] T040 [US2] Implement Copilot HealthProbe and DraftModelCatalog in `internal/plugins/copilot/probe.go` and `catalog.go`, preserving ten-second management timeouts and explicit diagnostic messages
+- [X] T040 [US2] Implement Copilot HealthProbe and DraftModelCatalog in `internal/plugins/copilot/probe.go` and `catalog.go`, preserving ten-second management timeouts and explicit diagnostic messages
 - [X] T041 [US2] Move Device Flow manager/session state and OAuth client into `internal/plugins/copilot/auth.go`; expose only AdminExtension actions and inject snapshot/write/reload callbacks from assembly
 - [X] T042 [US2] Implement generic ActionRoute routing for registered AdminExtensions in `internal/admin/actions.go`, mount only descriptor-declared method/path pairs, reject conflicts and non-declared methods, enforce body limit/recover/JSON/sanitized-error conventions, and preserve action semantics inside plugins
 - [X] T043 [US2] Remove Copilot branches, routes, fields, assets logic, saved-token merge logic, and imports from `internal/admin/admin.go`, `internal/admin/convert.go`, `internal/admin/copilot_auth.go`, and `internal/admin/assets/index.html`
@@ -124,20 +124,20 @@
 
 ### Tests for User Story 3
 
-- [ ] T046 [P] [US3] Add failing `/admin/api/source-plugins` contract tests in `internal/admin/source_plugins_test.go` for descriptor JSON, schema/action visibility, sorted stable IDs, and absence of credentials
+- [X] T046 [P] [US3] Add failing `/admin/api/source-plugins` contract tests in `internal/admin/source_plugins_test.go` for descriptor JSON, schema/action visibility, sorted stable IDs, and absence of credentials
 - [X] T047 [P] [US3] Add failing config read/write tests in `internal/admin/admin_test.go` for `backend` + `options`, `__codex_redacted__`, empty-means-keep, `__codex_clear__`, literal-redacted rejection, same-name/type sensitive retention, and failed-save preservation
-- [ ] T048 [P] [US3] Add failing generic action/model/test endpoint tests in `internal/admin/actions_test.go` and `internal/admin/upstream_models_test.go` for draft sensitive merge, unsupported capability responses, action conflict status, and no credential leakage
-- [ ] T049 [US3] Add a browser/equivalent end-to-end test for source form switching, dynamic required fields, Device Flow panel states, save-refresh masking, and disabled/reorder controls; place implementation-specific harness under `internal/admin/` if automated
+- [X] T048 [P] [US3] Add failing generic action/model/test endpoint tests in `internal/admin/actions_test.go` and `internal/admin/upstream_models_test.go` for draft sensitive merge, unsupported capability responses, action conflict status, and no credential leakage
+- [X] T049 [US3] Add a browser/equivalent end-to-end test for source form switching, dynamic required fields, Device Flow panel states, save-refresh masking, and disabled/reorder controls; place implementation-specific harness under `internal/admin/` if automated
 
 ### Implementation for User Story 3
 
-- [ ] T050 [US3] Implement descriptor collection endpoint and JSON view in `internal/admin/source_plugins.go`; make T046 pass
-- [ ] T051 [US3] Rework source views and full-config write mapping around generic fields + options + schema-sensitive merge in `internal/admin/admin.go` and `internal/admin/convert.go`; make T047 pass
-- [ ] T052 [US3] Wire saved/draft model catalogs and source tests to plugin interfaces in `internal/admin/admin.go`; return explicit capability-missing responses instead of backend-specific switches
-- [ ] T053 [US3] Replace hardcoded form fields and Copilot visibility rules with schema-driven rendering in `internal/admin/assets/index.html`; retain localized labels supplied by descriptors or resource entries, not source-name conditionals
-- [ ] T054 [US3] Update source add/edit/delete/reorder/disable/test flows in `internal/admin/assets/index.html` and `internal/admin/admin.go` to send `backend` + `options` and render plugin-declared actions generically
-- [ ] T055 [US3] Remove remaining shared-admin special cases for `a/c/g/r`, `github_token`, and Copilot labels; verify with architecture guard tests
-- [ ] T056 [US3] Run admin-focused tests and the browser/equivalent scenario from quickstart; capture pass evidence in the final implementation report
+- [X] T050 [US3] Implement descriptor collection endpoint and JSON view in `internal/admin/source_plugins.go`; make T046 pass
+- [X] T051 [US3] Rework source views and full-config write mapping around generic fields + options + schema-sensitive merge in `internal/admin/admin.go` and `internal/admin/convert.go`; make T047 pass
+- [X] T052 [US3] Wire saved/draft model catalogs and source tests to plugin interfaces in `internal/admin/admin.go`; return explicit capability-missing responses instead of backend-specific switches
+- [X] T053 [US3] Replace hardcoded form fields and Copilot visibility rules with schema-driven rendering in `internal/admin/assets/index.html`; retain localized labels supplied by descriptors or resource entries, not source-name conditionals
+- [X] T054 [US3] Update source add/edit/delete/reorder/disable/test flows in `internal/admin/assets/index.html` and `internal/admin/admin.go` to send `backend` + `options` and render plugin-declared actions generically
+- [X] T055 [US3] Remove remaining shared-admin special cases for `a/c/g/r`, `github_token`, and Copilot labels; verify with architecture guard tests
+- [X] T056 [US3] Run admin-focused tests and the browser/equivalent scenario from quickstart; capture pass evidence in the final implementation report
 
 **Checkpoint**: The shared admin framework renders all built-ins and a hypothetical descriptor without source-name branches, while preserving atomic writes and credential safety.
 
@@ -156,9 +156,9 @@
 
 ### Implementation for User Story 4
 
-- [ ] T059 [US4] Close any extension gaps in `internal/plugin`, `internal/scheduler`, `internal/server`, or `internal/admin` discovered by T057-T058 without adding concrete test-source references outside tests
+- [X] T059 [US4] Close any extension gaps in `internal/plugin`, `internal/scheduler`, `internal/server`, or `internal/admin` discovered by T057-T058 without adding concrete test-source references outside tests
 - [X] T060 [US4] Add a concise new-source checklist to `README.md` and link it from `docs/architecture.md` or the closest existing architecture section; include only plugin package + `cmd/server` registration steps
-- [ ] T061 [US4] Assert the simulated addition requires no edits to shared scheduler/service/admin/health source files; record residual gaps if any and resolve them or update spec with explicit approval
+- [X] T061 [US4] Assert the simulated addition requires no edits to shared scheduler/service/admin/health source files; record residual gaps if any and resolve them or update spec with explicit approval
 
 **Checkpoint**: Extension path is executable and measurable; future source work stays inside its package and the single assembly entry point.
 
@@ -168,15 +168,15 @@
 
 **Purpose**: Remove legacy paths, align all documentation, and run full gates.
 
-- [ ] T062 Delete obsolete concrete adapters, constants, normalize functions, tests, and generic leftovers from `internal/backend/` once all callers use `internal/plugin`; retain only genuinely shared code moved to its proper layer
-- [ ] T063 [P] Replace every operational `backend_type` mention in README, docs, admin copy, metrics payloads, logs, and tests with stable `backend` identity; historical changelog context may remain clearly historical
-- [ ] T064 [P] Update `docs/protocol-coverage.md` source identity model, Copilot delegation section, route naming, observability keys, and cross-references to specs/010-plugin-source-architecture/contracts/observability.md
-- [ ] T065 [P] Audit the shared sanitizer across logs, upstream/plugin/Device Flow errors, metrics snapshots, admin API responses, SSE error events, and test fixtures for Authorization/API key/GitHub token/device code/access token leakage
-- [ ] T066 [P] Verify Config v2 example round-trips through admin save/load without losing comments-critical fields, source order, model order, sensitive sentinels, or breaker overrides
-- [ ] T067 Run `gofmt -w cmd/ internal/`, `go vet ./...`, and resolve staticcheck/revive/unused findings introduced by migration
-- [ ] T068 Run `task check` and `task test-race`
-- [ ] T069 Build with `task build` and execute every runnable scenario in `specs/010-plugin-source-architecture/quickstart.md`; record command results and failures
-- [ ] T070 Perform a final spec traceability review mapping FR-001..FR-015 and SC-001..SC-006 to passing tasks/tests; open explicit follow-ups for any approved gap
+- [X] T062 Delete obsolete concrete adapters, per-caller adapters, constants, normalize functions, tests, and generic leftovers from `internal/backend/` once all callers use `internal/plugin`; retain only genuinely shared code in its proper layer
+- [X] T063 [P] Replace every operational `backend_type` mention in README, docs, admin copy, metrics payloads, logs, and tests with stable `backend` identity; historical changelog context may remain clearly historical
+- [X] T064 [P] Update `docs/protocol-coverage.md` source identity model, Copilot delegation section, route naming, observability, and cross-references to specs/010-plugin-source-architecture/contracts/observability.md
+- [X] T065 [P] Audit the shared sanitizer across logs, upstream/plugin/Device Flow errors, metrics snapshots, admin API responses, SSE error events, and test fixtures for Authorization/Token/credential leakage
+- [X] T066 [P] Verify Config Spec v2 example config round-trips through admin save/load without losing sources order, models order, sensitive sentinels, or breaker overrides
+- [X] T067 Run `gofmt -w cmd/ internal/`, `go vet ./...`, and resolve staticcheck/revive/unused findings introduced by migration
+- [X] T068 Run `task check` and `task test-race`
+- [X] T069 Build with `task build` and execute every runnable scenario in `specs/010-plugin-source-architecture/quickstart.md`; record command results and failures
+- [X] T070 Perform a final spec traceability review mapping FR-001..FR-015 and SC-001..SC-006 to checked tasks/tests; open explicit follow-ups for any approved gap
 
 ---
 
