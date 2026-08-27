@@ -170,6 +170,8 @@ type Source struct {
 	ResponsesCompatFold *bool `koanf:"responses_compat_fold" yaml:"responses_compat_fold,omitempty"`
 }
 
+// SupportsWebSearchValue 返回该源是否启用 hosted web_search 的生效值：
+// 显式配置优先，未配置时按稳定 backend ID 给默认。
 func (s Source) SupportsWebSearchValue() bool {
 	if s.SupportsWebSearch != nil {
 		return *s.SupportsWebSearch

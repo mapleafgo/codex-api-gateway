@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 )
@@ -169,6 +170,63 @@ func TestClientConcurrentDirectoryReads(t *testing.T) {
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
+// TestClientConcurrentMissRefreshFetchesOnce 验证空缓存上的并发 miss 经 singleflight
+// 折叠为一次上游请求：N 个 goroutine 同时刷新，hits 必须为 1。
+func TestClientConcurrentMissRefreshFetchesOnce(t *testing.T) {
+	var hits atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-release // 持住首个请求，确保其余 goroutine 在缓存未就绪时并发入场
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(modelsPayload))
+	}))
+	defer srv.Close()
+
+	client := NewWithHTTP(srv.Client(), srv.URL)
+	ctx := context.Background()
+	src := tokenSource("singleflight", "token", srv.URL)
+
+	const workers = 16
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			dir, err := client.Directory(ctx, src)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if len(dir.Models) != 1 || dir.Models[0].ID != "m" {
+				errs <- &unexpectedDirectory{dir: dir}
+			}
+		}()
+	}
+	close(start)
+
+	deadline := time.After(5 * time.Second)
+	for hits.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("no upstream request observed")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent miss: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (singleflight)", got)
 	}
 }
 
