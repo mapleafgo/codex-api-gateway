@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
@@ -14,14 +15,31 @@ import (
 // Plugin 是 GitHub Copilot 源插件：endpoint 发现、模型目录、Device Flow 认证
 // 与按模型能力的 r/a/c 协议路由全部归属本包。
 type Plugin struct {
-	b *Backend
+	b    *Backend
+	auth *authManager
 }
 
 // New 构造 Copilot 源插件，组合已有的三个 Backend 做委托。
 func New() *Plugin {
-	return &Plugin{
+	p := &Plugin{
 		b: NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
 	}
+	p.auth = newAuthManager(NewAuthClient(nil, "", ""), plugin.AdminCallbacks{})
+	return p
+}
+
+// InjectCallbacks 由共享 admin 在 Mount 时注入配置读写回调。
+func (p *Plugin) InjectCallbacks(cb plugin.AdminCallbacks) {
+	p.auth.setCallbacks(cb)
+}
+
+// InvokeAction 实现 AdminExtension：分发 device-flow 等管理动作。
+func (p *Plugin) InvokeAction(ctx context.Context, req plugin.ActionRequest) (plugin.ActionResult, error) {
+	switch req.ActionID {
+	case "device-flow":
+		return p.invokeDeviceFlow(ctx, req)
+	}
+	return plugin.ActionResult{Code: http.StatusNotFound, Error: "unknown action"}, nil
 }
 
 // Descriptor 返回插件的唯一身份与能力声明。
@@ -32,6 +50,17 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Summary:      "通过 GitHub Copilot API 按模型能力委托 Responses / Messages / Chat 协议",
 		Capabilities: []plugin.Capability{plugin.CapabilityResponsesPassthrough, plugin.CapabilityAnthropicMessages, plugin.CapabilityChatCompletions},
 		Streaming:    plugin.StreamingConverted,
+		Actions: []plugin.Action{
+			{
+				ID: "device-flow", Label: "GitHub Device Flow",
+				Kind: plugin.ActionKindDeviceCodeStatus,
+				Routes: []plugin.ActionRoute{
+					{ID: "start", Method: "POST", Path: "/admin/api/copilot/auth/start"},
+					{ID: "status", Method: "GET", Path: "/admin/api/copilot/auth/status"},
+					{ID: "cancel", Method: "POST", Path: "/admin/api/copilot/auth/cancel"},
+				},
+			},
+		},
 		Schema: []plugin.Field{
 			{
 				Name: "github_token", Label: "GitHub Token", Type: plugin.FieldTypePassword,
@@ -123,3 +152,5 @@ func (n normalizeBackend) Execute(
 
 var _ plugin.Backend = normalizeBackend{}
 var _ plugin.HealthProbe = (*Plugin)(nil)
+var _ plugin.AdminExtension = (*Plugin)(nil)
+var _ plugin.CallbackInjector = (*Plugin)(nil)

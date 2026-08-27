@@ -21,7 +21,6 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/anthropic"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	copilot "github.com/mapleafgo/codex-api-gateway/internal/plugins/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/health"
 	"github.com/mapleafgo/codex-api-gateway/internal/metrics"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
@@ -66,9 +65,6 @@ type Deps struct {
 
 type handler struct {
 	deps Deps
-	// copilot 只服务管理页旁路的目录/连通性探测，不进入 /v1/* 转发路径。
-	// auth 唯一活跃 Copilot Device Flow 会话（管理页旁路）。
-	auth *copilotAuthManager
 	// writeMu 序列化配置写回，避免并发保存互相覆盖。
 	writeMu sync.Mutex
 }
@@ -79,11 +75,6 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	h := &handler{
 		deps: deps,
 	}
-	h.auth = newCopilotAuthManager(
-		copilot.NewAuthClient(nil, "", ""),
-		func() *config.Config { return h.deps.Holder.Current() },
-		h.saveCopilotSource,
-	)
 	// 用 recoverMiddleware 包装，handler 内 panic 不会拖垮整个进程。
 	wrap := func(name string, fn http.HandlerFunc) http.HandlerFunc {
 		return recoverMiddleware(name, fn)
@@ -103,13 +94,12 @@ func Mount(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/admin/api/sources/reorder", wrap("source-reorder", h.handleReorderSources))
 	mux.HandleFunc("/admin/api/sources", wrap("source-add", h.handleAddSource))
 	mux.HandleFunc("/admin/api/sources/delete", wrap("source-delete", h.handleDeleteSource))
-	mux.HandleFunc("/admin/api/copilot/auth/start", wrap("copilot-auth-start", h.handleCopilotAuthStart))
-	mux.HandleFunc("/admin/api/copilot/auth/status", wrap("copilot-auth-status", h.handleCopilotAuthStatus))
-	mux.HandleFunc("/admin/api/copilot/auth/cancel", wrap("copilot-auth-cancel", h.handleCopilotAuthCancel))
 	mux.HandleFunc("/admin/api/models/reorder", wrap("model-reorder", h.handleReorderModels))
 	mux.HandleFunc("/admin/api/models/add", wrap("model-add", h.handleAddModel))
 	mux.HandleFunc("/admin/api/models/delete", wrap("model-delete", h.handleDeleteModel))
 	mux.HandleFunc("/admin/api/version", wrap("version", h.handleVersion))
+
+	h.mountActions(mux, wrap)
 }
 
 // recoverMiddleware 捕获 handler panic，记录日志后返回 500。
