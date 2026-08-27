@@ -70,14 +70,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T024 [P] [US1] Add failing table-driven config acceptance tests in `internal/config/config_test.go` covering four valid built-in configs and every FR-003/FR-004 rejection case from contracts/config-v2.md
-- [ ] T025 [P] [US1] Add failing per-plugin option validation tests in `internal/plugins/anthropic/options_test.go`, `internal/plugins/openaichat/options_test.go`, `internal/plugins/openairesponses/options_test.go`, and `internal/plugins/copilot/options_test.go`
-- [ ] T026 [P] [US1] Add failing protocol smoke tests in each built-in plugin package proving Execute delegates to the existing conversion/passthrough engine and preserves Responses SSE event order
+- [X] T024 [P] [US1] Add failing table-driven config acceptance tests in `internal/config/config_test.go` covering four valid built-in configs and every FR-003/FR-004 rejection case from contracts/config-v2.md
+- [X] T025 [P] [US1] Add failing per-plugin option validation tests in `internal/plugins/anthropic/options_test.go`, `internal/plugins/openaichat/options_test.go`, `internal/plugins/openairesponses/options_test.go`, and `internal/plugins/copilot/options_test.go`
+- [X] T026 [P] [US1] Add failing protocol smoke tests in each built-in plugin package proving Execute delegates to the existing conversion/passthrough engine and preserves Responses SSE event order
 
 ### Implementation for User Story 1
 
 - [X] T027 [US1] Implement Anthropic SourcePlugin with stable ID `anthropic`, options schema `default_max_tokens` / `cache_enabled`, RequestPreparer, Backend, ModelCatalog, HealthProbe, and normalized upstream token reporting in `internal/plugins/anthropic/` (schema+options 归一化、RequestPreparer、ModelCatalog、HealthProbe 均已落地)
-- [ ] T028 [US1] Implement OpenAI Chat SourcePlugin with stable ID `openai-chat`, common connection fields plus Chat-specific options, RequestPreparer semantics, Backend, ModelCatalog, HealthProbe, and web-search shape handling in `internal/plugins/openaichat/`
+- [X] T028 [US1] Implement OpenAI Chat SourcePlugin with stable ID `openai-chat`, common connection fields plus Chat-specific options, RequestPreparer semantics, Backend, ModelCatalog, HealthProbe, and web-search shape handling in `internal/plugins/openaichat/`
 - [X] T029 [US1] Implement OpenAI Responses SourcePlugin with stable ID `openai-responses`, passthrough streaming kind, PrepareUpstreamBody-backed RequestPreparer, Backend, ModelCatalog, HealthProbe, and raw passthrough event semantics in `internal/plugins/openairesponses/`
 - [X] T030 [US1] Create GitHub Copilot SourcePlugin boundary with stable ID `github-copilot`, options schema for `github_token`, endpoint/base-url rules, config validation, absorbed client state, and placeholder-safe capability declarations in `internal/plugins/copilot/`; full routing lands in US2
 - [X] T031 [US1] Register exactly these four plugins and inject one immutable Registry through assembly in `cmd/server/main.go`; remove hardcoded scheduler backend construction

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +24,118 @@ func (s *stubValidator) ValidateSource(src Source) error {
 type stubError struct{ src string }
 
 func (e *stubError) Error() string { return "stub: source " + e.src }
+
+// registryStub 模拟真实 Registry：只认已知 backend ID，拒绝 schema 外 option。
+type registryStub struct {
+	known   map[string]bool
+	schemas map[string]map[string]bool
+}
+
+func newRegistryStub() *registryStub {
+	return &registryStub{
+		known: map[string]bool{
+			"anthropic": true, "openai-chat": true,
+			"openai-responses": true, "github-copilot": true,
+		},
+		schemas: map[string]map[string]bool{
+			"anthropic":        {"default_max_tokens": true, "cache_enabled": true},
+			"openai-chat":      {},
+			"openai-responses": {},
+			"github-copilot":   {"github_token": true},
+		},
+	}
+}
+
+func (r *registryStub) ValidateSource(src Source) error {
+	if !r.known[src.Backend] {
+		return fmt.Errorf("source %q: unknown backend %q; registered backends: anthropic, github-copilot, openai-chat, openai-responses", src.Name, src.Backend)
+	}
+	for k := range src.Options {
+		if !r.schemas[src.Backend][k] {
+			return fmt.Errorf("source %q: options.%s: not declared in plugin schema", src.Name, k)
+		}
+	}
+	return nil
+}
+
+// TestLoadFourValidBuiltins 验证四个内置源类型的合法配置均可加载。
+func TestLoadFourValidBuiltins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+sources:
+  - name: anthropic-official
+    backend: anthropic
+    base_url: https://api.anthropic.com
+    api_key: sk-ant-key
+    options:
+      default_max_tokens: 16384
+      cache_enabled: true
+  - name: chat-source
+    backend: openai-chat
+    base_url: https://api.openai.com
+    api_key: sk-key
+  - name: responses-source
+    backend: openai-responses
+    base_url: https://api.openai.com
+    api_key: sk-key
+  - name: copilot
+    backend: github-copilot
+    options:
+      github_token: gho_token
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := newRegistryStub()
+	cfg, err := LoadWithValidator(path, v)
+	if err != nil {
+		t.Fatalf("LoadWithValidator: %v", err)
+	}
+	if len(cfg.Sources) != 4 {
+		t.Fatalf("Sources = %d, want 4", len(cfg.Sources))
+	}
+	want := []string{"anthropic", "openai-chat", "openai-responses", "github-copilot"}
+	for i, w := range want {
+		if got := cfg.Sources[i].Backend; got != w {
+			t.Errorf("Sources[%d].Backend = %q, want %q", i, got, w)
+		}
+	}
+}
+
+// TestLoadRejectsUnregisteredBackend 验证注入 registry 时未注册 backend 被拒绝。
+func TestLoadRejectsUnregisteredBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: bad
+    backend: fake-provider
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWithValidator(path, newRegistryStub()); err == nil {
+		t.Fatal("expected error for unregistered backend, got nil")
+	}
+}
+
+// TestLoadRejectsSchemaForeignOption 验证注入 registry 时 schema 外 option 被拒绝。
+func TestLoadRejectsSchemaForeignOption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+sources:
+  - name: anthropic-official
+    backend: anthropic
+    options:
+      bogus_field: 123
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWithValidator(path, newRegistryStub()); err == nil {
+		t.Fatal("expected error for schema-foreign option, got nil")
+	}
+}
 
 // TestLoadWithValidatorParsesV2Source 验证 Config v2 的 backend + options 解析，
 // 并把校验委托给注入的 validator。

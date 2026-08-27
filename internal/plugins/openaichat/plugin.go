@@ -5,7 +5,9 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/chatclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/chatconvert"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
@@ -35,8 +37,23 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 // ValidateSource 校验 OpenAI Chat 源配置。当前阶段无专属必填项。
 func (p *Plugin) ValidateSource(config.Source) error { return nil }
 
-// Backend 返回协议适配后端。
-func (p *Plugin) Backend() plugin.Backend { return p.b }
+// Backend 返回带 RequestPreparer 的协议适配后端。
+func (p *Plugin) Backend() plugin.Backend { return chatPluginBackend{p.b} }
+
+// chatPluginBackend 在 Chat 后端上承载 RequestPreparer：预检 dry-run
+// Responses -> Chat 转换，不发起上游请求。
+type chatPluginBackend struct {
+	*backend.ChatBackend
+}
+
+func (chatPluginBackend) PrepareRequest(_ context.Context, req *plugin.PrepareRequestInput) error {
+	params, err := convert.DecodeResponseNewParams(req.RawBody)
+	if err != nil {
+		return err
+	}
+	_, err = chatconvert.ToChat(params, "")
+	return err
+}
 
 // ListModels 拉取 Chat 兼容 /v1/models 目录。
 func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Model, error) {
@@ -60,3 +77,4 @@ func (p *Plugin) Probe(ctx context.Context, src config.Source) plugin.ProbeResul
 }
 
 var _ plugin.HealthProbe = (*Plugin)(nil)
+var _ plugin.RequestPreparer = chatPluginBackend{}
