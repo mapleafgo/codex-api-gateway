@@ -8,76 +8,77 @@ Codex CLI 只能走 OpenAI Responses API。本网关在本地提供 Responses �
 
 支持四类上游（可混排故障转移）：
 
-| `backend_type` | 上游 | 路径 |
+| `backend`（插件 ID） | 上游 | 路径 |
 |---|---|---|
-| `a`（默认） | Anthropic Messages | Responses → Messages → Responses SSE |
-| `c` | OpenAI Chat Completions | Responses → Chat → Responses SSE |
-| `r` | OpenAI Responses 透传 | 最小改写透传 + 出站 model 别名回写 |
-| `g` | GitHub Copilot | Zed 式认证 + 模型目录路由 → r/a/c |
+| `anthropic` | Anthropic Messages | Responses → Messages → Responses SSE |
+| `openai-chat` | OpenAI Chat Completions | Responses → Chat → Responses SSE |
+| `openai-responses` | OpenAI Responses 透传 | 最小改写透传 + 出站 model 别名回写 |
+| `github-copilot` | GitHub Copilot | Zed 式认证 + 模型目录路由 → r/a/c |
 
 ```text
 Codex CLI
    │  POST /v1/responses  (OpenAI Responses 格式)
    ▼
 codex-api-gateway  ── 协议适配 / 透传 + 多源路由 + 熔断
-   ├─ a → Anthropic Messages (/v1/messages, SSE)
-   ├─ c → OpenAI Chat Completions (/chat/completions, SSE)
-   ├─ r → OpenAI Responses 透传 (/responses, SSE)
-   └─ g → GitHub Copilot (按模型路由 /responses、/v1/messages、/chat/completions)
+   ├─ anthropic → Anthropic Messages (/v1/messages, SSE)
+   ├─ openai-chat → OpenAI Chat Completions (/chat/completions, SSE)
+   ├─ openai-responses → OpenAI Responses 透传 (/responses, SSE)
+   └─ github-copilot → GitHub Copilot (按模型目录路由到 r/a/c)
 ```
 
 
 
-### OpenAI Chat 兼容上游（backend_type: c）
+### OpenAI Chat 兼容上游（`backend: openai-chat`）
 
-除默认 Anthropic（`a`）外，源可配置为 OpenAI Chat Completions 兼容后端（`c`）。Responses 透传见下一节 `r`：
+除默认 Anthropic（`anthropic`）外，源可配置为 OpenAI Chat Completions 兼容后端（`openai-chat`）。Responses 透传见下一节 `openai-responses`：
 
 ```yaml
 sources:
   - name: openai-compat
     base_url: https://api.openai.com/v1   # 填 OpenAI SDK 的 base_url，不要带 /chat/completions
     api_key: ${OPENAI_API_KEY}
-    backend_type: c
+    backend: openai-chat
     model_map: { gpt-5: gpt-4o }
     default_model: gpt-4o
 ```
 
 `base_url` 示例：OpenAI `…/v1`、DeepSeek `https://api.deepseek.com`、智谱 `https://open.bigmodel.cn/api/paas/v4`、火山 `https://ark.cn-beijing.volces.com/api/v3`、百炼 `https://dashscope.aliyuncs.com/compatible-mode/v1`。客户端仍只访问网关的 `/v1/responses`。
 
-### OpenAI Responses 透传上游（backend_type: r）
+### OpenAI Responses 透传上游（`backend: openai-responses`）
 
-当上游本身提供 OpenAI Responses API 时，配置 `backend_type: r`：网关映射 model、强制 stream，
-并将上游 SSE 转回客户端（出站 `response.model` 回写为客户端模型别名）。可与 a/c 混排故障转移。
+当上游本身提供 OpenAI Responses API 时，配置 `backend: openai-responses`：网关映射 model、强制 stream，
+并将上游 SSE 转回客户端（出站 `response.model` 回写为客户端模型别名）。可与 anthropic / openai-chat 混排故障转移。
 
 ```yaml
 sources:
   - name: openai-responses
     base_url: https://api.openai.com/v1
     api_key: ${OPENAI_API_KEY}
-    backend_type: r
+    backend: openai-responses
     model_map: { gpt-5: gpt-5 }
     default_model: gpt-5
 ```
 
-### GitHub Copilot 上游（backend_type: g）
+### GitHub Copilot 上游（`backend: github-copilot`）
 
-当源是 GitHub Copilot 时，配置 `backend_type: g`。网关参照 Zed：直接使用 GitHub OAuth token 作为 Bearer，不交换或刷新 Copilot session token；缺省 `base_url` 时在首个请求通过 GitHub GraphQL 发现 Copilot endpoint，失败回退 `https://api.githubcopilot.com`。模型按 `/models` 目录的 `supported_endpoints` 以 `r > a > c` 路由，`billing.restricted_to` 不做本地筛选，权限由 Copilot 上游裁决。
+当源是 GitHub Copilot 时，配置 `backend: github-copilot`。网关参照 Zed：直接使用 GitHub OAuth token 作为 Bearer，不交换或刷新 Copilot session token；缺省 `base_url` 时在首个请求通过 GitHub GraphQL 发现 Copilot endpoint，失败回退 `https://api.githubcopilot.com`。模型按 `/models` 目录的 `supported_endpoints` 以 `r > a > c` 路由，`billing.restricted_to` 不做本地筛选，权限由 Copilot 上游裁决。
 
 ```yaml
 sources:
   - name: copilot
-    backend_type: g
-    github_token: ${COPILOT_GITHUB_TOKEN}
+    backend: github-copilot
+    options:
+      github_token: ${COPILOT_GITHUB_TOKEN}
     default_model: gpt-5.3-codex
     # base_url: https://api.githubcopilot.com  # 可选固定 endpoint，跳过 GraphQL 发现
 ```
 
-管理页提供 Zed 式 GitHub Device Flow 授权：新增源选择 `GitHub Copilot` 后立即展示用户码和授权地址；已有供应商卡片可点击「重新授权」更新凭据。在浏览器完成用户码确认后，token 会写入对应 `g` 源并热生效；device code 与 access token 不会出现在响应、日志或事件流中。同一实例同一时间只有一个活跃授权会话。
+管理页提供 Zed 式 GitHub Device Flow 授权：新增源选择 `GitHub Copilot` 后立即展示用户码和授权地址；已有供应商卡片可点击「重新授权」更新凭据。在浏览器完成用户码确认后，token 会写入对应 `github-copilot` 源并热生效；device code 与 access token 不会出现在响应、日志或事件流中。同一实例同一时间只有一个活跃授权会话。
 
 ## 功能
 
-- **多后端协议适配**：`a` Anthropic Messages 直转、`c` Chat Completions 转换、`r` Responses 透传、`g` GitHub Copilot 模型路由；客户端始终只走 `/v1/responses` SSE。
-- **多源路由**：多源按配置顺序优先级，运行时重建；a/c/g/r 可混排。
+- **多后端协议适配**：`anthropic` 直转、`openai-chat` 转换、`openai-responses` 透传、`github-copilot` 模型路由；客户端始终只走 `/v1/responses` SSE。
+- **多源路由**：多源按配置顺序优先级，运行时重建；四种源可混排。
 - **手动停用源**：管理页一键停用/启用单源，即时写盘并热重载；停用源不参与调度，仍保留在配置与观测中。
 - **首字节前故障转移**：上游未开始流式输出前可切换到下一个源；出流后仅收到状态事件（`response.created`/`in_progress`）、未产出任何内容事件（空响应）时仍可切换，一旦产出首个内容事件即锁定该源。
 - **断路器**：失败降级 → 熔断 → 冷却 → 半开探测 → 恢复，逐源可覆盖参数。
@@ -356,7 +357,7 @@ sources:
 
 ### `POST /v1/responses`
 
-核心转发入口。请求体为 OpenAI Responses API 格式；按命中源的 `backend_type` 走 a/c/g/r 适配或透传，响应始终为 OpenAI Responses SSE 流。
+核心转发入口。请求体为 OpenAI Responses API 格式；按命中源的 `backend` 插件 ID 从注册表取对应 Backend 适配或透传，响应始终为 OpenAI Responses SSE 流。
 
 ### `GET /v1/models`
 

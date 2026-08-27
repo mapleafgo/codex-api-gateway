@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-本仓库是 Go 服务 `codex-api-gateway`，把客户端 OpenAI Responses 请求适配到多类上游（`backend_type`：`a` Anthropic / `c` Chat Completions / `r` Responses 透传）。
+本仓库是 Go 服务 `codex-api-gateway`，把客户端 OpenAI Responses 请求按插件的 `backend` 适配到多类上游（`anthropic` / `openai-chat` / `openai-responses`，以及独立插件 `github-copilot`）。
 
 - `cmd/server/`：服务入口、HTTP 路由和启动逻辑。
 - `internal/backend/`：上游适配器（Anthropic / Chat / ResponsesBackend）。
@@ -36,7 +36,7 @@
 两条贯穿全局的关键路径：
 
 - **配置生效路径（单一真相源）**：磁盘 `config.yaml` → `config.Load` → `holder.Replace` → `scheduler.Reload`。管理页保存与外部编辑（vim 等）都走写盘 → fsnotify → 这条链路，不允许存在第二条直接改运行时配置的入口。
-- **请求转发路径**：`/v1/responses` → `server.handleResponses` → `scheduler.ExecuteGeneric` → 按源 `backend_type` 选 Backend（a/c/r）→ 上游 → Responses SSE。失败必须以 error / SSE 错误事件返回客户端，不得 panic 逃逸。
+- **请求转发路径**：`/v1/responses` → `server.handleResponses` → `scheduler.ExecuteGeneric` → 按源 `backend` 从插件注册表选 Backend → 上游 → Responses SSE。失败必须以 error / SSE 错误事件返回客户端，不得 panic 逃逸。
 
 ## 协议转换职责边界（架构基础）
 

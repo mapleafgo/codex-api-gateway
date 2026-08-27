@@ -237,3 +237,9 @@ US1 must precede US2 because Copilot's plugin boundary and config validation lan
 - Every implementation task above has a corresponding focused or shared test task.
 - Do not mark US2 complete while `internal/backend` or shared admin still contains Copilot facts.
 - Do not mark the feature complete until `task check`, `task test-race`, `task build`, architecture guards, browser-equivalent admin verification, and quickstart scenarios pass.
+
+## Phase 8: Convergence
+
+- [x] T071 扩展三个非 Copilot 内置插件（anthropic / openai-chat / openai-responses）的 Descriptor Schema，显式声明 `base_url`(Target=base_url, Required) 与 `api_key`(Target=api_key) 连接字段；Copilot 不声明连接字段（凭据由 Device Flow 提供） per FR-009, US3/AC1-2 (missing)
+
+**目的**：前端管理页要纯 Descriptor 驱动渲染源表单（T053），必须知道每种源需要哪些连接字段。当前 Descriptor 只声明 option 字段，前端无法判断字段可见性，导致 index.html 中 105 处 `backend_type`/`copilot` 硬编码特判。扩展后前端统一渲染 Descriptor Schema 声明的所有字段（含 target=base_url/api_key），不再按源名或短码分支。

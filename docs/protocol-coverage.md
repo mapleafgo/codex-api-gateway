@@ -1,8 +1,8 @@
 # Protocol Coverage Matrix
 
-日期: 2026-08-25（a Anthropic + c Chat + g GitHub Copilot + r Responses 透传；usage details 已支持，structured output 已移除）
+日期: 2026-08-27（anthropic + openai-chat + openai-responses + github-copilot；usage details 已支持，structured output 已移除）
 
-本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend_type: a`）**；`c` / `g` / `r` 见专节，**各路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
+本文是协议覆盖的**唯一真相源（SoT）**。默认表格描述 **Responses → Anthropic Messages（`backend: anthropic`）**；`openai-chat` / `openai-responses` / `github-copilot` 见专节，**各路径不共享**字段状态行。后续任何协议补齐都必须同步更新本文。
 
 ## 状态定义
 
@@ -17,17 +17,17 @@
 
 ## 关注面与产品边界
 
-本网关面向 **Codex CLI → 多上游**（`a` / `c` / `g` / `r`），不做 OpenAI 全量 Responses 平台，无 session 运行时：
+本网关面向 **Codex CLI → 多上游**（`anthropic` / `openai-chat` / `openai-responses` / `github-copilot`），不做 OpenAI 全量 Responses 平台，无 session 运行时：
 
 - 客户端**自带完整 `input`** 回灌；网关不做 session store。
-- **a**：`previous_response_id` 非空时 WARN + 忽略；Responses ↔ Anthropic **直转**。
-- **c / r**：见下列专节；r 可透传 `previous_response_id`，网关仍不代补历史。
+- **anthropic**：`previous_response_id` 非空时 WARN + 忽略；Responses ↔ Anthropic **直转**。
+- **openai-chat / openai-responses**：见下列专节；openai-responses 可透传 `previous_response_id`，网关仍不代补历史。
 
-### OpenAI Chat Completions 上游（`backend_type: c`）
+### OpenAI Chat Completions 上游（`backend: openai-chat`）
 
-客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: c` 时，网关经 `chatconvert` → Chat Completions 流式上游 → `chatstreamconv` 回写 Responses SSE。
+客户端仍只走 `/v1/responses`。当 source 配置 `backend: openai-chat` 时，网关经 `chatconvert` → Chat Completions 流式上游 → `chatstreamconv` 回写 Responses SSE。
 
-详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend_type: c）」**。摘要：
+详细字段级状态见本文专节 **「Chat 后端覆盖矩阵（backend: openai-chat）」**。摘要：
 
 - **已支持（A+B+透传收口）**：文本多轮、工具环、采样、`function.strict`/`service_tier`/`metadata`/`store`/`moderation`/`reasoning.effort`→`reasoning_effort`、**`reasoning_content` 出站+入站回灌（有损）**、`top_logprobs`（含出站 logprobs）、`stream_options.include_obfuscation`、usage（含 details）、`finish_reason` 终态。
 - **明确降级**：reasoning **无 encrypted/signature**（明文 `reasoning_content` 有损映射）；`text.verbosity`/`safety_identifier`/`prompt_cache_key` 为 Responses 专有字段，Chat 无顶层等价，**DEBUG + 丢弃**（2026-08-01）；hosted 为 **function 化有损**；file_search/computer/image_generation 历史 **WARN 跳过**；`compaction` item 密文不可解读，**WARN 丢弃**（Codex 非 OpenAI provider 下走 local 压缩，摘要以明文 user 消息回灌，不走 compaction item）；compaction_trigger 历史 **丢弃**，`mcp_list_tools` 历史**只注入工具声明**。`input_image` 图片按 opencode 形状透传为 `image_url`；`input_file` / 仅 `file_id` 的图片属协议不可映射，转换报错。
@@ -36,31 +36,31 @@
 - Anthropic 无等价能力的字段：明确错误 / WARN + 丢弃 / echo-only，禁止把整段 JSON 灌进 system。
 
 
-### OpenAI Responses 透传上游（`backend_type: r`）
+### OpenAI Responses 透传上游（`backend: openai-responses`）
 
-客户端仍只走 `/v1/responses`。当 source 配置 `backend_type: r` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
+客户端仍只走 `/v1/responses`。当 source 配置 `backend: openai-responses` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
 - **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；完全明文的 `agent_message` 按原位置折为 assistant `message`（兼容不认识 Codex 扩展的上游），含 `encrypted_content` 时保持原生 `agent_message` 交给上游；其余键原样保留（含 `previous_response_id`、tools、include 等）
 - **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
 - **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
-- **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend_type` 恒为 `r`（metrics 禁止空串）
+- **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend` 恒为 `openai-responses`（metrics 禁止空串）
 - **WARN 收口**：配置含**启用中** r 源时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」；`previous_response_id` 打 INFO「透传上游，网关不代补会话」
 - **与 a/c 关系**：并行 Backend，**不共享** a/c 字段矩阵；不经 Chat/Anthropic 转换
 - **DeepSeek 适配**：DeepSeek 的 Anthropic 兼容端点（`/anthropic/v1/messages`）对显式 `type:"custom"` 工具返回 400（`unknown variant 'custom'`）；a 路径 client tool 已统一省略 type（官方缺省 `name + description + input_schema` 形态），天然兼容，不再需要 `tools_type` 配置
 
 字段级状态不复用 a/c 表：r 路径以「形状透传、结果归上游」为准；几乎全部请求/事件字段对网关为 passthrough，语义由上游决定。
 
-### GitHub Copilot 上游（`backend_type: g`）
+### GitHub Copilot 上游（`backend: github-copilot`）
 
-客户端仍只走 `/v1/responses`。`g` 是 Copilot 专用认证、模型目录与协议分发层；认证参照 Zed 当前实现：`source.github_token` 直接作为 Bearer token，不交换 Copilot session token。
+客户端仍只走 `/v1/responses`。`github-copilot` 是 Copilot 专用认证、模型目录与协议分发层；认证参照 Zed 当前实现：`source.options.github_token` 直接作为 Bearer token，不交换 Copilot session token。
 
 - **endpoint**：缺省 `base_url` 时向 `https://api.github.com/graphql` 查询 `viewer.copilotEndpoints.api` 并缓存于 per-source 状态；失败 WARN 后回退 `https://api.githubcopilot.com` 并缓存该结果。显式 `source.base_url` 优先，跳过发现。
 - **模型目录**：GET `<endpoint>/models`，按 Zed 条件筛选 `model_picker_enabled == true`、`capabilities.type == "chat"`、`policy == null || policy.state == "enabled"`；结果带 `supported_endpoints`，5 分钟 TTL + singleflight，单条坏数据 WARN 后跳过。`billing.restricted_to` 不参与本地筛选，套餐/权限错误由 Copilot 上游裁决。
 - **路由**：按解析后的 model 查目录，优先级 `/responses` → `r`、`/v1/messages` → `a`、`/chat/completions` → `c`。模型不在目录、目录失败或端点无交集时默认 `r`。实际协议行为复用被委托的 a/c/r 专节；`g` 不新增重复字段矩阵。
 - **wire header**：Bearer token、`Content-Type: application/json`、`Editor-Version: Zed/0.1.0`、`X-GitHub-Api-Version: 2025-10-01`；不注入 VSCode 伪装头。`a` 路径按 Copilot Messages 形态省略 `x-api-key` 与 `anthropic-version`。
 - **流式与扩展**：仅流式；请求已含顶层 `contextTier` 时 r 路径 map 透传保留，缺省不注入 `long_context`。a/c 无该顶层 wire 槽位，按各自转换矩阵处理，网关仍不代补 `long_context`。
-- **观测**：对客户端/指标呈现 `backend_type=g`；实际 route（r/a/c）与 endpoint 记录在结构化日志。token 禁止进入日志、metrics 或管理页响应。
-- **管理页授权**：`/admin/api/copilot/auth/start|status|cancel` 提供 Zed 式 GitHub Device Flow；同一实例仅一个活跃会话，授权成功后按 FR-006 新增或原地更新同名 `g` 源，凭据只落盘不回显。
+- **观测**：对客户端/指标呈现 `backend=github-copilot`；实际 route（r/a/c）与 endpoint 记录在结构化日志。token 禁止进入日志、metrics 或管理页响应。
+- **管理页授权**：`/admin/api/copilot/auth/start|status|cancel` 提供 Zed 式 GitHub Device Flow；同一实例仅一个活跃会话，授权成功后按 FR-006 新增或原地更新同名 `github-copilot` 源，凭据只落盘不回显。
 
 ## 架构基础（与 AGENTS.md 对齐）
 
@@ -154,6 +154,10 @@
   回程（server_tool_use(code_execution) / code_execution_tool_result）按 skip 处理，不中断流。
 
 ## 变更记录
+
+### 2026-08-27
+
+- **后端标识统一为稳定插件 ID（破坏性配置变更）**：source 弃用 `backend_type` 单字符短码（a/c/g/r）与 source 级 `github_token`，统一为 `backend: anthropic|openai-chat|openai-responses|github-copilot`；Copilot 凭据落入 `source.options.github_token`。旧形状配置在加载时严格报错（`rejectLegacyConfigShape`），删除旧短码归一化归属；本文现状描述全部改用稳定 backend，历史变更记录保留原短码表述。
 
 ### 2026-08-25
 
@@ -277,11 +281,11 @@
 - 移除 `additional_tools` input item 转换分支（网关统一 `use_responses_lite=false`）。
 - 网关级指令注入从 `system_suffix` 改为 config 同级 `base_instructions.md`（经 `/v1/models` 由 Codex 客户端注入，prompt cache 更友好）。
 
-## Chat 后端覆盖矩阵（backend_type: c）
+## Chat 后端覆盖矩阵（backend: openai-chat）
 
 日期: 2026-08-01
 
-本节只描述 **Responses → Chat Completions → Responses SSE** 路径（`backend_type: c`）。Anthropic 直转见上文各表；两路径**不共享**字段状态。
+本节只描述 **Responses → Chat Completions → Responses SSE** 路径（`backend: openai-chat`）。Anthropic 直转见上文各表；两路径**不共享**字段状态。
 
 ### 状态约定
 
