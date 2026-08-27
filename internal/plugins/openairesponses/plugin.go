@@ -7,6 +7,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/responsesclient"
+	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
 
 // Plugin 是 OpenAI Responses 透传源插件（仅流式）。
@@ -60,3 +61,13 @@ func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Mo
 	}
 	return out, nil
 }
+
+// Probe 健康探测：GET /v1/models 验证可达性与凭据；404 时降级最小 POST 到 /responses。
+func (p *Plugin) Probe(ctx context.Context, src config.Source) plugin.ProbeResult {
+	return plugin.HTTPProbe(ctx, src, plugin.ProbeHTTPConfig{
+		ModelsURL:       upstreamhttp.ModelsURL(src.BaseURL),
+		FallbackPostURL: upstreamhttp.EndpointURL(src.BaseURL, "/responses"),
+	})
+}
+
+var _ plugin.HealthProbe = (*Plugin)(nil)

@@ -9,6 +9,7 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/convert"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
 
 // Plugin 是 Anthropic Messages 源插件：Responses → Anthropic Messages 转换与
@@ -63,6 +64,14 @@ func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Mo
 		out = append(out, plugin.Model{ID: m.ID, DisplayName: m.DisplayName})
 	}
 	return out, nil
+}
+
+// Probe 健康探测：GET /v1/models 验证可达性与凭据；404 时降级最小 POST 到 /v1/messages。
+func (p *Plugin) Probe(ctx context.Context, src config.Source) plugin.ProbeResult {
+	return plugin.HTTPProbe(ctx, src, plugin.ProbeHTTPConfig{
+		ModelsURL:       upstreamhttp.ModelsURL(src.BaseURL),
+		FallbackPostURL: upstreamhttp.EndpointURL(src.BaseURL, "/v1/messages"),
+	})
 }
 
 // anthropicOptionsBackend 在委托前把 source options 归一化为 cfg.Anthropic，
@@ -130,3 +139,4 @@ func intOption(v any) int {
 
 var _ plugin.Backend = anthropicOptionsBackend{}
 var _ plugin.RequestPreparer = anthropicOptionsBackend{}
+var _ plugin.HealthProbe = (*Plugin)(nil)

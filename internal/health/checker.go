@@ -6,12 +6,10 @@ package health
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/logging"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	"github.com/mapleafgo/codex-api-gateway/internal/upstreamhttp"
 )
@@ -135,121 +133,17 @@ func probeResultFromPlugin(pr plugin.ProbeResult) Result {
 }
 
 // checkSourceHTTP 检查单个源的连通性。
+// checkSourceHTTP 是注册表缺失或未匹配到插件时的 HTTP 探针兜底路径；
+// 探测逻辑统一委托 plugin.HTTPProbe，与插件 HealthProbe 同源。
 // 策略：先 GET /v1/models（不消耗 token）；若 404 则降级发最小 POST 验证 key。
 func (c *Checker) checkSourceHTTP(ctx context.Context, source config.Source) Result {
-	checkedAt := time.Now()
-	modelsURL := upstreamhttp.ModelsURL(source.BaseURL)
-
-	ctx, cancel := context.WithTimeout(ctx, c.config.Timeout)
-	defer cancel()
-
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
-	if err != nil {
-		return Result{
-			Status:    StatusFailed,
-			Success:   false,
-			Message:   fmt.Sprintf("创建请求失败: %v", err),
-			CheckedAt: checkedAt,
-		}
-	}
-	req.Header.Set("Authorization", "Bearer "+source.APIKey)
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		logging.FromContext(ctx).Warn("health: check failed",
-			"source", source.Name, "url", modelsURL, "error", err)
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        fmt.Sprintf("连接失败: %v", err),
-			ResponseTimeMs: time.Since(start).Milliseconds(),
-			CheckedAt:      checkedAt,
-		}
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	elapsed := time.Since(start).Milliseconds()
-
-	// /v1/models 返回 404：后端未实现该接口，降级发最小 POST 验证 key
-	if resp.StatusCode == http.StatusNotFound {
-		return c.fallbackMinimalProbe(ctx, source, checkedAt)
-	}
-
-	return c.classifyResponse(resp, elapsed, checkedAt)
-}
-
-// fallbackMinimalProbe 在 /v1/models 不可用时，发最小 POST 请求验证 key。
-// 仅消耗 1 token，用于区分"key 无效"和"key 有效但无 /v1/models"。
-func (c *Checker) fallbackMinimalProbe(ctx context.Context, source config.Source, checkedAt time.Time) Result {
-	start := time.Now()
-	endpoint := probeEndpoint(source)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
-	if err != nil {
-		return Result{
-			Status:    StatusFailed,
-			Success:   false,
-			Message:   fmt.Sprintf("创建请求失败: %v", err),
-			CheckedAt: checkedAt,
-		}
-	}
-	req.Header.Set("Authorization", "Bearer "+source.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		logging.FromContext(ctx).Warn("health: fallback probe failed",
-			"source", source.Name, "url", endpoint, "error", err)
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        fmt.Sprintf("连接失败: %v", err),
-			ResponseTimeMs: time.Since(start).Milliseconds(),
-			HTTPStatus:     0,
-			CheckedAt:      checkedAt,
-		}
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	elapsed := time.Since(start).Milliseconds()
-
-	// 只要不是 401/403，就说明 key 有效（404 的 /v1/models 后端通常对正确路径返回 400/422 等）
-	switch resp.StatusCode {
-	case http.StatusUnauthorized:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        "API Key 无效 (401)",
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	case http.StatusForbidden:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        "API Key 无权限 (403)",
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	default:
-		// 200/400/422/5xx 都说明 key 有效、服务可达（只是 /v1/models 未实现）
-		status := StatusOperational
-		msg := "正常（/v1/models 未实现，已降级验证）"
-		if elapsed > c.config.DegradedThreshold {
-			status = StatusDegraded
-			msg = fmt.Sprintf("可达但较慢 (%dms)", elapsed)
-		}
-		return Result{
-			Status:         status,
-			Success:        true,
-			Message:        msg,
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	}
+	return probeResultFromPlugin(plugin.HTTPProbe(ctx, source, plugin.ProbeHTTPConfig{
+		HTTPClient:      c.hc,
+		Timeout:         c.config.Timeout,
+		DegradedMS:      c.config.DegradedThreshold,
+		ModelsURL:       upstreamhttp.ModelsURL(source.BaseURL),
+		FallbackPostURL: probeEndpoint(source),
+	}))
 }
 
 // probeEndpoint 根据 stable backend 返回最小探测的目标 URL。
@@ -267,63 +161,6 @@ func probeEndpoint(source config.Source) string {
 		return upstreamhttp.EndpointURL(source.BaseURL, "/responses")
 	default:
 		return upstreamhttp.EndpointURL(source.BaseURL, "/v1/messages")
-	}
-}
-
-// classifyResponse 根据 /v1/models 响应分类结果。
-func (c *Checker) classifyResponse(resp *http.Response, elapsed int64, checkedAt time.Time) Result {
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		status := StatusOperational
-		msg := "正常"
-		if elapsed > c.config.DegradedThreshold {
-			status = StatusDegraded
-			msg = fmt.Sprintf("可达但较慢 (%dms)", elapsed)
-		}
-		return Result{
-			Status:         status,
-			Success:        true,
-			Message:        msg,
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	case resp.StatusCode == http.StatusUnauthorized:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        "API Key 无效 (401)",
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	case resp.StatusCode == http.StatusForbidden:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        "API Key 无权限 (403)",
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	case resp.StatusCode >= 500:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        fmt.Sprintf("上游服务错误 (%d)", resp.StatusCode),
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
-	default:
-		return Result{
-			Status:         StatusFailed,
-			Success:        false,
-			Message:        fmt.Sprintf("意外响应 (%d)", resp.StatusCode),
-			ResponseTimeMs: elapsed,
-			HTTPStatus:     resp.StatusCode,
-			CheckedAt:      checkedAt,
-		}
 	}
 }
 

@@ -35,7 +35,7 @@
 ### Plugin Foundation Implementation
 
 - [X] T007 Implement `ID`, `Descriptor`, `Capability`, `StreamingKind`, `Field`, `Action`, and schema validation in `internal/plugin/descriptor.go` using contracts/plugin-contract.md
-- [ ] T008 Implement `Backend`, `UpstreamEvent.Backend`, optional `RequestPreparer`, EventGate mode selection support, and shared outcome helpers in `internal/plugin/backend.go`; migrate generic helpers from `internal/backend/helpers.go` without changing protocol semantics
+- [X] T008 Implement `Backend`, `UpstreamEvent.Backend`, optional `RequestPreparer`, EventGate mode selection support, and shared outcome helpers in `internal/plugin/backend.go`; migrate generic helpers from `internal/backend/helpers.go` without changing protocol semantics
 - [X] T009 [P] Implement `Model`, `ModelCatalog`, `DraftModelCatalog`, `HealthProbe`, `ErrCapabilityNotSupported`, and probe result types in `internal/plugin/catalog.go`
 - [X] T010 [P] Implement sensitive sentinels, action request/result types, and AdminExtension contract in `internal/plugin/admin.go`
 - [X] T011 Implement immutable `Registry.New/Get/Descriptors/ValidateSource` and `config.SourceValidator` compatibility in `internal/plugin/registry.go`; make T004-T006 pass
@@ -43,14 +43,14 @@
 
 ### Config v2 Foundation
 
-- [ ] T013 Add failing Config v2 parser/validation tests in `internal/config/config_test.go` for `backend` + `options`, strict source decoding, rejected `backend_type`, rejected legacy top-level `github_token` and `anthropic`, recursive `${VAR}` interpolation in options, unique names, common header checks, and hot-reload failure preserving old holder state
-- [ ] T014 Implement Config v2 `Source.Backend`, `Source.Options map[string]any`, strict YAML decoding, removal of `BackendType`, `GithubToken`, and top-level `AnthropicCfg` in `internal/config/config.go`; preserve server/logging/breaker/models/common source fields
+- [X] T013 Add failing Config v2 parser/validation tests in `internal/config/config_test.go` for `backend` + `options`, strict source decoding, rejected `backend_type`, rejected legacy top-level `github_token` and `anthropic`, recursive `${VAR}` interpolation in options, unique names, common header checks, and hot-reload failure preserving old holder state
+- [X] T014 Implement Config v2 `Source.Backend`, `Source.Options map[string]any`, strict YAML decoding, removal of `BackendType`, `GithubToken`, and top-level `AnthropicCfg` in `internal/config/config.go`; preserve server/logging/breaker/models/common source fields
 - [X] T015 Add `SourceValidator` injection to `config.Load` and admin/configwatch write paths in `internal/config/config.go`, `internal/admin/admin.go`, and `internal/configwatch/configwatch.go`; ensure every disk load/save uses the same injected registry validator
-- [ ] T016 Update YAML marshaling/write-back for ordered deterministic sources/options and no default-value noise in `internal/config/config.go`; make T013 pass
+- [X] T016 Update YAML marshaling/write-back for ordered deterministic sources/options and no default-value noise in `internal/config/config.go`; make T013 pass
 
 ### Platform Foundation
 
-- [ ] T017 Add failing scheduler tests in `internal/scheduler/scheduler_test.go` proving registry-based dispatch, converted-vs-passthrough EventGate selection, existing failover/cancel/timeout semantics, and no concrete backend branches
+- [X] T017 Add failing scheduler tests in `internal/scheduler/scheduler_test.go` proving registry-based dispatch, converted-vs-passthrough EventGate selection, existing failover/cancel/timeout semantics, and no concrete backend branches
 - [X] T018 Refactor `Scheduler.New`, `backendFor`, model listing, and reload handling in `internal/scheduler/scheduler.go` to depend only on `plugin.Registry`, optional catalogs, descriptors, and holder; remove imports of concrete backends
 - [X] T019 Add failing server preflight tests in `internal/server/server_test.go` for first-source RequestPreparer invocation, capability-based mixed warnings, stable `backend` logging/metrics identity, and unchanged SSE response shape
 - [X] T020 Replace backend-type preconversion and warning branches with plugin capabilities and RequestPreparer in `internal/server/server.go`; remove direct imports of `internal/backend` and short-code comparisons
@@ -76,13 +76,13 @@
 
 ### Implementation for User Story 1
 
-- [ ] T027 [US1] Implement Anthropic SourcePlugin with stable ID `anthropic`, options schema `default_max_tokens` / `cache_enabled`, RequestPreparer, Backend, ModelCatalog, HealthProbe, and normalized upstream token reporting in `internal/plugins/anthropic/` (schema+options normalization 已落地；RequestPreparer/HealthProbe 待做)
+- [X] T027 [US1] Implement Anthropic SourcePlugin with stable ID `anthropic`, options schema `default_max_tokens` / `cache_enabled`, RequestPreparer, Backend, ModelCatalog, HealthProbe, and normalized upstream token reporting in `internal/plugins/anthropic/` (schema+options 归一化、RequestPreparer、ModelCatalog、HealthProbe 均已落地)
 - [ ] T028 [US1] Implement OpenAI Chat SourcePlugin with stable ID `openai-chat`, common connection fields plus Chat-specific options, RequestPreparer semantics, Backend, ModelCatalog, HealthProbe, and web-search shape handling in `internal/plugins/openaichat/`
-- [ ] T029 [US1] Implement OpenAI Responses SourcePlugin with stable ID `openai-responses`, passthrough streaming kind, PrepareUpstreamBody-backed RequestPreparer, Backend, ModelCatalog, HealthProbe, and raw passthrough event semantics in `internal/plugins/openairesponses/`
-- [ ] T030 [US1] Create GitHub Copilot SourcePlugin boundary with stable ID `github-copilot`, options schema for `github_token`, endpoint/base-url rules, config validation, absorbed client state, and placeholder-safe capability declarations in `internal/plugins/copilot/`; full routing lands in US2
+- [X] T029 [US1] Implement OpenAI Responses SourcePlugin with stable ID `openai-responses`, passthrough streaming kind, PrepareUpstreamBody-backed RequestPreparer, Backend, ModelCatalog, HealthProbe, and raw passthrough event semantics in `internal/plugins/openairesponses/`
+- [X] T030 [US1] Create GitHub Copilot SourcePlugin boundary with stable ID `github-copilot`, options schema for `github_token`, endpoint/base-url rules, config validation, absorbed client state, and placeholder-safe capability declarations in `internal/plugins/copilot/`; full routing lands in US2
 - [X] T031 [US1] Register exactly these four plugins and inject one immutable Registry through assembly in `cmd/server/main.go`; remove hardcoded scheduler backend construction
 - [X] T032 [US1] Replace `config.example.yaml` with Config v2 examples for all four built-ins, including required options and explicit comments that old formats are rejected
-- [ ] T033 [US1] Run targeted `go test ./internal/config ./internal/plugin ./internal/plugins/... ./internal/scheduler ./internal/server`; fix regressions before US2
+- [X] T033 [US1] Run targeted `go test ./internal/config ./internal/plugin ./internal/plugins/... ./internal/scheduler ./internal/server`; fix regressions before US2
 
 **Checkpoint**: Four named source kinds load, validate, execute through their own plugin, appear in models/probes with stable identities, and all legacy source spellings fail closed.
 

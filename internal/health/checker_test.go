@@ -12,6 +12,9 @@ import (
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+	anthropicplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/anthropic"
+	openaichatplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/openaichat"
+	openairesponsesplugin "github.com/mapleafgo/codex-api-gateway/internal/plugins/openairesponses"
 )
 
 // 返回一个返回固定状态码和响应体的 mock /v1/models 服务器。
@@ -273,6 +276,31 @@ func TestCheckSourceUnsupportedProbeCapability(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, "does not implement health probe") {
 		t.Fatalf("message = %q, want explicit not-supported hint", res.Message)
+	}
+}
+
+// TestCheckSourceBuiltinRegistryProbes 回归：内置插件实现 HealthProbe 后，
+// 注入 registry 的 CheckSource 应返回真实探测结果，而不是"未实现健康探测"失败。
+func TestCheckSourceBuiltinRegistryProbes(t *testing.T) {
+	reg, err := plugin.New(
+		anthropicplugin.New(),
+		openaichatplugin.New(),
+		openairesponsesplugin.New(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := mockModelsServer(http.StatusOK, `{"data":[]}`)
+	defer srv.Close()
+
+	ids := []string{plugin.BackendAnthropic, plugin.BackendOpenAIChat, plugin.BackendOpenAIResponses}
+	for _, id := range ids {
+		res := NewWithRegistry(DefaultConfig(), reg).CheckSource(context.Background(), config.Source{
+			Name: "s", Backend: id, BaseURL: srv.URL + "/v1", APIKey: "k",
+		})
+		if !res.Success || res.Status != StatusOperational {
+			t.Fatalf("backend %s: success=%v status=%q msg=%q want operational success", id, res.Success, res.Status, res.Message)
+		}
 	}
 }
 
