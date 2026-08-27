@@ -94,7 +94,7 @@ func (s ServerCfg) MaxBodyBytes() int64 {
 	return int64(s.MaxBodyMB) << 20
 }
 
-// AnthropicCfg 配置 backend_type=a 的 Anthropic Messages 转换行为。
+// AnthropicCfg 配置 backend=anthropic 的 Anthropic Messages 转换行为。
 type AnthropicCfg struct {
 	// DefaultMaxTokens 是客户端未传 max_output_tokens 时写入上游的 max_tokens。
 	// 0 表示使用内置默认值 16384。
@@ -129,16 +129,6 @@ type BreakerCfg struct {
 	MaxRetries int `koanf:"max_retries" yaml:"max_retries,omitempty"`
 }
 
-// Backend* 是 Source.BackendType 的合法取值：
-// 'a' = Anthropic Messages, 'c' = OpenAI Chat Completions (only streaming),
-// 'r' = OpenAI Responses (passthrough, only streaming)。
-const (
-	BackendAnthropic       = "a"
-	BackendGitHubCopilot   = "g"
-	BackendOpenAIChat      = "c"
-	BackendOpenAIResponses = "r"
-)
-
 // Recovery* 是 BreakerCfg.Recovery 的合法取值（半开探测成功后的恢复目标）。
 const (
 	RecoveryNormal   = "normal"
@@ -149,7 +139,7 @@ const (
 // config 校验与 logging/rotate 的兜底共用，避免默认值双份分叉。
 const DefaultLogMaxSizeMB = 50
 
-// Source configures one upstream (backend_type a | c | r).
+// Source configures one upstream (stable plugin backend id + plugin-owned options).
 type Source struct {
 	Name    string `koanf:"name" yaml:"name"`
 	BaseURL string `koanf:"base_url" yaml:"base_url"`
@@ -158,10 +148,6 @@ type Source struct {
 	Backend string `koanf:"backend" yaml:"backend"`
 	// Options 是所选插件 schema 声明的源专属配置（敏感值支持 ${ENV_VAR} 插值）。
 	Options map[string]any `koanf:"options" yaml:"options,omitempty"`
-	// BackendType 保留用于过渡期的旧短码读取与断言；Config v2 正式落地后移除。
-	// 旧配置若只填 BackendType 不填 Backend，validate 会按短码映射到稳定 ID。
-	BackendType string `koanf:"backend_type" yaml:"-"`
-	GithubToken string `koanf:"github_token" yaml:"-"`
 	// ModelMap 是平台级模型映射：客户端模型名 → 实际上游模型名。
 	ModelMap     map[string]string `koanf:"model_map" yaml:"model_map,omitempty"`
 	DefaultModel string            `koanf:"default_model" yaml:"default_model,omitempty"`
@@ -173,7 +159,7 @@ type Source struct {
 	// 保留头（content-type / authorization / accept / x-api-key / anthropic-version / anthropic-beta）不可被覆盖，静默跳过。
 	Headers map[string]string `koanf:"headers" yaml:"headers,omitempty"`
 	// SupportsWebSearch 显式声明该上游是否支持 hosted web_search 工具。
-	// nil 时按 backend_type 给默认（见 SupportsWebSearchValue）。上游不支持时网关
+	// nil 时按 stable backend 给默认（见 SupportsWebSearchValue）。上游不支持时网关
 	// 会在发请求前剥掉 web_search 工具，避免上游 400/断流。
 	SupportsWebSearch *bool `koanf:"supports_web_search" yaml:"supports_web_search,omitempty"`
 	// ResponsesCompatFold 控制 r 路径是否对 reasoning summary / 明文 agent_message
@@ -184,17 +170,12 @@ type Source struct {
 	ResponsesCompatFold *bool `koanf:"responses_compat_fold" yaml:"responses_compat_fold,omitempty"`
 }
 
-// SupportsWebSearchValue 返回上游对 hosted web_search 的有效开关。
-// 显式配置优先；nil 时按 backend_type 默认：Anthropic(a)/Responses(r) 直通默认支持，
-// 仅 Chat(c) 默认不支持（Chat 无 hosted web_search 对应物，网关负责剥掉避免上游报错）。
 func (s Source) SupportsWebSearchValue() bool {
 	if s.SupportsWebSearch != nil {
 		return *s.SupportsWebSearch
 	}
-	if n, err := NormalizeBackendType(s.BackendType); err == nil {
-		if n == BackendOpenAIChat {
-			return false
-		}
+	if s.Backend == "openai-chat" {
+		return false
 	}
 	return true
 }
@@ -206,76 +187,6 @@ func (s Source) ResponsesCompatFoldValue() bool {
 		return *s.ResponsesCompatFold
 	}
 	return true
-}
-
-// MarshalYAML 把 Source 序列化为 Config v2 形状：顶层 github_token / backend_type
-// 不写盘，旧顶层凭据归一化进 options.github_token，保证 reload 不再命中旧格式拒绝。
-func (s Source) MarshalYAML() (any, error) {
-	type plain Source
-	out := plain(s)
-	if tok := s.GithubToken; tok != "" {
-		if out.Options == nil {
-			out.Options = map[string]any{}
-		}
-		if _, ok := out.Options["github_token"]; !ok {
-			out.Options["github_token"] = tok
-		}
-		out.GithubToken = ""
-	}
-	out.BackendType = ""
-	return out, nil
-}
-
-// NormalizeBackendType normalizes and validates the backend_type value.
-// Returns normalized a/c/r or error if invalid.
-func NormalizeBackendType(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	switch s {
-	case "", BackendAnthropic:
-		return BackendAnthropic, nil
-	case BackendOpenAIChat:
-		return BackendOpenAIChat, nil
-	case BackendOpenAIResponses:
-		return BackendOpenAIResponses, nil
-	case BackendGitHubCopilot:
-		return BackendGitHubCopilot, nil
-	default:
-		return "", fmt.Errorf("config: invalid backend_type %q (allowed: a, c, g, r)", s)
-	}
-}
-
-// BackendTypeToID 把旧版单字符 backend_type 短码映射到稳定插件 ID。
-// 过渡期配置兼容用；Config v2 正式落地后移除。
-func BackendTypeToID(bt string) (string, bool) {
-	switch bt {
-	case BackendAnthropic:
-		return "anthropic", true
-	case BackendOpenAIChat:
-		return "openai-chat", true
-	case BackendOpenAIResponses:
-		return "openai-responses", true
-	case BackendGitHubCopilot:
-		return "github-copilot", true
-	default:
-		return "", false
-	}
-}
-
-// BackendIDToType 把稳定插件 ID 反向映射回旧版单字符 backend_type 短码。
-// 过渡期管理页仍按短码渲染；Config v2 正式落地后移除。
-func BackendIDToType(id string) (string, bool) {
-	switch id {
-	case "anthropic":
-		return BackendAnthropic, true
-	case "openai-chat":
-		return BackendOpenAIChat, true
-	case "openai-responses":
-		return BackendOpenAIResponses, true
-	case "github-copilot":
-		return BackendGitHubCopilot, true
-	default:
-		return "", false
-	}
 }
 
 // ModelOverride 覆盖单个模型 slug 的 Codex ModelInfo 字段。
@@ -700,16 +611,6 @@ func (c *Config) validate(v SourceValidator) error {
 	seenSource := make(map[string]bool, len(c.Sources))
 	for i := range c.Sources {
 		s := &c.Sources[i]
-		if s.Backend == "" && s.BackendType != "" {
-			// 过渡期：结构层仍接受旧 backend_type 短码读取；磁盘加载路径
-			// 已被 rejectLegacyConfigShape 严格拒绝，内部构造（admin/tests）
-			// 在 US 迁移完成前继续可用。
-			id, ok := BackendTypeToID(s.BackendType)
-			if !ok {
-				return fmt.Errorf("config: source %d backend_type %q is no longer valid; set backend to a registered plugin id", i, s.BackendType)
-			}
-			s.Backend = id
-		}
 		if s.Name != "" {
 			if seenSource[s.Name] {
 				return fmt.Errorf("config: duplicate source name %q", s.Name)
@@ -743,6 +644,9 @@ func (c *Config) validate(v SourceValidator) error {
 func validateSourceIdentity(i int, s *Source, v SourceValidator) error {
 	if s.Name == "" {
 		return fmt.Errorf("config: source %d missing name", i)
+	}
+	if s.Backend == "" {
+		return fmt.Errorf("config: source %d missing backend; set backend to a registered source plugin", i)
 	}
 	if v != nil {
 		if err := v.ValidateSource(*s); err != nil {
@@ -903,7 +807,7 @@ func rejectLegacyConfigShape(data []byte) error {
 		case "github_token":
 			return fmt.Errorf("config: top-level github_token is removed; move it into the corresponding source options.github_token")
 		case "backend_type":
-			return fmt.Errorf("config: backend_type is removed; set backend to one of the registered source plugins (anthropic, openai-chat, openai-responses, github-copilot)")
+			return fmt.Errorf("config: backend_type is removed; set backend to a registered source plugin id")
 		case "sources":
 			if val.Kind != yamlv3.SequenceNode {
 				continue
@@ -928,7 +832,7 @@ func rejectLegacySourceFields(node *yamlv3.Node) error {
 		key := node.Content[i]
 		switch key.Value {
 		case "backend_type":
-			return fmt.Errorf("config: source backend_type is removed; set backend to a registered source plugin (anthropic, openai-chat, openai-responses, github-copilot) and move backend-specific settings into options")
+			return fmt.Errorf("config: source backend_type is removed; set backend to a registered source plugin id and move backend-specific settings into options")
 		case "github_token":
 			return fmt.Errorf("config: source github_token is removed; move it into options.github_token")
 		case "backend":
@@ -936,7 +840,7 @@ func rejectLegacySourceFields(node *yamlv3.Node) error {
 		}
 	}
 	if !hasBackend {
-		return fmt.Errorf("config: source is missing backend; set backend to a registered source plugin (anthropic, openai-chat, openai-responses, github-copilot)")
+		return fmt.Errorf("config: source is missing backend; set backend to a registered source plugin id")
 	}
 	return nil
 }

@@ -913,8 +913,8 @@ html[data-theme="dark"] .ui-select {
               </span>
               <span class="center">
                 <span class="ui-badge ui-badge-soft-neutral mono" style="font-size:11px"
-                      x-text="backendTypeLabel(row.backend_type)"
-                      :title="backendTypeTitle(row.backend_type)"></span>
+                      x-text="backendTypeLabel(row.backend)"
+                      :title="backendTypeTitle(row.backend)"></span>
               </span>
               <span class="num" x-text="fmtTokens(row.input_tokens) || '-'"></span>
               <span class="num" x-text="fmtTokens(row.output_tokens) || '-'"></span>
@@ -1035,15 +1035,15 @@ html[data-theme="dark"] .ui-select {
                           x-text="(testResults[src.name].ok ? t('testReachable') : t('testUnreachable')) + (testResults[src.name].responseTime != null ? ' · ' + testResults[src.name].responseTime + 'ms' : '')">
                     </span>
                   </template>
-                <button class="ui-text-action" type="button"
-                         :disabled="testingSrc===src.name || ((src.backend_type || 'a') !== 'g' && !src.base_url)"
-                         @click="testSource(src)"
+               <button class="ui-text-action" type="button"
+                       :disabled="testingSrc===src.name || (!isAuthSource(src.backend) && !src.base_url)"
+                       @click="testSource(src)"
                          :title="t('testReachHint')"
                          x-text="testingSrc===src.name ? t('testingSrc') : t('testSrc')"></button>
-                <button class="ui-text-action" type="button"
-                          x-show="(src.backend_type || 'a') === 'g'"
-                          @click="authorizeSource(src)"
-                          x-text="t('copilotAuth')"></button>
+               <button class="ui-text-action" type="button"
+                         x-show="isAuthSource(src.backend)"
+                         @click="authorizeSource(src)"
+                         x-text="t('copilotAuth')"></button>
                 <button class="ui-text-action" type="button"
                           :disabled="!src.name || togglingDisabled===src.name"
                           @click="toggleSourceDisabled(idx)"
@@ -1059,12 +1059,12 @@ html[data-theme="dark"] .ui-select {
                   </label>
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('backendType')"></span>
-                    <div class="ui-sel"
-                         x-data="uiSel()"
-                         x-init="if(!src.backend_type) src.backend_type='a'; model=src.backend_type; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')},{v:'g',l:t('backendCopilot')}]"
-                         x-effect="const v=src.backend_type||'a'; if(v!==model) model=v; opts=[{v:'a',l:t('backendAnthropic')},{v:'c',l:t('backendChat')},{v:'r',l:t('backendResponses')},{v:'g',l:t('backendCopilot')}]"
-                         @sel-change="src.backend_type = $event.detail">
-                      <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
+                   <div class="ui-sel"
+                        x-data="uiSel()"
+                        x-init="if(!src.backend) src.backend=backendOpts()[0].v; model=src.backend; opts=backendOpts()"
+                        x-effect="const v=src.backend||backendOpts()[0].v; if(v!==model) model=v; opts=backendOpts()"
+                        @sel-change="src.backend = $event.detail">
+                     <button type="button" class="ui-sel-btn" @click="open=!open" @blur="setTimeout(()=>open=false,150)" @keydown="kd($event)">
                         <span x-text="label"></span>
                       </button>
                       <div class="ui-sel-list" :class="open && 'is-open'">
@@ -1074,23 +1074,23 @@ html[data-theme="dark"] .ui-select {
                       </div>
                     </div>
                   </label>
-                  <label class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">
-                    <span class="ui-label" x-text="t('srcURL')"></span>
-                    <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
-                  </label>
-                  <div class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">
-                    <div class="ui-label-row">
-                      <span class="ui-label" x-text="t('apiKey')"></span>
-                      <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
-                              @click="toggleKeyVisibility(idx)"
-                              :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
-                              x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
-                    </div>
-                    <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
-                           x-model="src.api_key" autocomplete="off" spellcheck="false">
+                <label class="ui-field ui-span-2" x-show="!isAuthSource(src.backend)">
+                 <span class="ui-label" x-text="t('srcURL')"></span>
+                  <input class="ui-input ui-input-sm mono" x-model="src.base_url" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="t('srcURL') + '…'">
+                </label>
+                <div class="ui-field ui-span-2" x-show="!isAuthSource(src.backend)">
+                  <div class="ui-label-row">
+                    <span class="ui-label" x-text="t('apiKey')"></span>
+                    <button type="button" class="ui-btn ui-btn-xs ui-btn-ghost"
+                            @click="toggleKeyVisibility(idx)"
+                            :aria-label="(visibleKeys[idx] ? t('hide') : t('show')) + ' ' + t('apiKey')"
+                            x-text="visibleKeys[idx] ? t('hide') : t('show')"></button>
                   </div>
-                  <p class="ui-hint ui-span-2" x-show="src.backend_type === 'g'"
-                     x-text="t('copilotAuthHint')"></p>
+                  <input class="ui-input ui-input-sm mono" :type="visibleKeys[idx] ? 'text' : 'password'"
+                         x-model="src.api_key" autocomplete="off" spellcheck="false">
+                </div>
+                <p class="ui-hint ui-span-2" x-show="isAuthSource(src.backend)"
+                   x-text="t('copilotAuthHint')"></p>
                   <label class="ui-field">
                     <span class="ui-label" x-text="t('defaultModel')"></span>
                     <div class="ui-ac" x-data="{ q: src.default_model || '', open: false, ai: -1,
@@ -1118,9 +1118,24 @@ html[data-theme="dark"] .ui-select {
                     </div>
                   </label>
                   <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px; height:34px; align-self:end">
-                    <input type="checkbox" x-model="src.supports_web_search">
-                    <span class="ui-label" style="margin:0" x-text="t('supportsWebSearch')"></span>
+                   <input type="checkbox" x-model="src.supports_web_search">
+                   <span class="ui-label" style="margin:0" x-text="t('supportsWebSearch')"></span>
                   </label>
+                  <template x-for="opt in descriptorOptionFields(src.backend)" :key="opt.name">
+                    <template x-if="opt.type === 'boolean'">
+                      <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px; height:34px; align-self:end">
+                        <input type="checkbox" x-model="src.options[opt.name]">
+                        <span class="ui-label" style="margin:0" x-text="opt.label" :title="opt.description"></span>
+                      </label>
+                    </template>
+                    <label class="ui-field" x-show="opt.type !== 'boolean'">
+                      <span class="ui-label" x-text="opt.label" :title="opt.description"></span>
+                      <input class="ui-input ui-input-sm mono"
+                             :type="opt.type === 'integer' ? 'number' : 'text'"
+                             x-model="src.options[opt.name]"
+                             autocomplete="off" spellcheck="false">
+                    </label>
+                  </template>
                 </div>
                 <fieldset class="ui-fieldset">
                   <legend x-text="t('modelMap')"></legend>
@@ -1551,8 +1566,8 @@ html[data-theme="dark"] .ui-select {
    <div class="ui-modal-actions">
       <button class="ui-btn ui-btn-sm ui-btn-ghost" type="button"
               x-show="modal.kind === 'form' && modal.allowTest && formHasBaseURL()"
-              :disabled="!!testingSrc || (formBackendType() === 'g' ? !formGithubToken() : !formBaseURL())"
-              @click="testFormSource()"
+             :disabled="!!testingSrc || (!isAuthSource(formBackend()) && !formBaseURL())"
+             @click="testFormSource()"
               :title="t('testReachHint')"
              x-text="testingSrc === '__form__' ? t('testingSrc') : t('testSrc')"></button>
       <template x-if="modal.kind === 'form' && modal.allowTest && testResults['__form__']">
@@ -1824,6 +1839,7 @@ function app() {
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
     cfg: { server:{}, logging:{}, breaker:{}, anthropic:{}, sources:[], models:[] },
+    sourcePlugins: [],
    promoting: '',
    togglingDisabled: '',
    testingSrc: '',
@@ -1851,6 +1867,7 @@ function app() {
       this.applyLocale();
       this.startSSE();
       this.loadConfig();
+      this.loadSourcePlugins();
       this.fetchVersion();
       this.restoreCopilotAuth();
       this.$nextTick(() => this.onListScroll());
@@ -1963,22 +1980,69 @@ function app() {
       const start = Math.max(0, Math.floor(el.scrollTop / this.ROW_H) - 6);
       const visible = Math.ceil(el.clientHeight / this.ROW_H) + 12;
       this.viewStart = start;
-      this.viewCount = visible;
-    },
+     this.viewCount = visible;
+   },
 
-    backendTypeLabel(v) {
-      const x = String(v || '').trim();
-      // 请求列表用大写 A/C/G/R 区分：a=Anthropic，c=OpenAI Chat，g=GitHub Copilot，r=OpenAI Responses
-      if (x === 'c') return 'C';
-      if (x === 'g') return 'G';
-      if (x === 'r') return 'R';
-      // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
-      return 'A';
-    },
-    backendTypeTitle(v) {
-      const x = String(v || '').trim() || 'a';
-      let full = this.t('backendAnthropic');
-      if (x === 'c') full = this.t('backendChat');
+   // 从已加载描述符列表按稳定 ID 查找插件。
+   pluginDescriptor(id) {
+     return (this.sourcePlugins || []).find(p => p.id === id) || null;
+   },
+   // 当前源是否声明了某个 schema 字段（用于决定字段可见性）。
+   hasSchemaField(backendId, fieldName) {
+     const p = this.pluginDescriptor(backendId);
+     if (!p || !p.schema) return false;
+     return p.schema.some(f => f.name === fieldName);
+   },
+   // 当前源是否声明了某个 action（如 device-flow）。
+   hasAction(backendId, actionId) {
+     const p = this.pluginDescriptor(backendId);
+     if (!p || !p.actions) return false;
+     return p.actions.some(a => a.id === actionId);
+   },
+   // 授权型源（有 device-flow action），不需要手填 base_url/api_key。
+   isAuthSource(backendId) {
+     return this.hasAction(backendId, 'device-flow');
+   },
+   // 源类型下拉选项，从已注册插件描述符动态生成。
+   backendOpts() {
+     return (this.sourcePlugins || []).map(p => ({ v: p.id, l: p.title }));
+   },
+   // 源类型下拉的 label（用于已保存源的显示）。
+   backendLabel(backendId) {
+     const p = this.pluginDescriptor(backendId);
+     return p ? p.title : backendId;
+   },
+   // 返回某 backend 的非敏感 option schema 字段（用于源卡片内联渲染）。
+   descriptorOptionFields(backendId) {
+     const p = this.pluginDescriptor(backendId);
+     if (!p || !p.schema) return [];
+     return p.schema.filter(f => f.target === 'options' && !f.sensitive);
+   },
+   async loadSourcePlugins() {
+     try {
+       const r = await fetch('/admin/api/source-plugins');
+       if (!r.ok) return;
+       const data = await r.json();
+       if (Array.isArray(data)) this.sourcePlugins = data;
+     } catch (e) {}
+   },
+   backendTypeLabel(v) {
+     const p = this.pluginDescriptor(v);
+     if (p) return p.title;
+     const x = String(v || '').trim();
+     // 请求列表用大写 A/C/G/R 区分：a=Anthropic，c=OpenAI Chat，g=GitHub Copilot，r=OpenAI Responses
+     if (x === 'c') return 'C';
+     if (x === 'g') return 'G';
+     if (x === 'r') return 'R';
+     // 缺省/a/空：视为 Anthropic（历史记录若无字段，也默认 a）
+     return 'A';
+   },
+   backendTypeTitle(v) {
+     const p = this.pluginDescriptor(v);
+     if (p) return this.t('colBackendType') + ': ' + p.title;
+     const x = String(v || '').trim() || 'a';
+     let full = this.t('backendAnthropic');
+     if (x === 'c') full = this.t('backendChat');
       else if (x === 'g') full = this.t('backendCopilot');
       else if (x === 'r') full = this.t('backendResponses');
       return this.t('colBackendType') + ': ' + this.backendTypeLabel(x) + ' · ' + full;
@@ -2103,12 +2167,11 @@ function app() {
           // 分配稳定 _id 作 x-for key，避免编辑 slug 时 Alpine 重建 DOM 丢焦点
           if (!m._id) m._id = 'mdl_' + Math.random().toString(36).slice(2, 10);
         });
-        (data.sources || []).forEach(s => {
-          if (!s.backend_type) s.backend_type = 'a';
-          if (!s.breaker) s.breaker = {};
-          // 未配置时按 backend_type 默认：仅 Chat(c) 默认不支持，a/r 均默认支持
-          if (s.supports_web_search == null) s.supports_web_search = (s.backend_type || 'a') !== 'c';
-          if (!s._id) s._id = 'src_' + Math.random().toString(36).slice(2, 10);
+       (data.sources || []).forEach(s => {
+         if (!s.options) s.options = {};
+        if (!s.breaker) s.breaker = {};
+          if (s.supports_web_search == null) s.supports_web_search = s.backend !== 'openai-chat';
+         if (!s._id) s._id = 'src_' + Math.random().toString(36).slice(2, 10);
         });
         data.server = data.server || {};
         if (data.server.max_body_mb == null || data.server.max_body_mb === 0) data.server.max_body_mb = 32;
@@ -2139,7 +2202,7 @@ function app() {
         }).filter(m => m.slug);
        (payload.sources || []).forEach(s => {
          if (s.model_map) Object.keys(s.model_map).forEach(k => { if (!k || !s.model_map[k]) delete s.model_map[k]; });
-         if ((s.backend_type || 'a') === 'g' && !s.github_token) delete s.github_token;
+         delete s.github_token;
          delete s._id;
          delete s.top;
        });
@@ -2192,65 +2255,89 @@ function app() {
       }
     },
 
-    addSource() {
-      this.openForm({
-        title: this.t('addSrc'),
-        confirmText: this.t('addSrc'),
-        allowTest: true,
-        fields: [
-          { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
-          { key: 'backend_type', label: this.t('backendType'), type: 'select', value: 'a', options: [
-            { v: 'a', l: this.t('backendAnthropic') },
-            { v: 'c', l: this.t('backendChat') },
-            { v: 'r', l: this.t('backendResponses') },
-            { v: 'g', l: this.t('backendCopilot') },
-          ]},
-          { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
-          { key: 'api_key', label: this.t('apiKey'), type: 'text', value: '', placeholder: '' },
-          { key: 'github_token', label: this.t('githubToken'), type: 'text', value: '', placeholder: 'gho_...' },
-          { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
-          { key: 'supports_web_search', label: this.t('supportsWebSearch'), type: 'checkbox', value: true, syncFrom: 'backend_type', syncDefault(v) { return v !== 'c'; } },
-        ],
-      }).then(async (v) => {
-        if (!v) return;
-        const name = (v.name || '').trim();
-        const copilot = v.backend_type === 'g';
-        const base_url = v.backend_type === 'g' ? '' : (v.base_url || '').trim();
-        const github_token = (v.github_token || '').trim();
-        if (!name || (!copilot && !base_url)) {
-          this.notify(this.locale === 'zh'
-            ? '源名称和上游地址不能为空'
-            : 'Name and URL are required', 'error');
-          return;
-        }
-        this.cfg.sources = this.cfg.sources || [];
-        if (this.cfg.sources.some(s => (s.name || '') === name)) {
-          this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
-          return;
-        }
-        if (copilot && !github_token) {
-          await this.startCopilotAuth({
-            name,
-            base_url,
-            backend_type: 'g',
-            api_key: (v.api_key || '').trim(),
-            github_token: '',
-            default_model: (v.default_model || '').trim(),
-            model_map: {},
-            supports_web_search: v.supports_web_search !== false,
-            disabled: false,
-          });
-          return;
-        }
-        try {
-          const r = await fetch('/admin/api/sources', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), github_token, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false }),
+   addSource() {
+     const defaultBackend = (this.sourcePlugins[0] || {}).id || 'anthropic';
+     // 从所有已注册插件的 Descriptor Schema 收集非敏感 option 字段。
+     // 提交时按当前选中的 backend 决定哪些字段进入 options。
+     const optionFields = [];
+     (this.sourcePlugins || []).forEach(p => {
+       (p.schema || []).forEach(f => {
+         if (f.target !== 'options' || f.sensitive) return;
+         if (optionFields.some(o => o.key === f.name)) return;
+         optionFields.push({
+           key: f.name,
+           label: f.label || f.name,
+           type: f.type === 'boolean' ? 'checkbox' : (f.type === 'integer' ? 'number' : 'text'),
+           value: f.default != null ? f.default : (f.type === 'boolean' ? true : ''),
+           placeholder: f.description || '',
+           _backend: p.id,
+         });
+       });
+     });
+     this.openForm({
+       title: this.t('addSrc'),
+       confirmText: this.t('addSrc'),
+       allowTest: true,
+       fields: [
+         { key: 'name', label: this.t('srcName'), type: 'text', value: '', placeholder: 'zhipu' },
+         { key: 'backend', label: this.t('backendType'), type: 'select', value: defaultBackend, options: this.backendOpts() },
+         { key: 'base_url', label: this.t('srcURL'), type: 'text', value: '', placeholder: 'https://...' },
+         { key: 'api_key', label: this.t('apiKey'), type: 'password', value: '', placeholder: '' },
+         { key: 'default_model', label: this.t('defaultModel'), type: 'text', value: '', placeholder: this.t('realModel') },
+         { key: 'supports_web_search', label: this.t('supportsWebSearch'), type: 'checkbox', value: true, syncFrom: 'backend', syncDefault(v) { return v !== 'openai-chat'; } },
+         ...optionFields,
+       ],
+     }).then(async (v) => {
+       if (!v) return;
+       const name = (v.name || '').trim();
+       const authSource = this.isAuthSource(v.backend);
+       const base_url = authSource ? '' : (v.base_url || '').trim();
+       if (!name || (!authSource && !base_url)) {
+         this.notify(this.locale === 'zh'
+           ? '源名称和上游地址不能为空'
+           : 'Name and URL are required', 'error');
+         return;
+       }
+       // 按当前选中 backend 的 Descriptor Schema 收集非敏感 option 字段。
+       const options = {};
+       const desc = this.pluginDescriptor(v.backend);
+       if (desc) {
+         (desc.schema || []).forEach(f => {
+           if (f.target !== 'options' || f.sensitive) return;
+           const val = v[f.name];
+           if (f.type === 'boolean') options[f.name] = val !== false;
+           else if (f.type === 'integer') options[f.name] = Number(val) || 0;
+           else if (val !== undefined && val !== '') options[f.name] = val;
+         });
+       }
+       this.cfg.sources = this.cfg.sources || [];
+       if (this.cfg.sources.some(s => (s.name || '') === name)) {
+         this.notify(this.locale === 'zh' ? '供应商已存在：' + name : 'Source exists: ' + name, 'error');
+         return;
+       }
+       if (authSource) {
+         await this.startCopilotAuth({
+           name,
+           base_url,
+           backend: v.backend,
+           api_key: (v.api_key || '').trim(),
+           options,
+           default_model: (v.default_model || '').trim(),
+           model_map: {},
+           supports_web_search: v.supports_web_search !== false,
+           disabled: false,
+         });
+         return;
+       }
+       try {
+         const r = await fetch('/admin/api/sources', {
+           method: 'POST',
+           headers: { 'content-type': 'application/json' },
+           body: JSON.stringify({ name, base_url, backend: v.backend, api_key: (v.api_key || '').trim(), options, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
-          const item = { name, base_url, backend_type: (v.backend_type || 'a'), api_key: (v.api_key || '').trim(), github_token, model_map: {}, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
+         const item = { name, base_url, backend: v.backend, api_key: (v.api_key || '').trim(), options, model_map: {}, default_model: (v.default_model || '').trim(), supports_web_search: v.supports_web_search !== false, disabled: false, _id: 'src_' + Math.random().toString(36).slice(2, 10) };
           this.cfg.sources.push(item);
           this.patchSnapshotAppend('sources', item);
           this.notify(this.t('addSrcOk') + ': ' + name, 'success');
@@ -2280,17 +2367,17 @@ function app() {
         return false;
       }
     },
-    async authorizeSource(src) {
-      if (!src || (src.backend_type || 'a') !== 'g' || !(src.name || '').trim()) return;
-      await this.startCopilotAuth({
-        name: src.name,
-        base_url: (src.base_url || '').trim(),
-        backend_type: 'g',
-        api_key: src.api_key || '',
-        github_token: '',
-        default_model: (src.default_model || '').trim(),
-        model_map: src.model_map || {},
-        headers: src.headers || undefined,
+   async authorizeSource(src) {
+     if (!src || !this.isAuthSource(src.backend) || !(src.name || '').trim()) return;
+     await this.startCopilotAuth({
+       name: src.name,
+       base_url: (src.base_url || '').trim(),
+       backend: src.backend,
+       api_key: src.api_key || '',
+       options: src.options || {},
+       default_model: (src.default_model || '').trim(),
+       model_map: src.model_map || {},
+       headers: src.headers || undefined,
         supports_web_search: src.supports_web_search !== false,
         disabled: !!src.disabled,
       });
@@ -2331,25 +2418,25 @@ function app() {
       this.$refs.authModal?.close();
       this.copilotAuth = null;
       if ((st || {}).state === 'authorized') {
-        if (this.modal.kind === 'form' && this.formBackendType() === 'g') this.cancelModal();
+        if (this.modal.kind === 'form' && this.isAuthSource(this.formBackend())) this.cancelModal();
         this.loadConfig();
       }
     },
-    async testSource(src) {
-      if (!src || (!(src.base_url || '').trim() && (src.backend_type || 'a') !== 'g')) return;
-      this.testingSrc = src.name || src.base_url;
-      try {
-        const r = await fetch('/admin/api/sources/test', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            base_url: (src.base_url || '').trim(),
-            api_key: src.api_key || '',
-            github_token: src.github_token || '',
-            name: src.name || '',
-            backend_type: src.backend_type || 'a',
-          }),
-        });
+   async testSource(src) {
+     if (!src || (!(src.base_url || '').trim() && !this.isAuthSource(src.backend))) return;
+     this.testingSrc = src.name || src.base_url;
+     try {
+       const r = await fetch('/admin/api/sources/test', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({
+           base_url: (src.base_url || '').trim(),
+           api_key: src.api_key || '',
+           options: src.options || {},
+           name: src.name || '',
+           backend: src.backend,
+         }),
+       });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
         const key = src.name || src.base_url;
@@ -2378,22 +2465,17 @@ function app() {
       const f = (this.modal.fields || []).find(x => x.key === 'base_url');
       return f ? String(f.value || '').trim() : '';
     },
-    formBackendType() {
-      const f = (this.modal.fields || []).find(x => x.key === 'backend_type');
-      return f ? (f.value || 'a') : 'a';
+    formBackend() {
+      const f = (this.modal.fields || []).find(x => x.key === 'backend');
+      return f ? (f.value || 'anthropic') : 'anthropic';
     },
     formAPIKey() {
       const f = (this.modal.fields || []).find(x => x.key === 'api_key');
       return f ? String(f.value || '').trim() : '';
     },
-    formGithubToken() {
-      const f = (this.modal.fields || []).find(x => x.key === 'github_token');
-      return f ? String(f.value || '').trim() : '';
-    },
     async testFormSource() {
       const base_url = this.formBaseURL();
-      const github_token = this.formGithubToken();
-      if (this.formBackendType() === 'g' ? !github_token : !base_url) {
+      if (!this.isAuthSource(this.formBackend()) && !base_url) {
         this.notify(this.locale === 'zh' ? '请先填写必填连接信息' : 'Enter required connection details first', 'error');
         return;
       }
@@ -2401,8 +2483,8 @@ function app() {
         name: '__form__',
         base_url,
         api_key: this.formAPIKey(),
-        github_token,
-        backend_type: this.formBackendType(),
+        options: {},
+        backend: this.formBackend(),
       });
     },
     clearFormScratch() {
@@ -2843,9 +2925,9 @@ function app() {
     // 用表单连接参数试拉；允许未落盘源。g 源可按 name 复用已保存 token。
     // cache key 含连接参数，修改后可重新拉取；同时按 name 索引供下拉 opts 使用。
     async fetchUpstreamModels(src) {
-      if (!src || (!(src.base_url || '').trim() && (src.backend_type || 'a') !== 'g')) return;
-      const name = src.name || '';
-      const cacheKey = name + '\0' + (src.base_url || '') + '\0' + (src.backend_type || 'a') + '\0' + (src.github_token || '');
+     if (!src || (!(src.base_url || '').trim() && !this.isAuthSource(src.backend))) return;
+     const name = src.name || '';
+     const cacheKey = name + '\0' + (src.base_url || '') + '\0' + src.backend + '\0' + JSON.stringify(src.options || {});
       if (this.upstreamModels[cacheKey] || this.upstreamLoading[cacheKey]) return;
       this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
       try {
@@ -2853,14 +2935,14 @@ function app() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            base_url: (src.base_url || '').trim(),
-            api_key: src.api_key || '',
-            github_token: src.github_token || '',
-            name,
-            backend_type: src.backend_type || 'a',
-          }),
-        });
-        const j = await r.json();
+           base_url: (src.base_url || '').trim(),
+           api_key: src.api_key || '',
+           name,
+           options: src.options || {},
+           backend: src.backend,
+         }),
+       });
+       const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
         const models = j.models || [];
         const next = Object.assign({}, this.upstreamModels, { [cacheKey]: models });
@@ -2877,22 +2959,21 @@ function app() {
        this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: false });
      }
    },
-    async fetchFormUpstreamModels() {
-      const fields = this.modal.fields || [];
-      const base_url = (fields.find(f => f.key === 'base_url') || {}).value || '';
-      const api_key = (fields.find(f => f.key === 'api_key') || {}).value || '';
-      const github_token = (fields.find(f => f.key === 'github_token') || {}).value || '';
-      const backend_type = (fields.find(f => f.key === 'backend_type') || {}).value || 'a';
-      if (!(backend_type === 'g' ? github_token.trim() : base_url.trim())) return;
-      const cacheKey = '__form__';
-      if (this.upstreamLoading[cacheKey]) return;
-      this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
-      try {
-        const r = await fetch('/admin/api/upstream-models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ base_url: base_url.trim(), api_key: api_key || '', github_token: github_token.trim(), backend_type }),
-        });
+   async fetchFormUpstreamModels() {
+     const fields = this.modal.fields || [];
+     const base_url = (fields.find(f => f.key === 'base_url') || {}).value || '';
+     const api_key = (fields.find(f => f.key === 'api_key') || {}).value || '';
+     const backend = (fields.find(f => f.key === 'backend') || {}).value || 'anthropic';
+     if (!this.isAuthSource(backend) && !base_url.trim()) return;
+     const cacheKey = '__form__';
+     if (this.upstreamLoading[cacheKey]) return;
+     this.upstreamLoading = Object.assign({}, this.upstreamLoading, { [cacheKey]: true });
+     try {
+       const r = await fetch('/admin/api/upstream-models', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ base_url: base_url.trim(), api_key: api_key || '', options: {}, backend }),
+       });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || j.error || 'HTTP ' + r.status);
         const models = j.models || [];
@@ -2972,19 +3053,19 @@ function app() {
     },
     // 表单内 select 变化：记录新值，并联动同表单里 syncFrom 指向本字段的
     // 复选框按其 syncDefault 重算默认（仅当用户未手动改过）。
-    onFormSelectChange(f, value) {
-      const wasCopilot = f.key === 'backend_type' && this.formBackendType() === 'g';
-      f.value = value;
-      const fields = this.modal.fields || [];
-      fields.forEach(cb => {
-        if (cb.syncFrom === f.key && !cb._touched && typeof cb.syncDefault === 'function') {
-          cb.value = cb.syncDefault(value);
-        }
-      });
-      if (f.key !== 'backend_type') return;
-      if (value === 'g' && !wasCopilot) { void this.beginFormCopilotAuth(); return; }
-      if (wasCopilot && value !== 'g') {
-        void this.cancelCopilotAuth().then(() => {
+   onFormSelectChange(f, value) {
+     const wasCopilot = f.key === 'backend' && this.isAuthSource(this.formBackend());
+     f.value = value;
+     const fields = this.modal.fields || [];
+     fields.forEach(cb => {
+       if (cb.syncFrom === f.key && !cb._touched && typeof cb.syncDefault === 'function') {
+         cb.value = cb.syncDefault(value);
+       }
+     });
+     if (f.key !== 'backend') return;
+     if (this.isAuthSource(value) && !wasCopilot) { void this.beginFormCopilotAuth(); return; }
+     if (wasCopilot && !this.isAuthSource(value)) {
+       void this.cancelCopilotAuth().then(() => {
           clearTimeout(this._copilotAuthTimer);
           this.$refs.authModal?.close();
           this.copilotAuth = null;
@@ -3011,26 +3092,27 @@ function app() {
       // 先显示 starting 面板：GitHub 网络慢时用户也能立刻看到授权流程已启动。
       this.copilotAuth = { state: 'starting', source_name: name };
       this.openCopilotAuthPanel();
-      return this.startCopilotAuth({
-        name,
-        base_url: '',
-        backend_type: 'g',
-        api_key: String(fieldValue('api_key') || ''),
-        github_token: '',
-        default_model: String(fieldValue('default_model') || '').trim(),
+     return this.startCopilotAuth({
+       name,
+       base_url: '',
+       backend: this.formBackend(),
+       api_key: String(fieldValue('api_key') || ''),
+       options: {},
+       default_model: String(fieldValue('default_model') || '').trim(),
         model_map: {},
         supports_web_search: fieldValue('supports_web_search') !== false,
         disabled: false,
       });
     },
-    formIsCopilot() {
-      return this.modal.kind === 'form' && this.formBackendType() === 'g';
-    },
-    // Copilot 源的 endpoint 由发现逻辑解析，凭据由 Device Flow 提供。
-    fieldVisible(f) {
-      if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key' || f.key === 'github_token')) return false;
-      return true;
-    },
+   formIsCopilot() {
+     return this.modal.kind === 'form' && this.isAuthSource(this.formBackend());
+   },
+   // Copilot 源的 endpoint 由发现逻辑解析，凭据由 Device Flow 提供。
+   fieldVisible(f) {
+     if (f._backend && f._backend !== this.formBackend()) return false;
+     if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key')) return false;
+     return true;
+   },
     confirmModal() {
       const r = this.modal;
       const resolve = r._resolve;

@@ -39,7 +39,7 @@ func TestAnthropicBackend_ReportsCacheUsage(t *testing.T) {
 	var up UpstreamEvent
 	err := b.Execute(logging.WithRequestID(context.Background(), "req-anthropic-usage"),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error { return nil },
 		func(ev UpstreamEvent) { up = ev },
@@ -96,7 +96,7 @@ func TestAnthropicBackend_ClientToolOmitsType(t *testing.T) {
 	b := NewAnthropic()
 	_ = b.Execute(logging.WithRequestID(context.Background(), "req-tools-type"),
 		[]byte(`{"model":"m","input":"hi","tools":[{"type":"custom","name":"c1"},{"type":"web_search"}],"stream":true}`),
-		config.Source{Name: "ds", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "ds", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		nil,
 		func(model.SSEEvent) error { return nil },
 		func(UpstreamEvent) {},
@@ -137,7 +137,7 @@ func TestAnthropicBackend_BearerOnlyAddsThinkingBudget(t *testing.T) {
 	b := NewAnthropic()
 	_ = b.ExecuteWithAuthorization(context.Background(),
 		[]byte(`{"model":"m","input":"hi","reasoning":{"effort":"medium"},"max_output_tokens":4096,"stream":true}`),
-		config.Source{Name: "bearer", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "bearer", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		nil,
 		func(model.SSEEvent) error { return nil },
 		func(UpstreamEvent) {},
@@ -172,7 +172,7 @@ func TestAnthropicBackend_MaxTokensReportsIncomplete(t *testing.T) {
 	b := NewAnthropic()
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error { return nil },
 		func(ev UpstreamEvent) { up = ev },
@@ -214,7 +214,7 @@ func TestAnthropicBackend_SetEchoOnCompleted(t *testing.T) {
 	b := NewAnthropic()
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","instructions":"sys-echo","temperature":0.2,"input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error {
 			if ev.Type == "response.completed" {
@@ -261,7 +261,7 @@ func TestAnthropicBackend_MissingMessageStopStillCompletes(t *testing.T) {
 	b := NewAnthropic()
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error {
 			types = append(types, ev.Type)
@@ -301,7 +301,7 @@ func TestAnthropicBackend_MidStreamEOFCode200(t *testing.T) {
 	b := NewAnthropic()
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error { types = append(types, ev.Type); return nil },
 		func(ev UpstreamEvent) { up = ev },
@@ -334,7 +334,7 @@ func TestAnthropicBackend_FirstErrorReportsCodes(t *testing.T) {
 	b := NewAnthropic()
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","input":"hi","stream":true}`),
-		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", BackendType: "a"},
+		config.Source{Name: "a1", BaseURL: ts.URL, APIKey: "k", Backend: "anthropic"},
 		&config.Config{},
 		func(ev model.SSEEvent) error { types = append(types, ev.Type); return nil },
 		func(ev UpstreamEvent) { up = ev },

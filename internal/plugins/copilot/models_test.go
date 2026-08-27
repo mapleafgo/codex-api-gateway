@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/mapleafgo/codex-api-gateway/internal/config"
 )
 
 func TestModelCacheFiltersZedVisibleChatModels(t *testing.T) {
@@ -210,9 +208,7 @@ func TestClientDirectoryResolvesEndpointAndSortsModels(t *testing.T) {
 	t.Cleanup(func() { graphqlURL = previous })
 
 	client := NewWithHTTP(graphql.Client(), "")
-	dir, err := client.Directory(context.Background(), config.Source{
-		Name: "copilot", BackendType: config.BackendGitHubCopilot, GithubToken: "token",
-	})
+	dir, err := client.Directory(context.Background(), tokenSource("copilot", "token", ""))
 	if err != nil {
 		t.Fatalf("Directory: %v", err)
 	}
@@ -230,9 +226,7 @@ func TestClientDirectoryReturnsEndpointWhenModelsFail(t *testing.T) {
 	defer api.Close()
 
 	client := NewWithHTTP(api.Client(), api.URL)
-	dir, err := client.Directory(context.Background(), config.Source{
-		Name: "copilot", BackendType: config.BackendGitHubCopilot, GithubToken: "token",
-	})
+	dir, err := client.Directory(context.Background(), tokenSource("copilot", "token", ""))
 	if err == nil {
 		t.Fatal("expected model fetch error")
 	}

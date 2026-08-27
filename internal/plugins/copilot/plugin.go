@@ -3,13 +3,10 @@ package copilot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
@@ -84,77 +81,18 @@ func (p *Plugin) ValidateSource(src config.Source) error {
 }
 
 // Backend 返回协议适配后端。
-func (p *Plugin) Backend() plugin.Backend { return normalizeBackend{p.b} }
+func (p *Plugin) Backend() plugin.Backend { return p.b }
 
-// ListModels 拉取 Copilot 筛选后的模型目录。
-func (p *Plugin) ListModels(ctx context.Context, src config.Source) ([]plugin.Model, error) {
-	ms, err := p.b.ListModels(ctx, withCopilotToken(src))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]plugin.Model, 0, len(ms))
-	for _, m := range ms {
-		out = append(out, plugin.Model{ID: m.ID})
-	}
-	return out, nil
-}
-
-// Probe 健康探测：复用 Copilot 的 endpoint 发现 + token 交换拉取模型目录，
-// 成功即可达；十秒管理超时与降级阈值与其它源一致。
-func (p *Plugin) Probe(ctx context.Context, src config.Source) plugin.ProbeResult {
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	models, err := p.b.ListModels(ctx, withCopilotToken(src))
-	latency := time.Since(start)
-	if err != nil {
-		return plugin.ProbeResult{Status: plugin.ProbeFailed, Message: fmt.Sprintf("探活失败: %v", err), Latency: latency, Time: time.Now(), Err: err}
-	}
-	status := plugin.ProbeOperational
-	msg := fmt.Sprintf("正常（%d 个模型）", len(models))
-	if latency.Milliseconds() > 5000 {
-		status = plugin.ProbeDegraded
-		msg = fmt.Sprintf("可达但较慢 (%dms)", latency.Milliseconds())
-	}
-	return plugin.ProbeResult{Status: status, Code: 200, Latency: latency, Message: msg, Time: time.Now()}
-}
-
-// copilotToken 返回配置中的 GitHub token：优先 options.github_token（Config v2），
-// 兜底旧的 github_token 顶层字段。
+// copilotToken 返回配置中的 GitHub token：只从插件声明的 options 区读取，
+// 共享核心不承载任何顶层 github_token 专属字段。
 func copilotToken(src config.Source) string {
 	if t, _ := src.Options["github_token"].(string); t != "" {
 		return t
 	}
-	return src.GithubToken
+	return ""
 }
 
-// withCopilotToken 把 options.github_token 归一化到 src.GithubToken，供内部委托。
-func withCopilotToken(src config.Source) config.Source {
-	if t, _ := src.Options["github_token"].(string); t != "" {
-		src.GithubToken = t
-	}
-	return src
-}
-
-// normalizeBackend 是归一化委托层：执行前把 options.github_token 填进 src，
-// 使被委托的 r/a/c 后端只认 src.GithubToken，插件边界内不影响共享核心。
-type normalizeBackend struct {
-	inner plugin.Backend
-}
-
-func (n normalizeBackend) Execute(
-	ctx context.Context,
-	rawBody []byte,
-	src config.Source,
-	cfg *config.Config,
-	onEvent func(model.SSEEvent) error,
-	onUpstream func(plugin.UpstreamEvent),
-	attempt int,
-) error {
-	return n.inner.Execute(ctx, rawBody, withCopilotToken(src), cfg, onEvent, onUpstream, attempt)
-}
-
-var _ plugin.Backend = normalizeBackend{}
+var _ plugin.Backend = (*Backend)(nil)
 var _ plugin.HealthProbe = (*Plugin)(nil)
 var _ plugin.AdminExtension = (*Plugin)(nil)
 var _ plugin.CallbackInjector = (*Plugin)(nil)

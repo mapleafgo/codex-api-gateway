@@ -35,17 +35,6 @@ func TestValidateSourceAcceptsTokenInOptions(t *testing.T) {
 	}
 }
 
-func TestValidateSourceAcceptsTokenInLegacyField(t *testing.T) {
-	p := New()
-	err := p.ValidateSource(config.Source{
-		Name: "copilot", Backend: "github-copilot",
-		GithubToken: "gho_secret",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestValidateSourceMissingTokenReturnsPluginError(t *testing.T) {
 	p := New()
 	err := p.ValidateSource(config.Source{Name: "copilot", Backend: "github-copilot"})

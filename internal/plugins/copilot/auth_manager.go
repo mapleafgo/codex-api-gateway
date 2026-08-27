@@ -355,8 +355,8 @@ type deviceFlowDraft struct {
 	Name              string            `json:"name"`
 	BaseURL           string            `json:"base_url"`
 	APIKey            string            `json:"api_key"`
-	BackendType       string            `json:"backend_type"`
-	GithubToken       string            `json:"github_token"`
+	Backend           string            `json:"backend"`
+	Options           map[string]any    `json:"options"`
 	ModelMap          map[string]string `json:"model_map"`
 	DefaultModel      string            `json:"default_model"`
 	Disabled          bool              `json:"disabled"`
@@ -371,21 +371,23 @@ func (d deviceFlowDraft) buildDraft() (config.Source, error) {
 	if name == "" {
 		return config.Source{}, errors.New("missing source name")
 	}
-	norm, err := config.NormalizeBackendType(d.BackendType)
-	if err != nil {
-		return config.Source{}, err
+	backend := strings.TrimSpace(d.Backend)
+	if backend != string(plugin.BackendGitHubCopilot) {
+		return config.Source{}, errors.New("source must be a Copilot backend")
 	}
-	if norm != config.BackendGitHubCopilot {
-		return config.Source{}, errors.New("source must be backend_type=g")
-	}
-	if strings.TrimSpace(d.GithubToken) != "" {
+	if tok, _ := d.Options["github_token"].(string); strings.TrimSpace(tok) != "" {
 		return config.Source{}, errors.New("github_token must be empty for device flow")
+	}
+	options := make(map[string]any, len(d.Options))
+	for k, v := range d.Options {
+		options[k] = v
 	}
 	return config.Source{
 		Name:              name,
 		Backend:           plugin.BackendGitHubCopilot,
 		BaseURL:           strings.TrimSpace(d.BaseURL),
 		APIKey:            strings.TrimSpace(d.APIKey),
+		Options:           options,
 		ModelMap:          d.ModelMap,
 		DefaultModel:      strings.TrimSpace(d.DefaultModel),
 		Disabled:          d.Disabled,

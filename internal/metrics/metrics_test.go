@@ -54,7 +54,7 @@ func TestCollectorAggregates(t *testing.T) {
 	if s.TotalCacheCreate != 220 {
 		t.Errorf("TotalCacheCreate = %d, want 220", s.TotalCacheCreate)
 	}
-	// BackendType 缺省按 Anthropic 处理，总输入已归一化。
+	// Backend 缺省按 Anthropic 处理，总输入已归一化。
 	// 命中率 = 380 / 1200
 	want := 380.0 / 1200.0
 	if s.CacheHitRate == nil || absFloat(*s.CacheHitRate-want) > 1e-9 {

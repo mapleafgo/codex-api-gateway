@@ -113,9 +113,9 @@ func noopCallbacks() plugin.AdminCallbacks {
 	}
 }
 
-func TestDeviceFlowRejectsManualToken(t *testing.T) {
+func TestDeviceFlowRejectsManualTokenInOptions(t *testing.T) {
 	p := newTestPlugin(t, nil)
-	res, _ := invokeStart(t, p, `{"source":{"name":"copilot","backend_type":"g","github_token":"ghp_manual"}}`)
+	res, _ := invokeStart(t, p, `{"source":{"name":"copilot","backend":"github-copilot","options":{"github_token":"ghp_manual"}}}`)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.Code)
 	}
@@ -123,7 +123,7 @@ func TestDeviceFlowRejectsManualToken(t *testing.T) {
 
 func TestDeviceFlowRejectsNonCopilotBackend(t *testing.T) {
 	p := newTestPlugin(t, nil)
-	res, _ := invokeStart(t, p, `{"source":{"name":"s1","backend_type":"a","base_url":"https://example.com"}}`)
+	res, _ := invokeStart(t, p, `{"source":{"name":"s1","backend":"anthropic","base_url":"https://example.com"}}`)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.Code)
 	}
@@ -131,7 +131,7 @@ func TestDeviceFlowRejectsNonCopilotBackend(t *testing.T) {
 
 func TestDeviceFlowRejectsMissingName(t *testing.T) {
 	p := newTestPlugin(t, nil)
-	res, _ := invokeStart(t, p, `{"source":{"name":"  ","backend_type":"g"}}`)
+	res, _ := invokeStart(t, p, `{"source":{"name":"  ","backend":"github-copilot"}}`)
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.Code)
 	}
@@ -145,7 +145,7 @@ func TestDeviceFlowStatusAwaitingUser(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 	}))
-	res, st := invokeStart(t, p, `{"source":{"name":"copilot","backend_type":"g"}}`)
+	res, st := invokeStart(t, p, `{"source":{"name":"copilot","backend":"github-copilot"}}`)
 	if res.Code != http.StatusOK {
 		t.Fatalf("start = %d, want 200", res.Code)
 	}
@@ -176,7 +176,7 @@ func TestDeviceFlowCancel(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"error":"authorization_pending"}`))
 	}))
-	if res, _ := invokeStart(t, p, `{"source":{"name":"cancel-me","backend_type":"g"}}`); res.Code != http.StatusOK {
+	if res, _ := invokeStart(t, p, `{"source":{"name":"cancel-me","backend":"github-copilot"}}`); res.Code != http.StatusOK {
 		t.Fatalf("start = %d", res.Code)
 	}
 	_ = waitAuthState(t, p, "awaiting_user")
@@ -184,7 +184,7 @@ func TestDeviceFlowCancel(t *testing.T) {
 	if res.Code != http.StatusOK || st.State != "cancelled" {
 		t.Fatalf("cancel: code=%d state=%q", res.Code, st.State)
 	}
-	if res, _ := invokeStart(t, p, `{"source":{"name":"again","backend_type":"g"}}`); res.Code != http.StatusOK {
+	if res, _ := invokeStart(t, p, `{"source":{"name":"again","backend":"github-copilot"}}`); res.Code != http.StatusOK {
 		t.Fatalf("restart = %d", res.Code)
 	}
 	_, _ = invokeCancel(p)
@@ -211,7 +211,7 @@ func TestDeviceFlowSuccessSavesNewSource(t *testing.T) {
 			return nil
 		},
 	})
-	res, _ := invokeStart(t, p, `{"source":{"name":"copilot","backend_type":"g","default_model":"gpt-5.3-codex"}}`)
+	res, _ := invokeStart(t, p, `{"source":{"name":"copilot","backend":"github-copilot","default_model":"gpt-5.3-codex"}}`)
 	if res.Code != http.StatusOK {
 		t.Fatalf("start = %d, want 200", res.Code)
 	}
@@ -247,7 +247,7 @@ func TestDeviceFlowPendingThenSuccess(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"ghu_after_pending"}`))
 	}))
 	p.InjectCallbacks(noopCallbacks())
-	invokeStart(t, p, `{"source":{"name":"pending","backend_type":"g"}}`)
+	invokeStart(t, p, `{"source":{"name":"pending","backend":"github-copilot"}}`)
 	if st := waitAuthState(t, p, "authorized"); st.State != "authorized" {
 		t.Fatalf("pending flow state = %q", st.State)
 	}
@@ -262,7 +262,7 @@ func TestDeviceFlowStatusNeverExposesToken(t *testing.T) {
 		_, _ = w.Write([]byte(`{"access_token":"ghu_topsecret"}`))
 	}))
 	p.InjectCallbacks(noopCallbacks())
-	invokeStart(t, p, `{"source":{"name":"secret-src","backend_type":"g"}}`)
+	invokeStart(t, p, `{"source":{"name":"secret-src","backend":"github-copilot"}}`)
 	_ = waitAuthState(t, p, "authorized")
 	st := invokeStatus(p)
 	raw, _ := json.Marshal(st)
@@ -295,7 +295,7 @@ func TestDeviceFlowSaveFailureErrorState(t *testing.T) {
 		Snapshot: func() *config.Config { return &config.Config{} },
 		Write:    func(c *config.Config) error { return errors.New("disk full") },
 	})
-	invokeStart(t, p, `{"source":{"name":"savefail","backend_type":"g"}}`)
+	invokeStart(t, p, `{"source":{"name":"savefail","backend":"github-copilot"}}`)
 	st := waitAuthState(t, p, "error")
 	if !strings.Contains(st.Error, "disk full") {
 		t.Fatalf("save failure error = %q", st.Error)
@@ -311,7 +311,7 @@ func TestDeviceFlowDenied(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"access_denied"}`))
 	}))
 	p.InjectCallbacks(noopCallbacks())
-	invokeStart(t, p, `{"source":{"name":"denied","backend_type":"g"}}`)
+	invokeStart(t, p, `{"source":{"name":"denied","backend":"github-copilot"}}`)
 	if st := waitAuthState(t, p, "error"); !strings.Contains(st.Error, "cancelled") {
 		t.Fatalf("denied error = %q", st.Error)
 	}

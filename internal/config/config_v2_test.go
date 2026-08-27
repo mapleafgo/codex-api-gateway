@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // stubValidator 记录被校验的 source，模拟插件级校验。
@@ -204,28 +206,6 @@ sources:
 	}
 }
 
-// TestLegacyBackendTypeMapsToID 验证过渡期旧短码被映射到稳定 Backend ID。
-func TestLegacyBackendTypeMapsToID(t *testing.T) {
-	cases := []struct {
-		bt   string
-		want string
-	}{
-		{"a", "anthropic"},
-		{"c", "openai-chat"},
-		{"r", "openai-responses"},
-		{"g", "github-copilot"},
-	}
-	for _, tc := range cases {
-		cfg := Config{Sources: []Source{{Name: "s", BackendType: tc.bt, BaseURL: "https://x"}}}
-		if err := cfg.validate(nil); err != nil {
-			t.Fatalf("backend_type=%q: %v", tc.bt, err)
-		}
-		if got := cfg.Sources[0].Backend; got != tc.want {
-			t.Errorf("backend_type=%q mapped Backend=%q want %q", tc.bt, got, tc.want)
-		}
-	}
-}
-
 // TestDuplicateSourceNameRejected 验证 source 名称唯一性约束。
 func TestDuplicateSourceNameRejected(t *testing.T) {
 	cfg := Config{Sources: []Source{
@@ -234,14 +214,6 @@ func TestDuplicateSourceNameRejected(t *testing.T) {
 	}}
 	if err := cfg.validate(nil); err == nil {
 		t.Fatal("expected duplicate source name error")
-	}
-}
-
-// TestUnknownBackendTypeRejected 验证不认识的旧短码被拒绝，提示改用 backend。
-func TestUnknownBackendTypeRejected(t *testing.T) {
-	cfg := Config{Sources: []Source{{Name: "s", BackendType: "z", BaseURL: "https://x"}}}
-	if err := cfg.validate(nil); err == nil {
-		t.Fatal("expected error for unknown backend_type")
 	}
 }
 
@@ -273,7 +245,7 @@ sources:
 }
 
 // TestLoadRejectsLegacyBackendType 验证 Config v2 磁盘加载严格拒绝 source 级 backend_type。
-// 内部构造的 Source 仍可携带过渡字段（US 迁移期），但磁盘配置必须用稳定 backend。
+// Source 结构体已不含该字段，磁盘配置必须使用稳定 backend。
 func TestLoadRejectsLegacyBackendType(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -337,5 +309,54 @@ sources:
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected error for missing backend, got nil")
+	}
+}
+
+// TestGithubTokenYAMLRoundTrip 验证 github-copilot 源的序列化形状：
+// Backend 使用稳定 ID，github_token 只落在 options.github_token，
+// 绝不写出过时的 backend_type 或顶层 github_token。
+func TestGithubTokenYAMLRoundTrip(t *testing.T) {
+	cfg := Config{
+		Sources: []Source{{
+			Name:    "copilot",
+			Backend: "github-copilot",
+			Options: map[string]any{"github_token": "gho_test_token_123"},
+		}},
+	}
+	if err := cfg.validate(nil); err != nil {
+		t.Fatalf("validate failed: %v", err)
+	}
+
+	data, err := yaml.Marshal(cfg.Sources[0])
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal doc: %v", err)
+	}
+	if _, ok := doc["github_token"]; ok {
+		t.Fatalf("top-level github_token must not be written:\n%s", data)
+	}
+	if _, ok := doc["backend_type"]; ok {
+		t.Fatalf("backend_type must not be written:\n%s", data)
+	}
+	opts, ok := doc["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("options missing from written YAML:\n%s", data)
+	}
+	if got := opts["github_token"]; got != "gho_test_token_123" {
+		t.Fatalf("options.github_token = %v (%T), want gho_test_token_123\n%s", got, got, data)
+	}
+
+	var src Source
+	if err := yaml.Unmarshal(data, &src); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if src.Backend != "github-copilot" {
+		t.Errorf("Backend = %q, want github-copilot", src.Backend)
+	}
+	if got := src.Options["github_token"]; got != "gho_test_token_123" {
+		t.Errorf("Options[github_token] = %v (%T), want gho_test_token_123", got, got)
 	}
 }

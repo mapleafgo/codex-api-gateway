@@ -33,17 +33,17 @@ func newTestRegistry() *plugin.Registry {
 // --- helpers --------------------------------------------------------------
 
 func makeSource(name, baseURL string, idx int) config.Source {
-	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, BackendType: config.BackendAnthropic}
+	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, Backend: "anthropic"}
 }
 
 func makeChatSource(name, baseURL string, idx int) config.Source {
-	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, BackendType: config.BackendOpenAIChat}
+	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, Backend: "openai-chat"}
 }
 
 func makeCopilotSource(name, baseURL string, idx int) config.Source {
 	return config.Source{
 		Name: name, BaseURL: baseURL, OriginalIndex: idx,
-		BackendType: config.BackendGitHubCopilot, GithubToken: "copilot-token",
+		Backend: "github-copilot", Options: map[string]any{"github_token": "copilot-token"},
 	}
 }
 
@@ -639,9 +639,9 @@ func TestRecoverRestoresOriginalPosition(t *testing.T) {
 			MaxRetries:                0,
 		},
 		Sources: []config.Source{
-			{Name: "A", BaseURL: flipFlop.URL, OriginalIndex: 0, BackendType: config.BackendAnthropic,
+			{Name: "A", BaseURL: flipFlop.URL, OriginalIndex: 0, Backend: "anthropic",
 				Breaker: &config.BreakerCfg{DegradeThreshold: 3}},
-			{Name: "B", BaseURL: bad2.URL, OriginalIndex: 1, BackendType: config.BackendAnthropic,
+			{Name: "B", BaseURL: bad2.URL, OriginalIndex: 1, Backend: "anthropic",
 				Breaker: &config.BreakerCfg{DegradeThreshold: 100}},
 		},
 	}
@@ -1126,8 +1126,8 @@ func TestSourceHealthAndPromote(t *testing.T) {
 			Recovery:                  "normal",
 		},
 		Sources: []config.Source{
-			{Name: "a", BaseURL: "https://a.example", APIKey: "k", DefaultModel: "m"},
-			{Name: "b", BaseURL: "https://b.example", APIKey: "k", DefaultModel: "m"},
+			{Name: "a", BaseURL: "https://a.example", APIKey: "k", DefaultModel: "m", Backend: "anthropic"},
+			{Name: "b", BaseURL: "https://b.example", APIKey: "k", DefaultModel: "m", Backend: "anthropic"},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -1569,7 +1569,7 @@ func TestListUpstreamModels_Responses(t *testing.T) {
 	cfg := &config.Config{
 		Sources: []config.Source{{
 			Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k",
-			BackendType: config.BackendOpenAIResponses, OriginalIndex: 0,
+			Backend: "openai-responses", OriginalIndex: 0,
 		}},
 	}
 	s := New(cfg, newTestRegistry())

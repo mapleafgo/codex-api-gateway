@@ -87,7 +87,8 @@ func (b *Backend) Execute(
 		"backend", plugin.BackendGitHubCopilot,
 		"attempt", attempt)
 
-	if src.GithubToken == "" {
+	token := copilotToken(src)
+	if token == "" {
 		return fmt.Errorf("copilot: source %q missing github_token", src.Name)
 	}
 
@@ -117,7 +118,7 @@ func (b *Backend) Execute(
 
 	delegateSrc := src
 	delegateSrc.BaseURL = endpoint
-	delegateSrc.APIKey = src.GithubToken
+	delegateSrc.APIKey = token
 	delegateSrc.Headers = mergeHeaders(src.Headers, Headers())
 	// Copilot /responses 为原生 OpenAI Responses 兼容端点，接受原生 reasoning
 	// 形态；委托时关闭共享 r 路径的兼容折算，工具调用 id 命名空间归一化在本包完成。

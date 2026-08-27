@@ -221,7 +221,7 @@ func TestIncludeLogprobsChatNoWarn(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
 		Sources: []config.Source{{
-			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
+			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", Backend: "openai-chat",
 		}},
 	}
 	srv := newSrv(cfg)
@@ -1149,15 +1149,10 @@ func TestResponsesPassthroughBackend(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
-			BackendType: config.BackendOpenAIResponses,
-			ModelMap:    map[string]string{"gpt-5": "upstream-m"},
+			Backend:  "openai-responses",
+			ModelMap: map[string]string{"gpt-5": "upstream-m"},
 		}},
 	}
-	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Sources[0].BackendType = bt
 
 	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
@@ -1213,15 +1208,10 @@ func TestPreviousResponseIDNoDiscardWarnWithResponsesSource(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
-			BackendType: config.BackendOpenAIResponses,
-			ModelMap:    map[string]string{"gpt-5": "upstream-m"},
+			Backend:  "openai-responses",
+			ModelMap: map[string]string{"gpt-5": "upstream-m"},
 		}},
 	}
-	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Sources[0].BackendType = bt
 
 	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
@@ -1256,7 +1246,7 @@ func TestResponsesFailedTerminalRecordsFailedClientStatus(t *testing.T) {
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
 			Name: "resp", BaseURL: upstream.URL + "/v1", APIKey: "k",
-			BackendType: config.BackendOpenAIResponses,
+			Backend: "openai-responses",
 		}},
 	}
 	srv := newSrv(cfg)
@@ -1303,7 +1293,7 @@ func TestAnthropicIncompleteTerminalRecordsIncompleteClientStatus(t *testing.T) 
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0},
 		Sources: []config.Source{{
 			Name: "anthropic", BaseURL: upstream.URL, APIKey: "k",
-			BackendType: config.BackendAnthropic,
+			Backend: "anthropic",
 		}},
 	}
 	srv := newSrv(cfg)
@@ -1344,7 +1334,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 	tests := []struct {
 		name           string
 		sourceName     string
-		backendType    string
+		backend        string
 		baseURLSuffix  string
 		convertedLog   string
 		finalLog       string
@@ -1353,7 +1343,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 		{
 			name:          "Responses",
 			sourceName:    "resp",
-			backendType:   config.BackendOpenAIResponses,
+			backend:       plugin.BackendOpenAIResponses,
 			baseURLSuffix: "/v1",
 			convertedLog:  "Responses 透传请求准备完成",
 			finalLog:      "Responses 上游流结束",
@@ -1363,7 +1353,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 		{
 			name:          "Chat",
 			sourceName:    "chat",
-			backendType:   config.BackendOpenAIChat,
+			backend:       plugin.BackendOpenAIChat,
 			baseURLSuffix: "/v1",
 			convertedLog:  "Chat 请求转换完成",
 			finalLog:      "Chat 上游流结束",
@@ -1374,7 +1364,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 		{
 			name:         "Anthropic",
 			sourceName:   "anthropic",
-			backendType:  config.BackendAnthropic,
+			backend:      plugin.BackendAnthropic,
 			convertedLog: "请求转换完成",
 			finalLog:     "Anthropic 上游流结束",
 			upstreamStream: `data: {"type":"message_start","message":{"id":"m1","model":"claude","usage":{"input_tokens":1,"output_tokens":0}}}` + "\n\n" +
@@ -1403,7 +1393,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 				Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0},
 				Sources: []config.Source{{
 					Name: tt.sourceName, BaseURL: upstream.URL + tt.baseURLSuffix, APIKey: "k",
-					BackendType: tt.backendType,
+					Backend: tt.backend,
 				}},
 			}
 			srv := newSrv(cfg)
@@ -1426,7 +1416,7 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 				tt.finalLog:     false,
 				"响应请求完成":        false,
 			}
-			if tt.backendType == config.BackendAnthropic {
+			if tt.backend == plugin.BackendAnthropic {
 				wanted["发起上游流式请求"] = false
 				wanted["上游流式请求已建立"] = false
 				wanted["SSE 事件流读取结束"] = false
@@ -1460,12 +1450,11 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 					}
 					// 所有层级日志统一用稳定 backend 插件 ID（全字符串），
 					// 取代旧的 backend_type 单字符短码。
-					wantPluginID := pluginIDForBackend(tt.backendType)
-					if record["backend"] != wantPluginID {
-						t.Fatalf("message %q backend=%v want %q: %s", message, record["backend"], wantPluginID, line)
+					if record["backend"] != tt.backend {
+						t.Fatalf("message %q backend=%v want %q: %s", message, record["backend"], tt.backend, line)
 					}
 				}
-				if tt.backendType == config.BackendAnthropic && message == tt.convertedLog {
+				if tt.backend == plugin.BackendAnthropic && message == tt.convertedLog {
 					if record["max_tokens"] != float64(config.DefaultAnthropicMaxTokens) {
 						t.Fatalf("converted max_tokens=%v want %d: %s", record["max_tokens"], config.DefaultAnthropicMaxTokens, line)
 					}
@@ -1480,23 +1469,6 @@ func TestRequestLogsShareRequestIDAndAttemptAcrossBackends(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// pluginIDForBackend 把单字符 backend_type 短码映射到插件稳定 ID，
-// 用于校验后端日志中的 backend 字段（过渡期 scheduler 仍用短码，后端用全名）。
-func pluginIDForBackend(bt string) string {
-	switch bt {
-	case config.BackendAnthropic:
-		return plugin.BackendAnthropic
-	case config.BackendOpenAIChat:
-		return plugin.BackendOpenAIChat
-	case config.BackendOpenAIResponses:
-		return plugin.BackendOpenAIResponses
-	case config.BackendGitHubCopilot:
-		return plugin.BackendGitHubCopilot
-	default:
-		return bt
 	}
 }
 
@@ -1515,15 +1487,9 @@ func TestResponsesChatBackendEndToEnd(t *testing.T) {
 	cfg := &config.Config{
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second), MaxRetries: 0, DegradeThreshold: 3, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1},
 		Sources: []config.Source{{
-			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", BackendType: config.BackendOpenAIChat,
+			Name: "chat", BaseURL: upstream.URL + "/v1", APIKey: "k", Backend: "openai-chat",
 		}},
 	}
-	// validate normalizes backend type
-	bt, err := config.NormalizeBackendType(cfg.Sources[0].BackendType)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Sources[0].BackendType = bt
 
 	srv := newSrv(cfg)
 	ts := httptest.NewServer(srv.Handler())
@@ -1625,7 +1591,7 @@ func TestResponsesRejectsOversizedBody(t *testing.T) {
 	cfg := &config.Config{
 		Server:  config.ServerCfg{MaxBodyMB: 1}, // 1 MiB
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(5 * time.Second)},
-		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:1"}},
+		Sources: []config.Source{{Name: "up", BaseURL: "http://127.0.0.1:1", Backend: "openai-responses"}},
 	}
 	// 补默认，对齐生产 Load 路径。
 	if err := cfg.Validate(); err != nil {

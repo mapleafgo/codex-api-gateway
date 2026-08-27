@@ -393,13 +393,10 @@ func (s *Scheduler) sourceByName(name string) (config.Source, bool) {
 	return config.Source{}, false
 }
 
-// backendID 返回源配置的稳定 Backend ID。旧配置（backend_type 短码）经由
-// config.Load 的过渡映射已填入 Backend；此处兜底处理手工构造的 Source。
+// backendID 返回源配置声明的稳定 Backend ID。Config v2 下该字段必填，
+// 其余路径（旧短码读取、归一化）已全部移除。
 func (s *Scheduler) backendID(src *config.Source) string {
-	if src.Backend != "" {
-		return src.Backend
-	}
-	return string(plugin.LegacyBackendTypeToID(src.BackendType))
+	return src.Backend
 }
 
 // streamingKind 按插件 Descriptor 返回源的流式形态；插件未注册时默认视为
@@ -453,7 +450,7 @@ func (s *Scheduler) waitBackoff(ctx context.Context, attempt int) error {
 	}
 }
 
-// ExecuteGeneric 按 runtime 优先级尝试各源，根据 backend_type 选择 Backend。
+// ExecuteGeneric 按 runtime 优先级尝试各源，根据 backend 插件 ID 选择 Backend。
 // rawBody 为客户端 Responses JSON；onEvent 接收已转换的 Responses SSE。
 func (s *Scheduler) ExecuteGeneric(
 	ctx context.Context,

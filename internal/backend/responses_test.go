@@ -60,7 +60,7 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 // Codex 多 agent 的明文 agent_message 按 wire 等价物恢复为 assistant message。
 // Responses 兼容上游不认识 agent_message 扩展时不能静默丢掉初始任务。
 func TestPrepareUpstreamBody_RewritesPlaintextAgentMessage(t *testing.T) {
-	src := config.Source{BackendType: config.BackendOpenAIResponses}
+	src := config.Source{Backend: "openai-responses"}
 	raw := []byte(`{
 		"model":"gpt-5",
 		"input":[
@@ -106,7 +106,7 @@ func TestPrepareUpstreamBody_RewritesPlaintextAgentMessage(t *testing.T) {
 }
 
 func TestPrepareUpstreamBody_PreservesEncryptedAgentMessage(t *testing.T) {
-	src := config.Source{BackendType: config.BackendOpenAIResponses}
+	src := config.Source{Backend: "openai-responses"}
 	raw := []byte(`{
 		"model":"gpt-5",
 		"input":[
@@ -134,7 +134,7 @@ func TestPrepareUpstreamBody_StripsWebSearchWhenUnsupported(t *testing.T) {
 	off := false
 	src := config.Source{
 		ModelMap:          map[string]string{"gpt-5": "o3"},
-		BackendType:       config.BackendOpenAIResponses,
+		Backend:           "openai-responses",
 		SupportsWebSearch: &off,
 	}
 	raw := []byte(`{"model":"gpt-5","tools":[{"type":"function","name":"f1"},{"type":"web_search"},{"type":"function","name":"f2"}]}`)
@@ -164,7 +164,7 @@ func TestPrepareUpstreamBody_KeepsWebSearchWhenSupported(t *testing.T) {
 	on := true
 	src := config.Source{
 		ModelMap:          map[string]string{"gpt-5": "o3"},
-		BackendType:       config.BackendOpenAIResponses,
+		Backend:           "openai-responses",
 		SupportsWebSearch: &on,
 	}
 	raw := []byte(`{"model":"gpt-5","tools":[{"type":"web_search"}]}`)
@@ -183,7 +183,7 @@ func TestPrepareUpstreamBody_NeutralizesToolChoiceWhenUnsupported(t *testing.T) 
 	off := false
 	src := config.Source{
 		ModelMap:          map[string]string{"gpt-5": "o3"},
-		BackendType:       config.BackendOpenAIResponses,
+		Backend:           "openai-responses",
 		SupportsWebSearch: &off,
 	}
 	raw := []byte(`{"model":"gpt-5","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`)
@@ -209,7 +209,7 @@ func TestPrepareUpstreamBody_FiltersAllowedToolsWhenUnsupported(t *testing.T) {
 	off := false
 	src := config.Source{
 		ModelMap:          map[string]string{"gpt-5": "o3"},
-		BackendType:       config.BackendOpenAIResponses,
+		Backend:           "openai-responses",
 		SupportsWebSearch: &off,
 	}
 	raw := []byte(`{
@@ -470,7 +470,7 @@ func TestResponsesBackend_EmptyStreamNoSynthetic(t *testing.T) {
 	var events int
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"m","input":[]}`),
-		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "r"},
+		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-responses"},
 		nil,
 		func(e model.SSEEvent) error { events++; return nil },
 		func(ev UpstreamEvent) {

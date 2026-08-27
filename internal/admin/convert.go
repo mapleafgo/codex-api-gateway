@@ -40,14 +40,6 @@ func buildConfigFromInput(in adminConfigInput, current *config.Config, sensitive
 	}
 	for _, sv := range in.Sources {
 		backend := sv.Backend
-		if backend == "" {
-			// 兼容旧管理页请求：backend_type 短码。
-			if n, err := config.NormalizeBackendType(sv.BackendType); err == nil {
-				if id, ok := config.BackendTypeToID(n); ok {
-					backend = id
-				}
-			}
-		}
 		options := sv.Options
 		if options == nil {
 			options = map[string]any{}

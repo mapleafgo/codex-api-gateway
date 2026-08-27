@@ -332,23 +332,17 @@ func (h *handler) handleUpstreamModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		BaseURL     string         `json:"base_url"`
-		APIKey      string         `json:"api_key"`
-		Options     map[string]any `json:"options"`
-		Name        string         `json:"name"`
-		Backend     string         `json:"backend"`
-		BackendType string         `json:"backend_type"`
+		BaseURL string         `json:"base_url"`
+		APIKey  string         `json:"api_key"`
+		Options map[string]any `json:"options"`
+		Name    string         `json:"name"`
+		Backend string         `json:"backend"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
 		return
 	}
 	backend := in.Backend
-	if backend == "" && in.BackendType != "" {
-		if id, ok := config.BackendTypeToID(in.BackendType); ok {
-			backend = id
-		}
-	}
 	if backend == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing backend"})
 		return
@@ -478,8 +472,6 @@ type sourceView struct {
 	APIKey            string            `json:"api_key"`
 	Backend           string            `json:"backend"`
 	Options           map[string]any    `json:"options,omitempty"`
-	GithubToken       string            `json:"github_token,omitempty"`
-	BackendType       string            `json:"backend_type"`
 	ModelMap          map[string]string `json:"model_map"`
 	DefaultModel      string            `json:"default_model"`
 	Breaker           *breakerView      `json:"breaker,omitempty"`
@@ -570,23 +562,11 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	for _, src := range cfg.Sources {
 		backend := src.Backend
-		if backend == "" {
-			if bt, err := config.NormalizeBackendType(src.BackendType); err == nil {
-				if id, ok := config.BackendTypeToID(bt); ok {
-					backend = id
-				}
-			}
-		}
-		shortCode := ""
-		if bt, ok := config.BackendIDToType(backend); ok {
-			shortCode = bt
-		}
 		sv := sourceView{
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
-			Backend:     backend,
-			BackendType: shortCode,
-			Options:     h.redactOptions(backend, src.Options),
-			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
+			Backend:  backend,
+			Options:  h.redactOptions(backend, src.Options),
+			ModelMap: src.ModelMap, DefaultModel: src.DefaultModel,
 			Disabled:          src.Disabled,
 			Headers:           src.Headers,
 			SupportsWebSearch: src.SupportsWebSearch,
@@ -717,26 +697,26 @@ func (h *handler) handleSourceTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		BaseURL     string         `json:"base_url"`
-		APIKey      string         `json:"api_key"`
-		Name        string         `json:"name"`
-		Backend     string         `json:"backend"`
-		BackendType string         `json:"backend_type"`
-		Options     map[string]any `json:"options"`
+		BaseURL string         `json:"base_url"`
+		APIKey  string         `json:"api_key"`
+		Name    string         `json:"name"`
+		Backend string         `json:"backend"`
+		Options map[string]any `json:"options"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid json", Detail: err.Error()})
 		return
 	}
 	backend := strings.TrimSpace(in.Backend)
-	if backend == "" && in.BackendType != "" {
-		if id, ok := config.BackendTypeToID(in.BackendType); ok {
-			backend = id
-		}
-	}
 	if backend == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid backend"})
 		return
+	}
+	if h.deps.Registry != nil {
+		if _, ok := h.deps.Registry.Get(backend); !ok {
+			writeJSON(w, http.StatusBadRequest, errorBody{Error: "unknown backend", Detail: backend})
+			return
+		}
 	}
 	opts := in.Options
 	if opts == nil {
@@ -905,17 +885,6 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(in.Name)
 	baseURL := strings.TrimSpace(in.BaseURL)
 	backend := strings.TrimSpace(in.Backend)
-	if backend == "" && strings.TrimSpace(in.BackendType) != "" {
-		// 兼容旧管理页请求：backend_type 短码。
-		norm, err := config.NormalizeBackendType(in.BackendType)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, errorBody{Error: err.Error()})
-			return
-		}
-		if id, ok := config.BackendTypeToID(norm); ok {
-			backend = id
-		}
-	}
 	if name == "" {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "missing name"})
 		return
@@ -942,27 +911,6 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	options := in.Options
 	if options == nil {
 		options = map[string]any{}
-	}
-	// 兼容旧管理页：前端可能把敏感 option（如 github_token）作为顶层表单字段
-	// 发送。这里基于插件 Schema 把这些字段统一归入 options。
-	if h.deps.Registry != nil {
-		if p, ok := h.deps.Registry.Get(backend); ok {
-			for _, f := range p.Descriptor().Schema {
-				if f.Target != plugin.FieldTargetOption || f.Name == "" {
-					continue
-				}
-				if _, exists := options[f.Name]; exists {
-					continue
-				}
-				// sourceView 用 json tag 做字段名映射。
-				switch f.Name {
-				case "github_token":
-					if gt := strings.TrimSpace(in.GithubToken); gt != "" {
-						options["github_token"] = gt
-					}
-				}
-			}
-		}
 	}
 	next.Sources[len(cur.Sources)] = config.Source{
 		Name:              name,

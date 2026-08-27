@@ -31,6 +31,18 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Summary:      "将 Responses 请求转换为 Chat Completions 流式协议",
 		Capabilities: []plugin.Capability{plugin.CapabilityChatCompletions},
 		Streaming:    plugin.StreamingConverted,
+		Schema: []plugin.Field{
+			{
+				Name: "base_url", Label: "Base URL", Type: plugin.FieldTypeText,
+				Required: true, Target: plugin.FieldTargetBaseURL,
+				Description: "OpenAI-compatible Chat Completions base URL",
+			},
+			{
+				Name: "api_key", Label: "API Key", Type: plugin.FieldTypePassword,
+				Target:      plugin.FieldTargetAPIKey,
+				Description: "API key sent as Bearer token",
+			},
+		},
 	}
 }
 

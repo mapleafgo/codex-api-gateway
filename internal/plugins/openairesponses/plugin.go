@@ -29,6 +29,18 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Summary:      "把 Responses 请求原样透传给兼容上游并回传 SSE",
 		Capabilities: []plugin.Capability{plugin.CapabilityResponsesPassthrough},
 		Streaming:    plugin.StreamingPassthrough,
+		Schema: []plugin.Field{
+			{
+				Name: "base_url", Label: "Base URL", Type: plugin.FieldTypeText,
+				Required: true, Target: plugin.FieldTargetBaseURL,
+				Description: "OpenAI-compatible Responses base URL",
+			},
+			{
+				Name: "api_key", Label: "API Key", Type: plugin.FieldTypePassword,
+				Target:      plugin.FieldTargetAPIKey,
+				Description: "API key sent as Bearer token",
+			},
+		},
 	}
 }
 

@@ -583,7 +583,7 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 			log.Info("previous_response_id 将透传上游；网关不代补会话历史",
 				"field", "previous_response_id",
 				"previous_response_id", req.PreviousResponseID.Value,
-				"impact", "backend_type=r 时原样转发；网关无 session store")
+				"impact", "backend=openai-responses 时原样转发；网关无 session store")
 		}
 		return
 	}
@@ -604,20 +604,20 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 			"previous_response_id", req.PreviousResponseID.Value,
 			"impact", "不会按 response_id 补全历史；请在 input 中完整回灌上下文")
 	}
-	// service_tier：Chat 源（backend_type c）透传；Anthropic 源无等价，仍忽略。
+	// service_tier：Chat 源（backend=openai-chat）透传；Anthropic 源无等价，仍忽略。
 	// 此处 INFO 提示路径差异，避免「全局永不透传」误导（混排 failover 时以实际 Backend 为准）。
 	if req.ServiceTier != "" {
 		log.Info("service_tier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "service_tier",
 			"value", string(req.ServiceTier),
-			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
+			"impact", "backend=openai-chat 写入 Chat body；backend=anthropic 不传上游")
 	}
 	// text.verbosity：Chat 源透传；Anthropic 无原生参数。
 	if req.Text.Verbosity != "" {
 		log.Info("text.verbosity 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "text.verbosity",
 			"value", string(req.Text.Verbosity),
-			"impact", "backend_type=c 写入 Chat verbosity；backend_type=a 不传上游")
+			"impact", "backend=openai-chat 写入 Chat verbosity；backend=anthropic 不传上游")
 	}
 	// truncation：Anthropic 无直接等价策略，仅在响应中 echo。
 	// truncation 状态为 raw_preserved：值在响应对象中 echo 回显，未被丢弃，
@@ -666,7 +666,7 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 			log.Warn("忽略仅 Chat 源可映射的 include 项（当前无 Chat 上游）",
 				"field", "include",
 				"values", strings.Join(chatSkipped, ","),
-				"impact", "backend_type=c 且 top_logprobs 时才有 output_text.logprobs；当前配置无法生效")
+				"impact", "backend=openai-chat 且 top_logprobs 时才有 output_text.logprobs；当前配置无法生效")
 		}
 		if len(unsupported) > 0 {
 			log.Warn("忽略无后端等价能力的 include 项，对应数据被丢弃",
@@ -687,7 +687,7 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 			log.Info("metadata 按后端分流（c 整表透传；a 仅 user_id + 响应 echo）",
 				"field", "metadata",
 				"entries", len(req.Metadata),
-				"impact", "backend_type=c 写入 Chat metadata；backend_type=a 仅 metadata.user_id 进上游")
+				"impact", "backend=openai-chat 写入 Chat metadata；backend=anthropic 仅 metadata.user_id 进上游")
 		}
 	}
 	// prompt_cache_*：Anthropic 用内容 hash + 网关自主 cache_control，不认 OpenAI client key/options/retention。
@@ -755,7 +755,7 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 	if req.SafetyIdentifier.Valid() && req.SafetyIdentifier.Value != "" {
 		log.Info("safety_identifier 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "safety_identifier",
-			"impact", "backend_type=c 写入 Chat body；backend_type=a 不传上游")
+			"impact", "backend=openai-chat 写入 Chat body；backend=anthropic 不传上游")
 	}
 	// moderation：Chat 透传；Anthropic 无等价。
 	if req.Moderation.Model != "" ||
@@ -766,21 +766,21 @@ func (s *Server) warnDroppedOrIgnoredParams(log *slog.Logger, req *oairesponses.
 			"moderation_model", req.Moderation.Model,
 			"input_mode", req.Moderation.Policy.Input.Mode,
 			"output_mode", req.Moderation.Policy.Output.Mode,
-			"impact", "backend_type=c 写入 Chat moderation；backend_type=a 不传上游")
+			"impact", "backend=openai-chat 写入 Chat moderation；backend=anthropic 不传上游")
 	}
 	// stream_options.include_obfuscation：Chat 透传；Anthropic 无等价。
 	if req.StreamOptions.IncludeObfuscation.Valid() {
 		log.Info("stream_options.include_obfuscation 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "stream_options.include_obfuscation",
 			"value", req.StreamOptions.IncludeObfuscation.Value,
-			"impact", "backend_type=c 写入 Chat stream_options；backend_type=a 不传上游")
+			"impact", "backend=openai-chat 写入 Chat stream_options；backend=anthropic 不传上游")
 	}
 	// top_logprobs：Chat 透传（并开 logprobs）；Anthropic 无等价。
 	if req.TopLogprobs.Valid() {
 		log.Info("top_logprobs 仅 Chat 源透传，Anthropic 源忽略",
 			"field", "top_logprobs",
 			"value", req.TopLogprobs.Value,
-			"impact", "backend_type=c 写入 Chat logprobs/top_logprobs；backend_type=a 不返回 logprobs")
+			"impact", "backend=openai-chat 写入 Chat logprobs/top_logprobs；backend=anthropic 不返回 logprobs")
 	}
 	// deprecated user：OpenAI 已废弃，需决定忽略或映射 metadata。
 	if req.User.Valid() && req.User.Value != "" {
@@ -960,13 +960,9 @@ func (s *Server) recordUpstream(ev scheduler.UpstreamEvent) {
 	})
 }
 
-// backendIDFor 返回源配置的稳定 Backend ID，与 scheduler.backendID 同一规则：
-// 过渡期手工构造的 Source 仍可按旧短码解析。
+// backendIDFor 返回源配置声明的稳定 Backend ID；Config v2 下该字段必填。
 func (s *Server) backendIDFor(src config.Source) string {
-	if src.Backend != "" {
-		return src.Backend
-	}
-	return string(plugin.LegacyBackendTypeToID(src.BackendType))
+	return src.Backend
 }
 
 // sourceHasCapability 按插件描述符能力判断单个源，不再比较源身份短码。

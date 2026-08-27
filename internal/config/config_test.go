@@ -45,7 +45,7 @@ sources:
 func boolPtr(b bool) *bool { return &b }
 
 // TestSupportsWebSearchValue 验证 SupportsWebSearchValue 的默认与显式覆盖语义：
-// nil 时按 backend_type（Anthropic(a)/Responses(r)=true、只 Chat(c)=false），
+// nil 时按稳定 backend（anthropic/openai-responses=true、仅 openai-chat=false），
 // 显式配置优先。
 func TestSupportsWebSearchValue(t *testing.T) {
 	cases := []struct {
@@ -53,11 +53,11 @@ func TestSupportsWebSearchValue(t *testing.T) {
 		src  Source
 		want bool
 	}{
-		{name: "a 默认支持", src: Source{Name: "s", BackendType: BackendAnthropic}, want: true},
-		{name: "c 默认不支持", src: Source{Name: "s", BackendType: BackendOpenAIChat}, want: false},
-		{name: "r 默认支持", src: Source{Name: "s", BackendType: BackendOpenAIResponses}, want: true},
-		{name: "显式 true 覆盖 c", src: Source{Name: "s", BackendType: BackendOpenAIChat, SupportsWebSearch: boolPtr(true)}, want: true},
-		{name: "显式 false 覆盖 r", src: Source{Name: "s", BackendType: BackendOpenAIResponses, SupportsWebSearch: boolPtr(false)}, want: false},
+		{name: "anthropic 默认支持", src: Source{Name: "s", Backend: "anthropic"}, want: true},
+		{name: "openai-chat 默认不支持", src: Source{Name: "s", Backend: "openai-chat"}, want: false},
+		{name: "openai-responses 默认支持", src: Source{Name: "s", Backend: "openai-responses"}, want: true},
+		{name: "显式 true 覆盖 openai-chat", src: Source{Name: "s", Backend: "openai-chat", SupportsWebSearch: boolPtr(true)}, want: true},
+		{name: "显式 false 覆盖 openai-responses", src: Source{Name: "s", Backend: "openai-responses", SupportsWebSearch: boolPtr(false)}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -31,7 +31,7 @@ func TestChatBackend_TextStream(t *testing.T) {
 	var types []string
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
-		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "c"},
+		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
 		&config.Config{},
 		func(ev model.SSEEvent) error {
 			types = append(types, ev.Type)
@@ -69,7 +69,7 @@ func TestChatBackend_CacheReadPropagated(t *testing.T) {
 	var up UpstreamEvent
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
-		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "c"},
+		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
 		&config.Config{},
 		func(model.SSEEvent) error { return nil },
 		func(ev UpstreamEvent) { up = ev },
@@ -115,7 +115,7 @@ func TestChatBackend_EmptyStreamNoSyntheticLock(t *testing.T) {
 			var types []string
 			err := b.Execute(context.Background(),
 				[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
-				config.Source{Name: "opencode", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "c"},
+				config.Source{Name: "opencode", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
 				&config.Config{},
 				func(ev model.SSEEvent) error {
 					types = append(types, ev.Type)
@@ -152,7 +152,7 @@ func TestChatBackend_CommentThenContent(t *testing.T) {
 	var types []string
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
-		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", BackendType: "c"},
+		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
 		&config.Config{},
 		func(ev model.SSEEvent) error {
 			types = append(types, ev.Type)

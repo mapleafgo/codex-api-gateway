@@ -54,7 +54,7 @@ func TestAppServerSubAgentHistoryKeepsAgentMessage(t *testing.T) {
 		Sources: []config.Source{{
 			Name:         "appserver-e2e",
 			BaseURL:      upstream.URL,
-			BackendType:  config.BackendAnthropic,
+			Backend:      "anthropic",
 			DefaultModel: "mock-claude",
 		}},
 		ModelOverrides: map[string]config.ModelOverride{
@@ -164,9 +164,9 @@ func TestAppServerResponsesBackendDeliversAgentMessage(t *testing.T) {
 		Logging: config.LoggingCfg{Level: "error"},
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(10 * time.Second)},
 		Sources: []config.Source{{
-			Name:        "responses-e2e",
-			BaseURL:     upstream.URL,
-			BackendType: config.BackendOpenAIResponses,
+			Name:    "responses-e2e",
+			BaseURL: upstream.URL,
+			Backend: "openai-responses",
 		}},
 		ModelOverrides: map[string]config.ModelOverride{
 			"mock-model": {ContextWindow: int64Ptr(200000)},
@@ -283,7 +283,7 @@ func TestAppServerAnthropicBackendPreservesFollowUpQuestion(t *testing.T) {
 		Sources: []config.Source{{
 			Name:         "appserver-followup-e2e",
 			BaseURL:      upstream.URL,
-			BackendType:  config.BackendAnthropic,
+			Backend:      "anthropic",
 			DefaultModel: "mock-claude",
 		}},
 		ModelOverrides: map[string]config.ModelOverride{
@@ -383,9 +383,9 @@ func TestAppServerChatBackendPreservesFollowUpQuestion(t *testing.T) {
 		Logging: config.LoggingCfg{Level: "error"},
 		Breaker: config.BreakerCfg{FirstByteTimeout: config.Duration(10 * time.Second)},
 		Sources: []config.Source{{
-			Name:        "chat-e2e",
-			BaseURL:     upstream.URL,
-			BackendType: config.BackendOpenAIChat,
+			Name:    "chat-e2e",
+			BaseURL: upstream.URL,
+			Backend: "openai-chat",
 		}},
 		ModelOverrides: map[string]config.ModelOverride{
 			"mock-model": {ContextWindow: int64Ptr(200000)},

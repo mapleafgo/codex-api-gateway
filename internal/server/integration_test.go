@@ -1287,7 +1287,7 @@ func TestIntegrationResponsesTimeoutTerminalAppend(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := timeoutConfig(300 * time.Millisecond)
-	cfg.Sources = []config.Source{{Name: "up", BaseURL: upstream.URL, BackendType: config.BackendOpenAIResponses}}
+	cfg.Sources = []config.Source{{Name: "up", BaseURL: upstream.URL, Backend: "openai-responses"}}
 	srv := newSrv(cfg)
 	defer srv.Close()
 	ts := httptest.NewServer(srv.Handler())

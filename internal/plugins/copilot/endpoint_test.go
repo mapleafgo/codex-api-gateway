@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-
-	"github.com/mapleafgo/codex-api-gateway/internal/config"
 )
 
 func TestDiscoverAPIEndpointSuccess(t *testing.T) {
@@ -112,17 +110,17 @@ func TestClientCachesEndpointPerSourceAndRebuildsOnTokenChange(t *testing.T) {
 
 	client := NewClient()
 	ctx := context.Background()
-	one := config.Source{Name: "one", BackendType: config.BackendGitHubCopilot, GithubToken: "token-one"}
+	one := tokenSource("one", "token-one", "")
 	for range 2 {
 		if got := client.ResolveEndpoint(ctx, one); got != "https://one.example.com" {
 			t.Fatalf("one endpoint = %q", got)
 		}
 	}
-	two := config.Source{Name: "two", BackendType: config.BackendGitHubCopilot, GithubToken: "token-two"}
+	two := tokenSource("two", "token-two", "")
 	if got := client.ResolveEndpoint(ctx, two); got != "https://two.example.com" {
 		t.Fatalf("two endpoint = %q", got)
 	}
-	one.GithubToken = "token-three"
+	one.Options["github_token"] = "token-three"
 	if got := client.ResolveEndpoint(ctx, one); got != "https://one.example.com" {
 		t.Fatalf("updated one endpoint = %q", got)
 	}
@@ -147,9 +145,7 @@ func TestClientUsesFallbackEndpointWhenDiscoveryFails(t *testing.T) {
 	defer fallback.Close()
 
 	client := NewWithHTTP(graphql.Client(), fallback.URL)
-	dir, err := client.Directory(context.Background(), config.Source{
-		Name: "copilot", BackendType: config.BackendGitHubCopilot, GithubToken: "token",
-	})
+	dir, err := client.Directory(context.Background(), tokenSource("copilot", "token", ""))
 	if err != nil {
 		t.Fatalf("Directory: %v", err)
 	}

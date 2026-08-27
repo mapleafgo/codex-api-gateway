@@ -29,7 +29,7 @@ func newTestDeps(t *testing.T) (*Deps, string) {
 		Logging:   config.LoggingCfg{Level: "info", Format: "text"},
 		Anthropic: config.AnthropicCfg{DefaultMaxTokens: 16384, CacheEnabled: ptrBool(true)},
 		Sources: []config.Source{
-			{Name: "s1", BaseURL: "https://example.com", APIKey: "k1", DefaultModel: "m1"},
+			{Name: "s1", BaseURL: "https://example.com", APIKey: "k1", DefaultModel: "m1", Backend: "openai-chat"},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -130,8 +130,6 @@ func TestMetricsDashboardLabels(t *testing.T) {
 		"cardReq: '上游调用量'",
 		"cardReq: 'Upstream calls'",
 		"backendCopilot: 'GitHub Copilot'",
-		"github_token: src.github_token || ''",
-		"github_token: github_token.trim()",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
@@ -158,9 +156,9 @@ func TestCopilotSourceCardHidesTokenInput(t *testing.T) {
 func TestCopilotFormHidesUpstreamURL(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
-		`<label class="ui-field ui-span-2" x-show="src.backend_type !== 'g'">`,
-		"if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key' || f.key === 'github_token')) return false;",
-		"const base_url = v.backend_type === 'g' ? '' : (v.base_url || '').trim();",
+		`x-show="!isAuthSource(src.backend)"`,
+		"if (this.formIsCopilot() && (f.key === 'base_url' || f.key === 'api_key')) return false;",
+		"const base_url = authSource ? '' : (v.base_url || '').trim();",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
@@ -171,7 +169,7 @@ func TestCopilotFormHidesUpstreamURL(t *testing.T) {
 func TestCopilotSelectionStartsDeviceFlowImmediately(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
-		"if (value === 'g' && !wasCopilot) { void this.beginFormCopilotAuth(); return; }",
+		"if (this.isAuthSource(value) && !wasCopilot) { void this.beginFormCopilotAuth(); return; }",
 		"async beginFormCopilotAuth() {",
 		":disabled=\"formIsCopilot() && f.key === 'name'\"",
 		"copilotAuthHint: '选择 GitHub Copilot 后将立即进入 GitHub 设备授权，无需手动填写 Token'",
@@ -190,9 +188,9 @@ func TestAddSourceSupportsCopilot(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(sourceView{
-		Name:        "copilot",
-		BackendType: config.BackendGitHubCopilot,
-		GithubToken: "github-token",
+		Name:    "copilot",
+		Backend: "github-copilot",
+		Options: map[string]any{"github_token": "github-token"},
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -224,10 +222,10 @@ func TestAddSourceCopilotIgnoresUpstreamURL(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(sourceView{
-		Name:        "copilot",
-		BaseURL:     "https://stale.example.com",
-		BackendType: config.BackendGitHubCopilot,
-		GithubToken: "github-token",
+		Name:    "copilot",
+		BaseURL: "https://stale.example.com",
+		Backend: "github-copilot",
+		Options: map[string]any{"github_token": "github-token"},
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -252,9 +250,9 @@ func TestAdminCopilotTokenHiddenAndBlankSavePreserved(t *testing.T) {
 	defer srv.Close()
 
 	addBody, _ := json.Marshal(sourceView{
-		Name:        "copilot",
-		BackendType: config.BackendGitHubCopilot,
-		GithubToken: "github-token",
+		Name:    "copilot",
+		Backend: "github-copilot",
+		Options: map[string]any{"github_token": "github-token"},
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/sources", "application/json", bytes.NewReader(addBody))
 	if err != nil {
@@ -285,7 +283,6 @@ func TestAdminCopilotTokenHiddenAndBlankSavePreserved(t *testing.T) {
 	if len(view.Sources) != 2 {
 		t.Fatalf("sources = %d, want 2", len(view.Sources))
 	}
-	view.Sources[1].GithubToken = ""
 	saveBody, _ := json.Marshal(view)
 	resp, err = http.Post(srv.URL+"/admin/api/config", "application/json", bytes.NewReader(saveBody))
 	if err != nil {
@@ -335,7 +332,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	// POST：加一个 source
 	view.Sources = append(view.Sources, sourceView{
 		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", DefaultModel: "m2",
-		Disabled: true,
+		Backend: "openai-chat", Disabled: true,
 	})
 	view.Models = []modelViewItem{{Slug: "glm-latest", ContextWindow: ptrInt64(100000)}}
 	body, _ := json.Marshal(view)
@@ -589,9 +586,9 @@ func TestUpstreamModelsUnsaved(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{
-		"base_url":     upstream.URL + "/v1",
-		"api_key":      "secret",
-		"backend_type": "c",
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "secret",
+		"backend":  "openai-chat",
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -634,9 +631,9 @@ func TestUpstreamModelsAcceptsResponsesBackend(t *testing.T) {
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]string{
-		"base_url":     upstream.URL + "/v1",
-		"api_key":      "secret",
-		"backend_type": "r",
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "secret",
+		"backend":  "openai-responses",
 	})
 	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -688,7 +685,7 @@ func TestUpstreamModelsCopilotUsesSavedToken(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json",
-		strings.NewReader(`{"name":"copilot","backend_type":"g"}`))
+		strings.NewReader(`{"name":"copilot","backend":"github-copilot"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,14 +706,14 @@ func TestUpstreamModelsCopilotUsesSavedToken(t *testing.T) {
 	}
 }
 
-func TestUpstreamModelsRejectsInvalidBackendType(t *testing.T) {
+func TestUpstreamModelsRejectsUnknownBackend(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	mux := http.NewServeMux()
 	Mount(mux, *deps)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	body := []byte(`{"base_url":"https://x","backend_type":"openai"}`)
+	body := []byte(`{"base_url":"https://x","backend":"openai"}`)
 	resp, err := http.Post(srv.URL+"/admin/api/upstream-models", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -982,9 +979,9 @@ func TestSourceTest(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// invalid backend_type
+	// invalid backend
 	resp, err = http.Post(srv.URL+"/admin/api/sources/test", "application/json",
-		strings.NewReader(`{"base_url":"https://example.com","backend_type":"x"}`))
+		strings.NewReader(`{"base_url":"https://example.com","backend":"x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,7 +992,7 @@ func TestSourceTest(t *testing.T) {
 
 	// reachable with valid api_key
 	resp, err = http.Post(srv.URL+"/admin/api/sources/test", "application/json",
-		strings.NewReader(`{"base_url":"`+srv.URL+`","api_key":"sk-test","backend_type":"a"}`))
+		strings.NewReader(`{"base_url":"`+srv.URL+`","api_key":"sk-test","backend":"anthropic"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1013,7 @@ func TestSourceTest(t *testing.T) {
 
 	// missing api_key should fail (401 from mock)
 	resp2, err := http.Post(srv.URL+"/admin/api/sources/test", "application/json",
-		strings.NewReader(`{"base_url":"`+srv.URL+`","backend_type":"a"}`))
+		strings.NewReader(`{"base_url":"`+srv.URL+`","backend":"anthropic"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,7 +1048,6 @@ func TestSourceTestCopilotUsesSavedTokenWithoutBaseURL(t *testing.T) {
 	deps, _ := newTestDeps(t)
 	cur := deps.Holder.Current()
 	cur.Sources[0].Backend = "github-copilot"
-	cur.Sources[0].BackendType = config.BackendGitHubCopilot
 	cur.Sources[0].BaseURL = upstream.URL
 	cur.Sources[0].Options = map[string]any{"github_token": "github-token"}
 	deps.Holder.Replace(cur)
@@ -1061,7 +1057,7 @@ func TestSourceTestCopilotUsesSavedTokenWithoutBaseURL(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/admin/api/sources/test", "application/json",
-		strings.NewReader(`{"name":"s1","backend_type":"g"}`))
+		strings.NewReader(`{"name":"s1","backend":"github-copilot"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1152,7 +1148,7 @@ func TestAddSource(t *testing.T) {
 
 	// success
 	resp, err = http.Post(srv.URL+"/admin/api/sources", "application/json",
-		strings.NewReader(`{"name":"s2","base_url":"https://two.example.com","api_key":"k2","backend_type":"c","default_model":"m2"}`))
+		strings.NewReader(`{"name":"s2","base_url":"https://two.example.com","api_key":"k2","backend":"openai-chat","default_model":"m2"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1189,7 +1185,7 @@ func TestDeleteSource(t *testing.T) {
 	// seed second source via holder+disk
 	cfg := *deps.Holder.Current()
 	cfg.Sources = append(append([]config.Source{}, cfg.Sources...), config.Source{
-		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", BackendType: "a",
+		Name: "s2", BaseURL: "https://two.example.com", APIKey: "k2", Backend: "anthropic",
 	})
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

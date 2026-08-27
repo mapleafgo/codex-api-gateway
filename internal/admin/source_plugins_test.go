@@ -64,6 +64,67 @@ func TestSourcePlugins_DescriptorJSON(t *testing.T) {
 	}
 }
 
+// TestSourcePlugins_ConnectionFields 验证三个非 Copilot 插件的 Descriptor Schema
+// 声明了 base_url(required) 和 api_key 连接字段，使前端能纯 descriptor 驱动渲染。
+// Copilot 不声明连接字段（凭据由 Device Flow 提供）。
+func TestSourcePlugins_ConnectionFields(t *testing.T) {
+	deps, _ := newTestDeps(t)
+	mux := http.NewServeMux()
+	Mount(mux, *deps)
+	srv := newServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/admin/api/source-plugins")
+	if err != nil {
+		t.Fatalf("GET source-plugins: %v", err)
+	}
+	defer resp.Body.Close()
+	var plugins []sourcePluginView
+	if err := json.NewDecoder(resp.Body).Decode(&plugins); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byID := make(map[string]sourcePluginView, len(plugins))
+	for _, p := range plugins {
+		byID[p.ID] = p
+	}
+
+	// anthropic / openai-chat / openai-responses 必须声明 base_url + api_key 连接字段。
+	for _, id := range []string{"anthropic", "openai-chat", "openai-responses"} {
+		p, ok := byID[id]
+		if !ok {
+			t.Fatalf("plugin %q missing from source-plugins", id)
+		}
+		hasBaseURL := false
+		hasAPIKey := false
+		for _, f := range p.Schema {
+			if f.Name == "base_url" && f.Target == "base_url" && f.Required {
+				hasBaseURL = true
+			}
+			if f.Name == "api_key" && f.Target == "api_key" {
+				hasAPIKey = true
+			}
+		}
+		if !hasBaseURL {
+			t.Errorf("plugin %q: schema missing required base_url field (target=base_url)", id)
+		}
+		if !hasAPIKey {
+			t.Errorf("plugin %q: schema missing api_key field (target=api_key)", id)
+		}
+	}
+
+	// Copilot 不声明连接字段。
+	copilot := byID["github-copilot"]
+	for _, f := range copilot.Schema {
+		if f.Target == "base_url" {
+			t.Errorf("copilot should not declare base_url field, got %+v", f)
+		}
+		if f.Target == "api_key" {
+			t.Errorf("copilot should not declare api_key field, got %+v", f)
+		}
+	}
+}
+
 // TestSourcePlugins_NoCredentials 验证响应文本不含明文凭据或 Authorization。
 func TestSourcePlugins_NoCredentials(t *testing.T) {
 	deps, _ := newTestDeps(t)

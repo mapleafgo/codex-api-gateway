@@ -108,12 +108,12 @@ func (c *Client) resolveEndpoint(ctx context.Context, st *sourceState) string {
 // Directory resolves the endpoint and returns the filtered, ID-sorted model
 // catalog. A model-fetch error is returned with Directory.Endpoint populated.
 func (c *Client) Directory(ctx context.Context, src config.Source) (Directory, error) {
-	if src.GithubToken == "" {
+	if copilotToken(src) == "" {
 		return Directory{}, fmt.Errorf("copilot: source %q missing github_token", src.Name)
 	}
 	st := c.getState(src)
 	endpoint := c.resolveEndpoint(ctx, st)
-	models, err := st.modelsCache.Get(ctx, endpoint, src.GithubToken)
+	models, err := st.modelsCache.Get(ctx, endpoint, copilotToken(src))
 	if err != nil {
 		return Directory{Endpoint: endpoint}, err
 	}
@@ -141,12 +141,12 @@ func (c *Client) getState(src config.Source) *sourceState {
 	c.statesMu.Lock()
 	defer c.statesMu.Unlock()
 	if st := c.states[src.Name]; st != nil {
-		if st.githubToken == src.GithubToken && st.endpointOverride == src.BaseURL {
+		if st.githubToken == copilotToken(src) && st.endpointOverride == src.BaseURL {
 			return st
 		}
 	}
 	st := &sourceState{
-		githubToken:      src.GithubToken,
+		githubToken:      copilotToken(src),
 		endpointOverride: src.BaseURL,
 		modelsCache:      newModelCache(c.http, 0),
 	}

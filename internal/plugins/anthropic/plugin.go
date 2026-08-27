@@ -34,6 +34,16 @@ func (p *Plugin) Descriptor() plugin.Descriptor {
 		Streaming:    plugin.StreamingConverted,
 		Schema: []plugin.Field{
 			{
+				Name: "base_url", Label: "Base URL", Type: plugin.FieldTypeText,
+				Required: true, Target: plugin.FieldTargetBaseURL,
+				Description: "Anthropic-compatible API base URL",
+			},
+			{
+				Name: "api_key", Label: "API Key", Type: plugin.FieldTypePassword,
+				Sensitive: false, Target: plugin.FieldTargetAPIKey,
+				Description: "API key sent as x-api-key header",
+			},
+			{
 				Name: "default_max_tokens", Label: "Default Max Tokens", Type: plugin.FieldTypeInteger,
 				Target:      plugin.FieldTargetOption,
 				Description: "Default max_output_tokens when the client does not set one",

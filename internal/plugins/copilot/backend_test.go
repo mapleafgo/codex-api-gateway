@@ -290,13 +290,8 @@ func TestCopilotExecuteRoutesAndUpstreamContract(t *testing.T) {
 			defer api.Close()
 
 			b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-			src := config.Source{
-				Name:        "copilot",
-				BaseURL:     api.URL,
-				BackendType: config.BackendGitHubCopilot,
-				GithubToken: "github-oauth-token",
-				ModelMap:    map[string]string{"alias": tt.resolvedModel},
-			}
+			src := tokenSource("copilot", "github-oauth-token", api.URL)
+			src.ModelMap = map[string]string{"alias": tt.resolvedModel}
 			var eventTypes []string
 			var upstreamEvent plugin.UpstreamEvent
 			err := b.Execute(context.Background(), []byte(`{"model":"alias","input":"hi","stream":true}`), src, &config.Config{},
@@ -367,7 +362,7 @@ func TestCopilotExecuteResponsesNormalizesInput(t *testing.T) {
 	defer api.Close()
 
 	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	src := tokenSource("copilot", "token", api.URL)
 	raw := `{
 		"model":"m",
 		"input":[
@@ -427,7 +422,7 @@ func TestCopilotExecuteAnthropicInjectsThinkingBudget(t *testing.T) {
 	defer api.Close()
 
 	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	src := tokenSource("copilot", "token", api.URL)
 	err := b.Execute(context.Background(), []byte(`{"model":"m","input":"hi","reasoning":{"effort":"high"},"stream":true}`), src, &config.Config{},
 		func(model.SSEEvent) error { return nil }, nil, 1)
 	if err != nil {
@@ -472,13 +467,8 @@ func TestCopilotExecuteDefaultModelRoutesResolvedModel(t *testing.T) {
 	defer api.Close()
 
 	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-	src := config.Source{
-		Name:         "copilot",
-		BaseURL:      api.URL,
-		BackendType:  config.BackendGitHubCopilot,
-		GithubToken:  "token",
-		DefaultModel: "default-model",
-	}
+	src := tokenSource("copilot", "token", api.URL)
+	src.DefaultModel = "default-model"
 	err := b.Execute(context.Background(), []byte(`{"input":"hi","stream":true}`), src, &config.Config{},
 		func(model.SSEEvent) error { return nil }, nil, 1)
 	if err != nil {
@@ -522,7 +512,7 @@ func TestCopilotExecuteContextTierPassthrough(t *testing.T) {
 			defer api.Close()
 
 			b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-			src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+			src := tokenSource("copilot", "token", api.URL)
 			err := b.Execute(context.Background(), []byte(tt.raw), src, &config.Config{},
 				func(model.SSEEvent) error { return nil }, nil, 1)
 			if err != nil {
@@ -543,7 +533,7 @@ func TestCopilotExplicitBaseURLBypassesDiscovery(t *testing.T) {
 	defer api.Close()
 
 	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	src := tokenSource("copilot", "token", api.URL)
 	if endpoint := b.ResolveEndpoint(context.Background(), &src); endpoint != api.URL {
 		t.Fatalf("endpoint = %q, want explicit base URL %q", endpoint, api.URL)
 	}
@@ -562,7 +552,7 @@ func TestCopilotExecuteFallsBackToResponsesWhenModelsFail(t *testing.T) {
 	defer api.Close()
 
 	b := NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat())
-	src := config.Source{Name: "copilot", BaseURL: api.URL, BackendType: config.BackendGitHubCopilot, GithubToken: "token"}
+	src := tokenSource("copilot", "token", api.URL)
 	err := b.Execute(context.Background(), []byte(`{"model":"m","input":"hi","stream":true}`), src, &config.Config{},
 		func(model.SSEEvent) error { return nil }, nil, 1)
 	if err != nil {

@@ -94,9 +94,6 @@ func NewWithRegistry(cfg Config, reg *plugin.Registry) *Checker {
 func (c *Checker) CheckSource(ctx context.Context, source config.Source) Result {
 	if c.registry != nil {
 		id := source.Backend
-		if id == "" {
-			id = string(plugin.LegacyBackendTypeToID(source.BackendType))
-		}
 		if p, ok := c.registry.Get(id); ok {
 			hp, supported := p.(plugin.HealthProbe)
 			if !supported {
@@ -149,11 +146,6 @@ func (c *Checker) checkSourceHTTP(ctx context.Context, source config.Source) Res
 // probeEndpoint 根据 stable backend 返回最小探测的目标 URL。
 func probeEndpoint(source config.Source) string {
 	backend := source.Backend
-	if backend == "" {
-		if id, ok := config.BackendTypeToID(source.BackendType); ok {
-			backend = id
-		}
-	}
 	switch backend {
 	case plugin.BackendOpenAIChat:
 		return upstreamhttp.EndpointURL(source.BaseURL, "/chat/completions")

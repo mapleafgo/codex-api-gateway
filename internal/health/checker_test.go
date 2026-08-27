@@ -369,7 +369,7 @@ func TestCheckSource_Models404_ChatBackend(t *testing.T) {
 	defer srv.Close()
 
 	c := New(DefaultConfig())
-	src := config.Source{Name: "chat-no-models", BaseURL: srv.URL, APIKey: "sk-valid", BackendType: "c"}
+	src := config.Source{Name: "chat-no-models", BaseURL: srv.URL, APIKey: "sk-valid", Backend: "openai-chat"}
 	res := c.CheckSource(context.Background(), src)
 
 	if res.Status != StatusOperational {
