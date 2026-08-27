@@ -25,9 +25,8 @@ import (
 func newTestDeps(t *testing.T) (*Deps, string) {
 	t.Helper()
 	cfg := &config.Config{
-		Server:    config.ServerCfg{Listen: ":0"},
-		Logging:   config.LoggingCfg{Level: "info", Format: "text"},
-		Anthropic: config.AnthropicCfg{DefaultMaxTokens: 16384, CacheEnabled: ptrBool(true)},
+		Server:  config.ServerCfg{Listen: ":0"},
+		Logging: config.LoggingCfg{Level: "info", Format: "text"},
 		Sources: []config.Source{
 			{Name: "s1", BaseURL: "https://example.com", APIKey: "k1", DefaultModel: "m1", Backend: "openai-chat"},
 		},
@@ -316,15 +315,8 @@ func TestConfigRoundTrip(t *testing.T) {
 	if len(view.Sources) != 1 || view.Sources[0].Name != "s1" {
 		t.Fatalf("sources = %+v", view.Sources)
 	}
-	if view.Anthropic.DefaultMaxTokens != 16384 || !view.Anthropic.CacheEnabled {
-		t.Fatalf("anthropic = %+v", view.Anthropic)
-	}
 	if view.Breaker.RequestTimeout != "2m0s" {
 		t.Fatalf("default request_timeout view = %q, want 2m0s (120s)", view.Breaker.RequestTimeout)
-	}
-	view.Anthropic = anthropicView{
-		DefaultMaxTokens: 32768,
-		CacheEnabled:     false,
 	}
 	view.Breaker.RequestTimeout = "45s"
 	view.Sources[0].Breaker = &breakerView{RequestTimeout: "30s"}
@@ -361,10 +353,6 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if len(cur.ModelOverrides) != 1 {
 		t.Errorf("models = %v", cur.ModelOverrides)
-	}
-	if cur.Anthropic.DefaultMaxTokens != 32768 || cur.Anthropic.CacheEnabled == nil ||
-		*cur.Anthropic.CacheEnabled {
-		t.Errorf("anthropic config not preserved: %+v", cur.Anthropic)
 	}
 	if cur.Breaker.RequestTimeout != config.Duration(45*time.Second) {
 		t.Errorf("after save: global request_timeout = %v, want 45s", cur.Breaker.RequestTimeout)
@@ -510,17 +498,20 @@ func TestModelMutationReportsCatalogSyncFailure(t *testing.T) {
 	}
 }
 
-func TestAnthropicConfigCard(t *testing.T) {
+func TestGlobalConfigPanelOmitsAnthropic(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
 		`t('anthropicParams')`,
 		`cfg.anthropic.default_max_tokens`,
 		`cfg.anthropic.cache_enabled`,
-		`t('loggingParams')`,
-		`class="ui-grid-3"`,
 	} {
+		if strings.Contains(html, want) {
+			t.Errorf("全局 Anthropic 面板不应存在 %q", want)
+		}
+	}
+	for _, want := range []string{`t('loggingParams')`, `class="ui-grid-3"`} {
 		if !strings.Contains(html, want) {
-			t.Errorf("Anthropic config card missing %q", want)
+			t.Errorf("缺少 %q", want)
 		}
 	}
 }

@@ -21,7 +21,6 @@ const (
 // 管理端做全量覆盖：input 不携带的字段会写回为零值/默认值。
 // 这是用户接受的语义（管理页即权威配置）。
 func buildConfigFromInput(in adminConfigInput, current *config.Config, sensitiveKeys func(string) map[string]bool) *config.Config {
-	cacheEnabled := in.Anthropic.CacheEnabled
 	cfg := &config.Config{
 		Server: config.ServerCfg{
 			Listen:            in.Server.Listen,
@@ -33,10 +32,6 @@ func buildConfigFromInput(in adminConfigInput, current *config.Config, sensitive
 			MaxSizeMB: in.Logging.MaxSizeMB, MaxBackups: in.Logging.MaxBackups,
 		},
 		Breaker: breakerViewToCfg(in.Breaker),
-		Anthropic: config.AnthropicCfg{
-			DefaultMaxTokens: in.Anthropic.DefaultMaxTokens,
-			CacheEnabled:     &cacheEnabled,
-		},
 	}
 	for _, sv := range in.Sources {
 		backend := sv.Backend

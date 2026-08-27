@@ -1353,20 +1353,6 @@ html[data-theme="dark"] .ui-select {
             </div>
           </fieldset>
           <fieldset class="ui-fieldset">
-            <legend x-text="t('anthropicParams')"></legend>
-            <div class="ui-grid-3">
-              <label class="ui-field">
-                <span class="ui-label" x-text="t('anthropicDefaultMaxTokens')"></span>
-                <input class="ui-input ui-input-sm mono" type="number" min="1" step="1" x-model.number="cfg.anthropic.default_max_tokens" autocomplete="off" inputmode="numeric">
-                <span class="ui-hint" x-text="t('anthropicDefaultMaxTokensHint')"></span>
-              </label>
-              <label class="ui-field" style="flex-direction:row; align-items:center; gap:10px">
-                <input type="checkbox" x-model="cfg.anthropic.cache_enabled">
-                <span class="ui-label" style="margin:0" x-text="t('anthropicCacheEnabled')"></span>
-              </label>
-            </div>
-          </fieldset>
-          <fieldset class="ui-fieldset">
             <legend x-text="t('breaker')"></legend>
             <div class="ui-grid-2">
               <label class="ui-field">
@@ -1688,9 +1674,7 @@ function app() {
      deleteModelConfirmPrefix: '删除模型 ', deleteModelConfirmSuffix: ' ？删除后即时生效。',
      addModel: '新增模型', modelHint: '顺序决定 /v1/models 的 Priority（越靠前越高）。可上下移动调整选型优先级。',
       slug: '模型标识', contextWindow: '上下文窗口', acceptsImage: '接受图片', imageDetailOriginal: '原图分辨率', actions: '操作',
-      globalParams: '服务端参数', loggingParams: '日志参数', anthropicParams: 'Anthropic', breaker: '断路器',
-      anthropicDefaultMaxTokens: '默认输出额度', anthropicDefaultMaxTokensHint: '客户端未传 max_output_tokens 时写入上游 max_tokens',
-      anthropicCacheEnabled: '启用 Prompt Cache',
+      globalParams: '服务端参数', loggingParams: '日志参数', breaker: '断路器',
       listen: '监听地址',
       maxBodyMb: '请求体上限（MiB）', maxBodyMbHint: '限制 /v1/responses 请求体，防止超大历史/图片撑爆内存',
       readHeaderTimeout: '读头超时', readHeaderTimeoutHint: '读完请求头的最长时间；不影响 SSE 长流',
@@ -1767,9 +1751,7 @@ function app() {
      deleteModelConfirmPrefix: 'Delete model ', deleteModelConfirmSuffix: '? Takes effect immediately.',
      addModel: 'Add model', modelHint: 'Order sets /v1/models Priority (earlier = higher). Reorder to steer model selection.',
       slug: 'Slug', contextWindow: 'Context window', acceptsImage: 'Accept image', imageDetailOriginal: 'Original resolution', actions: 'Actions',
-      globalParams: 'Server Parameters', loggingParams: 'Logging', anthropicParams: 'Anthropic', breaker: 'Breaker',
-      anthropicDefaultMaxTokens: 'Default output budget', anthropicDefaultMaxTokensHint: 'Used as upstream max_tokens when the client omits max_output_tokens',
-      anthropicCacheEnabled: 'Enable Prompt Cache',
+      globalParams: 'Server Parameters', loggingParams: 'Logging', breaker: 'Breaker',
       listen: 'Listen address',
       maxBodyMb: 'Max body (MiB)', maxBodyMbHint: 'Cap /v1/responses body size to avoid huge history/images blowing memory',
       readHeaderTimeout: 'Read header timeout', readHeaderTimeoutHint: 'Max time to finish reading request headers; does not cut SSE streams',
@@ -1842,7 +1824,7 @@ function app() {
     snap: { by_group: [], recent: [] },
     filterModel: '', filterSource: '', filterStatus: '', filterKind: 'upstream',
 
-    cfg: { server:{}, logging:{}, breaker:{}, anthropic:{}, sources:[], models:[] },
+    cfg: { server:{}, logging:{}, breaker:{}, sources:[], models:[] },
     sourcePlugins: [],
    promoting: '',
    togglingDisabled: '',
@@ -2198,9 +2180,6 @@ function app() {
         data.logging = data.logging || {};
         if (data.logging.max_size_mb == null || data.logging.max_size_mb === 0) data.logging.max_size_mb = 50;
         if (data.logging.max_backups == null) data.logging.max_backups = 3;
-        data.anthropic = data.anthropic || {};
-        if (data.anthropic.default_max_tokens == null || data.anthropic.default_max_tokens === 0) data.anthropic.default_max_tokens = 16384;
-        if (data.anthropic.cache_enabled == null) data.anthropic.cache_enabled = true;
        this.cfg = data;
        this.cfgSnapshot = JSON.stringify(this.cfg);
         this.activeSourceId = '';
@@ -2230,9 +2209,6 @@ function app() {
         payload.logging = payload.logging || {};
         payload.logging.max_size_mb = Number(payload.logging.max_size_mb) || 50;
         payload.logging.max_backups = Math.max(0, Number(payload.logging.max_backups) || 0);
-        payload.anthropic = payload.anthropic || {};
-        payload.anthropic.default_max_tokens = Number(payload.anthropic.default_max_tokens) || 16384;
-        payload.anthropic.cache_enabled = payload.anthropic.cache_enabled !== false;
         const r = await fetch('/admin/api/config', {
           method: 'POST', headers: {'content-type':'application/json'},
           body: JSON.stringify(payload),
