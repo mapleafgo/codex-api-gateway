@@ -116,11 +116,13 @@ func TestAnthropicBackend_ClientToolOmitsType(t *testing.T) {
 	}
 }
 
-// TestAnthropicBackend_BearerOnlyAddsThinkingBudget 验证 ExecuteWithAuthorization
-// （仅 Bearer 认证的 Anthropic 兼容端点）对 enabled thinking 补 budget_tokens；
-// 这类端点对缺省 budget 报 "budget_tokens: Field required"。该行为是通用 bearer
-// 路径语义，不依赖任何具体源身份。
-func TestAnthropicBackend_BearerOnlyAddsThinkingBudget(t *testing.T) {
+// TestAnthropicBackend_BearerOnlyUsesAdaptiveThinking 验证 ExecuteWithAuthorization
+// （仅 Bearer 认证的 Anthropic 兼容端点，即 Copilot /v1/messages）使用 adaptive
+// thinking 而非 enabled：这类端点对新模型报
+// `"thinking.type.enabled" is not supported ... use "thinking.type.adaptive" and
+// output_config.effort`，adaptive 无 budget_tokens，thinking 深度由
+// output_config.effort 控制。该行为是通用 bearer 路径语义，不依赖具体源身份。
+func TestAnthropicBackend_BearerOnlyUsesAdaptiveThinking(t *testing.T) {
 	var body []byte
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
@@ -146,8 +148,14 @@ func TestAnthropicBackend_BearerOnlyAddsThinkingBudget(t *testing.T) {
 	if len(body) == 0 {
 		t.Fatal("上游未收到请求体")
 	}
-	if !bytes.Contains(body, []byte(`"budget_tokens":`)) {
-		t.Fatalf("bearer 路径应补 thinking budget_tokens: %s", body)
+	if !bytes.Contains(body, []byte(`"thinking":{"type":"adaptive"}`)) {
+		t.Fatalf("bearer 路径应使用 adaptive thinking: %s", body)
+	}
+	if bytes.Contains(body, []byte(`"budget_tokens":`)) {
+		t.Fatalf("adaptive thinking 不应携带 budget_tokens: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`"output_config":{"effort":"medium"}`)) {
+		t.Fatalf("bearer 路径应保留 output_config.effort=medium: %s", body)
 	}
 }
 

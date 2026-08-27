@@ -398,10 +398,12 @@ func TestCopilotExecuteResponsesNormalizesInput(t *testing.T) {
 	}
 }
 
-// TestCopilotExecuteAnthropicInjectsThinkingBudget 复现 Copilot /v1/messages 的
-// thinking.enabled.budget_tokens Field required 400：带上 reasoning effort 的
-// 请求在委派时注入合法 budget_tokens，普通 Anthropic 源行为不受影响。
-func TestCopilotExecuteAnthropicInjectsThinkingBudget(t *testing.T) {
+// TestCopilotExecuteAnthropicUsesAdaptiveThinking 复现 Copilot /v1/messages 对
+// claude-sonnet-5 等新模型的 400：`"thinking.type.enabled" is not supported ...
+// Use "thinking.type.adaptive" and "output_config.effort"`。带上 reasoning
+// effort 的请求在委派时应整体替换为 adaptive thinking（无 budget_tokens），
+// 并保留 output_config.effort，普通 Anthropic 源行为不受影响。
+func TestCopilotExecuteAnthropicUsesAdaptiveThinking(t *testing.T) {
 	logs := &copilotRequestLog{}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logs.record(t, r)
@@ -433,16 +435,14 @@ func TestCopilotExecuteAnthropicInjectsThinkingBudget(t *testing.T) {
 	if !ok {
 		t.Fatalf("upstream thinking missing: %v", upstream.body["thinking"])
 	}
-	if thinking["type"] != "enabled" {
-		t.Fatalf("thinking.type = %v, want enabled", thinking["type"])
+	if thinking["type"] != "adaptive" {
+		t.Fatalf("thinking.type = %v, want adaptive", thinking["type"])
 	}
-	budget, ok := thinking["budget_tokens"].(float64)
-	if !ok || budget <= 0 {
-		t.Fatalf("thinking.budget_tokens = %v, want > 0", thinking["budget_tokens"])
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("adaptive thinking 不应携带 budget_tokens: %v", thinking["budget_tokens"])
 	}
-	maxTokens, ok := upstream.body["max_tokens"].(float64)
-	if !ok || budget >= maxTokens {
-		t.Fatalf("budget_tokens %v 应小于 max_tokens %v", budget, upstream.body["max_tokens"])
+	if _, ok := upstream.body["output_config"].(map[string]any); !ok {
+		t.Fatalf("adaptive thinking 应带 output_config: %v", upstream.body["output_config"])
 	}
 }
 

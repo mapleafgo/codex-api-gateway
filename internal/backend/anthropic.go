@@ -98,10 +98,12 @@ func (b *AnthropicBackend) execute(
 	resolved := resolveModel(&src, clientModel)
 	anthReq.Model = anthropic.Model(resolved)
 	// 仅以 Authorization: Bearer 认证的 Anthropic 兼容端点（经 BearerOnlyBackend
-	// 委派）要求 enabled thinking 显式携带 budget_tokens；共享转换层刻意省略它
-	// 以兼容常规 Anthropic 源，故在 bearer 路径统一补齐，不据此判断具体源身份。
+	// 委派）统一使用 adaptive thinking：这类端点模型声明 adaptive_thinking，
+	// 上游会拒绝 enabled 形态（提示改用 adaptive + output_config.effort）。
+	// 共享转换层保留 enabled 以兼容常规 Anthropic 源，故在 bearer 路径统一
+	// 切换，不据此判断具体源身份。
 	if bearerOnly {
-		applyBearerThinkingBudget(anthReq, req)
+		applyBearerAdaptiveThinking(anthReq, req)
 	}
 
 	maxTokensSource := "anthropic_default"
@@ -310,35 +312,22 @@ func logAnthropicConverted(log *slog.Logger, anthReq *anthropic.MessageNewParams
 	}
 }
 
-// defaultBearerThinkingBudget 是 Bearer 认证 Anthropic 兼容端点 thinking budget
-// 合法区间为 ≥1024 且严格小于 max_tokens。
-const defaultBearerThinkingBudget int64 = 8192
-
-// applyBearerThinkingBudget 为仅以 Bearer 认证的 Anthropic 兼容端点补 thinking
-// budget_tokens。这类端点对 enabled thinking 报 "budget_tokens: Field required"，
-// 而共享转换层 applyReasoning 刻意构造不带 budget 的 {"type":"enabled"}（SDK 零值
-// 会序列化为 0 被常规 Anthropic 拒绝）。此处整体替换为带合法 budget 的结构体，
-// 保留 summarized display，常规 Anthropic 源（走 Execute）行为不受影响。
-func applyBearerThinkingBudget(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
+// applyBearerAdaptiveThinking 将仅以 Bearer 认证的 Anthropic 兼容端点的 thinking
+// 切换到 adaptive。这类端点模型声明 adaptive_thinking，不接受 enabled 形态
+// （上游报 "thinking.type.enabled" is not supported ... use
+// "thinking.type.adaptive" and "output_config.effort"）；adaptive 不承载
+// budget_tokens，thinking 深度由共享转换层已写入的 output_config.effort 控制。
+// display 按客户端 summary 要求保留，常规 Anthropic 源（走 Execute）不变。
+func applyBearerAdaptiveThinking(out *anthropic.MessageNewParams, req *oairesponses.ResponseNewParams) {
 	effort := string(req.Reasoning.Effort)
 	if effort == "" || effort == model.ReasoningEffortNone {
 		return
 	}
-	budget := defaultBearerThinkingBudget
-	if tok := out.MaxTokens; tok > 1024 {
-		candidate := tok - 1024
-		if candidate < budget {
-			budget = candidate
-		}
-		if budget < 1024 {
-			budget = 1024
-		}
-	}
-	enabled := anthropic.ThinkingConfigEnabledParam{BudgetTokens: budget}
+	adaptive := anthropic.ThinkingConfigAdaptiveParam{}
 	if string(req.Reasoning.Summary) == model.ReasoningSummaryConcise {
-		enabled.Display = anthropic.ThinkingConfigEnabledDisplaySummarized
+		adaptive.Display = anthropic.ThinkingConfigAdaptiveDisplaySummarized
 	}
-	out.Thinking = anthropic.ThinkingConfigParamUnion{OfEnabled: &enabled}
+	out.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
 }
 
 func summarizeAnthropicRequest(req *anthropic.MessageNewParams) (thinkingBlocks, emptySig, toolUse, toolResult, assistant, user int) {
