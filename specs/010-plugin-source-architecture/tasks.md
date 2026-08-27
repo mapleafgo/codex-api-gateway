@@ -152,7 +152,7 @@
 ### Tests for User Story 4
 
 - [X] T057 [P] [US4] Add failing test-source fixture implementing Descriptor, options validation, Backend, optional catalog/probe/action behaviors in `internal/plugin/testsource_test.go`
-- [~] T058 [US4] 契约级已完成（testsource_test.go 覆盖注册/元数据/校验/分发/未注册拒绝）；server/admin 端到端集成（含热重载旧状态保留）待补，依赖 US3 管理面描述符端点稳定后接入
+- [X] T058 [US4] 契约级已完成（testsource_test.go 覆盖注册/元数据/校验/分发/未注册拒绝）；server/admin 端到端集成（含热重载旧状态保留）已由 `internal/server/source_plugins_e2e_test.go` 落地
 
 ### Implementation for User Story 4
 

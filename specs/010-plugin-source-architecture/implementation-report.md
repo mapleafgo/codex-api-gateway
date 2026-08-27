@@ -68,6 +68,7 @@
 | SC-003 | source_plugins 契约测试 + admin HTML 断言 |
 | SC-005 | config v2 校验测试 + 热重载失败保留旧配置（e2e） |
 | SC-001 | `task check` 全量回归 |
+| SC-006 | Device Flow/脱敏单测 + 全量无凭据泄漏 grep |
 
 ## 收敛补记：顶层 anthropic 配置输入移除落地
 
@@ -87,7 +88,19 @@
 - 测试：`TestAnthropicConfigRejectsTopLevel` 断言迁移错误；删除环境覆盖与无效值
   用例；admin 面板测试反转断言为"不存在全部局 anthropic 面板"。
 - `docs/protocol-coverage.md` 两处引用改为 per-source `options.*` 表述。
-| SC-006 | Device Flow/脱敏单测 + 全量无凭据泄漏 grep |
+
+## 收敛补记：T058 状态对齐（2026-08-27 复核）
+
+复核收敛时确认 T058 的剩余项（server/admin 端到端集成含热重载旧状态保留）已由
+`internal/server/source_plugins_e2e_test.go` 落地并随 `9a1404d` 合入：
+
+- `TestServerRegistersExternalSourcePluginEndToEnd`：注册式 test source 经统一
+  `/v1/responses` 转发出流并携带插件自报身份，覆盖 SC-004。
+- `TestExternalSourceReloadRejectsUnknownBackend`：写未注册 backend 时 Load 失败、
+  holder 保留旧配置，覆盖 SC-005 热重载失败不丢旧状态。
+
+tasks.md 中 T058 由 `[~]` 更新为 `[X]`，与已有代码与测试证据对齐；无新增功能缺口。
+本轮全量 `go test ./...` 通过。
 | FR-010..FR-013, FR-015 | 对应任务 T036/T047/T012/T060..T066 已勾选并附测试 |
 
 ## 残留与显式说明
