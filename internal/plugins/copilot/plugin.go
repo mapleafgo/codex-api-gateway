@@ -7,21 +7,20 @@ import (
 
 	"github.com/mapleafgo/codex-api-gateway/internal/backend"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	copilotpkg "github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 
 // Plugin 是 GitHub Copilot 源插件：endpoint 发现、模型目录、Device Flow 认证
-// 与按模型能力的 r/a/c 协议路由全部归属 internal/copilot 单一归属包。
+// 与按模型能力的 r/a/c 协议路由全部归属本包。
 type Plugin struct {
-	b *copilotpkg.Backend
+	b *Backend
 }
 
 // New 构造 Copilot 源插件，组合已有的三个 Backend 做委托。
 func New() *Plugin {
 	return &Plugin{
-		b: copilotpkg.NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
+		b: NewBackend(backend.NewResponses(), backend.NewAnthropic(), backend.NewChat()),
 	}
 }
 

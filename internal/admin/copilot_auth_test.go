@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
+	copilot "github.com/mapleafgo/codex-api-gateway/internal/plugins/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 )
 

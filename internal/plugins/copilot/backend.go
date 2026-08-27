@@ -30,7 +30,7 @@ func NewBackend(responses, anthropic, chat plugin.Backend) *Backend {
 		responses: responses,
 		anthropic: anthropic,
 		chat:      chat,
-		Client:    New(),
+		Client:    NewClient(),
 	}
 }
 

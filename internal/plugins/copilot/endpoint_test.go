@@ -110,7 +110,7 @@ func TestClientCachesEndpointPerSourceAndRebuildsOnTokenChange(t *testing.T) {
 	defer graphql.Close()
 	overrideGraphQLURL(t, graphql.URL)
 
-	client := New()
+	client := NewClient()
 	ctx := context.Background()
 	one := config.Source{Name: "one", BackendType: config.BackendGitHubCopilot, GithubToken: "token-one"}
 	for range 2 {

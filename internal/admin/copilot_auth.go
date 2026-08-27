@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/copilot"
 	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
+	copilot "github.com/mapleafgo/codex-api-gateway/internal/plugins/copilot"
 )
 
 // Device Flow 会话状态。idle 表示当前没有活跃或保留的会话。

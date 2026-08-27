@@ -47,8 +47,8 @@ type Directory struct {
 	Models   []ModelInfo
 }
 
-// New returns a Client using the official Copilot fallback endpoint.
-func New() *Client {
+// NewClient returns a Client using the official Copilot fallback endpoint.
+func NewClient() *Client {
 	return NewWithHTTP(nil, "")
 }
 
