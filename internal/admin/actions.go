@@ -96,6 +96,25 @@ func (h *handler) makeActionHandler(ext plugin.AdminExtension, pluginID plugin.I
 // actionCtxKey 用于在 context 中携带 route 元数据（预留扩展）。
 type actionCtxKey struct{}
 
+// sensitiveOptionKeys 返回指定 backend 的敏感 option 键集合（来自插件 Descriptor Schema）。
+// 管理页全量保存时用它判断哪些 option 需要从已保存配置中恢复。
+func (h *handler) sensitiveOptionKeys(backend string) map[string]bool {
+	keys := map[string]bool{}
+	if h.deps.Registry == nil {
+		return keys
+	}
+	p, ok := h.deps.Registry.Get(backend)
+	if !ok {
+		return keys
+	}
+	for _, f := range p.Descriptor().Schema {
+		if f.Sensitive && f.Target == plugin.FieldTargetOption {
+			keys[f.Name] = true
+		}
+	}
+	return keys
+}
+
 // persistConfig 持久化一个完整的新配置并触发热重载（序列化写回）。
 func (h *handler) persistConfig(next *config.Config) error {
 	h.writeMu.Lock()

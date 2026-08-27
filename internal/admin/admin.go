@@ -488,14 +488,15 @@ type sourceView struct {
 }
 
 // redactOptions 去掉 options 中的敏感键，避免管理页回显 token 类凭据。
-// 保存时 buildConfigFromInput / handleAddSource 会从当前快照恢复被脱敏的键。
-func redactOptions(opts map[string]any) map[string]any {
+// 敏感键由插件 Descriptor Schema 声明（Sensitive=true），共享 admin 不硬编码任何源。
+func (h *handler) redactOptions(backend string, opts map[string]any) map[string]any {
 	if len(opts) == 0 {
 		return nil
 	}
+	sensitive := h.sensitiveOptionKeys(backend)
 	out := make(map[string]any, len(opts))
 	for k, v := range opts {
-		if isSensitiveOption(k) {
+		if sensitive[k] {
 			continue
 		}
 		out[k] = v
@@ -504,15 +505,6 @@ func redactOptions(opts map[string]any) map[string]any {
 		return nil
 	}
 	return out
-}
-
-// isSensitiveOption 判定 option 键是否为凭据类，管理页保存时需保留占位但不回显值。
-func isSensitiveOption(key string) bool {
-	switch key {
-	case "github_token", "api_key", "token":
-		return true
-	}
-	return false
 }
 
 // modelViewItem 是有序列表中的单个模型项（顺序 = /v1/models Priority）。
@@ -592,7 +584,7 @@ func (h *handler) getConfig(w http.ResponseWriter, _ *http.Request) {
 			Name: src.Name, BaseURL: src.BaseURL, APIKey: src.APIKey,
 			Backend:     backend,
 			BackendType: shortCode,
-			Options:     redactOptions(src.Options),
+			Options:     h.redactOptions(backend, src.Options),
 			ModelMap:    src.ModelMap, DefaultModel: src.DefaultModel,
 			Disabled:          src.Disabled,
 			Headers:           src.Headers,
@@ -639,7 +631,7 @@ func (h *handler) postConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody{Error: "invalid JSON", Detail: err.Error()})
 		return
 	}
-	cfg := buildConfigFromInput(in, h.deps.Holder.Current())
+	cfg := buildConfigFromInput(in, h.deps.Holder.Current(), h.sensitiveOptionKeys)
 	var validateErr error
 	if h.deps.ValidateConfig != nil {
 		validateErr = h.deps.ValidateConfig(cfg)
@@ -947,13 +939,28 @@ func (h *handler) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	next.Sources = make([]config.Source, len(cur.Sources)+1)
 	copy(next.Sources, cur.Sources)
 	options := in.Options
-	// 兼容旧管理页：GithubToken 表单字段归入 options。
-	if gt := strings.TrimSpace(in.GithubToken); gt != "" {
-		if options == nil {
-			options = map[string]any{}
-		}
-		if _, ok := options["github_token"]; !ok {
-			options["github_token"] = gt
+	if options == nil {
+		options = map[string]any{}
+	}
+	// 兼容旧管理页：前端可能把敏感 option（如 github_token）作为顶层表单字段
+	// 发送。这里基于插件 Schema 把这些字段统一归入 options。
+	if h.deps.Registry != nil {
+		if p, ok := h.deps.Registry.Get(backend); ok {
+			for _, f := range p.Descriptor().Schema {
+				if f.Target != plugin.FieldTargetOption || f.Name == "" {
+					continue
+				}
+				if _, exists := options[f.Name]; exists {
+					continue
+				}
+				// sourceView 用 json tag 做字段名映射。
+				switch f.Name {
+				case "github_token":
+					if gt := strings.TrimSpace(in.GithubToken); gt != "" {
+						options["github_token"] = gt
+					}
+				}
+			}
 		}
 	}
 	next.Sources[len(cur.Sources)] = config.Source{

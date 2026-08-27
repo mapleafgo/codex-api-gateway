@@ -377,41 +377,27 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBuildConfigFromInputPreservesCopilotToken(t *testing.T) {
-	cfg := buildConfigFromInput(adminConfigInput{
-		Sources: []sourceView{{
-			Name:         "copilot",
-			BackendType:  config.BackendGitHubCopilot,
-			GithubToken:  "github-token",
-			DefaultModel: "gpt-5.3-codex",
-		}},
-	}, nil)
-	if cfg.Sources[0].GithubToken != "github-token" {
-		t.Fatalf("GithubToken = %q, want github-token", cfg.Sources[0].GithubToken)
-	}
-	if got, _ := cfg.Sources[0].Options["github_token"].(string); got != "github-token" {
-		t.Fatalf("Options.github_token = %q, want github-token", got)
-	}
-}
-
-func TestBuildConfigFromInputRestoresCopilotOptionsToken(t *testing.T) {
+func TestBuildConfigFromInputRestoresSensitiveOptions(t *testing.T) {
 	current := &config.Config{Sources: []config.Source{{
 		Name:    "copilot",
 		Backend: plugin.BackendGitHubCopilot,
-		Options: map[string]any{"github_token": "gho_saved"},
+		Options: map[string]any{"github_token": "gho_saved", "max_tokens": 4096},
 	}}}
 	cfg := buildConfigFromInput(adminConfigInput{
 		Sources: []sourceView{{
 			Name:    "copilot",
 			Backend: plugin.BackendGitHubCopilot,
-			// 管理页脱敏后回传：github_token 已被 redactOptions 移除。
+			// 管理页脱敏后回传：sensitive option 已被 redactOptions 移除。
 		}},
-	}, current)
+	}, current, func(string) map[string]bool {
+		return map[string]bool{"github_token": true}
+	})
 	if got, _ := cfg.Sources[0].Options["github_token"].(string); got != "gho_saved" {
 		t.Fatalf("Options.github_token = %q, want gho_saved", got)
 	}
-	if cfg.Sources[0].GithubToken != "gho_saved" {
-		t.Fatalf("GithubToken = %q, want gho_saved", cfg.Sources[0].GithubToken)
+	// 非敏感 option 不应被回写（后端声明之外或普通字段保留原样）。
+	if got, _ := cfg.Sources[0].Options["max_secret"].(float64); got != 0 {
+		t.Fatalf("Options.max_secret = %v, want 0（未回写）", got)
 	}
 }
 

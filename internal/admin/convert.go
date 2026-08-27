@@ -5,14 +5,13 @@ import (
 	"time"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
-	"github.com/mapleafgo/codex-api-gateway/internal/plugin"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // buildConfigFromInput 把管理端 POST 的视图组装回 *config.Config。
 // 管理端做全量覆盖：input 不携带的字段会写回为零值/默认值。
 // 这是用户接受的语义（管理页即权威配置）。
-func buildConfigFromInput(in adminConfigInput, current *config.Config) *config.Config {
+func buildConfigFromInput(in adminConfigInput, current *config.Config, sensitiveKeys func(string) map[string]bool) *config.Config {
 	cacheEnabled := in.Anthropic.CacheEnabled
 	cfg := &config.Config{
 		Server: config.ServerCfg{
@@ -40,38 +39,34 @@ func buildConfigFromInput(in adminConfigInput, current *config.Config) *config.C
 				}
 			}
 		}
-		baseURL := sv.BaseURL
-		if backend == plugin.BackendGitHubCopilot {
-			baseURL = ""
+		options := sv.Options
+		if options == nil {
+			options = map[string]any{}
 		}
-		githubToken := strings.TrimSpace(sv.GithubToken)
-		if githubToken == "" && backend == plugin.BackendGitHubCopilot && current != nil {
-			for _, prev := range current.Sources {
-				if prev.Name == sv.Name {
-					githubToken = prev.GithubToken
-					if t, _ := prev.Options["github_token"].(string); t != "" {
-						githubToken = t
+		// 通用敏感 option 回写：管理页 GET 时脱敏了敏感 option（凭据不回显），
+		// POST 全量保存时从已保存配置中恢复被脱敏的 option 键，避免凭据丢失。
+		if current != nil && sensitiveKeys != nil {
+			sensitive := sensitiveKeys(backend)
+			if len(sensitive) > 0 {
+				for _, prev := range current.Sources {
+					if prev.Name == sv.Name {
+						for k, v := range prev.Options {
+							if sensitive[k] {
+								if _, exists := options[k]; !exists {
+									options[k] = v
+								}
+							}
+						}
+						break
 					}
-					break
 				}
 			}
 		}
-		options := sv.Options
-		if backend == plugin.BackendGitHubCopilot && githubToken != "" {
-			// 存回 Options：Config v2 的 copilot 插件从 options.github_token 读取。
-			if options == nil {
-				options = map[string]any{}
-			}
-			if _, ok := options["github_token"]; !ok {
-				options["github_token"] = githubToken
-			}
-		}
 		src := config.Source{
-			Name: sv.Name, BaseURL: baseURL, APIKey: sv.APIKey,
-			Backend:     backend,
-			Options:     options,
-			GithubToken: githubToken,
-			ModelMap:    sv.ModelMap, DefaultModel: sv.DefaultModel,
+			Name: sv.Name, BaseURL: sv.BaseURL, APIKey: sv.APIKey,
+			Backend:  backend,
+			Options:  options,
+			ModelMap: sv.ModelMap, DefaultModel: sv.DefaultModel,
 			Disabled:          sv.Disabled,
 			Headers:           sv.Headers,
 			SupportsWebSearch: sv.SupportsWebSearch,
