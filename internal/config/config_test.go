@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -205,7 +206,7 @@ sources:
 	}
 }
 
-func TestAnthropicConfigLoadsExplicitValues(t *testing.T) {
+func TestAnthropicConfigRejectsTopLevel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(`
@@ -217,39 +218,10 @@ sources:
     backend: anthropic
     base_url: http://upstream
 `), 0644)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Anthropic.DefaultMaxTokens != 32768 {
-		t.Fatalf("anthropic.default_max_tokens: got %d, want 32768", cfg.Anthropic.DefaultMaxTokens)
-	}
-	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
-		t.Fatalf("anthropic.cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
-	}
-}
-
-func TestAnthropicConfigEnvironmentOverrides(t *testing.T) {
-	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__DEFAULT_MAX_TOKENS", "24576")
-	t.Setenv("CODEX_API_GATEWAY_ANTHROPIC__CACHE_ENABLED", "false")
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	_ = os.WriteFile(path, []byte(`
-sources:
-  - name: s1
-    backend: anthropic
-    base_url: http://upstream
-`), 0644)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Anthropic.DefaultMaxTokens != 24576 {
-		t.Fatalf("env default_max_tokens: got %d, want 24576", cfg.Anthropic.DefaultMaxTokens)
-	}
-	if cfg.Anthropic.CacheEnabled == nil || *cfg.Anthropic.CacheEnabled {
-		t.Fatalf("env cache_enabled: got %v, want false", cfg.Anthropic.CacheEnabled)
+	if _, err := Load(path); err == nil {
+		t.Fatal("top-level anthropic should be rejected with a migration error")
+	} else if !strings.Contains(err.Error(), "top-level anthropic is removed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -292,36 +264,6 @@ func TestBreakerRequestTimeoutRejectsNegative(t *testing.T) {
 			_ = os.WriteFile(path, []byte(tt.body), 0644)
 			if _, err := Load(path); err == nil {
 				t.Fatal("expected negative request_timeout to fail validation")
-			}
-		})
-	}
-}
-
-func TestAnthropicConfigRejectsInvalidValues(t *testing.T) {
-	tests := []struct {
-		name string
-		body string
-	}{
-		{
-			name: "negative default max tokens",
-			body: `
-anthropic:
-  default_max_tokens: -1
-`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.yaml")
-			_ = os.WriteFile(path, []byte(tt.body+`
-sources:
-  - name: s1
-    backend: anthropic
-    base_url: http://upstream
-`), 0644)
-			if _, err := Load(path); err == nil {
-				t.Fatal("expected invalid Anthropic config to fail")
 			}
 		})
 	}

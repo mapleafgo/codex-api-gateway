@@ -50,11 +50,8 @@ breaker:
   recovery: normal          # halfOpen 探测成功后恢复到 normal | degraded
   max_retries: 0            # 所有源全部失败后的整轮重试次数（0=不重试）；仅全局生效，不被单源 breaker 覆盖
 
-# 顶层 anthropic 段保留兼容（过渡期），但新配置推荐改为在 anthropic 源 options
-# 中声明（见下方 anthropic-official 示例的 options），二者取一即可。
-anthropic:
-  default_max_tokens: 16384
-  cache_enabled: true    # 自动注入 Anthropic prompt cache（TTL 固定 5m）
+# 顶层 anthropic 段已移除。default_max_tokens / cache_enabled 改为在
+# anthropic 源的 options 中声明（见下方 anthropic-official 示例的 options）。
 
 #
 # 基线指令（base_instructions.md）：与本配置文件同级放置，不在 YAML 中配置路径。

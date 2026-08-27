@@ -38,11 +38,16 @@ type SourceValidator interface {
 
 // Config is the top-level YAML configuration.
 type Config struct {
-	Server    ServerCfg    `koanf:"server" yaml:"server"`
-	Logging   LoggingCfg   `koanf:"logging" yaml:"logging"`
-	Breaker   BreakerCfg   `koanf:"breaker" yaml:"breaker,omitempty"`
-	Anthropic AnthropicCfg `koanf:"anthropic" yaml:"anthropic,omitempty"`
-	Sources   []Source     `koanf:"sources" yaml:"sources,omitempty"`
+	Server  ServerCfg  `koanf:"server" yaml:"server"`
+	Logging LoggingCfg `koanf:"logging" yaml:"logging"`
+	Breaker BreakerCfg `koanf:"breaker" yaml:"breaker,omitempty"`
+	Sources []Source   `koanf:"sources" yaml:"sources,omitempty"`
+
+	// Anthropic 是 backend=anthropic 的运行时载体，由 anthropic 插件在请求时把
+	// per-source options 归一化写入（见 plugins/anthropic），并经 convert.ToAnthropic
+	// 读取。它不是配置输入项：顶层 anthropic 段已被 rejectLegacyConfigShape 拒绝，
+	// YAML/环境变量不再解析它，仅在加载时由 validate 补齐内置默认值。
+	Anthropic AnthropicCfg `koanf:"-" yaml:"-"`
 
 	// Models 为 per-slug 模型能力覆盖表。key 是模型 slug（如 gpt-5.5、glm-5.2），
 	// 对应 /v1/models 返回的每条 CodexModelInfo 字段。仅覆盖显式给出的字段，
@@ -219,19 +224,17 @@ type ModelOverride struct {
 // 不参与序列化；models 按 ModelSlugOrder（或 ConfiguredModelSlugs）有序输出。
 func (c Config) MarshalYAML() (any, error) {
 	type out struct {
-		Server    ServerCfg    `yaml:"server"`
-		Logging   LoggingCfg   `yaml:"logging,omitempty"`
-		Breaker   BreakerCfg   `yaml:"breaker,omitempty"`
-		Anthropic AnthropicCfg `yaml:"anthropic,omitempty"`
-		Sources   []Source     `yaml:"sources,omitempty"`
-		Models    *yamlv3.Node `yaml:"models,omitempty"`
+		Server  ServerCfg    `yaml:"server"`
+		Logging LoggingCfg   `yaml:"logging,omitempty"`
+		Breaker BreakerCfg   `yaml:"breaker,omitempty"`
+		Sources []Source     `yaml:"sources,omitempty"`
+		Models  *yamlv3.Node `yaml:"models,omitempty"`
 	}
 	o := out{
-		Server:    c.Server,
-		Logging:   c.Logging,
-		Breaker:   c.Breaker,
-		Anthropic: c.Anthropic,
-		Sources:   c.Sources,
+		Server:  c.Server,
+		Logging: c.Logging,
+		Breaker: c.Breaker,
+		Sources: c.Sources,
 	}
 	if n := orderedModelsYAMLNode(c); n != nil {
 		o.Models = n
@@ -447,7 +450,6 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		{"logging.file", &cfg.Logging.File},
 		{"logging.max_size_mb", &cfg.Logging.MaxSizeMB},
 		{"logging.max_backups", &cfg.Logging.MaxBackups},
-		{"anthropic.default_max_tokens", &cfg.Anthropic.DefaultMaxTokens},
 		{"breaker.first_byte_timeout", &cfg.Breaker.FirstByteTimeout},
 		{"breaker.request_timeout", &cfg.Breaker.RequestTimeout},
 		{"breaker.circuit_interval", &cfg.Breaker.CircuitInterval},
@@ -462,13 +464,6 @@ func applyEnvOverrides(cfg *Config, k *koanf.Koanf) error {
 		if err := unmarshalEnvPath(k, override.path, override.target); err != nil {
 			return err
 		}
-	}
-	if k.Exists("anthropic.cache_enabled") {
-		var enabled bool
-		if err := unmarshalEnvPath(k, "anthropic.cache_enabled", &enabled); err != nil {
-			return err
-		}
-		cfg.Anthropic.CacheEnabled = &enabled
 	}
 	for i := range cfg.Sources {
 		if err := applySourceEnvOverrides(&cfg.Sources[i], k, fmt.Sprintf("sources.%d", i)); err != nil {
@@ -788,7 +783,7 @@ func warnDeprecatedFields(data []byte) {
 }
 
 // rejectLegacyConfigShape 在 Config v2 下显式拒绝旧格式：source 级 backend_type、
-// 顶层 github_token、source 级 github_token，以及缺少 backend 的 source。
+// 顶层 github_token、source 级 github_token、顶层 anthropic，以及缺少 backend 的 source。
 // 返回的迁移错误指明明明新配置形状（stable backend + options），不自动迁移猜测。
 func rejectLegacyConfigShape(data []byte) error {
 	var doc yamlv3.Node
@@ -808,6 +803,8 @@ func rejectLegacyConfigShape(data []byte) error {
 		switch key.Value {
 		case "github_token":
 			return fmt.Errorf("config: top-level github_token is removed; move it into the corresponding source options.github_token")
+		case "anthropic":
+			return fmt.Errorf("config: top-level anthropic is removed; set default_max_tokens / cache_enabled in the options of each anthropic source")
 		case "backend_type":
 			return fmt.Errorf("config: backend_type is removed; set backend to a registered source plugin id")
 		case "sources":
@@ -950,10 +947,6 @@ logging:
   # file: gateway.log
   # max_size_mb: 50              # 单日志文件滚动阈值（MiB，仅 file 模式）
   # max_backups: 3               # 保留历史日志个数
-
-anthropic:
-  default_max_tokens: 16384      # 客户端未传 max_output_tokens 时使用
-  cache_enabled: true            # 自动注入 Anthropic prompt cache 断点
 `
 
 // WriteDefault 写入最小默认配置到 path。目录不存在时创建。
