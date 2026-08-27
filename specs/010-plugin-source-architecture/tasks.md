@@ -151,8 +151,8 @@
 
 ### Tests for User Story 4
 
-- [ ] T057 [P] [US4] Add failing test-source fixture implementing Descriptor, options validation, Backend, optional catalog/probe/action behaviors in `internal/plugin/testsource_test.go`
-- [ ] T058 [US4] Add failing extension integration tests in `internal/server/server_test.go` and `internal/admin/admin_test.go` for registered test-source config acceptance, request dispatch, model/probe/action metadata, unregistered reload rejection, and old-state preservation
+- [X] T057 [P] [US4] Add failing test-source fixture implementing Descriptor, options validation, Backend, optional catalog/probe/action behaviors in `internal/plugin/testsource_test.go`
+- [~] T058 [US4] 契约级已完成（testsource_test.go 覆盖注册/元数据/校验/分发/未注册拒绝）；server/admin 端到端集成（含热重载旧状态保留）待补，依赖 US3 管理面描述符端点稳定后接入
 
 ### Implementation for User Story 4
 
