@@ -40,7 +40,7 @@
 
 客户端仍只走 `/v1/responses`。当 source 配置 `backend: openai-responses` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
-- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；完全明文的 `agent_message` 按原位置折为 assistant `message`（兼容不认识 Codex 扩展的上游），含 `encrypted_content` 时保持原生 `agent_message` 交给上游；其余键原样保留（含 `previous_response_id`、tools、include 等）
+- **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；完全明文的 `agent_message` 按原位置折为 assistant `message`（兼容不认识 Codex 扩展的上游），含 `encrypted_content` 时保持原生 `agent_message` 交给上游；其余键原样保留（含 `previous_response_id`、tools、include 等）；`input_image`（URL / data URI / file_id / detail）原样透传，由上游裁决（2026-08-31）
 - **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
 - **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend` 恒为 `openai-responses`（metrics 禁止空串）
@@ -86,7 +86,7 @@
 | `file_search` / `computer*` / `image_generation` / `programmatic_tool_calling` | 工具声明 fail-fast；历史 item `dropped` |
 | `audio*` SSE | 不做 |
 | MCP `require_approval` 审批协议 | 降级 never + WARN；审批历史 item `dropped` |
-| OpenAI Files 凭据拉取（`file_id`） | WARN + 丢弃 |
+| OpenAI Files 凭据拉取（`file_id`） | 源级失败（007 FR-003，2026-08-31） |
 | OpenAI moderation / safety_identifier 透传 | WARN + 忽略 |
 
 ### 3. 后端/协议限制（无法等价实现）
@@ -135,7 +135,7 @@
 | custom `format` grammar 完整保留 | Anthropic custom tool 无 OpenAI grammar 等价 |
 | structured output 非 tool 模拟 | 无原生 json_schema 强制 |
 | reasoning.effort 精确 token | OpenAI effort 非 budget；已改用 `output_config.effort` 语义映射，模型自行决定深度 |
-| system/developer 中的 image | Anthropic system 仅文本 |
+| system/developer 中的 image | Anthropic system 仅文本；源级失败（007 FR-012，2026-08-31） |
 | 出站专用 `shell_call`/`apply_patch_call` item type | Codex 消费 `custom_tool_call` 已验证 |
 | SSE citation 非 web 类 → file_citation | OpenAI 无更细等价 |
 
@@ -249,7 +249,7 @@
 
 - **Codex 主路径 wire 修复**
   - `input` 历史 assistant `content[].type=output_text`/`refusal` 从 raw JSON 归一为 `input_text` 再走 `appendMessage`（原路径被 SDK EasyInputMessage 静默清空）。
-  - `function_call_output` / `custom_tool_call_output` 的 `output` 支持 content 数组（`input_text` / `input_image` / `input_file`）→ `tool_result` 多 part；仅 `file_id` 无法拉取时 WARN。
+  - `function_call_output` / `custom_tool_call_output` 的 `output` 支持 content 数组（`input_text` / `input_image` / `input_file`）→ `tool_result` 多 part；仅 `file_id` 无法拉取时源级失败（007 FR-003，2026-08-31）。
   - `reasoning`：`summary` 为空时回退 `content[].reasoning_text`，避免误判 redacted。
 - **hosted server tool 历史回灌**
   - `web_search_call` 历史：`server_tool_use(web_search)` + 空 `web_search_tool_result` + sources URL 折可见文本（Anthropic required `encrypted_content` 无 OpenAI 来源，填空会 400）。
@@ -343,13 +343,13 @@
 
 | Responses item | Chat 映射 | 状态 | 说明 |
 |---|---|---|---|
-| `message` / EasyInputMessage | role + content | `lossy_supported` | `user` 纯文本为 string、含图片为 `[text,image_url]` parts；`developer`/`system` 折 `<system-update>` user；assistant 无文本跳过 |
+| `message` / EasyInputMessage | role + content | `lossy_supported` | `user` 纯文本为 string、含图片为 `[text,image_url]` parts（detail 有 Chat 槽位，保留透传）；`developer`/`system` 折 `<system-update>` user，含图片时按协议不可映射源级失败（007 FR-012，2026-08-31）；assistant 无文本跳过 |
 | `input_message` / `output_message` | 同 message 文本 | `supported` | 防御分支；SDK 实测几乎总落到 EasyInputMessage |
 | `agent_message` | 按原位置恢复为 assistant message | `lossy_supported` | Codex 多 agent `NEW_TASK` / `MESSAGE` / `FINAL_ANSWER`；明文 `input_text` 保留，`encrypted_content` 本地不可解读则丢弃密文；禁止并入工具结果；必须先于 `output_text` 恢复整体重建 items，避免错位覆盖后续 user 输入 |
 | `function_call` | assistant `tool_calls[]` | `supported` | **相邻 call 合并**到同一 assistant；`id` / `tool_call_id` 原样透传（不归一化） |
-| `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode）；含 `input_file` 报错；输入缺对应 `function_call` 时孤儿 tool 输出 WARN + 丢弃 |
+| `function_call_output` | role=tool + user image | `supported` | 文本留在 `role=tool`（多段 `\n` 拼接）；图片收集为后续独立 user `image_url` 消息（同 opencode，detail 保留透传）；含 `input_file` 报错；仅 `file_id` 图片源级失败（007 FR-003，2026-08-31）；输入缺对应 `function_call` 时孤儿 tool 输出 WARN + 丢弃 |
 | `custom_tool_call` | assistant tool_calls name 原样 | `supported` | arguments=`{"s":...}` freeform；相邻合并 |
-| `custom_tool_call_output` | role=tool | `supported` | 同 `function_call_output`；孤儿 tool 输出 WARN + 丢弃 |
+| `custom_tool_call_output` | role=tool | `supported` | 同 `function_call_output`（含 detail 透传与 file_id 源级失败）；孤儿 tool 输出 WARN + 丢弃 |
 | `shell_call` / `local_shell_call` | tool_calls name=`shell` / `local_shell` | `lossy_supported` | 命令折 `input`；env/limits 不进 Chat schema；`local_shell` 用独立函数名区分回程 |
 | `shell_call_output` / `local_shell_call_output` | role=tool | `lossy_supported` | status/stdout 折文本 |
 | `apply_patch_call` | tool_calls name=`apply_patch` | `supported` | operation/path/diff 结构化 JSON 进 function arguments，含 status/caller |
@@ -406,7 +406,7 @@
 
 | 项 | 说明 |
 |---|---|
-| 多模态输入 | `input_image`（URL/data URL）真传 `image_url`；`input_file` / 仅 `file_id` 图片无 Chat 槽位，转换报错（不占位降级） |
+| 多模态输入 | `input_image`（URL/data URL）真传 `image_url`，detail 保留透传；`input_file` / 仅 `file_id` 图片无 Chat 槽位，转换报错（不占位降级）；system/developer 含图片源级失败（2026-08-31） |
 | 厂商 `reasoning_content` 无 encrypted/signature | 明文 reasoning 有损（summary 承载全文）；a 路径 signature/encrypted 不在 c 复现 |
 | Chat 原生 Anthropic 式 `citations_delta` | 五家主路径无官方等价；联网多走 tool_calls；非标 annotations 本期不做 |
 | hosted tools **真实** server 执行 | Chat 仅 function 形状；出站 completed 无真实 sources/logs |
@@ -510,8 +510,8 @@
 | `input_text` | `text` block | `supported` | 文本语义保留 |
 | `output_text`（作为 input 历史 content） | `text` block | `supported` | 非 Input Content 官方成员，但是 Codex 回灌 wire；解码时归一为 `input_text` 再转换 |
 | `refusal`（作为 input 历史 content） | `text` block | `lossy_supported` | 折成可见文本（`[refusal] …`），避免整段 assistant 历史被抹掉 |
-| `input_image.image_url` | `image` block | `supported` | URL 或 data URI 映射 |
-| `input_image.file_id` | none | `unsupported_by_backend` | 网关没有 OpenAI Files 凭据来拉取文件 |
+| `input_image.image_url` | `image` block | `supported` | URL 或 data URI 映射；`detail` 无 Anthropic 等价，字段级有损丢弃但图像本体保留（登记 `lossy`，2026-08-31） |
+| `input_image.file_id` | none | `unsupported_by_backend` | 网关没有 OpenAI Files 凭据来拉取文件；按协议不可映射源级失败（007 FR-003，2026-08-31） |
 | `input_file.file_data` | `document` block | `supported` | 以 base64/plain text 方式构造 document |
 | `input_file.file_url` | `document` block | `supported` | URL document |
 | `input_file.file_id` | none | `unsupported_by_backend` | 同 OpenAI Files 限制 |
@@ -521,7 +521,7 @@
 
 | OpenAI item | Anthropic 映射 | 当前状态 | 说明 |
 |---|---|---|---|
-| `message` / `EasyInputMessage` | message/system text | `lossy_supported` | system/developer 仅保留文本；图片等非文本内容无法放入 Anthropic system。Codex 回灌 assistant 正文见下「output_text 回灌」行 |
+| `message` / `EasyInputMessage` | message/system text | `lossy_supported` | system/developer 仅保留文本；含图片时按协议不可映射源级失败（007 FR-012，2026-08-31），禁止丢图后发残缺指令。Codex 回灌 assistant 正文见下「output_text 回灌」行 |
 | `message` + history `content[output_text]` | assistant text | `supported` | Codex 回灌主路径；raw 归一后走 `appendMessage` |
 | `message` + history `content[refusal]` | assistant text | `lossy_supported` | refusal 折成可见文本 |
 | `input_message` | message | `supported` | SDK 三个 `message` discriminator 实测几乎总落到 `OfMessage`；无独立分支需求 |
@@ -532,7 +532,7 @@
 | `computer_call_output` | none | `dropped` | 同上 |
 | `web_search_call`（input 历史） | `server_tool_use` + 空 result + sources 文本 | `lossy_supported` | query→input；`web_search_tool_result` 必须放在 assistant 消息（DeepSeek 400 实测）；无 encrypted 时 result content 空；URL 折成同一 assistant 消息内可见文本（lossy，非 tool_result）；open_page/find 折 query。出站 stream 见 Output/SSE |
 | `function_call` | assistant `tool_use` | `supported` | `arguments` 转 tool input |
-| `function_call_output` | user `tool_result` | `supported` | `output` string 或 content 数组（`input_text`/`input_image`/`input_file`）→ tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
+| `function_call_output` | user `tool_result` | `supported` | `output` string 或 content 数组（`input_text`/`input_image`/`input_file`）→ tool_result 多 part；仅 `file_id` 无法拉取时按协议不可映射源级失败（007 FR-003，2026-08-31） |
 | `tool_search_call` | assistant `tool_use` name=`tool_search` | `supported` | 已有语义分支 |
 | `tool_search_output` | dynamic tools + tool_result | `supported` | 工具注入并记录 developer marker |
 | `additional_tools` | none | `unsupported_by_backend` | Responses Lite 产物；网关统一 `use_responses_lite=false`，该 item 不会出现，移除转换分支 |
@@ -551,7 +551,7 @@
 | `mcp_approval_response` | none | `dropped` | Anthropic 无审批协议；网关不实现，历史回灌 WARN + 丢弃 |
 | `mcp_call` | `tool_use` name=`mcp__<server>__<tool>` + `tool_result` | `supported` | 扁平名直接回填；error 文本并入 tool_result；缺 output 时由 `ensureToolUsePaired` 补 `is_error` 占位 + WARN |
 | `custom_tool_call` | assistant custom `tool_use` | `supported` | freeform custom tool 支持 |
-| `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时 WARN + 丢弃 |
+| `custom_tool_call_output` | user `tool_result` | `supported` | `output` string 或 content list → tool_result 多 part；仅 `file_id` 无法拉取时源级失败（007 FR-003，2026-08-31） |
 | `compaction_trigger` | none | `dropped` | 请求控制信号，Codex 明确丢弃，不发给模型 |
 | `item_reference` | none | `dropped` | 网关无 session store；历史回灌 WARN + 丢弃 |
 | `program` | none | `dropped` | 历史回灌 WARN + 丢弃 |
