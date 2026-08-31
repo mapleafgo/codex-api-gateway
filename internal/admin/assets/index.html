@@ -531,7 +531,7 @@ html[data-theme="dark"] .ui-sel-list {
 }
 .ui-log-head, .ui-log-row {
   display: grid;
-  grid-template-columns: 72px 48px minmax(90px,1fr) minmax(140px,1.5fr) 88px repeat(4, 72px) 64px 64px 56px 40px;
+  grid-template-columns: 72px 48px 72px minmax(140px,1.5fr) 170px repeat(4, 72px) 64px 64px 56px 40px;
   gap: 10px; align-items: center; padding: 0 16px;
 }
 .ui-log-head {
@@ -911,8 +911,8 @@ html[data-theme="dark"] .ui-select {
                   <span class="truncate" x-text="row.model"></span>
                 </template>
               </span>
-              <span class="center">
-                <span class="ui-badge ui-badge-soft-neutral mono" style="font-size:11px"
+              <span class="center min0">
+                <span class="ui-badge ui-badge-soft-neutral mono truncate" style="font-size:11px; max-width:100%"
                       x-text="backendTypeLabel(row.backend)"
                       :title="backendTypeTitle(row.backend)"></span>
               </span>
