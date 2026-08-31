@@ -1,13 +1,8 @@
 <!--
 Sync Impact Report
-- Version change: 1.2.0 → 1.3.0
-- Modified principles:
-  - 产品边界与协议透传：backend_type 短码清单改为已注册源插件身份模型
-  - 协议事实源与官方 SDK：分发型 Copilot 复用被委托协议路径矩阵
-  - 分层单向依赖：新增源插件契约、实现隔离与唯一组装约束
-  - 调度可用性：按转换/透传引擎表达 EventGate，而非固定短码路径
-  - 热路径隔离：观测身份统一为稳定 backend 标识
-- Added principles: 无
+- Version change: 1.3.0 → 1.4.0
+- Modified principles: 无
+- Added principles: VIII. 转换保真：禁止有损降级
 - Added sections: 无
 - Removed sections: 无
 - Follow-up TODOs: 无
@@ -148,6 +143,14 @@ API、生命周期和并发行为必须使用表驱动或场景测试锁定协�
 必须优先复用 `internal/*` 既有模式和共享类型；新增抽象必须在消除真实重复或承载明确
 架构边界时才允许。
 
+### VIII. 转换保真：禁止有损降级
+
+网关转换任何用户可见内容、工具结果或关键输入字段时，必须保持数据完整到达上游：转换
+逻辑必须优先无损映射，仅允许字段级省略或格式等价的无损降级；必须禁止丢弃图像本体、
+工具结果、用户可见输出等关键数据后继续发送残缺请求。目标协议无法无损承载某项数据时，
+该源必须按协议不可映射进入既有源级失败与换源流程，禁止静默丢弃并把残缺请求发给该
+上游，因为残缺请求会误导上游模型产出答非所问的结果。
+
 ## 安全、隐私与本地运行边界
 
 真实 API key、上游凭据、本地 URL 和本地专用配置禁止提交。`config.yaml`、日志、PID、
@@ -199,4 +202,4 @@ Sync Impact Report、版本号与 Last Amended 日期。合规审查必须在合
 新增治理章节或实质扩展；PATCH 用于措辞澄清、笔误和非语义修正。任何故意延迟的字段必须
 在正文中说明原因，并列入 Sync Impact Report 的待办清单。
 
-**Version**: 1.3.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-26
+**Version**: 1.4.0 | **Ratified**: 2026-08-18 | **Last Amended**: 2026-08-31
