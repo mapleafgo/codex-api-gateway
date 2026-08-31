@@ -2103,6 +2103,40 @@ func TestToChat_ImageInputDataURLPassthrough(t *testing.T) {
 	}
 }
 
+// TestToChat_ImageDetailPassthrough Chat image_url 有 detail 槽位，保留透传。
+func TestToChat_ImageDetailPassthrough(t *testing.T) {
+	out := mustChat(t, `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":[
+		{"type":"input_text","text":"look"},
+		{"type":"input_image","image_url":"https://example.com/a.png","detail":"high"}
+	]}],"stream":true}`, "gpt-4o")
+	parts := chatParts(t, out.Messages[0].Content)
+	if len(parts) != 2 || parts[1].ImageURL == nil {
+		t.Fatalf("want text+image parts, got %+v", parts)
+	}
+	if parts[1].ImageURL.Detail != "high" {
+		t.Fatalf("detail not preserved: %q", parts[1].ImageURL.Detail)
+	}
+}
+
+// TestToChat_SystemRoleImageSourceLevelFailure Chat system 内容 union
+// 只支持文本 parts：含图片时必须源级失败（007 FR-012）。
+func TestToChat_SystemRoleImageSourceLevelFailure(t *testing.T) {
+	req, err := convert.DecodeResponseNewParams([]byte(`{"model":"gpt-4o","input":[{"type":"message","role":"developer","content":[
+		{"type":"input_text","text":"be brief"},
+		{"type":"input_image","image_url":"https://example.com/img.png"}
+	]}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_, err = ToChat(req, "gpt-4o")
+	if err == nil {
+		t.Fatalf("want source-level failure for developer image, got nil")
+	}
+	if !strings.Contains(err.Error(), "system/developer") || !strings.Contains(err.Error(), "无法无损映射") {
+		t.Fatalf("error must name position and reason, got: %v", err)
+	}
+}
+
 func TestToChat_ImageToolResultAggregatesUserMessage(t *testing.T) {
 	body := `{
 		"model":"gpt-4o",

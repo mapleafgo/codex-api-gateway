@@ -56,6 +56,31 @@ func TestPrepareUpstreamBody_PreservesLargeNumbers(t *testing.T) {
 	}
 }
 
+// TestPrepareUpstreamBody_PreservesInputImage 验证 r 路径透传源对
+// input_image 保持原样：URL、data URI、file_id 与 detail 都不改写（007 FR-003）。
+func TestPrepareUpstreamBody_PreservesInputImage(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5","stream":false,"input":[{"type":"message","role":"user","content":[
+		{"type":"input_text","text":"look"},
+		{"type":"input_image","image_url":"https://example.com/a.png?sig=abc#frag","detail":"high"},
+		{"type":"input_image","image_url":"data:image/png;base64,AAEC"},
+		{"type":"input_image","file_id":"file-abc"}
+	]}]}`)
+	body, _, _, err := PrepareUpstreamBody(raw, &config.Source{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`https://example.com/a.png?sig=abc#frag`,
+		`"detail":"high"`,
+		`data:image/png;base64,AAEC`,
+		`"file_id":"file-abc"`,
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Fatalf("passthrough lost %s in %s", want, body)
+		}
+	}
+}
+
 // TestPrepareUpstreamBody_RewritesPlaintextAgentMessage 验证 r 路径把
 // Codex 多 agent 的明文 agent_message 按 wire 等价物恢复为 assistant message。
 // Responses 兼容上游不认识 agent_message 扩展时不能静默丢掉初始任务。

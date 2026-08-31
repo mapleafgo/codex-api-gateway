@@ -9,6 +9,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	aparam "github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
+	"github.com/mapleafgo/codex-api-gateway/internal/imagemapper"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	oparam "github.com/openai/openai-go/v3/packages/param"
@@ -675,17 +676,17 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 				OfText: &anthropic.TextBlockParam{Text: cp.OfInputText.Text},
 			})
 		} else if cp.OfInputImage != nil {
-			// Only the url/data-URI variant is mapped. The file_id variant
-			// (OpenAI Files) is dropped: Anthropic image blocks take
-			// base64/url only, and the gateway has no OpenAI credentials to
-			// fetch the file. See README "Known limitations".
-			if cp.OfInputImage.ImageURL.Valid() {
-				blocks = append(blocks, imageBlock(cp.OfInputImage.ImageURL.Value))
-			} else if cp.OfInputImage.FileID.Valid() && cp.OfInputImage.FileID.Value != "" {
-				slog.Warn("丢弃 input_image.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
-					"role", string(m.Role),
-					"file_id", cp.OfInputImage.FileID.Value,
-					"impact", "图片不会传递给上游")
+			// Anthropic image blocks 只接受 base64/url：URL/data-URI 可无损
+			// 映射，file_id（OpenAI Files）与空引用无法无损承载，必须按协议
+			// 不可映射源级失败，禁止丢图后发残缺请求。
+			d := imagemapper.InspectParam(cp.OfInputImage)
+			switch d.Kind {
+			case imagemapper.KindMapped:
+				blocks = append(blocks, imageBlock(d.URL))
+			case imagemapper.KindFileID:
+				return fmt.Errorf("convert: input_image.file_id 无法映射到 Anthropic（网关无 OpenAI Files 凭据拉取文件）")
+			default:
+				return fmt.Errorf("convert: input_image 缺少 image_url，无法映射到 Anthropic")
 			}
 		} else if cp.OfInputFile != nil {
 			if block := documentBlock(cp.OfInputFile); block != nil {
@@ -702,17 +703,12 @@ func appendMessage(out *anthropic.MessageNewParams, sysParts *[]instructionPart,
 	role := string(m.Role)
 
 	// system/developer fold into top-level System.
-	// NOTE: image blocks in system/developer messages are dropped here.
-	// Anthropic's system parameter is []TextBlockParam (text-only), so images
-	// cannot be represented in the system role. This is a protocol limitation.
-	// WARN 必须只在真正折入 System 时输出：user/assistant 的 image 会随
-	// blocks 正常发给上游，在这之前告警就是对每张用户图片撒谎。
+	// Anthropic 的 system 参数是 []TextBlockParam（仅文本），图片无法无损承载：
+	// 按协议不可映射源级失败，禁止丢图后把残缺指令发给该上游（007 FR-012）。
 	if role == model.RoleSystem || role == model.RoleDeveloper {
 		for _, b := range blocks {
 			if b.OfImage != nil {
-				slog.Warn("丢弃 system/developer message 中的 image block（Anthropic system 仅支持文本），对应数据被丢弃",
-					"role", role,
-					"impact", "图片不会传递给上游")
+				return fmt.Errorf("convert: system/developer 消息含图片，Anthropic system 仅支持文本，无法无损映射")
 			}
 		}
 		*sysParts = append(*sysParts, instructionPart{
@@ -1048,7 +1044,10 @@ func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses
 	// function_call_output.output 是 union：string 或 [{input_text|input_image|input_file}...]。
 	// 只读 OfString 会把 content list 静默变空 tool_result，参见协议覆盖表 Input Item 说明。
 	if items := fco.Output.OfResponseFunctionCallOutputItemArray; len(items) > 0 {
-		blocks := functionCallOutputContent(fco.CallID, items)
+		blocks, err := functionCallOutputContent(fco.CallID, items)
+		if err != nil {
+			return err
+		}
 		return appendToolResultBlocks(out, fco.CallID, blocks)
 	}
 	outputText := ""
@@ -1061,7 +1060,10 @@ func appendFunctionCallOutput(out *anthropic.MessageNewParams, fco *oairesponses
 func appendCustomToolCallOutput(out *anthropic.MessageNewParams, output *oairesponses.ResponseCustomToolCallOutputParam) error {
 	// custom_tool_call_output.output 同样是 union：string 或 [{input_text|input_image|input_file}...]。
 	if items := output.Output.OfOutputContentList; len(items) > 0 {
-		blocks := customToolOutputContent(output.CallID, items)
+		blocks, err := customToolOutputContent(output.CallID, items)
+		if err != nil {
+			return err
+		}
 		return appendToolResultBlocks(out, output.CallID, blocks)
 	}
 	outputText := ""
@@ -1324,7 +1326,7 @@ func appendToolResultBlocks(out *anthropic.MessageNewParams, callID string, cont
 }
 
 // functionCallOutputContent 把 function_call_output 的 content 数组转成 tool_result parts。
-func functionCallOutputContent(callID string, items []oairesponses.ResponseFunctionCallOutputItemUnionParam) []anthropic.ToolResultBlockParamContentUnion {
+func functionCallOutputContent(callID string, items []oairesponses.ResponseFunctionCallOutputItemUnionParam) ([]anthropic.ToolResultBlockParamContentUnion, error) {
 	out := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(items))
 	for _, item := range items {
 		switch {
@@ -1333,20 +1335,22 @@ func functionCallOutputContent(callID string, items []oairesponses.ResponseFunct
 				OfText: &anthropic.TextBlockParam{Text: item.OfInputText.Text},
 			})
 		case item.OfInputImage != nil:
-			if part, ok := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID); ok {
-				out = append(out, part)
+			part, err := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, part)
 		case item.OfInputFile != nil:
 			if part, ok := toolResultFilePart(callID, item.OfInputFile.FileURL, item.OfInputFile.FileData, item.OfInputFile.FileID, item.OfInputFile.Filename); ok {
 				out = append(out, part)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // customToolOutputContent 把 custom_tool_call_output 的 content list 转成 tool_result parts。
-func customToolOutputContent(callID string, items []oairesponses.ResponseCustomToolCallOutputOutputOutputContentListItemUnionParam) []anthropic.ToolResultBlockParamContentUnion {
+func customToolOutputContent(callID string, items []oairesponses.ResponseCustomToolCallOutputOutputOutputContentListItemUnionParam) ([]anthropic.ToolResultBlockParamContentUnion, error) {
 	out := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(items))
 	for _, item := range items {
 		switch {
@@ -1355,33 +1359,34 @@ func customToolOutputContent(callID string, items []oairesponses.ResponseCustomT
 				OfText: &anthropic.TextBlockParam{Text: item.OfInputText.Text},
 			})
 		case item.OfInputImage != nil:
-			if part, ok := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID); ok {
-				out = append(out, part)
+			part, err := toolResultImagePart(callID, item.OfInputImage.ImageURL, item.OfInputImage.FileID)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, part)
 		case item.OfInputFile != nil:
 			if part, ok := toolResultFilePart(callID, item.OfInputFile.FileURL, item.OfInputFile.FileData, item.OfInputFile.FileID, item.OfInputFile.Filename); ok {
 				out = append(out, part)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
-func toolResultImagePart(callID string, imageURL, fileID oparam.Opt[string]) (anthropic.ToolResultBlockParamContentUnion, bool) {
-	if imageURL.Valid() && imageURL.Value != "" {
-		img := imageBlock(imageURL.Value)
+func toolResultImagePart(_ string, imageURL, fileID oparam.Opt[string]) (anthropic.ToolResultBlockParamContentUnion, error) {
+	d := imagemapper.Inspect(imageURL, fileID, "")
+	switch d.Kind {
+	case imagemapper.KindMapped:
+		img := imageBlock(d.URL)
 		if img.OfImage == nil {
-			return anthropic.ToolResultBlockParamContentUnion{}, false
+			return anthropic.ToolResultBlockParamContentUnion{}, fmt.Errorf("convert: tool output image 构造 imageBlock 失败")
 		}
-		return anthropic.ToolResultBlockParamContentUnion{OfImage: img.OfImage}, true
+		return anthropic.ToolResultBlockParamContentUnion{OfImage: img.OfImage}, nil
+	case imagemapper.KindFileID:
+		return anthropic.ToolResultBlockParamContentUnion{}, fmt.Errorf("convert: tool output image file_id 无法映射到 Anthropic（网关无 OpenAI Files 凭据拉取文件）")
+	default:
+		return anthropic.ToolResultBlockParamContentUnion{}, fmt.Errorf("convert: tool output image 缺少 image_url，无法映射到 Anthropic")
 	}
-	if fileID.Valid() && fileID.Value != "" {
-		slog.Warn("丢弃 tool output 中的 input_image.file_id（网关无 OpenAI Files 凭据拉取文件），对应数据被丢弃",
-			"call_id", callID,
-			"file_id", fileID.Value,
-			"impact", "图片不会出现在 tool_result 中")
-	}
-	return anthropic.ToolResultBlockParamContentUnion{}, false
 }
 
 func toolResultFilePart(callID string, fileURL, fileData, fileID, filename oparam.Opt[string]) (anthropic.ToolResultBlockParamContentUnion, bool) {

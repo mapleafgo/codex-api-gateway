@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mapleafgo/codex-api-gateway/internal/imagemapper"
 	"github.com/mapleafgo/codex-api-gateway/internal/model"
 	"github.com/mapleafgo/codex-api-gateway/internal/toolcatalog"
 	openai "github.com/openai/openai-go/v3"
@@ -91,7 +92,8 @@ type ChatContentPart struct {
 
 // ChatImageURL 承载图片地址（URL 或 data URL），对齐 opencode lowerMedia 的形状透传。
 type ChatImageURL struct {
-	URL string `json:"url"`
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // MarshalJSON 按 opencode wire 规则输出：
@@ -995,6 +997,9 @@ func convertMessageRole(role string, text string, parts []ChatContentPart, err e
 	}
 	switch role {
 	case "system", "developer":
+		if len(parts) > 0 {
+			return ChatMessage{}, false, fmt.Errorf("chatconvert: system/developer 消息含图片，无法无损映射到 Chat（system 仅支持文本）")
+		}
 		if text == "" {
 			return ChatMessage{}, false, nil
 		}
@@ -1024,8 +1029,12 @@ func buildUserMessage(text string, parts []ChatContentPart) (ChatMessage, bool) 
 }
 
 // imagePart 构造 Chat image_url part。
-func imagePart(url string) ChatContentPart {
-	return ChatContentPart{Type: "image_url", ImageURL: &ChatImageURL{URL: url}}
+func imagePart(url, detail string) ChatContentPart {
+	ciURL := &ChatImageURL{URL: url}
+	if detail != "" {
+		ciURL.Detail = detail
+	}
+	return ChatContentPart{Type: "image_url", ImageURL: ciURL}
 }
 
 // inputImagePart 仅接受 image_url（file_id 无 Chat 槽位，报协议不可映射错误）。
@@ -1033,17 +1042,15 @@ func inputImagePart(img *oairesponses.ResponseInputImageParam) (ChatContentPart,
 	if img == nil {
 		return ChatContentPart{}, nil
 	}
-	url := ""
-	if img.ImageURL.Valid() {
-		url = img.ImageURL.Value
-	}
-	if url == "" && img.FileID.Valid() && img.FileID.Value != "" {
+	d := imagemapper.InspectParam(img)
+	switch d.Kind {
+	case imagemapper.KindMapped:
+		return imagePart(d.URL, d.Detail), nil
+	case imagemapper.KindFileID:
 		return ChatContentPart{}, fmt.Errorf("chatconvert: input_image file_id 无法映射到 Chat（仅支持 image_url）")
-	}
-	if url == "" {
+	default:
 		return ChatContentPart{}, fmt.Errorf("chatconvert: input_image 缺少 image_url，无法映射到 Chat")
 	}
-	return imagePart(url), nil
 }
 
 // inputImageContentPart 与 inputImagePart 同规则，针对 function_call_output 的图片项。
@@ -1051,17 +1058,15 @@ func inputImageContentPart(img *oairesponses.ResponseInputImageContentParam) (Ch
 	if img == nil {
 		return ChatContentPart{}, nil
 	}
-	url := ""
-	if img.ImageURL.Valid() {
-		url = img.ImageURL.Value
-	}
-	if url == "" && img.FileID.Valid() && img.FileID.Value != "" {
+	d := imagemapper.InspectContentParam(img)
+	switch d.Kind {
+	case imagemapper.KindMapped:
+		return imagePart(d.URL, d.Detail), nil
+	case imagemapper.KindFileID:
 		return ChatContentPart{}, fmt.Errorf("chatconvert: tool output image file_id 无法映射到 Chat（仅支持 image_url）")
-	}
-	if url == "" {
+	default:
 		return ChatContentPart{}, fmt.Errorf("chatconvert: tool output image 缺少 image_url，无法映射到 Chat")
 	}
-	return imagePart(url), nil
 }
 
 // convertInputContent 把 input content 列表转成文本与有序多模态 parts。

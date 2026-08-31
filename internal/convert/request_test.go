@@ -717,30 +717,20 @@ func TestCustomToolCallOutputContentListPreserved(t *testing.T) {
 	}
 }
 
-// TestFunctionCallOutputImageFileIDWarns 数组里只有 file_id 的图片无法拉取，应 WARN 且不崩溃。
-func TestFunctionCallOutputImageFileIDWarns(t *testing.T) {
-	buf, restore := captureWarnLogger(t)
-	defer restore()
+// TestFunctionCallOutputImageFileIDSourceLevelFailure 仅 file_id 的 tool 结果
+// 图片无法无损拉取，必须源级失败（007 FR-002），禁止丢图后发残缺 tool_result。
+func TestFunctionCallOutputImageFileIDSourceLevelFailure(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[
 		{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
 		{"type":"function_call","call_id":"c1","name":"shot","arguments":"{}"},
 		{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","file_id":"file-abc"}]}
 	],"tools":[{"type":"function","name":"shot","parameters":{"type":"object"}}],"stream":true}`)
-	out, err := ToAnthropic(req, &config.Config{})
-	if err != nil {
-		t.Fatal(err)
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil {
+		t.Fatalf("want source-level failure for tool output file_id image, got nil")
 	}
-	tr := findToolResult(out.Messages, "c1")
-	if tr == nil {
-		t.Fatalf("tool_result missing after file_id-only image: %+v", out.Messages)
-	}
-	// 无可用内容时仍保留空 text 占位，避免 tool_use 失配。
-	if len(tr.Content) != 1 || tr.Content[0].OfText == nil {
-		t.Fatalf("want empty text placeholder, got %+v", tr.Content)
-	}
-	logs := buf.String()
-	if !strings.Contains(logs, "file_id") || !strings.Contains(logs, "file-abc") {
-		t.Fatalf("expected WARN for tool output image file_id, got: %s", logs)
+	if !strings.Contains(err.Error(), "file_id") || !strings.Contains(err.Error(), "无法映射") {
+		t.Fatalf("error must name file_id and reason, got: %v", err)
 	}
 }
 
@@ -2048,24 +2038,39 @@ func TestInputFileURLConvertsToAnthropicDocument(t *testing.T) {
 	}
 }
 
-// TestInputImageFileIDEmitsWarn 验证 input_image.file_id（无 OpenAI Files 凭据）
-// 被静默跳过时按 AGENTS.md 约定输出 WARN。
-func TestInputImageFileIDEmitsWarn(t *testing.T) {
-	buf, restore := captureWarnLogger(t)
-	defer restore()
-
+// TestInputImageFileIDSourceLevelFailure 验证 input_image.file_id（无 OpenAI Files 凭据）
+// 无法无损映射，必须源级失败并携带可归因错误（007 FR-002）。
+func TestInputImageFileIDSourceLevelFailure(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[{"type":"input_image","file_id":"file-abc123"}]}],"stream":true}`)
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil {
+		t.Fatalf("want source-level failure for input_image.file_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "input_image.file_id") || !strings.Contains(err.Error(), "无法映射") {
+		t.Fatalf("error must name input_image.file_id and reason, got: %v", err)
+	}
+}
+
+// TestInputImageDetailLossyDropped Anthropic image block 无 detail 等价字段：
+// 有损丢弃 detail（字段级降级）但图像本体必须保留（007 FR-002）。
+func TestInputImageDetailLossyDropped(t *testing.T) {
+	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":[
+		{"type":"input_text","text":"look"},
+		{"type":"input_image","image_url":"https://example.com/a.png","detail":"high"}
+	]}],"stream":true}`)
 	out, err := ToAnthropic(req, &config.Config{})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("detail drop must not fail conversion: %v", err)
 	}
-	// file_id 被丢弃后该 message 只有一个空 text 占位 block。
-	if len(out.Messages) != 1 {
-		t.Fatalf("expected one message: %+v", out.Messages)
+	blocks := out.Messages[0].Content
+	var imageSeen bool
+	for _, b := range blocks {
+		if b.OfImage != nil && b.OfImage.Source.OfURL != nil && b.OfImage.Source.OfURL.URL == "https://example.com/a.png" {
+			imageSeen = true
+		}
 	}
-	logs := buf.String()
-	if !strings.Contains(logs, "input_image.file_id") || !strings.Contains(logs, "file-abc123") {
-		t.Fatalf("expected WARN for input_image.file_id, got: %s", logs)
+	if !imageSeen {
+		t.Fatalf("image body must survive detail drop: %+v", blocks)
 	}
 }
 
@@ -2088,19 +2093,17 @@ func TestInputFileFileIDEmitsWarn(t *testing.T) {
 	}
 }
 
-// TestSystemRoleImageDroppedEmitsWarn 验证 system/developer message 中的 image
-// 被 Anthropic system（仅文本）丢弃时输出 WARN。
-func TestSystemRoleImageDroppedEmitsWarn(t *testing.T) {
-	buf, restore := captureWarnLogger(t)
-	defer restore()
-
+// TestSystemRoleImageSourceLevelFailure 验证 system/developer message 中的 image
+// 无法承载到 Anthropic system（仅文本）时源级失败（007 FR-012），
+// 禁止丢图后把残缺指令发给上游。
+func TestSystemRoleImageSourceLevelFailure(t *testing.T) {
 	req := mustReq(t, `{"model":"gpt-5","input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"be brief"},{"type":"input_image","image_url":"https://example.com/img.png"}]}],"stream":true}`)
-	if _, err := ToAnthropic(req, &config.Config{}); err != nil {
-		t.Fatal(err)
+	_, err := ToAnthropic(req, &config.Config{})
+	if err == nil {
+		t.Fatalf("want source-level failure for developer image, got nil")
 	}
-	logs := buf.String()
-	if !strings.Contains(logs, "image block") || !strings.Contains(logs, "developer") {
-		t.Fatalf("expected WARN for system/developer image drop, got: %s", logs)
+	if !strings.Contains(err.Error(), "system/developer") || !strings.Contains(err.Error(), "无法无损映射") {
+		t.Fatalf("error must name position and reason, got: %v", err)
 	}
 }
 
