@@ -2,7 +2,7 @@
 //
 // 设计要点：
 //   - Run 在独立 goroutine 中调用，通过 Show 立即显示图标，实现"在任何处理前启动托盘"。
-//   - 菜单："打开"、可选勾选"开机自启"、"退出"。
+//   - 菜单："打开"、可选勾选"应用到 Codex"/"开机自启"、"同步 Codex 会话历史"、"退出"。
 //   - headless / 异常降级：systray 事件循环在未请求退出时提前返回（无图形桌面、
 //     D-Bus 不可用、托盘宿主崩溃、无交互会话等）一律降级为等待 SIGINT/SIGTERM
 //     的信号模式继续运行，托盘异常绝不带崩进程，因此 -d 后台模式也可安全启用托盘。
@@ -164,6 +164,7 @@ func (t *Tray) buildMenu() *systray.Menu {
 			enabled = on
 		}
 		menu.AddCheckbox("应用到 Codex", enabled, t.onCodexToggle)
+		menu.Add("同步 Codex 会话历史", t.onSyncSessions)
 	}
 	if t.cfg.Autostart != nil {
 		enabled := false
@@ -221,6 +222,20 @@ func (t *Tray) onCodexToggle() {
 		slog.Info("已开启 Codex 接入")
 	}
 	t.refreshMenu()
+}
+
+// onSyncSessions 清除 Codex 会话历史中的 model_provider 标记，
+// 使切换提供商后历史会话在 codex 恢复选择器中按当前 provider 可见。
+func (t *Tray) onSyncSessions() {
+	if t.cfg.Codex == nil {
+		return
+	}
+	rewritten, err := t.cfg.Codex.SyncSessionHistory()
+	if err != nil {
+		slog.Warn("同步 Codex 会话历史失败", "error", err)
+		return
+	}
+	slog.Info("已同步 Codex 会话历史", "cleared_sessions", rewritten)
 }
 
 // onAutostartToggle 切换开机自启；失败时保持原勾选并记 WARN。

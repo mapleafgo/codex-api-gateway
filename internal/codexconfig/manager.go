@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/mapleafgo/codex-api-gateway/internal/codexsessions"
 )
 
 const (
@@ -122,7 +124,11 @@ func (m *Manager) Enable() error {
 	lines = upsertTableBlock(lines, providerHeader, providerBlock(base))
 	lines = upsertTopLevelKey(lines, "model_provider", providerID)
 	lines = upsertTopLevelKey(lines, "model_catalog_json", catalogPath)
-	return writeConfig(path, lines)
+	if err := writeConfig(path, lines); err != nil {
+		return err
+	}
+	m.syncSessionHistoryLocked(home)
+	return nil
 }
 
 // Disable 恢复启用前的 model_provider 原值并删除备份；provider 块保留。
@@ -154,6 +160,7 @@ func (m *Manager) Disable() error {
 				if err := writeConfig(path, lines); err != nil {
 					return err
 				}
+				m.syncSessionHistoryLocked(home)
 				slog.Warn("codexconfig: 备份缺失，已移除网关注入键，model_provider 回落 Codex 默认",
 					"backup", backupPath)
 				return nil
@@ -183,7 +190,49 @@ func (m *Manager) Disable() error {
 	if err := os.Remove(backupPath); err != nil {
 		return fmt.Errorf("codexconfig: 删除备份 %s 失败: %w", backupPath, err)
 	}
+	m.syncSessionHistoryLocked(home)
 	return nil
+}
+
+// SyncSessionHistory 清除 Codex 会话历史中 session_meta 的
+// model_provider，使切换提供商后历史会话仍可见；点选/取消勾选
+// 「应用到 Codex」时也会自动执行一次。被清除的会话限于网关注入的
+// provider 与备份中的原 provider，不动其他 provider 的会话。
+// codex 恢复选择器把没有 provider 标记的会话按当前默认 provider 归入。
+// 返回被清除的会话文件数。
+func (m *Manager) SyncSessionHistory() (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	home, _, err := resolveConfigPaths()
+	if err != nil {
+		return 0, err
+	}
+	return m.syncSessionHistoryLocked(home), nil
+}
+
+// syncSessionHistoryLocked 清除网关注入与备份原 provider 会话的
+// model_provider；调用方需持有 m.mu。同步失败只记 WARN，不阻断开关。
+func (m *Manager) syncSessionHistoryLocked(home string) int {
+	// 可清除的会话只限于网关注入的 provider 与启用前的原 provider。
+	// 两者都要放进去：切换后两边 provider 下的历史会话都要能恢复。
+	sources := []string{providerID}
+	if data, err := os.ReadFile(filepath.Join(home, backupFileName)); err == nil {
+		var state backupState
+		if err := json.Unmarshal(data, &state); err == nil && state.ModelProvider != nil {
+			sources = append(sources, *state.ModelProvider)
+		}
+	}
+	rw := codexsessions.New(home, sources...)
+	rewritten, err := rw.Sync()
+	if err != nil {
+		slog.Warn("codexconfig: 同步 Codex 会话历史失败", "error", err)
+		return 0
+	}
+	slog.Info("Codex 会话历史已同步",
+		"cleared_sessions", rewritten,
+		"sessions_root", filepath.Join(home, "sessions"))
+	return rewritten
 }
 
 // resolveConfigPaths 返回 codex 主目录与 config.toml 绝对路径。

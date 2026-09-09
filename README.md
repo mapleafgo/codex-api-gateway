@@ -143,6 +143,14 @@ systemctl --user disable --now codex-api-gateway.service
 `$CODEX_HOME/models.json`，`base_url` 自动取当前监听端口）；取消勾选恢复启用前的
 `model_provider` 与 `model_catalog_json` 原值。
 
+- **「同步 Codex 会话历史」**：Codex 的会话恢复选择器按当前 `model_provider`
+  过滤历史。切换提供商后，旧 provider 下的会话文件仍然标记原 provider，
+  因此恢复列表里“看不见”。点击该按钮会清除 `$CODEX_HOME/sessions/**/*.jsonl`
+  中属于网关注入 provider 与启用前原 provider 会话的 `session_meta.model_provider`
+  标签，Codex 会把没有该标记的会话按当前默认 provider 显示，切换后两边的
+  历史会话都能继续在 codex 列表里恢复。同步只动 `session_meta` 的
+  `model_provider` 字段，其他字段与第三方 provider 的会话不动。勾选或取消
+  「应用到 Codex」时会自动执行一次会话同步，无需每次手动点。
 - 启用前的原值备份在 `~/.codex/codex-api-gateway-backup.json`，恢复后自动删除。
 - 备份文件异常缺失时，取消勾选会移除网关注入键并回落到 Codex 默认 provider（对应 WARN 日志）。
 - `config.toml` 不存在时不自动创建，请先运行一次 codex 生成配置。

@@ -435,3 +435,73 @@ func TestWriteModelsCatalog(t *testing.T) {
 		t.Fatalf("仅写模型目录不应启用 Codex，on=%v err=%v", on, err)
 	}
 }
+
+func TestEnableSyncsSessionHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	seedConfigFile(t, home, seedConfig)
+	seedSessionForSync(t, home, "openai", "openai-session")
+	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
+	seedSessionForSync(t, home, "anthropic", "other-session")
+
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"openai-session", "gateway-session"} {
+		if got := readSession(t, home, name); strings.Contains(got, `"model_provider"`) {
+			t.Fatalf("应用后 %s 的 model_provider 应被自动清除:\n%s", name, got)
+		}
+	}
+	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
+		t.Fatalf("应用后第三方 provider 会话不应被清除:\n%s", got)
+	}
+}
+
+func TestDisableSyncsSessionHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	seedConfigFile(t, home, seedConfig)
+
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	// 启用期间新产生的网关与第三方会话，用于验证还原时的自动同步。
+	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
+	seedSessionForSync(t, home, "anthropic", "other-session")
+	if err := m.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSession(t, home, "gateway-session"); strings.Contains(got, `"model_provider"`) {
+		t.Fatalf("还原后网关会话的 model_provider 应被自动清除:\n%s", got)
+	}
+	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
+		t.Fatalf("还原后第三方 provider 会话不应被清除:\n%s", got)
+	}
+}
+
+func seedSessionForSync(t *testing.T, home, provider, name string) {
+	t.Helper()
+	rel := filepath.Join(".codex", "sessions", "2026", "09", "09", name+".jsonl")
+	path := filepath.Join(home, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"session_meta","payload":{"model_provider":"` + provider + `"}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readSession(t *testing.T, home, name string) string {
+	t.Helper()
+	path := filepath.Join(home, ".codex", "sessions", "2026", "09", "09", name+".jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
