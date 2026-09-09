@@ -2063,7 +2063,7 @@ function app() {
    },
    backendTypeTitle(v) {
      // 仅按已注册插件描述符展示；未知/历史值原样显示，不再映射短码。
-     return this.t('colBackendType') + ': ' + this.backendTypeLabel(v);
+     return this.backendTypeLabel(v);
    },
     isOk(row) {
       if (!row) return false;
