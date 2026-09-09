@@ -92,6 +92,50 @@ func TestChatBackend_CacheReadPropagated(t *testing.T) {
 	}
 }
 
+// TestChatBackend_ContentFilterIncomplete 复现：上游 finish_reason=content_filter 时，
+// onUpstream.Status 必须是语义态 incomplete（此前 chat.go 硬编码 completed，导致
+// 日志/metrics 记 completed，而客户端实际收到 response.incomplete）。
+func TestChatBackend_ContentFilterIncomplete(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-cf\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}]}\n\n")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-cf\",\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewChat()
+	var types []string
+	var up UpstreamEvent
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
+		config.Source{Name: "c1", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
+		&config.Config{},
+		func(ev model.SSEEvent) error {
+			types = append(types, ev.Type)
+			return nil
+		},
+		func(ev UpstreamEvent) { up = ev },
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	has := map[string]bool{}
+	for _, tpe := range types {
+		has[tpe] = true
+	}
+	if !has["response.incomplete"] {
+		t.Fatalf("want response.incomplete, got %v", types)
+	}
+	if has["response.completed"] {
+		t.Fatalf("unexpected response.completed in %v", types)
+	}
+	if up.Status != model.ResponseStatusIncomplete {
+		t.Fatalf("onUpstream status=%q want %q", up.Status, model.ResponseStatusIncomplete)
+	}
+}
+
 // TestChatBackend_EmptyStreamNoSyntheticLock 复现 OpenCode/OpenRouter 空流：
 // 仅 SSE 注释或仅 [DONE] 时，不得合成 response.created/completed 锁定源。
 func TestChatBackend_EmptyStreamNoSyntheticLock(t *testing.T) {

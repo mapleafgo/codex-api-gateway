@@ -338,6 +338,16 @@ func (c *Converter) Seq() int64 { return c.seq }
 // StopReason 停止原因。
 func (c *Converter) StopReason() string { return c.stopReason }
 
+// Status 返回基于上游 stop reason 推导的 Responses 语义终态；
+// 已发出 response.failed 优先。
+func (c *Converter) Status() string {
+	if c.failed {
+		return model.ResponseStatusFailed
+	}
+	status, _ := statusForFinish(c.stopReason)
+	return status
+}
+
 // Usage token 用量。
 func (c *Converter) Usage() *model.ResponseUsage { return c.usage }
 

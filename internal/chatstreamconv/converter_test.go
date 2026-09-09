@@ -502,6 +502,37 @@ func TestFinishReasonContentFilter(t *testing.T) {
 	}
 }
 
+func TestConverterStatus(t *testing.T) {
+	cases := []struct {
+		name   string
+		finish string
+		want   string
+	}{
+		{"stop", "stop", model.ResponseStatusCompleted},
+		{"tool_calls", "tool_calls", model.ResponseStatusCompleted},
+		{"length", "length", model.ResponseStatusIncomplete},
+		{"content_filter", "content_filter", model.ResponseStatusIncomplete},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New()
+			c.SetClientModel("m")
+			c.Feed([]byte(`{"id":"c1","choices":[{"delta":{},"finish_reason":"` + tc.finish + `"}]}`))
+			c.FeedDone()
+			if got := c.Status(); got != tc.want {
+				t.Fatalf("Status=%q want %q", got, tc.want)
+			}
+		})
+	}
+	t.Run("failed", func(t *testing.T) {
+		c := New()
+		c.FailWithCode("boom", "")
+		if got := c.Status(); got != model.ResponseStatusFailed {
+			t.Fatalf("Status=%q want %q", got, model.ResponseStatusFailed)
+		}
+	})
+}
+
 func TestFeedDoneWithoutFinishReason(t *testing.T) {
 	c := New()
 	c.SetClientModel("m")

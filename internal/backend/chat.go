@@ -132,7 +132,7 @@ func (b *ChatBackend) Execute(
 		Locked:   locked,
 		ScanErr:  scanErr,
 		Terminal: conv.Done(),
-		Status:   "completed",
+		Status:   conv.Status(),
 		Code:     200,
 		// 无事件且错误串解析不出状态码时 code 落 0（与历史行为一致）。
 		NoEventsCode: 0,
