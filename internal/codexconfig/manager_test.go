@@ -1,6 +1,7 @@
 package codexconfig
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -444,6 +445,11 @@ func TestEnableSyncsSessionHistory(t *testing.T) {
 	seedSessionForSync(t, home, "openai", "openai-session")
 	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
 	seedSessionForSync(t, home, "anthropic", "other-session")
+	statePath := seedManagerStateDB(t, home,
+		[2]string{"openai-session", "openai"},
+		[2]string{"gateway-session", "codex-api-gateway"},
+		[2]string{"other-session", "anthropic"},
+	)
 
 	m := New(func() string { return "http://127.0.0.1:8383/v1" })
 	if err := m.Enable(); err != nil {
@@ -457,13 +463,22 @@ func TestEnableSyncsSessionHistory(t *testing.T) {
 	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
 		t.Fatalf("应用后第三方 provider 会话不应被清除:\n%s", got)
 	}
+	if got := readManagerState(t, statePath, "openai-session"); got != "codex-api-gateway" {
+		t.Fatalf("state 索引中 openai 会话应改写为 codex-api-gateway，实际 %q", got)
+	}
+	if got := readManagerState(t, statePath, "gateway-session"); got != "codex-api-gateway" {
+		t.Fatalf("state 索引中网关会话应保持 codex-api-gateway，实际 %q", got)
+	}
+	if got := readManagerState(t, statePath, "other-session"); got != "anthropic" {
+		t.Fatalf("state 索引中第三方会话不应被改写，实际 %q", got)
+	}
 }
 
 func TestDisableSyncsSessionHistory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
-	seedConfigFile(t, home, seedConfig)
+	_ = seedConfigFile(t, home, seedConfig)
 
 	m := New(func() string { return "http://127.0.0.1:8383/v1" })
 	if err := m.Enable(); err != nil {
@@ -472,6 +487,10 @@ func TestDisableSyncsSessionHistory(t *testing.T) {
 	// 启用期间新产生的网关与第三方会话，用于验证还原时的自动同步。
 	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
 	seedSessionForSync(t, home, "anthropic", "other-session")
+	statePath := seedManagerStateDB(t, home,
+		[2]string{"gateway-session", "codex-api-gateway"},
+		[2]string{"other-session", "anthropic"},
+	)
 	if err := m.Disable(); err != nil {
 		t.Fatal(err)
 	}
@@ -481,6 +500,55 @@ func TestDisableSyncsSessionHistory(t *testing.T) {
 	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
 		t.Fatalf("还原后第三方 provider 会话不应被清除:\n%s", got)
 	}
+	if got := readManagerState(t, statePath, "gateway-session"); got != "openai" {
+		t.Fatalf("还原后 state 索引中网关会话应改写为 openai，实际 %q", got)
+	}
+	if got := readManagerState(t, statePath, "other-session"); got != "anthropic" {
+		t.Fatalf("还原后 state 索引中第三方会话不应被改写，实际 %q", got)
+	}
+}
+
+// seedManagerStateDB 在 home/.codex 下写入 state_5.sqlite 并填充
+// threads 行；返回 state 库相对 home 的路径。
+func seedManagerStateDB(t *testing.T, home string, rows ...[2]string) string {
+	t.Helper()
+	rel := filepath.Join(".codex", "state_5.sqlite")
+	path := filepath.Join(home, rel)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(
+		"CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, model_provider TEXT, title TEXT)",
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(
+			"INSERT OR REPLACE INTO threads (id, model_provider, title) VALUES (?, ?, ?)",
+			row[0], row[1], "title-"+row[0],
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path
+}
+
+func readManagerState(t *testing.T, path, id string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var got string
+	if err := db.QueryRow(
+		"SELECT model_provider FROM threads WHERE id = ?", id,
+	).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
 
 func seedSessionForSync(t *testing.T, home, provider, name string) {

@@ -17,6 +17,9 @@ const (
 	providerID   = "codex-api-gateway"
 	providerName = "Codex API Gateway"
 	wireAPI      = "responses"
+	// defaultCodexProviderID 是 codex-rs 在 config 缺失 model_provider 时
+	// 回落的默认 provider（config/mod.rs model_provider 缺省的 "openai"）。
+	defaultCodexProviderID = "openai"
 
 	backupFileName = "codex-api-gateway-backup.json"
 	modelsFileName = "models.json"
@@ -194,26 +197,33 @@ func (m *Manager) Disable() error {
 	return nil
 }
 
-// SyncSessionHistory 清除 Codex 会话历史中 session_meta 的
-// model_provider，使切换提供商后历史会话仍可见；点选/取消勾选
-// 「应用到 Codex」时也会自动执行一次。被清除的会话限于网关注入的
-// provider 与备份中的原 provider，不动其他 provider 的会话。
-// codex 恢复选择器把没有 provider 标记的会话按当前默认 provider 归入。
-// 返回被清除的会话文件数。
-func (m *Manager) SyncSessionHistory() (int, error) {
+// SyncSessionHistory 清除 Codex 会话历史归属标记，使切换提供商后
+// 历史会话仍可见；点选/取消勾选「应用到 Codex」时也会自动执行一次。
+// 受处理的会话限于网关注入的 provider 与备份中的原 provider，不动
+// 其他 provider 的会话。JSONL 的 session_meta 标记被清除，state_*.sqlite
+// 索引行改写为当前默认 provider（codex 恢复选择器按该列精确匹配）。
+func (m *Manager) SyncSessionHistory() (SyncResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	home, _, err := resolveConfigPaths()
 	if err != nil {
-		return 0, err
+		return SyncResult{}, err
 	}
 	return m.syncSessionHistoryLocked(home), nil
 }
 
-// syncSessionHistoryLocked 清除网关注入与备份原 provider 会话的
-// model_provider；调用方需持有 m.mu。同步失败只记 WARN，不阻断开关。
-func (m *Manager) syncSessionHistoryLocked(home string) int {
+// SyncResult 描述一次历史会话同步的处理量。
+type SyncResult struct {
+	// SessionFiles 是被清除 model_provider 标记的 rollout JSONL 文件数。
+	SessionFiles int
+	// StateRows 是被改写 provider 的 state_*.sqlite 会话索引行数。
+	StateRows int
+}
+
+// syncSessionHistoryLocked 同步 JSONL 标记与本地会话索引；调用方需持有
+// m.mu。同步失败只记 WARN，不阻断开关。
+func (m *Manager) syncSessionHistoryLocked(home string) SyncResult {
 	// 可清除的会话只限于网关注入的 provider 与启用前的原 provider。
 	// 两者都要放进去：切换后两边 provider 下的历史会话都要能恢复。
 	sources := []string{providerID}
@@ -224,15 +234,39 @@ func (m *Manager) syncSessionHistoryLocked(home string) int {
 		}
 	}
 	rw := codexsessions.New(home, sources...)
-	rewritten, err := rw.Sync()
+	var result SyncResult
+	files, err := rw.Sync()
 	if err != nil {
-		slog.Warn("codexconfig: 同步 Codex 会话历史失败", "error", err)
-		return 0
+		slog.Warn("codexconfig: 同步 Codex 会话 JSONL 失败", "error", err)
+	} else {
+		result.SessionFiles = files
+	}
+	defaultProvider := currentDefaultProvider(home)
+	rows, err := rw.SyncStateDB(defaultProvider)
+	if err != nil {
+		slog.Warn("codexconfig: 同步 Codex 会话索引失败",
+			"error", err, "default_provider", defaultProvider)
+	} else {
+		result.StateRows = rows
 	}
 	slog.Info("Codex 会话历史已同步",
-		"cleared_sessions", rewritten,
+		"cleared_files", result.SessionFiles,
+		"state_rows", result.StateRows,
+		"default_provider", defaultProvider,
 		"sessions_root", filepath.Join(home, "sessions"))
-	return rewritten
+	return result
+}
+
+// currentDefaultProvider 返回当前 config.toml 的 model_provider；
+// 键缺失时回落到 codex 内置默认 provider。
+func currentDefaultProvider(home string) string {
+	raw, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err == nil {
+		if value, ok := topLevelKey(strings.Split(string(raw), "\n"), "model_provider"); ok && value != "" {
+			return value
+		}
+	}
+	return defaultCodexProviderID
 }
 
 // resolveConfigPaths 返回 codex 主目录与 config.toml 绝对路径。

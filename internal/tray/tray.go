@@ -224,18 +224,20 @@ func (t *Tray) onCodexToggle() {
 	t.refreshMenu()
 }
 
-// onSyncSessions 清除 Codex 会话历史中的 model_provider 标记，
+// onSyncSessions 清除 Codex 会话历史归属标记（JSONL + 本地会话索引），
 // 使切换提供商后历史会话在 codex 恢复选择器中按当前 provider 可见。
 func (t *Tray) onSyncSessions() {
 	if t.cfg.Codex == nil {
 		return
 	}
-	rewritten, err := t.cfg.Codex.SyncSessionHistory()
+	result, err := t.cfg.Codex.SyncSessionHistory()
 	if err != nil {
 		slog.Warn("同步 Codex 会话历史失败", "error", err)
 		return
 	}
-	slog.Info("已同步 Codex 会话历史", "cleared_sessions", rewritten)
+	slog.Info("已同步 Codex 会话历史",
+		"cleared_files", result.SessionFiles,
+		"state_rows", result.StateRows)
 }
 
 // onAutostartToggle 切换开机自启；失败时保持原勾选并记 WARN。

@@ -1,7 +1,9 @@
-// Package codexsessions 把 Codex 会话历史（rollout JSONL）中
-// session_meta 的 model_provider 字段清除，使 codex 的恢复选择器
-// 把历史会话按当前默认 provider 归入（codex 把缺失 provider 的会话
-// 视为属于当前默认 provider）。
+// Package codexsessions 清除 Codex 会话历史中的 model_provider 归属标记，
+// 使切换提供商后历史会话仍可在 codex 恢复选择器中看到。清除包含两个存储：
+// rollout JSONL 的 session_meta 字段，以及本地会话索引
+// state_*.sqlite 的 threads.model_provider 列。索引必须把受管会话改写为
+// 当前默认 provider（codex 恢复选择器按该列精确匹配），JSONL 清除
+// 用于会话被重新索引时按当前默认 provider 归入。
 package codexsessions
 
 import (
@@ -21,6 +23,7 @@ const (
 
 // Rewriter 按需清除会话文件 session_meta 行中的 model_provider 标记。
 type Rewriter struct {
+	home         string
 	sessionsRoot string
 	clearable    map[string]struct{}
 }
@@ -36,6 +39,7 @@ func New(home string, sources ...string) *Rewriter {
 		}
 	}
 	return &Rewriter{
+		home:         home,
 		sessionsRoot: filepath.Join(home, sessionsDir),
 		clearable:    set,
 	}
