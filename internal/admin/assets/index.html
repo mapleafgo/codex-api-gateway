@@ -256,7 +256,10 @@ html[data-theme="dark"] .ui-btn-primary { background: var(--signal); border-colo
   background: var(--ink); color: var(--surface);
   font-size: 11px; font-weight: 500; line-height: 1.4;
   white-space: pre-wrap; word-break: break-word; box-shadow: var(--shadow-lg);
-  pointer-events: none;
+  pointer-events: auto; user-select: text;
+}
+.gw-tooltip.is-pinned {
+  box-shadow: var(--shadow-lg), 0 0 0 1.5px color-mix(in srgb, var(--brand) 55%, transparent);
 }
 html[data-theme="dark"] .gw-tooltip {
   background: #e8eef8; color: #0b1220;
@@ -531,7 +534,7 @@ html[data-theme="dark"] .ui-sel-list {
 }
 .ui-log-head, .ui-log-row {
   display: grid;
-  grid-template-columns: 72px 48px 87px minmax(140px,1.5fr) 170px repeat(4, 72px) 64px 64px 56px 40px;
+  grid-template-columns: 72px 48px 120px minmax(140px,1.5fr) 76px repeat(4, 72px) 64px 64px 56px 40px;
   gap: 10px; align-items: center; padding: 0 16px;
 }
 .ui-log-head {
@@ -913,7 +916,7 @@ html[data-theme="dark"] .ui-select {
               </span>
               <span class="center min0">
                 <span class="ui-badge ui-badge-soft-neutral mono truncate" style="font-size:11px; max-width:100%"
-                      x-text="backendTypeLabel(row.backend)"
+                      x-text="backendTypeShort(row.backend)"
                       :title="backendTypeTitle(row.backend)"></span>
               </span>
               <span class="num" x-text="fmtTokens(row.input_tokens) || '-'"></span>
@@ -925,7 +928,8 @@ html[data-theme="dark"] .ui-select {
               <span class="num">
                 <span class="ui-tip"
                       @mouseenter="showTip($event, codeTip(row))"
-                      @mouseleave="hideTip()">
+                      @mouseleave="scheduleTipHide()"
+                      @click.stop="pinTip($event, codeTip(row))">
                   <span class="ui-badge" :class="codeBadge(row)" x-text="row.code || '-'"></span>
                 </span>
               </span>
@@ -1826,6 +1830,7 @@ function app() {
 
     cfg: { server:{}, logging:{}, breaker:{}, sources:[], models:[] },
     sourcePlugins: [],
+    backendShorts: { anthropic: 'A', 'openai-chat': 'C', 'openai-responses': 'R', 'github-copilot': 'G' },
    promoting: '',
    togglingDisabled: '',
    testingSrc: '',
@@ -1863,6 +1868,12 @@ function app() {
         let obj = this;
         for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
         if (obj) obj[parts[parts.length - 1]] = e.detail;
+      });
+      document.addEventListener('click', (e) => {
+        if (this._tipEl && !e.target.closest('.gw-tooltip') && !e.target.closest('.ui-tip')) this.hideTip();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') this.hideTip();
       });
     },
     // 先拉取插件描述符，再尝试恢复进行中的设备授权会话（路由从声明元数据读取）。
@@ -1958,7 +1969,7 @@ function app() {
       return arr.filter(r =>
         (this.filterKind === '' || r.kind === this.filterKind) &&
         (!this.filterModel || (r.model||'').includes(this.filterModel)) &&
-        (!this.filterSource || (r.source||'').includes(this.filterSource)) &&
+        (!this.filterSource || (r.source||'') === this.filterSource) &&
         (!this.filterStatus || String(r.code) === this.filterStatus)
       );
     },
@@ -2044,6 +2055,12 @@ function app() {
      const p = v ? this.pluginDescriptor(v) : null;
      return p ? p.title : (v || this.t('unknownBackend'));
    },
+   // 请求历史表接口类型用缩写，完整名称保留在 title 提示中。
+   backendTypeShort(v) {
+     const p = v ? this.pluginDescriptor(v) : null;
+     if (p && this.backendShorts[p.id]) return this.backendShorts[p.id];
+     return this.backendTypeLabel(v);
+   },
    backendTypeTitle(v) {
      // 仅按已注册插件描述符展示；未知/历史值原样显示，不再映射短码。
      return this.t('colBackendType') + ': ' + this.backendTypeLabel(v);
@@ -2110,10 +2127,35 @@ function app() {
       }
       el.style.left = left + 'px';
       el.style.top = top + 'px';
+      el.addEventListener('mouseenter', () => this.cancelTipHide());
+      el.addEventListener('mouseleave', () => this.scheduleTipHide());
       this._tipEl = el;
     },
+    scheduleTipHide(delay) {
+      if (this._tipPinned) return;
+      this.cancelTipHide();
+      this._tipTimer = setTimeout(() => this.hideTip(), delay === undefined ? 2500 : delay);
+    },
+    cancelTipHide() {
+      if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = null; }
+    },
     hideTip() {
+      this.cancelTipHide();
       if (this._tipEl) { this._tipEl.remove(); this._tipEl = null; }
+      this._tipPinned = false;
+    },
+    // 点击状态码固定/取消固定浮窗，固定后不自动消失，便于选中复制。
+    pinTip(ev, text) {
+      if (this._tipPinned) {
+        this.hideTip();
+        return;
+      }
+      this.showTip(ev, text);
+      this._tipPinned = true;
+      if (this._tipEl) {
+        this._tipEl.classList.add('is-pinned');
+        this.cancelTipHide();
+      }
     },
     get statusCodeOptions() {
       const set = new Set();
