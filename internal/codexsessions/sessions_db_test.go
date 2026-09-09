@@ -57,9 +57,9 @@ func readStateProvider(t *testing.T, path, id string) (string, bool) {
 	return provider.String, provider.Valid
 }
 
-// TestSyncStateDBRewritesManagedProviders 验证受管 provider 与缺失 provider
-// 的行被改写为当前默认，第三方 provider 行原样保留。
-func TestSyncStateDBRewritesManagedProviders(t *testing.T) {
+// TestSyncStateDBRewritesAllProviders 验证全部会话行被改写为当前默认，
+// 第三方 provider、空与 NULL provider 同样处理。
+func TestSyncStateDBRewritesAllProviders(t *testing.T) {
 	home := t.TempDir()
 	path := seedStateDB(t, home,
 		[2]string{"openai", "openai"},
@@ -69,19 +69,19 @@ func TestSyncStateDBRewritesManagedProviders(t *testing.T) {
 		[2]string{"null", "<null>"},
 	)
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.SyncStateDB("codex-api-gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n < 3 {
-		t.Fatalf("至少 3 行应被改写，实际 %d", n)
+	if n != 5 {
+		t.Fatalf("5 行应全部被改写，实际 %d", n)
 	}
 	if got, _ := readStateProvider(t, path, "a"); got != "codex-api-gateway" {
 		t.Fatalf("openai 行应为 codex-api-gateway，实际 %q", got)
 	}
-	if got, _ := readStateProvider(t, path, "c"); got != "anthropic" {
-		t.Fatalf("第三方行不应被改写，实际 %q", got)
+	if got, _ := readStateProvider(t, path, "c"); got != "codex-api-gateway" {
+		t.Fatalf("第三方行应被改写为 codex-api-gateway，实际 %q", got)
 	}
 	if got, _ := readStateProvider(t, path, "d"); got != "codex-api-gateway" {
 		t.Fatalf("空 provider 行应为 codex-api-gateway，实际 %q", got)
@@ -91,8 +91,8 @@ func TestSyncStateDBRewritesManagedProviders(t *testing.T) {
 	}
 }
 
-// TestSyncStateRestoresToOriginalProvider 验证还原时把网关会话行
-// 改写回默认 provider（openai）。
+// TestSyncStateRestoresToOriginalProvider 验证还原时把全部会话行改写回
+// 默认 provider（openai），包括第三方 provider 行。
 func TestSyncStateRestoresToOriginalProvider(t *testing.T) {
 	home := t.TempDir()
 	path := seedStateDB(t, home,
@@ -100,22 +100,22 @@ func TestSyncStateRestoresToOriginalProvider(t *testing.T) {
 		[2]string{"third", "anthropic"},
 	)
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	if _, err := rw.SyncStateDB("openai"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := readStateProvider(t, path, "a"); got != "openai" {
 		t.Fatalf("网关行应改写为 openai，实际 %q", got)
 	}
-	if got, _ := readStateProvider(t, path, "b"); got != "anthropic" {
-		t.Fatalf("第三方行不应被改写，实际 %q", got)
+	if got, _ := readStateProvider(t, path, "b"); got != "openai" {
+		t.Fatalf("第三方行也应改写为 openai，实际 %q", got)
 	}
 }
 
 // TestSyncStateMissingStateFilesNoop 验证无 state_*.sqlite 时无操作。
 func TestSyncStateMissingStateFilesNoop(t *testing.T) {
 	home := t.TempDir()
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.SyncStateDB("codex-api-gateway")
 	if err != nil || n != 0 {
 		t.Fatalf("缺失状态库应为 no-op (n=%d err=%v)", n, err)
@@ -135,7 +135,7 @@ func TestSyncStateMissingThreadsTableNoop(t *testing.T) {
 	}
 	_ = db.Close()
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.SyncStateDB("codex-api-gateway")
 	if err != nil || n != 0 {
 		t.Fatalf("无 threads 表应为 no-op (n=%d err=%v)", n, err)
@@ -146,7 +146,7 @@ func TestSyncStateMissingThreadsTableNoop(t *testing.T) {
 func TestSyncStateEmptyDefaultNoop(t *testing.T) {
 	home := t.TempDir()
 	seedStateDB(t, home, [2]string{"openai", "openai"})
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.SyncStateDB("")
 	if err != nil || n != 0 {
 		t.Fatalf("空默认 provider 应为 no-op (n=%d err=%v)", n, err)
@@ -178,7 +178,7 @@ func TestSyncStateMultiStateFiles(t *testing.T) {
 	}
 	_ = db.Close()
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.SyncStateDB("codex-api-gateway")
 	if err != nil {
 		t.Fatal(err)

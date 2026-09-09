@@ -2,8 +2,9 @@
 // 使切换提供商后历史会话仍可在 codex 恢复选择器中看到。清除包含两个存储：
 // rollout JSONL 的 session_meta 字段，以及本地会话索引
 // state_*.sqlite 的 threads.model_provider 列。索引必须把受管会话改写为
-// 当前默认 provider（codex 恢复选择器按该列精确匹配），JSONL 清除
-// 用于会话被重新索引时按当前默认 provider 归入。
+// 当前默认 provider（codex 恢复选择器按该列精确匹配），JSONL 同步移除
+// 全部 provider 标记，保证会话被重新索引时按当前默认 provider 归入。
+// 处理不区分 provider 归属：第三方 provider 与缺失 provider 的会话同样处理。
 package codexsessions
 
 import (
@@ -12,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -21,32 +23,22 @@ const (
 	sessionMetaType = `"type":"session_meta"`
 )
 
-// Rewriter 按需清除会话文件 session_meta 行中的 model_provider 标记。
+// Rewriter 清除会话文件 session_meta 行中的 model_provider 标记。
 type Rewriter struct {
 	home         string
 	sessionsRoot string
-	clearable    map[string]struct{}
 }
 
-// New 创建会话清除器。home 为 Codex 配置目录（FindCodexHome 的结果），
-// sources 是需要清除 model_provider 的 provider 集合（通常为
-// codex-api-gateway 与启用前的原 provider）。
-func New(home string, sources ...string) *Rewriter {
-	set := make(map[string]struct{}, len(sources))
-	for _, s := range sources {
-		if s != "" {
-			set[s] = struct{}{}
-		}
-	}
+// New 创建会话清除器。home 为 Codex 配置目录（FindCodex 的结果）。
+func New(home string) *Rewriter {
 	return &Rewriter{
 		home:         home,
 		sessionsRoot: filepath.Join(home, sessionsDir),
-		clearable:    set,
 	}
 }
 
-// Sync 扫描会话目录，清除 clearable 集合中 provider 标记的
-// model_provider 字段。返回清除的文件数；跳过其他 provider 的会话。
+// Sync 扫描会话目录，移除全部 session_meta 行的 model_provider 字段。
+// 返回清除的文件数；空的会话目录不报错。
 func (r *Rewriter) Sync() (int, error) {
 	info, err := os.Stat(r.sessionsRoot)
 	if err != nil {
@@ -67,7 +59,7 @@ func (r *Rewriter) Sync() (int, error) {
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
-		changed, err := clearFile(path, r.clearable)
+		changed, err := clearFile(path)
 		if err != nil {
 			return err
 		}
@@ -82,9 +74,9 @@ func (r *Rewriter) Sync() (int, error) {
 	return rewritten, nil
 }
 
-// clearFile 逐行处理 rollout JSONL：仅对 session_meta 行删除 clearable
-// 集合中 provider 对应的 model_provider 键值，其余字节原样保留。
-func clearFile(path string, clearable map[string]struct{}) (bool, error) {
+// clearFile 逐行处理 rollout JSONL：仅对 session_meta 行删除全部
+// model_provider 键值，其余字节原样保留。
+func clearFile(path string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
@@ -96,7 +88,7 @@ func clearFile(path string, clearable map[string]struct{}) (bool, error) {
 			out.Write(line)
 			continue
 		}
-		next := clearProviderKeys(line, clearable)
+		next := clearProviderKeys(line)
 		if !bytes.Equal(next, line) {
 			changed = true
 		}
@@ -111,16 +103,21 @@ func clearFile(path string, clearable map[string]struct{}) (bool, error) {
 	return true, nil
 }
 
-// clearProviderKeys 删除行内 clearable 对应值的 model_provider 键。
-// 三个模式覆盖 compact JSON 中键值位于对象任意位置（首个、中间、唯一个）的情况。
-func clearProviderKeys(line []byte, clearable map[string]struct{}) []byte {
+// clearProviderKeys 删除行内任意值的 model_provider 键，与 provider 归属
+// 无关。三个模式覆盖 compact JSON 中键值位于对象首位、中间、末尾以及
+// 唯一键四种情况，替换后仍是合法 JSON（provider 值是简单标识符，
+// 不含引号转义）。
+var (
+	providerLeadingComma  = regexp.MustCompile(`,\s*"model_provider"\s*:\s*"[^"]*"`)
+	providerTrailingComma = regexp.MustCompile(`"model_provider"\s*:\s*"[^"]*",\s*`)
+	providerOnlyKey       = regexp.MustCompile(`"model_provider"\s*:\s*"[^"]*"`)
+)
+
+func clearProviderKeys(line []byte) []byte {
 	out := line
-	for id := range clearable {
-		kv := `"model_provider":"` + id + `"`
-		out = bytes.ReplaceAll(out, []byte(kv+","), nil)
-		out = bytes.ReplaceAll(out, []byte(","+kv), nil)
-		out = bytes.ReplaceAll(out, []byte(kv+"}"), []byte("}"))
-	}
+	out = providerLeadingComma.ReplaceAll(out, nil)
+	out = providerTrailingComma.ReplaceAll(out, nil)
+	out = providerOnlyKey.ReplaceAll(out, nil)
 	return out
 }
 

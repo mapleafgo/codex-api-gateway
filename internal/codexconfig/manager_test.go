@@ -455,13 +455,10 @@ func TestEnableSyncsSessionHistory(t *testing.T) {
 	if err := m.Enable(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"openai-session", "gateway-session"} {
+	for _, name := range []string{"openai-session", "gateway-session", "other-session"} {
 		if got := readSession(t, home, name); strings.Contains(got, `"model_provider"`) {
 			t.Fatalf("应用后 %s 的 model_provider 应被自动清除:\n%s", name, got)
 		}
-	}
-	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
-		t.Fatalf("应用后第三方 provider 会话不应被清除:\n%s", got)
 	}
 	if got := readManagerState(t, statePath, "openai-session"); got != "codex-api-gateway" {
 		t.Fatalf("state 索引中 openai 会话应改写为 codex-api-gateway，实际 %q", got)
@@ -469,8 +466,8 @@ func TestEnableSyncsSessionHistory(t *testing.T) {
 	if got := readManagerState(t, statePath, "gateway-session"); got != "codex-api-gateway" {
 		t.Fatalf("state 索引中网关会话应保持 codex-api-gateway，实际 %q", got)
 	}
-	if got := readManagerState(t, statePath, "other-session"); got != "anthropic" {
-		t.Fatalf("state 索引中第三方会话不应被改写，实际 %q", got)
+	if got := readManagerState(t, statePath, "other-session"); got != "codex-api-gateway" {
+		t.Fatalf("state 索引中第三方会话应改写为 codex-api-gateway，实际 %q", got)
 	}
 }
 
@@ -494,17 +491,16 @@ func TestDisableSyncsSessionHistory(t *testing.T) {
 	if err := m.Disable(); err != nil {
 		t.Fatal(err)
 	}
-	if got := readSession(t, home, "gateway-session"); strings.Contains(got, `"model_provider"`) {
-		t.Fatalf("还原后网关会话的 model_provider 应被自动清除:\n%s", got)
-	}
-	if got := readSession(t, home, "other-session"); !strings.Contains(got, `"model_provider":"anthropic"`) {
-		t.Fatalf("还原后第三方 provider 会话不应被清除:\n%s", got)
+	for _, name := range []string{"gateway-session", "other-session"} {
+		if got := readSession(t, home, name); strings.Contains(got, `"model_provider"`) {
+			t.Fatalf("还原后 %s 的 model_provider 应被自动清除:\n%s", name, got)
+		}
 	}
 	if got := readManagerState(t, statePath, "gateway-session"); got != "openai" {
 		t.Fatalf("还原后 state 索引中网关会话应改写为 openai，实际 %q", got)
 	}
-	if got := readManagerState(t, statePath, "other-session"); got != "anthropic" {
-		t.Fatalf("还原后 state 索引中第三方会话不应被改写，实际 %q", got)
+	if got := readManagerState(t, statePath, "other-session"); got != "openai" {
+		t.Fatalf("还原后 state 索引中第三方会话应改写为 openai，实际 %q", got)
 	}
 }
 

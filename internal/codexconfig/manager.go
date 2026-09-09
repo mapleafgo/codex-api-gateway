@@ -199,9 +199,9 @@ func (m *Manager) Disable() error {
 
 // SyncSessionHistory 清除 Codex 会话历史归属标记，使切换提供商后
 // 历史会话仍可见；点选/取消勾选「应用到 Codex」时也会自动执行一次。
-// 受处理的会话限于网关注入的 provider 与备份中的原 provider，不动
-// 其他 provider 的会话。JSONL 的 session_meta 标记被清除，state_*.sqlite
-// 索引行改写为当前默认 provider（codex 恢复选择器按该列精确匹配）。
+// 会话处理不区分 provider 归属：第三方 provider 与缺失 provider 的
+// 会话同样处理。JSONL 的 session_meta 标记被清除，state_*.sqlite 索引行
+// 改写为当前默认 provider（codex 恢复选择器按该列精确匹配）。
 func (m *Manager) SyncSessionHistory() (SyncResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -224,16 +224,9 @@ type SyncResult struct {
 // syncSessionHistoryLocked 同步 JSONL 标记与本地会话索引；调用方需持有
 // m.mu。同步失败只记 WARN，不阻断开关。
 func (m *Manager) syncSessionHistoryLocked(home string) SyncResult {
-	// 可清除的会话只限于网关注入的 provider 与启用前的原 provider。
-	// 两者都要放进去：切换后两边 provider 下的历史会话都要能恢复。
-	sources := []string{providerID}
-	if data, err := os.ReadFile(filepath.Join(home, backupFileName)); err == nil {
-		var state backupState
-		if err := json.Unmarshal(data, &state); err == nil && state.ModelProvider != nil {
-			sources = append(sources, *state.ModelProvider)
-		}
-	}
-	rw := codexsessions.New(home, sources...)
+	// 全量处理：不区分 provider 归属，避免 Codex 配置文件切换源后
+	// 历史会话因 model_provider 不匹配而无法在恢复选择器中看到。
+	rw := codexsessions.New(home)
 	var result SyncResult
 	files, err := rw.Sync()
 	if err != nil {

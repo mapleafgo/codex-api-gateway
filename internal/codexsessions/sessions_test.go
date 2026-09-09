@@ -29,7 +29,7 @@ func TestSyncRemovesGatewayProvider(t *testing.T) {
 	home := t.TempDir()
 	path := seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-a.jsonl"), sessionLine+"\n")
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.Sync()
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestClearProviderKeyPositions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			path := seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-x.jsonl"), tc.in+"\n")
-			changed, err := clearFile(path, map[string]struct{}{"openai": {}})
+			changed, err := clearFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -100,26 +100,50 @@ func TestClearProviderKeyPositions(t *testing.T) {
 	}
 }
 
-// TestSyncSkipsNonRewritableProviders 验证目标之外的 provider 会话不被清除。
-func TestSyncSkipsNonRewritableProviders(t *testing.T) {
+// TestSyncClearsThirdPartyProviders 验证第三方 provider 的会话同样被清除。
+func TestSyncClearsThirdPartyProviders(t *testing.T) {
 	home := t.TempDir()
 	path := seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-b.jsonl"),
 		`{"type":"session_meta","payload":{"model_provider":"anthropic"}}`+"\n")
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.Sync()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Fatalf("不应清除外部 provider 会话，实际 %d", n)
+	if n != 1 {
+		t.Fatalf("应清除第三方 provider 会话，实际 %d", n)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `"model_provider":"anthropic"`) {
-		t.Fatalf("原内容应保留:\n%s", got)
+	if strings.Contains(string(got), `"model_provider"`) {
+		t.Fatalf("第三方 provider 的 model_provider 应被清除:\n%s", got)
+	}
+}
+
+// TestSyncClearsMissingProvider 验证缺失 model_provider 键的会话
+// 同样被处理（不报错、不损坏原内容）。
+func TestSyncClearsMissingProvider(t *testing.T) {
+	home := t.TempDir()
+	path := seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-f.jsonl"),
+		`{"type":"session_meta","payload":{"session_id":"s9"}}`+"\n")
+
+	rw := New(home)
+	n, err := rw.Sync()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("无 provider 键的会话未发生字节变化，实际 %d", n)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `"session_id":"s9"`) {
+		t.Fatalf("无 provider 键会话应原样保留:\n%s", got)
 	}
 }
 
@@ -129,7 +153,7 @@ func TestSyncSkipsNonSessionMetaEvents(t *testing.T) {
 	event := `{"type":"event_msg","payload":{"model_provider":"anthropic","turn_id":"t1"}}` + "\n"
 	path := seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-c.jsonl"), event+sessionLine+"\n")
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.Sync()
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +178,7 @@ func TestSyncIdempotent(t *testing.T) {
 	home := t.TempDir()
 	seedSession(t, home, filepath.Join(sessionsRoot, "2026/09/09", "rollout-d.jsonl"), sessionLine+"\n")
 
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	if _, err := rw.Sync(); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +194,7 @@ func TestSyncIdempotent(t *testing.T) {
 // TestSyncMissingSessionsRootNoop 验证会话目录缺失时不报错、不处理。
 func TestSyncMissingSessionsRootNoop(t *testing.T) {
 	home := t.TempDir()
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	n, err := rw.Sync()
 	if err != nil || n != 0 {
 		t.Fatalf("缺失会话目录应为 no-op (n=%d err=%v)", n, err)
@@ -184,7 +208,7 @@ func TestSyncPreservesFileMode(t *testing.T) {
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	rw := New(home, "codex-api-gateway", "openai")
+	rw := New(home)
 	if _, err := rw.Sync(); err != nil {
 		t.Fatal(err)
 	}
