@@ -9,6 +9,7 @@ package codexsessions
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -21,9 +22,12 @@ const (
 	sessionsDir = "sessions"
 	// sessionMetaType 用于识别 rollout JSONL 中的 session_meta 事件行。
 	sessionMetaType = `"type":"session_meta"`
+	// responseItemType 用于识别 rollout JSONL 中的 response_item 事件行。
+	responseItemType = `"type":"response_item"`
 )
 
-// Rewriter 清除会话文件 session_meta 行中的 model_provider 标记。
+// Rewriter 清除会话历史中的 provider 归属标记与第三方明文推理内容，使切换
+// 提供商后历史会话仍可在 codex 恢复选择器中看到且可被 OpenAI 协议接受。
 type Rewriter struct {
 	home         string
 	sessionsRoot string
@@ -37,7 +41,8 @@ func New(home string) *Rewriter {
 	}
 }
 
-// Sync 扫描会话目录，移除全部 session_meta 行的 model_provider 字段。
+// Sync 扫描会话目录，移除全部 session_meta 行的 model_provider 字段，并把
+// response_item 行中 reasoning item 的明文 content 折算进 summary。
 // 返回清除的文件数；空的会话目录不报错。
 func (r *Rewriter) Sync() (int, error) {
 	info, err := os.Stat(r.sessionsRoot)
@@ -74,8 +79,9 @@ func (r *Rewriter) Sync() (int, error) {
 	return rewritten, nil
 }
 
-// clearFile 逐行处理 rollout JSONL：仅对 session_meta 行删除全部
-// model_provider 键值，其余字节原样保留。
+// clearFile 逐行处理 rollout JSONL：对 session_meta 行删除全部
+// model_provider 键值，对 response_item 行清洗明文 reasoning content，
+// 其余字节原样保留。
 func clearFile(path string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -84,11 +90,17 @@ func clearFile(path string) (bool, error) {
 	var out bytes.Buffer
 	changed := false
 	for _, line := range bytes.SplitAfter(raw, []byte{'\n'}) {
-		if !bytes.Contains(line, []byte(sessionMetaType)) {
+		if !bytes.Contains(line, []byte(sessionMetaType)) && !bytes.Contains(line, []byte(responseItemType)) {
 			out.Write(line)
 			continue
 		}
-		next := clearProviderKeys(line)
+		next := line
+		if bytes.Contains(line, []byte(sessionMetaType)) {
+			next = clearProviderKeys(line)
+		}
+		if bytes.Contains(line, []byte(responseItemType)) && bytes.Contains(line, []byte(`"type":"reasoning"`)) {
+			next = clearReasoningContent(next)
+		}
 		if !bytes.Equal(next, line) {
 			changed = true
 		}
@@ -101,6 +113,103 @@ func clearFile(path string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// clearReasoningContent 把 response_item 行中 reasoning item 归一化为
+// 便携形态：明文 content（第三方 provider 写入的 reasoning_text part）
+// 折入 summary、content 置空，并剥离 encrypted_content 与第三方 id。
+// OpenAI Responses 协议只允许 reasoning 携带 summary 或官方签发的
+// encrypted_content，携带明文 content 回灌会被上游以
+// array_above_max_length 拒绝，无效密文与 id 也会被拒。
+func clearReasoningContent(line []byte) []byte {
+	var obj map[string]any
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil {
+		return line
+	}
+	if obj["type"] != "response_item" {
+		return line
+	}
+	payload, ok := obj["payload"].(map[string]any)
+	if !ok || payload["type"] != "reasoning" {
+		return line
+	}
+	changed := false
+	if texts := reasoningTexts(payload["content"]); len(texts) > 0 {
+		payload["summary"] = appendSummaryTexts(payload["summary"], texts)
+		payload["content"] = nil
+		changed = true
+	}
+	if _, ok := payload["encrypted_content"]; ok {
+		delete(payload, "encrypted_content")
+		changed = true
+	}
+	if _, ok := payload["id"]; ok {
+		delete(payload, "id")
+		changed = true
+	}
+	if !changed {
+		return line
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return line
+	}
+	if bytes.HasSuffix(line, []byte{'\n'}) {
+		out = append(out, '\n')
+	}
+	return out
+}
+
+// reasoningTexts 提取 reasoning content 的明文文本，兼容对象 part
+// （{"type":"reasoning_text","text":...}）与字符串简写（[...]）两种形态。
+func reasoningTexts(content any) []string {
+	arr, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+	var texts []string
+	for _, raw := range arr {
+		switch part := raw.(type) {
+		case string:
+			if part != "" {
+				texts = append(texts, part)
+			}
+		case map[string]any:
+			if text, ok := part["text"].(string); ok && text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	return texts
+}
+
+// appendSummaryTexts 把明文正文追加到 summary（summary_text part），
+// 已存在的文本不重复追加，保证重复同步幂等。
+func appendSummaryTexts(summary any, texts []string) []any {
+	existing := map[string]bool{}
+	var out []any
+	if arr, ok := summary.([]any); ok {
+		for _, raw := range arr {
+			if part, ok := raw.(map[string]any); ok {
+				if text, ok := part["text"].(string); ok {
+					existing[text] = true
+				}
+			}
+			out = append(out, raw)
+		}
+	}
+	for _, text := range texts {
+		if existing[text] {
+			continue
+		}
+		out = append(out, map[string]any{
+			"type": "summary_text",
+			"text": text,
+		})
+	}
+	return out
 }
 
 // clearProviderKeys 删除行内任意值的 model_provider 键，与 provider 归属
