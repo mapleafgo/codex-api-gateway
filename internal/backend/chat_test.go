@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -178,6 +179,51 @@ func TestChatBackend_EmptyStreamNoSyntheticLock(t *testing.T) {
 				t.Fatalf("must not emit synthetic SSE events, got %v", types)
 			}
 		})
+	}
+}
+
+// TestChatBackend_MultiLineDataFrame 复现「chat 输出不完整」的一个根因：
+// 上游按 SSE 规范把一个事件的 JSON 拆到多条 data: 行（接收端应以 "\n" 拼接）。
+// 逐行单独解析会把合法 JSON 当截断，该事件内容丢失并报 bad chunk。
+func TestChatBackend_MultiLineDataFrame(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-ml\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"")
+		io.WriteString(w, ",\"content\":\"line1\\n\\\"quoted\\\" line2\"}}]}\n\n")
+		// 这一事件跨两行 data:（换行落在 token 边界，JSON 允许 token 间空白）。
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-ml\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"second\"}\n")
+		io.WriteString(w, "data: }]}\n\n")
+		io.WriteString(w, "data: {\"id\":\"chatcmpl-ml\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer ts.Close()
+
+	b := NewChat()
+	var got strings.Builder
+	err := b.Execute(context.Background(),
+		[]byte(`{"model":"gpt-4o","input":"hello","stream":true}`),
+		config.Source{Name: "ml", BaseURL: ts.URL + "/v1", APIKey: "k", Backend: "openai-chat"},
+		&config.Config{},
+		func(ev model.SSEEvent) error {
+			if ev.Type != "response.output_text.delta" {
+				return nil
+			}
+			var d model.OutputTextDeltaEvent
+			if err := json.Unmarshal(ev.Data, &d); err != nil {
+				return err
+			}
+			got.WriteString(d.Delta)
+			return nil
+		},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := "line1\n\"quoted\" line2second"
+	if got.String() != want {
+		t.Fatalf("多行 data 帧内容不完整：got %q, want %q", got.String(), want)
 	}
 }
 
