@@ -130,7 +130,6 @@ func (m *Manager) Enable() error {
 	if err := writeConfig(path, lines); err != nil {
 		return err
 	}
-	m.syncSessionHistoryLocked(home)
 	return nil
 }
 
@@ -163,7 +162,6 @@ func (m *Manager) Disable() error {
 				if err := writeConfig(path, lines); err != nil {
 					return err
 				}
-				m.syncSessionHistoryLocked(home)
 				slog.Warn("codexconfig: 备份缺失，已移除网关注入键，model_provider 回落 Codex 默认",
 					"backup", backupPath)
 				return nil
@@ -193,12 +191,12 @@ func (m *Manager) Disable() error {
 	if err := os.Remove(backupPath); err != nil {
 		return fmt.Errorf("codexconfig: 删除备份 %s 失败: %w", backupPath, err)
 	}
-	m.syncSessionHistoryLocked(home)
 	return nil
 }
 
 // SyncSessionHistory 清除 Codex 会话历史归属标记，使切换提供商后
-// 历史会话仍可见；点选/取消勾选「应用到 Codex」时也会自动执行一次。
+// 历史会话仍可见。仅由托盘「同步 Codex 会话历史」手动触发；
+// 勾选/取消「应用到 Codex」不再自动执行，避免切换应用时隐式改动历史。
 // 会话处理不区分 provider 归属：第三方 provider 与缺失 provider 的
 // 会话同样处理。JSONL 的 session_meta 标记被清除，state_*.sqlite 索引行
 // 改写为当前默认 provider（codex 恢复选择器按该列精确匹配）。

@@ -437,7 +437,60 @@ func TestWriteModelsCatalog(t *testing.T) {
 	}
 }
 
-func TestEnableSyncsSessionHistory(t *testing.T) {
+// TestEnableDoesNotSyncSessionHistory 固定「切换应用不再自动同步历史」：
+// 勾选「应用到 Codex」只改 config.toml，不得隐式改动会话 JSONL 与 state 索引；
+// 历史同步改为用户经托盘按钮手动触发。
+func TestEnableDoesNotSyncSessionHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	seedConfigFile(t, home, seedConfig)
+	seedSessionForSync(t, home, "openai", "openai-session")
+	statePath := seedManagerStateDB(t, home,
+		[2]string{"openai-session", "openai"},
+	)
+
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSession(t, home, "openai-session"); !strings.Contains(got, `"model_provider":"openai"`) {
+		t.Fatalf("启用不应改动会话 JSONL，实际:\n%s", got)
+	}
+	if got := readManagerState(t, statePath, "openai-session"); got != "openai" {
+		t.Fatalf("启用不应改写 state 索引，实际 %q", got)
+	}
+}
+
+// TestDisableDoesNotSyncSessionHistory 取消勾选同样只还原 config.toml。
+func TestDisableDoesNotSyncSessionHistory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	_ = seedConfigFile(t, home, seedConfig)
+
+	m := New(func() string { return "http://127.0.0.1:8383/v1" })
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
+	statePath := seedManagerStateDB(t, home,
+		[2]string{"gateway-session", "codex-api-gateway"},
+	)
+	if err := m.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readSession(t, home, "gateway-session"); !strings.Contains(got, `"model_provider":"codex-api-gateway"`) {
+		t.Fatalf("还原不应改动会话 JSONL，实际:\n%s", got)
+	}
+	if got := readManagerState(t, statePath, "gateway-session"); got != "codex-api-gateway" {
+		t.Fatalf("还原不应改写 state 索引，实际 %q", got)
+	}
+}
+
+// TestSyncSessionHistoryManual 手动触发仍必须可用：全量清除 JSONL 标记并把
+// state 索引改写为当前默认 provider。
+func TestSyncSessionHistoryManual(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
@@ -452,55 +505,23 @@ func TestEnableSyncsSessionHistory(t *testing.T) {
 	)
 
 	m := New(func() string { return "http://127.0.0.1:8383/v1" })
-	if err := m.Enable(); err != nil {
+	result, err := m.SyncSessionHistory()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.SessionFiles != 3 {
+		t.Fatalf("手动同步应处理 3 个会话文件，实际 %d", result.SessionFiles)
 	}
 	for _, name := range []string{"openai-session", "gateway-session", "other-session"} {
 		if got := readSession(t, home, name); strings.Contains(got, `"model_provider"`) {
-			t.Fatalf("应用后 %s 的 model_provider 应被自动清除:\n%s", name, got)
+			t.Fatalf("手动同步后 %s 的 model_provider 应被清除:\n%s", name, got)
 		}
 	}
-	if got := readManagerState(t, statePath, "openai-session"); got != "codex-api-gateway" {
-		t.Fatalf("state 索引中 openai 会话应改写为 codex-api-gateway，实际 %q", got)
-	}
-	if got := readManagerState(t, statePath, "gateway-session"); got != "codex-api-gateway" {
-		t.Fatalf("state 索引中网关会话应保持 codex-api-gateway，实际 %q", got)
-	}
-	if got := readManagerState(t, statePath, "other-session"); got != "codex-api-gateway" {
-		t.Fatalf("state 索引中第三方会话应改写为 codex-api-gateway，实际 %q", got)
-	}
-}
-
-func TestDisableSyncsSessionHistory(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", "")
-	_ = seedConfigFile(t, home, seedConfig)
-
-	m := New(func() string { return "http://127.0.0.1:8383/v1" })
-	if err := m.Enable(); err != nil {
-		t.Fatal(err)
-	}
-	// 启用期间新产生的网关与第三方会话，用于验证还原时的自动同步。
-	seedSessionForSync(t, home, "codex-api-gateway", "gateway-session")
-	seedSessionForSync(t, home, "anthropic", "other-session")
-	statePath := seedManagerStateDB(t, home,
-		[2]string{"gateway-session", "codex-api-gateway"},
-		[2]string{"other-session", "anthropic"},
-	)
-	if err := m.Disable(); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"gateway-session", "other-session"} {
-		if got := readSession(t, home, name); strings.Contains(got, `"model_provider"`) {
-			t.Fatalf("还原后 %s 的 model_provider 应被自动清除:\n%s", name, got)
+	// seedConfig 的 model_provider 为 openai，索引应统一改写为它。
+	for _, name := range []string{"openai-session", "gateway-session", "other-session"} {
+		if got := readManagerState(t, statePath, name); got != "openai" {
+			t.Fatalf("手动同步后 state 索引 %s 应改写为 openai，实际 %q", name, got)
 		}
-	}
-	if got := readManagerState(t, statePath, "gateway-session"); got != "openai" {
-		t.Fatalf("还原后 state 索引中网关会话应改写为 openai，实际 %q", got)
-	}
-	if got := readManagerState(t, statePath, "other-session"); got != "openai" {
-		t.Fatalf("还原后 state 索引中第三方会话应改写为 openai，实际 %q", got)
 	}
 }
 
