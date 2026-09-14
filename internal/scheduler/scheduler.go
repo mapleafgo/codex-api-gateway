@@ -172,10 +172,19 @@ func (s *Scheduler) recoverLoop(period time.Duration) {
 	}
 }
 
-// evaluateRecoveries 对所有源执行一次 degrade 超时自动恢复评估。
+// evaluateRecoveries 执行一次无请求驱动的冷却迁移评估：degraded 超过
+// degrade_interval 归还优先级位置、circuitOpen 超过 circuit_interval 进入
+// halfOpen。两种冷却态共用 breaker.AutoProbe 的同一份迁移实现，差别只在
+// 间隔参数与到期后的目标状态。
+//
+// 必须遍历 healthSeq 而非 runtimeSeq：circuitOpen 源不占运行时优先级槽位，
+// runtimeSeq 不收录它们；只用 runtimeSeq 就会漏掉队尾熔断源的冷却迁移。
 func (s *Scheduler) evaluateRecoveries() {
-	for _, src := range s.runtimeSeq() {
-		s.autoRecoverDegraded(&src)
+	for _, src := range s.healthSeq() {
+		if src.Disabled {
+			continue
+		}
+		s.autoProbe(&src)
 	}
 }
 
@@ -523,12 +532,10 @@ func (s *Scheduler) tryRoundGeneric(
 	var lastErr error
 	var lastSource string
 
-	// 每轮先评估所有降级源的 degrade 超时自动恢复。不能放在单源循环内，否则
-	// 高优先级源一旦锁定成功就提前返回，队尾降级源永远不会被遍历到，也就
-	// 永远停留在 degraded、后续不再被调用。
-	for _, src := range s.runtimeSeq() {
-		s.autoRecoverDegraded(&src)
-	}
+	// 每轮先做一次无请求驱动的健康态时间迁移（degraded 超时归位、circuitOpen
+	// 冷却到期进半开）。不能放在单源循环内，否则高优先级源一旦锁定成功就提前
+	// 返回，队尾的 degraded/circuitOpen 源永远不会被遍历到，也就永远等不到恢复。
+	s.evaluateRecoveries()
 
 	for _, src := range s.healthSeq() {
 		if src.Disabled {
@@ -576,19 +583,22 @@ func (s *Scheduler) backendFor(src *config.Source) plugin.Backend {
 	return nil
 }
 
-// autoRecoverDegraded 检查 src 是否已到 degrade 超时恢复时机。若到时机，只把
-// 源恢复到原始优先级位置（重新给被尝试的机会），健康状态保持 degraded：
-// degradeCount 不清零，后续连续失败能累计升级到 circuitOpen；只有真实请求
-// 成功后才由 RecordSuccess 转回 normal。
-func (s *Scheduler) autoRecoverDegraded(src *config.Source) {
+// autoProbe 对单个源做一次冷却迁移评估（degraded 超时归位 / circuitOpen
+// 冷却到期进半开），两者共用 breaker.AutoProbe。两种迁移的动作相同——都只是
+// 「归还运行优先级」，差别在到期后的目标状态：
+//   - Degraded -> Degraded：给机会窗口，健康状态保持 degraded；
+//   - CircuitOpen -> HalfOpen：熔断冷却到期，恢复到原始位置才拿得到探测机会。
+//
+// 因此这里统一调用 restoreOriginal，不需要走 adjustOrder 的状态分派。
+func (s *Scheduler) autoProbe(src *config.Source) {
 	bk := s.breakerFor(src)
-	_, _, recovered := bk.AutoRecover()
-	if !recovered {
+	oldState, newState, ok := bk.AutoProbe()
+	if !ok {
 		return
 	}
 	s.restoreOriginal(src.Name)
-	slog.Info("上游源 degrade 超时恢复优先级（状态保持 degraded）",
-		"source", src.Name, "degrade_count", bk.DegradeCount())
+	slog.Info("上游源冷却到期恢复运行优先级",
+		"source", src.Name, "old_state", oldState, "new_state", newState)
 }
 
 func (s *Scheduler) trySourceGeneric(

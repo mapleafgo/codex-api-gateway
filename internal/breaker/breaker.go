@@ -128,6 +128,38 @@ func (b *Breaker) applyRecovery(target State) {
 	b.degradedAt = time.Time{}
 }
 
+// cooldownTransition 是「冷却到期」的唯一迁移实现（调用方必须持有 b.mu）。
+// degraded 与 circuitOpen 共用它，差别只在到期后的目标状态：
+//   - Degraded：到 degrade_interval 且无新失败 -> 重置计时窗口，状态保持 degraded。
+//     降级源本就仍可服务，只需归还优先级位置重新获得被尝试的机会。
+//   - CircuitOpen：到 circuit_interval -> 迁移到 halfOpen。熔断源被排除出候选
+//     队列，必须改状态才有机会被真正探测；探测名额不在此占用（halfOpenInflight=0），
+//     由随后真正发起的请求经 AllowTransition 占用。
+//
+// 返回 (oldState, newState, ok)；Normal/HalfOpen 或未到时机时 ok=false。
+func (b *Breaker) cooldownTransition() (State, State, bool) {
+	switch b.st {
+	case Degraded:
+		interval := b.intervalFor(Degraded)
+		if interval <= 0 || b.now().Sub(b.degradedAt) < interval {
+			return b.st, b.st, false
+		}
+		// 重置计时窗口，避免每个轮询周期重复触发；状态仍保持 degraded。
+		b.degradedAt = b.now()
+		return Degraded, Degraded, true
+	case CircuitOpen:
+		if b.now().Sub(b.openedAt) < b.intervalFor(CircuitOpen) {
+			return b.st, b.st, false
+		}
+		b.st = HalfOpen
+		b.halfOpenInflight = 0
+		b.successStreak = 0
+		return CircuitOpen, HalfOpen, true
+	default:
+		return b.st, b.st, false
+	}
+}
+
 // Allow reports whether a request may proceed. In circuitOpen state it
 // transitions to halfOpen after the circuit_interval elapses.
 func (b *Breaker) Allow() bool {
@@ -135,31 +167,32 @@ func (b *Breaker) Allow() bool {
 	return allowed
 }
 
-// AllowTransition 在 Allow 基础上返回迁移前后的状态，供调度器在
-// circuitOpen -> halfOpen 时恢复运行优先级。
+// AllowTransition 判定一次请求能否发往该源，并返回迁移前后的状态：
+//   - Normal / Degraded：放行（order 不变）。
+//   - CircuitOpen：冷却未到 -> 拒绝；已到 -> 先走与 AutoProbe 相同的
+//     cooldownTransition 迁移到 halfOpen，再按 halfOpen 规则放行本次探测。
+//     这里必须复用同一实现：否则「轮内冷却到期」与「轮前定时迁移」会出现
+//     两套行为，且探测名额的占用语义容易走偏。
+//   - HalfOpen：探测名额未满 -> 放行并占名额；已满 -> 拒绝。
 func (b *Breaker) AllowTransition() (allowed bool, oldState, newState State) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	oldState = b.st
+	// 先处理冷却到期（circuitOpen -> halfOpen），与定时入口共用同一迁移。
+	b.cooldownTransition()
 	switch b.st {
 	case Normal, Degraded:
 		return true, oldState, b.st
-	case CircuitOpen:
-		if b.now().Sub(b.openedAt) >= b.intervalFor(CircuitOpen) {
-			b.st = HalfOpen
-			b.halfOpenInflight = 1 // count this probe
-			b.successStreak = 0
-			return true, oldState, b.st
-		}
-		return false, oldState, b.st
 	case HalfOpen:
 		if b.halfOpenInflight < b.cfg.CircuitRecoveryThreshold {
-			b.halfOpenInflight++
+			b.halfOpenInflight++ // 占用一个探测名额
 			return true, oldState, b.st
 		}
 		return false, oldState, b.st
+	default:
+		// 仍为 CircuitOpen 且未到时机：拒绝，且不改变 order。
+		return false, oldState, oldState
 	}
-	return true, oldState, b.st
 }
 
 // RecordFailure records a failure and returns the (old, new) State pair.
@@ -236,29 +269,23 @@ func (b *Breaker) RecordSuccess() (State, State) {
 	return old, b.st
 }
 
-// AutoRecover 检查 degraded 源是否已超过 degrade_interval 无新失败。
-// 若超时且无新失败（degradedAt 未被 RecordFailure 重置），返回 true 表示
-// 「时机已到」：调度器据此把源恢复到原始优先级（重新给被尝试的机会）。
-// 但健康状态**保持 degraded**，degradeCount 不清零——这样后续连续失败能
-// 继续升级到 circuitOpen，而不是被无条件重置为 normal 导致熔断永不发生。
-// 只有真实请求成功（RecordSuccess 达到 degraded_recovery_threshold）才转回 normal。
-// 返回 (Degraded, Degraded, true)；未到时机则 (st, st, false)。
-func (b *Breaker) AutoRecover() (State, State, bool) {
+// AutoProbe 是「无请求驱动的冷却迁移」唯一入口，由调度器的后台线程与每轮前置
+// 各调用一次，一次评估当前冷却态是否到期并迁移（degraded / circuitOpen 共用
+// cooldownTransition，只有间隔与目标状态不同）：
+//   - Degraded 且超过 degrade_interval 无新失败 -> (Degraded, Degraded, true)：
+//     调度器据此把源恢复到原始优先级（重新给被尝试的机会）。健康状态**保持
+//     degraded**、degradeCount 不清零，后续连续失败仍能升级到 circuitOpen；
+//     只有真实请求成功（RecordSuccess 达到 degraded_recovery_threshold）才转回 normal。
+//   - CircuitOpen 且超过 circuit_interval -> (CircuitOpen, HalfOpen, true)：
+//     熔断源被排除出候选队列，必须改状态才有机会被真正探测。
+//
+// 必须独立于请求遍历：degraded/circuitOpen 源都会被后移到运行时队尾，只要前面
+// 有健康源锁定成功，遍历就提前返回，队尾源永远等不到迁移。ok=false 表示当前
+// 状态无需迁移或未到时机；(oldState, newState) 供调度器决定是否调整运行顺序。
+func (b *Breaker) AutoProbe() (State, State, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.st != Degraded {
-		return b.st, b.st, false
-	}
-	interval := b.intervalFor(Degraded)
-	if interval <= 0 {
-		return b.st, b.st, false
-	}
-	if b.now().Sub(b.degradedAt) >= interval {
-		// 重置计时窗口，避免每个轮询周期重复触发；状态仍保持 degraded。
-		b.degradedAt = b.now()
-		return Degraded, Degraded, true
-	}
-	return b.st, b.st, false
+	return b.cooldownTransition()
 }
 
 // UpdateCfg 原子替换阈值配置，保留当前健康状态与计数。

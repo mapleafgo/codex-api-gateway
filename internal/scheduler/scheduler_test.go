@@ -1279,7 +1279,7 @@ func TestAllSourcesDisabled(t *testing.T) {
 
 // --- Auto-recover degraded sources in tryRoundGeneric ---
 
-func TestSchedulerAutoRecoverDegradedSource(t *testing.T) {
+func TestSchedulerAutoProbeDegradedSource(t *testing.T) {
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		goodAnthropicSSE(w)
 	}))
@@ -1326,7 +1326,7 @@ func TestSchedulerAutoRecoverDegradedSource(t *testing.T) {
 	}
 }
 
-func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
+func TestSchedulerAutoProbeDegradedBeforeInterval(t *testing.T) {
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		goodAnthropicSSE(w)
 	}))
@@ -1353,10 +1353,10 @@ func TestSchedulerAutoRecoverDegradedBeforeInterval(t *testing.T) {
 	bk := s.breakerFor(&src)
 	bk.RecordFailure() // -> degraded
 
-	// degradedAt is set to now, so AutoRecover should NOT trigger (30s not elapsed)
-	_, _, recovered := bk.AutoRecover()
+	// degradedAt is set to now, so AutoProbe should NOT trigger (30s not elapsed)
+	_, _, recovered := bk.AutoProbe()
 	if recovered {
-		t.Fatal("AutoRecover should not recover immediately")
+		t.Fatal("AutoProbe should not recover immediately")
 	}
 }
 
@@ -1460,7 +1460,7 @@ func TestDegradedChanceFailuresMoveToEndAndCircuitOpen(t *testing.T) {
 	// 三次机会：每次超时恢复原位置 -> 机会内失败 -> 重新移到队尾。
 	for i := 0; i < 3; i++ {
 		bkA.SetDegradedAt(time.Now().Add(-time.Minute))
-		s.autoRecoverDegraded(&aSrc)
+		s.autoProbe(&aSrc)
 		seq = s.runtimeSeq()
 		if seq[0].Name != "A" || seq[1].Name != "B" {
 			t.Fatalf("chance %d: A 应恢复到原位置，got %v", i+1, sourceNames(seq))
@@ -1531,7 +1531,7 @@ func TestClientErrorDegradesAndChanceFailuresCircuitOpen(t *testing.T) {
 	// 三次机会，每次超时恢复原位置 -> 4xx 机会失败 -> 重新移到队尾。
 	for i := 0; i < 3; i++ {
 		bkA.SetDegradedAt(time.Now().Add(-time.Minute))
-		s.autoRecoverDegraded(&aSrc)
+		s.autoProbe(&aSrc)
 		seq = s.runtimeSeq()
 		if seq[0].Name != "A" || seq[1].Name != "B" {
 			t.Fatalf("chance %d: A 应恢复到原位置，got %v", i+1, sourceNames(seq))
@@ -1809,4 +1809,117 @@ func TestRecoveryStopIdempotentAndBeforeStart(t *testing.T) {
 
 	s.StopRecovery()
 	s.StopRecovery() // 重复 Stop 必须安全
+}
+
+// TestCircuitOpenSourceGetsProbeAfterInterval 复现「熔断源冷却到期后从不被探测」：
+// 熔断源被 moveToEnd 排到运行时队尾，只要前面有健康源锁定成功，请求遍历就
+// 提前返回，队尾熔断源的 AllowTransition 永远不会被调用，circuitOpen ->
+// halfOpen 的冷却探测一次也不会发生。
+func TestCircuitOpenSourceGetsProbeAfterInterval(t *testing.T) {
+	var flakyCalls atomic.Int64
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flakyCalls.Add(1)
+		goodAnthropicSSE(w)
+	}))
+	defer flaky.Close()
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer healthy.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(10 * time.Millisecond),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
+		},
+		Sources: []config.Source{
+			makeSource("flaky", flaky.URL, 0),
+			makeSource("healthy", healthy.URL, 1),
+		},
+	}
+	s := New(cfg, newTestRegistry())
+	flakySrc, _ := s.sourceByName("flaky")
+	bk := s.breakerFor(&flakySrc)
+
+	// 走生产路径：degraded -> circuitOpen，并把熔断源后移到运行时队尾。
+	oldState, newState := bk.RecordFailure()
+	s.adjustOrder("flaky", oldState, newState)
+	oldState, newState = bk.RecordFailure()
+	s.adjustOrder("flaky", oldState, newState)
+	if bk.State() != breaker.CircuitOpen {
+		t.Fatalf("setup: want flaky circuitOpen, got %v", bk.State())
+	}
+	// circuitOpen 源不占运行时优先级槽位，此处核对运行时顺序即可。
+	if got := orderNames(s.order); len(got) != 2 || got[0] != "healthy" {
+		t.Fatalf("setup: 熔断源应已被后移，order=%v", got)
+	}
+
+	// 冷却到期后，即使健康源仍在前面，熔断源也必须拿到一次探测机会。
+	deadline := time.Now().Add(2 * time.Second)
+	for flakyCalls.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("熔断源冷却到期后应被探测，实际 0 次（state=%v order=%v）",
+				bk.State(), sourceNames(s.runtimeSeq()))
+		}
+		time.Sleep(5 * time.Millisecond)
+		if _, err := runGeneric(s, nil, nil); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+	}
+	if bk.State() != breaker.Normal {
+		t.Fatalf("探测成功后应恢复 normal，got %v", bk.State())
+	}
+}
+
+// TestCircuitOpenProbeNotBeforeInterval 保证冷却未到时不提前探测。
+func TestCircuitOpenProbeNotBeforeInterval(t *testing.T) {
+	var flakyCalls atomic.Int64
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flakyCalls.Add(1)
+		goodAnthropicSSE(w)
+	}))
+	defer flaky.Close()
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodAnthropicSSE(w)
+	}))
+	defer healthy.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout:          config.Duration(2 * time.Second),
+			DegradeThreshold:          1,
+			DegradedRecoveryThreshold: 1,
+			CircuitInterval:           config.Duration(time.Hour),
+			CircuitRecoveryThreshold:  1,
+			MaxRetries:                0,
+			Recovery:                  "normal",
+		},
+		Sources: []config.Source{
+			makeSource("flaky", flaky.URL, 0),
+			makeSource("healthy", healthy.URL, 1),
+		},
+	}
+	s := New(cfg, newTestRegistry())
+	flakySrc, _ := s.sourceByName("flaky")
+	bk := s.breakerFor(&flakySrc)
+	bk.RecordFailure()
+	bk.RecordFailure()
+	if bk.State() != breaker.CircuitOpen {
+		t.Fatalf("setup: want circuitOpen, got %v", bk.State())
+	}
+
+	if _, err := runGeneric(s, nil, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if flakyCalls.Load() != 0 {
+		t.Fatalf("冷却未到时不应探测熔断源，got %d 次", flakyCalls.Load())
+	}
+	if bk.State() != breaker.CircuitOpen {
+		t.Fatalf("冷却未到时状态应保持 circuitOpen，got %v", bk.State())
+	}
 }

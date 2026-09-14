@@ -156,7 +156,7 @@ func TestCircuitOpenHalfOpenRecoveryDegraded(t *testing.T) {
 
 // TestHalfOpenRecoveryDegradedResetsDegradedAt 覆盖：半开探测成功恢复到 degraded
 // 时，必须像 RecordFailure 进入 degraded 一样重新初始化 degradedAt。否则旧时间戳
-// 会让 AutoRecover 立刻判定 degrade_interval 已超时，跳过正常的恢复冷却。
+// 会让 AutoProbe 立刻判定 degrade_interval 已超时，跳过正常的恢复冷却。
 func TestHalfOpenRecoveryDegradedResetsDegradedAt(t *testing.T) {
 	b := New(cfg(3, 1, "degraded"))
 	for i := 0; i < 6; i++ {
@@ -183,18 +183,18 @@ func TestHalfOpenRecoveryDegradedResetsDegradedAt(t *testing.T) {
 	}
 
 	// 半开恢复成 degraded 后 degradedAt 必须重置为当前时刻（否则旧时间戳会让
-	// AutoRecover 立即判定 degrade_interval 已超时），同一时刻不得自动恢复。
+	// AutoProbe 立即判定 degrade_interval 已超时），同一时刻不得自动恢复。
 	if !fresh.Equal(now) {
 		t.Fatalf("degradedAt should be fresh after halfOpen recovery: got %v want %v", fresh, now)
 	}
-	if _, _, recovered := b.AutoRecover(); recovered {
-		t.Fatal("AutoRecover should be false immediately after halfOpen->degraded recovery")
+	if _, _, recovered := b.AutoProbe(); recovered {
+		t.Fatal("AutoProbe should be false immediately after halfOpen->degraded recovery")
 	}
 
 	// 超过 degrade_interval 后应恢复（机会窗口）。
 	advanceTime(b, 31*time.Second)
-	if _, _, recovered := b.AutoRecover(); !recovered {
-		t.Fatal("AutoRecover should be true after degrade_interval")
+	if _, _, recovered := b.AutoProbe(); !recovered {
+		t.Fatal("AutoProbe should be true after degrade_interval")
 	}
 }
 
@@ -499,9 +499,9 @@ func TestForceNormalFromCircuitOpen(t *testing.T) {
 	}
 }
 
-// --- AutoRecover (time-based degraded recovery) ---
+// --- AutoProbe（无请求驱动的冷却迁移：degraded 归位 / circuitOpen 进半开）---
 
-func TestAutoRecoverDegradedElapsed(t *testing.T) {
+func TestAutoProbeDegradedElapsed(t *testing.T) {
 	b := New(cfg(1, 1, "normal"))
 	b.RecordFailure() // -> degraded
 	if b.State() != Degraded {
@@ -518,9 +518,9 @@ func TestAutoRecoverDegradedElapsed(t *testing.T) {
 	// Advance past degrade_interval (cfg uses 30s)
 	b.now = func() time.Time { return start.Add(31 * time.Second) }
 
-	oldSt, newSt, recovered := b.AutoRecover()
+	oldSt, newSt, recovered := b.AutoProbe()
 	if !recovered {
-		t.Fatal("AutoRecover should return true after degrade_interval")
+		t.Fatal("AutoProbe should return true after degrade_interval")
 	}
 	if oldSt != Degraded {
 		t.Fatalf("old state: want Degraded, got %v", oldSt)
@@ -529,11 +529,11 @@ func TestAutoRecoverDegradedElapsed(t *testing.T) {
 		t.Fatalf("new state: want Degraded (B 语义，超时只恢复机会、状态保持 degraded), got %v", newSt)
 	}
 	if b.State() != Degraded {
-		t.Fatalf("state after AutoRecover: want Degraded (degraded 保留以便后续失败升级到熔断), got %v", b.State())
+		t.Fatalf("state after AutoProbe: want Degraded (degraded 保留以便后续失败升级到熔断), got %v", b.State())
 	}
 }
 
-func TestAutoRecoverDegradedNotElapsed(t *testing.T) {
+func TestAutoProbeDegradedNotElapsed(t *testing.T) {
 	b := New(cfg(1, 1, "normal"))
 	b.RecordFailure() // -> degraded
 	b.mu.Lock()
@@ -543,34 +543,36 @@ func TestAutoRecoverDegradedNotElapsed(t *testing.T) {
 	// Only advance 5s (less than 30s degrade_interval)
 	b.now = func() time.Time { return start.Add(5 * time.Second) }
 
-	_, _, recovered := b.AutoRecover()
+	_, _, recovered := b.AutoProbe()
 	if recovered {
-		t.Fatal("AutoRecover should return false before degrade_interval elapses")
+		t.Fatal("AutoProbe should return false before degrade_interval elapses")
 	}
 	if b.State() != Degraded {
 		t.Fatalf("state should stay Degraded, got %v", b.State())
 	}
 }
 
-func TestAutoRecoverSkipsNormal(t *testing.T) {
+func TestAutoProbeSkipsNormal(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
-	_, _, recovered := b.AutoRecover()
-	if recovered {
-		t.Fatal("AutoRecover on Normal should return false")
+	if _, _, ok := b.AutoProbe(); ok {
+		t.Fatal("normal 不应触发冷却迁移")
 	}
 }
 
-func TestAutoRecoverSkipsCircuitOpen(t *testing.T) {
+// TestAutoProbeCircuitOpenNotElapsed circuitOpen 冷却未到不迁移，到期才进 halfOpen。
+func TestAutoProbeCircuitOpenNotElapsed(t *testing.T) {
 	b := New(cfg(1, 1, "normal"))
 	b.RecordFailure() // -> degraded
 	b.RecordFailure() // -> circuitOpen
-	_, _, recovered := b.AutoRecover()
-	if recovered {
-		t.Fatal("AutoRecover on CircuitOpen should return false")
+	if _, _, ok := b.AutoProbe(); ok {
+		t.Fatal("circuit_interval 未到不应迁移")
+	}
+	if b.State() != CircuitOpen {
+		t.Fatalf("state=%v want circuitOpen", b.State())
 	}
 }
 
-func TestAutoRecoverPreservesDegradeCount(t *testing.T) {
+func TestAutoProbePreservesDegradeCount(t *testing.T) {
 	b := New(cfg(1, 1, "normal"))
 	b.RecordFailure() // -> degraded (degradeCount=1)
 	if b.DegradeCount() != 1 {
@@ -582,16 +584,16 @@ func TestAutoRecoverPreservesDegradeCount(t *testing.T) {
 	b.mu.Unlock()
 	b.now = func() time.Time { return start.Add(31 * time.Second) }
 
-	b.AutoRecover()
+	b.AutoProbe()
 	if b.DegradeCount() != 1 {
-		t.Fatalf("degradeCount should stay 1 after AutoRecover (保持 degraded 以允许升级到熔断), got %d", b.DegradeCount())
+		t.Fatalf("degradeCount should stay 1 after AutoProbe (保持 degraded 以允许升级到熔断), got %d", b.DegradeCount())
 	}
 }
 
-// TestAutoRecoverPreservesCircuitOpenPath 覆盖 B 语义的核心动机：degrade 超时
+// TestAutoProbePreservesCircuitOpenPath 覆盖 B 语义的核心动机：degrade 超时
 // 只恢复机会、不清除 degradeCount；随后连续 DegradeThreshold 次失败必须能
 // 从 degraded 升级到 circuitOpen，而不是被反复重置回 normal 导致永不熔断。
-func TestAutoRecoverPreservesCircuitOpenPath(t *testing.T) {
+func TestAutoProbePreservesCircuitOpenPath(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
 	for i := 0; i < 3; i++ {
 		b.RecordFailure() // -> degraded (degradeCount=1)
@@ -605,8 +607,8 @@ func TestAutoRecoverPreservesCircuitOpenPath(t *testing.T) {
 	b.mu.Unlock()
 	b.now = func() time.Time { return start.Add(31 * time.Second) }
 
-	if _, _, recovered := b.AutoRecover(); !recovered {
-		t.Fatal("AutoRecover should return true after degrade_interval")
+	if _, _, recovered := b.AutoProbe(); !recovered {
+		t.Fatal("AutoProbe should return true after degrade_interval")
 	}
 	if b.State() != Degraded {
 		t.Fatalf("超时后应保持 degraded, got %v", b.State())
@@ -621,7 +623,7 @@ func TestAutoRecoverPreservesCircuitOpenPath(t *testing.T) {
 	}
 }
 
-func TestAutoRecoverFailureResetsDegradedAt(t *testing.T) {
+func TestAutoProbeFailureResetsDegradedAt(t *testing.T) {
 	b := New(cfg(3, 1, "normal"))
 	for i := 0; i < 3; i++ {
 		b.RecordFailure() // -> degraded
@@ -643,17 +645,71 @@ func TestAutoRecoverFailureResetsDegradedAt(t *testing.T) {
 		t.Fatal("degradedAt should be reset after failure in Degraded state")
 	}
 
-	// AutoRecover at 25s from the new degradedAt should not yet recover
+	// AutoProbe at 25s from the new degradedAt should not yet recover
 	b.now = func() time.Time { return afterFailure.Add(25 * time.Second) }
-	_, _, recovered := b.AutoRecover()
+	_, _, recovered := b.AutoProbe()
 	if recovered {
-		t.Fatal("AutoRecover should not recover 25s after the new degradedAt")
+		t.Fatal("AutoProbe should not recover 25s after the new degradedAt")
 	}
 
 	// But after 31s from the new degradedAt it should
 	b.now = func() time.Time { return afterFailure.Add(31 * time.Second) }
-	_, _, recovered = b.AutoRecover()
+	_, _, recovered = b.AutoProbe()
 	if !recovered {
-		t.Fatal("AutoRecover should recover 31s after the new degradedAt")
+		t.Fatal("AutoProbe should recover 31s after the new degradedAt")
+	}
+}
+
+// TestAutoProbeCircuitOpenElapsed 验证熔断源冷却到期后可由时间驱动进入
+// halfOpen：请求路径可能永远走不到队尾的熔断源，必须有一个不依赖请求遍历
+// 的迁移入口，否则熔断源永久不再获得探测机会。
+func TestAutoProbeCircuitOpenElapsed(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	b.RecordFailure() // -> degraded
+	b.RecordFailure() // -> circuitOpen
+	if b.State() != CircuitOpen {
+		t.Fatalf("setup: want circuitOpen, got %v", b.State())
+	}
+
+	if _, _, ok := b.AutoProbe(); ok {
+		t.Fatal("未到 circuit_interval 不应进入 halfOpen")
+	}
+
+	advanceTime(b, 31*time.Second) // circuit_interval=30s
+	old, newSt, ok := b.AutoProbe()
+	if !ok || old != CircuitOpen || newSt != HalfOpen {
+		t.Fatalf("冷却到期应进入 halfOpen，got ok=%v old=%v new=%v", ok, old, newSt)
+	}
+	if b.State() != HalfOpen {
+		t.Fatalf("state=%v want halfOpen", b.State())
+	}
+	if !b.Allow() {
+		t.Fatal("halfOpen 应放行探测请求")
+	}
+}
+
+// TestAutoProbeSkipsNonCooldownStates 只有 degraded 与 circuitOpen 两种冷却态
+// 参与时间迁移；normal 与 halfOpen（探测进行中）不动作，避免误改健康状态。
+func TestAutoProbeSkipsNonCooldownStates(t *testing.T) {
+	b := New(cfg(1, 1, "normal"))
+	if _, _, ok := b.AutoProbe(); ok {
+		t.Fatal("normal 不应触发冷却迁移")
+	}
+
+	b.RecordFailure() // -> degraded
+	b.RecordFailure() // -> circuitOpen
+	advanceTime(b, 31*time.Second)
+	if !b.Allow() { // circuit_interval 到期 -> halfOpen
+		t.Fatal("setup: 应进入 halfOpen")
+	}
+	if b.State() != HalfOpen {
+		t.Fatalf("setup: want halfOpen, got %v", b.State())
+	}
+	advanceTime(b, time.Hour)
+	if _, _, ok := b.AutoProbe(); ok {
+		t.Fatal("halfOpen 探测进行中不应触发冷却迁移")
+	}
+	if b.State() != HalfOpen {
+		t.Fatalf("halfOpen 状态不得被改动，got %v", b.State())
 	}
 }

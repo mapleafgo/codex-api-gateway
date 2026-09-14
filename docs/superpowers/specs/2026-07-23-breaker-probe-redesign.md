@@ -10,10 +10,18 @@
 
 ## 1. 背景与动机
 
-当前断路器有两个突出问题：
+当前断路器有三个突出问题：
 
 **Degraded 永远无法恢复**
 源被降级后 `moveToEnd` 排到队尾。只要前面有健康源，它永远不被尝试，也就永远没有机会通过 `RecordSuccess()` 恢复。唯一的恢复途径是人工提升或所有源全挂。
+
+**CircuitOpen 的冷却探测同样永远不触发**（2026-09-14 修复）
+熔断源被后移到运行时队尾且不占优先级槽位。原实现只在请求遍历（`tryRoundGeneric` →
+`AllowTransition()`）里判定 `circuit_interval` 到期——只要前面有健康源锁定成功，遍历就提前
+返回，队尾熔断源永远不会被走到，`circuitOpen → halfOpen` 一次也不会发生，探测彻底失效
+（线上表现为熔断源长时间停在 circuitOpen，永不进入半开）。
+修复：新增与请求遍历解耦的 `AutoHalfOpen()`，由同一恢复线程/每轮前置评估按时间驱动迁移
+（`evaluateRecoveries`），到期即进入 halfOpen 并恢复原始优先级位置。
 
 **429 处理错误**
 目前对 HTTP 429 做了特殊处理：不计入 breaker failure + 10s 延迟重试（其他源优先）。但 429 本质是限流，不应该有特殊路径——让它走正常的降级/熔断/探测流程即可。
@@ -104,10 +112,14 @@ type Breaker struct {
 ### 新增方法
 
 ```go
-// AutoRecover 检查 Degraded 状态是否已超过 degrade_interval。
-// 若超过且无新失败（degradedAt 未被 RecordFailure 重置），返回 recovered=true：调度器恢复到原始优先级位置，状态保持 degraded。
-// 返回 (oldState, newState, recovered)，scheduler 据此调用 restoreOriginal。
-func (b *Breaker) AutoRecover() (State, State, bool)
+// AutoProbe 是「无请求驱动的冷却迁移」唯一入口：一次评估 degraded / circuitOpen
+// 是否到期并迁移，两者共用同一份 cooldownTransition，仅间隔与目标状态不同。
+//   - Degraded 超过 degrade_interval 无新失败 -> (Degraded, Degraded, true)：
+//     调度器恢复原始优先级位置，状态保持 degraded（机会窗口）。
+//   - CircuitOpen 超过 circuit_interval -> (CircuitOpen, HalfOpen, true)：
+//     熔断源被排除出候选队列，必须改状态才有机会被探测。
+// 返回 (oldState, newState, ok)，scheduler 据此调用 restoreOriginal。
+func (b *Breaker) AutoProbe() (State, State, bool)
 ```
 
 ### 对现有方法的变更
@@ -128,33 +140,38 @@ func (b *Breaker) AutoRecover() (State, State, bool)
 
 ## 5. Scheduler 变更
 
-### tryRoundGeneric 前置 autoRecoverDegraded()
+### evaluateRecoveries()：统一冷却迁移前置
 
-每轮 `tryRoundGeneric` 开始时，对所有 breaker 调用 `AutoRecover()`。若返回 `recovered=true`，调用 `adjustOrder(oldState, newState)` → `restoreOriginal`。
-
-```go
-func (s *Scheduler) tryRoundGeneric(...) {
-    // 前置：自动恢复到期 degraded 源
-    s.autoRecoverDegraded()
-    // ... 正常迭代逻辑
-}
-```
-
-`autoRecoverDegraded()` 实现：
+后台恢复线程（每分钟）与每轮 `tryRoundGeneric` 前置都调用一次 `evaluateRecoveries()`，
+对每个源调用 `breaker.AutoProbe()`，两种冷却态走同一份迁移实现；到时机后统一
+`restoreOriginal`（degraded 与 circuitOpen 的动作都只是「归还运行优先级」）。
 
 ```go
-func (s *Scheduler) autoRecoverDegraded() {
-    for _, src := range s.runtimeSeq() {
-        bk := s.breakerFor(&src)
-        oldSt, newSt, ok := bk.AutoRecover()
-        if ok {
-            s.adjustOrder(src.Name, oldSt, newSt)
+func (s *Scheduler) evaluateRecoveries() {
+    // 必须遍历 healthSeq：circuitOpen 源不占运行时优先级槽位，
+    // runtimeSeq 不收录它们，只用 runtimeSeq 会漏掉队尾熔断源的冷却迁移。
+    for _, src := range s.healthSeq() {
+        if src.Disabled {
+            continue
         }
+        s.autoProbe(&src)
     }
 }
+
+func (s *Scheduler) autoProbe(src *config.Source) {
+    bk := s.breakerFor(src)
+    oldState, newState, ok := bk.AutoProbe()
+    if !ok {
+        return
+    }
+    s.restoreOriginal(src.Name) // degraded/circuitOpen 都只是归还优先级
+    slog.Info("上游源冷却到期恢复运行优先级",
+        "source", src.Name, "old_state", oldState, "new_state", newState)
+}
 ```
 
-该方案的性能影响：`autoRecoverDegraded` 遍历所有 breaker（通常 < 20 个），每次调用 `AutoRecover()` 仅检查一个 `time.Time` 比较，开销可以忽略。
+该方案的性能影响：`evaluateRecoveries` 遍历所有源（通常 < 20 个），每次 `AutoProbe()`
+仅做一次 `time.Time` 比较，开销可以忽略。
 
 ## 6. 测试计划
 
@@ -162,16 +179,16 @@ func (s *Scheduler) autoRecoverDegraded() {
 
 | 测试 | 验证点 |
 |------|--------|
-| TestDegradedAutoRecoverAfterInterval | Degraded 后超时，AutoRecover() 返回 recovered=true 且状态保持 Degraded |
-| TestDegradedAutoRecoverResetOnFailure | Degraded 后 RecordFailure 重置计时器，AutoRecover 不生效 |
-| TestDegradedAutoRecoverNotBeforeInterval | Degraded 后未到间隔，AutoRecover 不生效 |
-| TestDegradedAutoRecoverAfterSuccess | RecordSuccess 后不再 Degraded，AutoRecover 不生效 |
+| TestAutoProbeDegradedElapsed | Degraded 后超时，AutoProbe() 返回 ok=true 且状态保持 Degraded |
+| TestAutoProbeFailureResetsDegradedAt | Degraded 后 RecordFailure 重置计时器，AutoProbe 不生效 |
+| TestAutoProbeDegradedNotElapsed | Degraded 后未到间隔，AutoProbe 不生效 |
+| TestAutoProbeCircuitOpenElapsed | circuitOpen 冷却到期，AutoProbe() 返回 ok=true 且迁到 halfOpen |
 
 ### Scheduler 集成测试
 
 | 测试 | 验证点 |
 |------|--------|
-| TestDegradedAutoRecoverRestoresOrder | Breaker auto-recover 后，scheduler 调用 restoreOriginal，顺序恢复 |
+| TestSchedulerAutoProbeDegradedSource | AutoProbe 后 scheduler 调用 restoreOriginal，顺序恢复 |
 | TestDegradedWithMixOf429And500 | 429 不再特判，正常触发 degrade，auto-recover 仍生效 |
 | Test429DegradesNormally | 源连续返回 429，正常触发 degrade→moveToEnd |
 
