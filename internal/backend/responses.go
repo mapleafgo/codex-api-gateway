@@ -457,6 +457,8 @@ func (b *ResponsesBackend) Execute(
 
 	var ttfb time.Duration
 	locked := false
+	forwarded := false
+	suppressedFailure := false
 	terminalStatus := ""
 	terminalError := ""
 	var inTok, outTok, cacheRead, cacheCreate int
@@ -481,12 +483,23 @@ func (b *ResponsesBackend) Execute(
 		if et == evOutputItemAdded || et == evOutputItemDone {
 			data = rewriteCollabPlaintextArgs(data)
 		}
-		if err := onEvent(model.SSEEvent{Type: et, Data: data}); err != nil {
-			return err
-		}
 		// 观测：尽力解析 usage，不中断流
 		if i, o, cr, cc, ok := parseUsageFromEvent(et, data); ok {
 			inTok, outTok, cacheRead, cacheCreate = i, o, cr, cc
+		}
+		if et == evResponseFailed && !forwarded {
+			// 首个事件就是失败终态时客户端尚未收到任何 SSE。抑制该终态并
+			// 在流结束后返回上游错误，让 scheduler 记失败并尝试后续源。
+			suppressedFailure = true
+			return nil
+		}
+		if suppressedFailure {
+			// 已判定本源失败，后续事件一律不再透传，避免 failed 之后出现第二源事件。
+			return nil
+		}
+		forwarded = true
+		if err := onEvent(model.SSEEvent{Type: et, Data: data}); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -515,6 +528,10 @@ func (b *ResponsesBackend) Execute(
 			"model", clientModel,
 			"resolved_model", resolved,
 			"elapsed", time.Since(start).String())
+	}
+	if suppressedFailure && scanErr == nil {
+		// 错误串带 upstream 200 以复用 StatusCodeFromErr 归因，观测保持 failed/200。
+		scanErr = fmt.Errorf("upstream %d: %s", code, terminalError)
 	}
 	level := slog.LevelInfo
 	if status == "failed" {

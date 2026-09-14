@@ -206,26 +206,31 @@ func ErrSummary(err error) string {
 }
 
 // StatusCodeFromErr 从 client 错误串解析上游 HTTP 状态码。
+// 错误可能被全源失败上下文包装，前面的 "upstream sources" 不带码，
+// 因此逐段向后扫描直到出现合法的 100-599 状态码。
 func StatusCodeFromErr(err error) int {
 	if err == nil {
 		return 0
 	}
 	s := err.Error()
 	for _, prefix := range []string{"anthropic upstream ", "upstream "} {
-		i := strings.Index(s, prefix)
-		if i < 0 {
-			continue
-		}
-		rest := s[i+len(prefix):]
-		n := 0
-		for _, ch := range rest {
-			if ch < '0' || ch > '9' {
+		for {
+			i := strings.Index(s, prefix)
+			if i < 0 {
 				break
 			}
-			n = n*10 + int(ch-'0')
-		}
-		if n >= 100 && n <= 599 {
-			return n
+			rest := s[i+len(prefix):]
+			n := 0
+			for _, ch := range rest {
+				if ch < '0' || ch > '9' {
+					break
+				}
+				n = n*10 + int(ch-'0')
+			}
+			if n >= 100 && n <= 599 {
+				return n
+			}
+			s = rest
 		}
 	}
 	return 0

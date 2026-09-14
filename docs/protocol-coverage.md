@@ -41,7 +41,7 @@
 客户端仍只走 `/v1/responses`。当 source 配置 `backend: openai-responses` 时，网关对 OpenAI Responses 上游做**最小改写透传**（实现：`backend.ResponsesBackend` + `responsesclient`）：
 
 - **入站**：`map` 语义透传；`model` 经 `model_map`/`default_model` 解析；强制 `stream: true`；`reasoning` item 仅含 `summary` 明文时折算 `content`（`reasoning_text` part）——DeepSeek `/responses` 只支持 plain-text `content` 合并进相邻 assistant，忽略 `summary`，不折算会触发 `reasoning_text must be passed back` 400；完全明文的 `agent_message` 按原位置折为 assistant `message`（兼容不认识 Codex 扩展的上游），含 `encrypted_content` 时保持原生 `agent_message` 交给上游；其余键原样保留（含 `previous_response_id`、tools、include 等）；`input_image`（URL / data URI / file_id / detail）原样透传，由上游裁决（2026-08-31）
-- **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`
+- **出站 SSE**：上游 `event` + `data` 转发（无 `event` 时从 JSON `type` 回填；仍空则跳过帧）；**T2** 仅回写顶层/`response.model` 为客户端请求 model；空流不合成终态；中途失败不强制补 `response.failed`。**首个事件即 `response.failed`（限流/限额等）时抑制该终态、按本源失败计熔断并 failover 到后续源**（客户端在失败前未收到任何事件，换源安全）；一旦已有事件透传（含 `response.created`），源锁定，错误终态仍原样透传
 - **取消语义**：已收到 `response.completed` / `response.incomplete` 后客户端取消 → 观测记 `completed`（对齐 Chat 终态后读尾）
 - **观测**：尽力解析终态事件 `usage`（`input_tokens` / `output_tokens` / cache 字段若有）；`backend` 恒为 `openai-responses`（metrics 禁止空串）
 - **WARN 收口**：配置含**启用中** r 源时，`warnDroppedOrIgnoredParams` 不对 r 可透传字段误报「数据被丢弃」；`previous_response_id` 打 INFO「透传上游，网关不代补会话」

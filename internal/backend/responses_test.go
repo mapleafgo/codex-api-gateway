@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mapleafgo/codex-api-gateway/internal/config"
@@ -555,7 +556,7 @@ func TestResponsesBackend_PassthroughSSE(t *testing.T) {
 	}
 }
 
-func TestResponsesBackend_FailedTerminalIsFailed(t *testing.T) {
+func TestResponsesBackend_FirstFailedTerminalIsSuppressed(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = io.WriteString(w, "event: response.failed\n")
@@ -565,22 +566,26 @@ func TestResponsesBackend_FailedTerminalIsFailed(t *testing.T) {
 
 	b := NewResponses()
 	var up UpstreamEvent
+	events := 0
 	err := b.Execute(context.Background(),
 		[]byte(`{"model":"gpt-5","input":[]}`),
 		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
 		nil,
-		func(model.SSEEvent) error { return nil },
+		func(model.SSEEvent) error { events++; return nil },
 		func(ev UpstreamEvent) { up = ev },
 		1,
 	)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Fatalf("err=%v want upstream failure with quota exceeded", err)
+	}
+	if events != 0 {
+		t.Fatalf("events=%d want 0 (first failed terminal must not be forwarded)", events)
 	}
 	if up.Status != "failed" || up.Code != http.StatusOK {
 		t.Fatalf("status=%s code=%d want failed/200", up.Status, up.Code)
 	}
 	if up.Error != "quota exceeded" {
-		t.Fatalf("error=%q want quota exceeded", up.Error)
+		t.Fatalf("up.Error=%q want quota exceeded", up.Error)
 	}
 	if up.InputTokens != 3 || up.OutputTokens != 1 {
 		t.Fatalf("usage=%d/%d want 3/1", up.InputTokens, up.OutputTokens)
@@ -647,42 +652,6 @@ func TestResponsesBackend_TruncatedStreamWithoutTerminalIsFailed(t *testing.T) {
 	// 不代补终态：客户端只应收到上游实际发出的 2 个事件
 	if events != 2 {
 		t.Fatalf("events=%d want 2 (no synthetic terminal)", events)
-	}
-}
-
-func TestResponsesBackend_CancelAfterFailedTerminalIsFailed(t *testing.T) {
-	released := make(chan struct{})
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "text/event-stream")
-		fl := w.(http.Flusher)
-		_, _ = io.WriteString(w, "event: response.failed\n")
-		_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"r1","model":"o3","error":{"message":"failed upstream"}}}`+"\n\n")
-		fl.Flush()
-		select {
-		case <-r.Context().Done():
-		case <-released:
-		}
-	}))
-	defer ts.Close()
-	defer close(released)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	b := NewResponses()
-	var up UpstreamEvent
-	_ = b.Execute(ctx,
-		[]byte(`{"model":"gpt-5","input":[]}`),
-		config.Source{Name: "r1", BaseURL: ts.URL + "/v1", APIKey: "k"},
-		nil,
-		func(model.SSEEvent) error {
-			cancel()
-			return ctx.Err()
-		},
-		func(ev UpstreamEvent) { up = ev },
-		1,
-	)
-	if up.Status != "failed" || up.Error != "failed upstream" {
-		t.Fatalf("up=%+v want failed terminal after cancel", up)
 	}
 }
 

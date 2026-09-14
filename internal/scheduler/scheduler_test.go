@@ -40,6 +40,10 @@ func makeChatSource(name, baseURL string, idx int) config.Source {
 	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, Backend: "openai-chat"}
 }
 
+func makeResponsesSource(name, baseURL string, idx int) config.Source {
+	return config.Source{Name: name, BaseURL: baseURL, OriginalIndex: idx, Backend: "openai-responses"}
+}
+
 func makeCopilotSource(name, baseURL string, idx int) config.Source {
 	return config.Source{
 		Name: name, BaseURL: baseURL, OriginalIndex: idx,
@@ -270,6 +274,62 @@ func TestMixAnthropicFailThenChatSuccess(t *testing.T) {
 	}
 	if !sawC {
 		t.Fatalf("upstream events=%+v", ups)
+	}
+}
+
+// TestResponsesFirstTerminalFailureSwitchesToNext 复现 HTTP 200 + 首个事件
+// response.failed 的限额错误：该源未向客户端写出任何事件，必须计失败并换源。
+func TestResponsesFirstTerminalFailureSwitchesToNext(t *testing.T) {
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "event: response.failed\n")
+		io.WriteString(w, `data: {"type":"response.failed","response":{"id":"r1","model":"x","error":{"message":"已达到 5 小时的使用上限。您的限额将在 2026-09-10 04:21:15 重置。"}}}`+"\n\n")
+	}))
+	defer limited.Close()
+
+	goodCalled := atomic.Bool{}
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCalled.Store(true)
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "event: response.created\n")
+		io.WriteString(w, `data: {"type":"response.created","response":{"id":"r2","model":"x"}}`+"\n\n")
+		io.WriteString(w, "event: response.output_text.delta\n")
+		io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"ok"}`+"\n\n")
+		io.WriteString(w, "event: response.completed\n")
+		io.WriteString(w, `data: {"type":"response.completed","response":{"id":"r2","model":"x"}}`+"\n\n")
+	}))
+	defer good.Close()
+
+	cfg := &config.Config{
+		Breaker: config.BreakerCfg{
+			FirstByteTimeout: config.Duration(2 * time.Second), MaxRetries: 0,
+			DegradeThreshold: 5, CircuitInterval: config.Duration(time.Minute), CircuitRecoveryThreshold: 1,
+		},
+		Sources: []config.Source{
+			makeResponsesSource("r-limited", limited.URL+"/v1", 0),
+			makeResponsesSource("r-good", good.URL+"/v1", 1),
+		},
+	}
+	s := New(cfg, newTestRegistry())
+	var events []model.SSEEvent
+	name, err := runGeneric(s, func(ev model.SSEEvent) error {
+		events = append(events, ev)
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !goodCalled.Load() {
+		t.Fatal("first terminal failure must failover to next source")
+	}
+	if name != "r-good" {
+		t.Fatalf("source=%q want r-good", name)
+	}
+	if countEventType(events, "response.failed") != 0 {
+		t.Fatalf("client must not receive limited source terminal failure; events=%+v", events)
+	}
+	if countEventType(events, "response.output_text.delta") != 1 {
+		t.Fatalf("client must receive content from second source; events=%+v", events)
 	}
 }
 
